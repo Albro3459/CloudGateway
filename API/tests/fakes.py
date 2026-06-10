@@ -5,7 +5,7 @@ from threading import Lock
 
 from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
 from cloudlaunch_api.enums import ClientStatus, OperationResult, Role
-from cloudlaunch_api.errors import AuthRequiredError, ClientNotFoundError
+from cloudlaunch_api.errors import AuthRequiredError, ClientNotFoundError, WireGuardApplyFailedError
 from cloudlaunch_api.repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
@@ -116,6 +116,8 @@ class FakeRepository(FirebaseRepository):
         self.users: dict[str, UserDoc] = {}
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
+        self.mark_client_active_error: Exception | None = None
+        self.delete_client_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
@@ -201,6 +203,8 @@ class FakeRepository(FirebaseRepository):
         client_public_key: str,
         wireguard_config: str,
     ) -> ClientDoc:
+        if self.mark_client_active_error is not None:
+            raise self.mark_client_active_error
         ensure_local_region(region_id, self.local_region_id)
         with self._lock:
             client = self._require_client(owner_uid=owner_uid, region_id=region_id, client_id=client_id)
@@ -263,6 +267,8 @@ class FakeRepository(FirebaseRepository):
         region_id: str,
         client_id: str,
     ) -> ClientDoc:
+        if self.delete_client_error is not None:
+            raise self.delete_client_error
         ensure_local_region(region_id, self.local_region_id)
         with self._lock:
             ensure_delete_allowed(
@@ -350,12 +356,39 @@ class FakeWireGuardManager(WireGuardManager):
     def __init__(self):
         self.peers: dict[str, str] = {}
         self.keypair_count = 0
+        self.add_peer_calls = 0
+        self.remove_peer_calls = 0
+        self.fail_generate_count = 0
+        self.fail_add_count = 0
+        self.fail_remove_count = 0
+        self.fail_add_transient = False
+        self.fail_remove_transient = False
 
     def generate_keypair(self) -> WireGuardKeypair:
+        if self.fail_generate_count:
+            self.fail_generate_count -= 1
+            raise WireGuardApplyFailedError("Simulated key generation failure.")
         self.keypair_count += 1
         return WireGuardKeypair(
             private_key=f"fake-private-{self.keypair_count}",
             public_key=f"fake-public-{self.keypair_count}",
+        )
+
+    def render_client_config(
+        self,
+        *,
+        private_key: str,
+        tunnel_ipv4: str,
+        tunnel_ipv6: str,
+    ) -> str:
+        return (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            f"Address = {tunnel_ipv4}, {tunnel_ipv6}\n"
+            "\n"
+            "[Peer]\n"
+            "PublicKey = fake-server-public\n"
+            "Endpoint = 203.0.113.10:51820\n"
         )
 
     def add_peer(
@@ -366,9 +399,17 @@ class FakeWireGuardManager(WireGuardManager):
         tunnel_ipv4: str,
         tunnel_ipv6: str,
     ) -> None:
+        self.add_peer_calls += 1
+        if self.fail_add_count:
+            self.fail_add_count -= 1
+            raise WireGuardApplyFailedError("Simulated add peer failure.", transient=self.fail_add_transient)
         self.peers[public_key] = client_id
 
     def remove_peer(self, *, client_id: str, public_key: str) -> OperationResult:
+        self.remove_peer_calls += 1
+        if self.fail_remove_count:
+            self.fail_remove_count -= 1
+            raise WireGuardApplyFailedError("Simulated remove peer failure.", transient=self.fail_remove_transient)
         if public_key not in self.peers:
             return OperationResult.NOOP
         del self.peers[public_key]

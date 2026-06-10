@@ -14,7 +14,7 @@ from .models import ErrorDetail, ErrorResponse
 from .repository import FirebaseRepository
 from .routes import router
 from .settings import Settings
-from .wireguard import UnavailableWireGuardManager, WireGuardManager
+from .wireguard import LocalWireGuardManager, WireGuardManager
 
 logger = logging.getLogger("cloudlaunch_api.app")
 
@@ -48,7 +48,15 @@ def create_app(
         repository = repository or FirestoreRepository(settings)
     app.state.token_verifier = token_verifier
     app.state.repository = repository
-    app.state.wireguard = wireguard or UnavailableWireGuardManager()
+    app.state.wireguard = wireguard or LocalWireGuardManager(
+        interface=settings.wg_interface,
+        config_path=settings.wg_config_path,
+        server_public_key=settings.wg_server_public_key,
+        endpoint_ipv4=settings.wg_endpoint_ipv4,
+        listen_port=settings.wg_port,
+        dns_ipv4=settings.wg_dns_ipv4,
+        dns_ipv6=settings.wg_dns_ipv6,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):

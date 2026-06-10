@@ -34,6 +34,16 @@ class WireGuardManager(ABC):
         """Generate a fresh WireGuard keypair."""
 
     @abstractmethod
+    def render_client_config(
+        self,
+        *,
+        private_key: str,
+        tunnel_ipv4: str,
+        tunnel_ipv6: str,
+    ) -> str:
+        """Render a client-facing WireGuard config."""
+
+    @abstractmethod
     def add_peer(
         self,
         *,
@@ -220,6 +230,15 @@ class LocalWireGuardManager(WireGuardManager):
 
 class UnavailableWireGuardManager(WireGuardManager):
     def generate_keypair(self) -> WireGuardKeypair:
+        raise WireGuardApplyFailedError("WireGuard manager is not implemented yet.")
+
+    def render_client_config(
+        self,
+        *,
+        private_key: str,
+        tunnel_ipv4: str,
+        tunnel_ipv6: str,
+    ) -> str:
         raise WireGuardApplyFailedError("WireGuard manager is not implemented yet.")
 
     def add_peer(
