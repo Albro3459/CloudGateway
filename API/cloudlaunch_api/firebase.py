@@ -4,7 +4,14 @@ from typing import Any
 
 from .auth import AuthenticatedUser, TokenVerifier
 from .enums import ClientStatus, Role
-from .errors import AuthRequiredError, ClientNotFoundError, FirebaseWriteFailedError
+from .errors import (
+    AuthRequiredError,
+    ClientNotFoundError,
+    DuplicateEmailError,
+    FirebaseWriteFailedError,
+    InvalidPasswordError,
+    InvalidRequestError,
+)
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
@@ -99,6 +106,47 @@ class FirestoreRepository(FirebaseRepository):
         if not doc.exists:
             return None
         return _client_from_data(doc.to_dict() or {}, client_id)
+
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
+        from firebase_admin import auth, firestore
+
+        _firebase_app(self._settings)
+        try:
+            auth_data = {"email": email, "password": password}
+            if display_name is not None:
+                auth_data["display_name"] = display_name
+            auth_user = auth.create_user(**auth_data)
+        except Exception as exc:
+            if _exception_is_named(exc, "EmailAlreadyExistsError"):
+                raise DuplicateEmailError() from exc
+            if _exception_is_named(exc, "InvalidPasswordError"):
+                raise InvalidPasswordError() from exc
+            if isinstance(exc, ValueError):
+                raise InvalidRequestError() from exc
+            raise FirebaseWriteFailedError() from exc
+
+        uid = auth_user.uid
+        now = utc_now()
+        try:
+            db = self._db()
+            db.collection("Users").document(uid).set(
+                {
+                    "uid": uid,
+                    "email": auth_user.email or email,
+                    "displayName": display_name,
+                    "createdAt": firestore.SERVER_TIMESTAMP,
+                }
+            )
+            db.collection("Roles").document(uid).set(
+                {
+                    "role": Role.USER.value,
+                    "updatedAt": firestore.SERVER_TIMESTAMP,
+                }
+            )
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+        return UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
 
     def reserve_client(
         self,
@@ -384,6 +432,10 @@ def _role_from_snapshot(snapshot) -> Role | None:
     if not snapshot.exists:
         return None
     return _role_from_data(snapshot.to_dict() or {})
+
+
+def _exception_is_named(exc: Exception, *class_names: str) -> bool:
+    return any(cls.__name__ in class_names for cls in type(exc).__mro__)
 
 
 def _role_from_data(data: dict[str, Any]) -> Role | None:

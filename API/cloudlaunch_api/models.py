@@ -54,9 +54,17 @@ class DeleteClientResponse(ApiModel):
 
 
 class CreateUserRequest(ApiModel):
-    email: str = Field(min_length=1)
-    password: str = Field(min_length=1)
-    display_name: str | None = None
+    email: str = Field(min_length=1, max_length=320)
+    password: str
+    display_name: str | None = Field(default=None, max_length=256)
+
+    @field_validator("email")
+    @classmethod
+    def email_must_be_present(cls, value: str) -> str:
+        value = value.strip()
+        if not value or "@" not in value:
+            raise ValueError("Invalid email.")
+        return value
 
     @field_validator("display_name")
     @classmethod

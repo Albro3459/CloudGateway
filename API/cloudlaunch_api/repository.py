@@ -151,6 +151,10 @@ class FirebaseRepository(ABC):
         """Return a client document, or None when it does not exist."""
 
     @abstractmethod
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
+        """Create an Auth user and matching Users/Roles documents."""
+
+    @abstractmethod
     def reserve_client(
         self,
         *,

@@ -5,12 +5,13 @@ from typing import TypeVar
 from fastapi import APIRouter, Depends, Request
 
 from .auth import AuthenticatedUser, get_current_user, require_admin_user
-from .enums import ClientStatus, ErrorCode, Event, OperationResult
+from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
 from .errors import (
     ApiError,
     ClientNotFoundError,
     FirebaseWriteFailedError,
     InternalError,
+    InvalidPasswordError,
     WireGuardApplyFailedError,
 )
 from .logs import log_event
@@ -29,6 +30,8 @@ from .wireguard import WireGuardManager
 logger = logging.getLogger("cloudlaunch_api.routes")
 router = APIRouter()
 T = TypeVar("T")
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 4096
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -265,14 +268,46 @@ async def create_user(
     body: CreateUserRequest,
     admin_user: AuthenticatedUser = Depends(require_admin_user),
 ) -> CreateUserResponse:
+    repository = request.app.state.repository
+    request_id = request.state.request_id
+
     log_event(
         logger,
         Event.USER_CREATE_STARTED,
-        request_id=request.state.request_id,
+        request_id=request_id,
         admin_uid=admin_user.uid,
         email=body.email,
     )
-    raise InternalError("User creation is not implemented yet.")
+    try:
+        _validate_create_user_password(body.password)
+        created_user = repository.create_user(
+            email=body.email,
+            password=body.password,
+            display_name=body.display_name,
+        )
+    except ApiError:
+        log_event(
+            logger,
+            Event.USER_CREATE_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            email=body.email,
+        )
+        raise
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.USER_CREATE_FAILED,
+            level=logging.ERROR,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            email=body.email,
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+        raise InternalError() from exc
+
+    return CreateUserResponse(user_id=created_user.uid, email=created_user.email, role=Role.USER)
 
 
 def _create_client_response(client: ClientDoc) -> CreateClientResponse:
@@ -291,6 +326,21 @@ def _create_client_response(client: ClientDoc) -> CreateClientResponse:
 def _ensure_client_matches_request(*, client: ClientDoc, owner_uid: str, region_id: str, client_id: str) -> None:
     if client.owner_uid != owner_uid or client.region_id != region_id or client.client_id != client_id:
         raise ClientNotFoundError()
+
+
+def _validate_create_user_password(password: str) -> None:
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise InvalidPasswordError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters long")
+    if len(password) > PASSWORD_MAX_LENGTH:
+        raise InvalidPasswordError(f"Password must be no more than {PASSWORD_MAX_LENGTH} characters long")
+    if not any(char.isupper() for char in password):
+        raise InvalidPasswordError("Password must include an uppercase character")
+    if not any(char.islower() for char in password):
+        raise InvalidPasswordError("Password must include a lowercase character")
+    if not any(char.isdigit() for char in password):
+        raise InvalidPasswordError("Password must include a numeric character")
+    if not any(not char.isalnum() for char in password):
+        raise InvalidPasswordError("Password must include a special character")
 
 
 def _run_wireguard_operation(

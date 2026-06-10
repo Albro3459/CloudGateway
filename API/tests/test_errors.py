@@ -55,16 +55,15 @@ def test_users_rejects_non_admin(client):
     assert_error_shape(response.json(), "ADMIN_REQUIRED")
 
 
-def test_users_admin_scaffold_returns_controlled_error(client):
+def test_users_admin_can_create_user(client):
     response = client.post(
         "/users",
         json={"email": "a@b.com", "password": "Password1!"},
         headers={"Authorization": "Bearer admin-token"},
     )
 
-    assert response.status_code == 500
-    assert_error_shape(response.json(), "INTERNAL_ERROR")
-    assert response.json()["error"]["message"] == "User creation is not implemented yet."
+    assert response.status_code == 200
+    assert response.json()["role"] == "user"
 
 
 def test_invalid_body_maps_to_invalid_request(client):

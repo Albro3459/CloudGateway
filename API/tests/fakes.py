@@ -5,7 +5,12 @@ from threading import Lock
 
 from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
 from cloudlaunch_api.enums import ClientStatus, OperationResult, Role
-from cloudlaunch_api.errors import AuthRequiredError, ClientNotFoundError, WireGuardApplyFailedError
+from cloudlaunch_api.errors import (
+    AuthRequiredError,
+    ClientNotFoundError,
+    DuplicateEmailError,
+    WireGuardApplyFailedError,
+)
 from cloudlaunch_api.repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
@@ -116,7 +121,9 @@ class FakeRepository(FirebaseRepository):
         self.users: dict[str, UserDoc] = {}
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
+        self.created_user_count = 0
         self.mark_client_active_error: Exception | None = None
+        self.create_user_error: Exception | None = None
         self.delete_client_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
@@ -130,6 +137,22 @@ class FakeRepository(FirebaseRepository):
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         return self.clients.get((owner_uid, region_id, client_id))
+
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
+        if self.create_user_error is not None:
+            raise self.create_user_error
+        with self._lock:
+            if any(user.email.lower() == email.lower() for user in self.users.values()):
+                raise DuplicateEmailError()
+            self.created_user_count += 1
+            uid = f"created-user-{self.created_user_count}"
+            while uid in self.users or uid in self.roles:
+                self.created_user_count += 1
+                uid = f"created-user-{self.created_user_count}"
+            user = UserDoc(uid=uid, email=email, display_name=display_name, created_at=utc_now())
+            self.users[uid] = user
+            self.roles[uid] = Role.USER
+            return user
 
     def reserve_client(
         self,
