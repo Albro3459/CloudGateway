@@ -26,7 +26,6 @@ WG_DNS_ADDRESS_V4="${wg_dns_address_v4}"
 WG_DNS_ADDRESS_V6="${wg_dns_address_v6}"
 WG_NETWORK_V4="${wg_network_v4}"
 WG_NETWORK_V6="${wg_network_v6}"
-WG_SERVER_PRIVATE_KEY="${wg_server_private_key}"
 RATE_LIMIT="${wg_rate_limit}"
 RATE_LIMIT_BURST="${wg_rate_limit_burst}"
 PRIMARY_IFACE="$(ip route show default | awk '/default/ { print $5; exit }')"
@@ -36,14 +35,14 @@ if [[ -z "$PRIMARY_IFACE" ]]; then
   exit 1
 fi
 
-echo "==> Step 1/8: Installing required packages"
+echo "==> Step 1/11: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data
+apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip
 systemctl stop unbound || true
 
-echo "==> Step 2/8: Preparing configuration directories"
+echo "==> Step 2/11: Preparing configuration directories"
 # Essentially mkdir -p /etc/wireguard && chmod 700 /etc/wireguard
 install -d -m 700 /etc/wireguard
 install -d -m 755 /etc/sysctl.d
@@ -51,8 +50,10 @@ install -d -m 755 /etc/ssh/sshd_config.d
 install -d -m 755 /etc/fail2ban/jail.d
 install -d -m 755 /etc/unbound/unbound.conf.d
 install -d -o unbound -g unbound -m 750 /var/lib/unbound
+install -d -m 700 /etc/cloudlaunch
+install -d -m 755 /opt/cloudlaunch/api
 
-echo "==> Step 3/8: Hardening SSH access"
+echo "==> Step 3/11: Hardening SSH access"
 SSHD_BACKUP="/etc/ssh/sshd_config.bak.$(date +%F_%H-%M-%S)"
 cp /etc/ssh/sshd_config "$SSHD_BACKUP"
 install -d -m 755 /run/sshd
@@ -66,7 +67,7 @@ sshd -t
 systemctl reload-or-restart ssh || systemctl reload-or-restart sshd || systemctl start ssh
 sshd -T | grep -E '^(passwordauthentication|permitrootlogin) ' || true
 
-echo "==> Step 4/8: Configuring fail2ban"
+echo "==> Step 4/11: Configuring fail2ban"
 cat > /etc/fail2ban/jail.d/sshd.local <<'FAIL2BAN'
 [sshd]
 enabled = true
@@ -84,7 +85,7 @@ systemctl --no-pager --full status fail2ban || true
 fail2ban-client status || true
 fail2ban-client status sshd || true
 
-echo "==> Step 5/8: Enabling IP forwarding"
+echo "==> Step 5/11: Enabling IP forwarding"
 # IP forwarding
 cat > /etc/sysctl.d/99-wireguard-forwarding.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
@@ -97,13 +98,14 @@ SYSCTL
 # Apply IP forwarding changes
 sysctl --system
 
-echo "==> Step 6/8: Writing WireGuard configuration"
-# Create Wireguard config
+echo "==> Step 6/11: Writing WireGuard configuration"
+# Create WireGuard config. Shared server: no static peer sections here.
+# Peers are added and removed at runtime by the CloudLaunch API.
 cat > "/etc/wireguard/$WG_INTERFACE.conf" <<WGCONF
 [Interface]
 Address = $WG_ADDRESS_V4, $WG_ADDRESS_V6
 ListenPort = $LISTEN_PORT
-PrivateKey = $WG_SERVER_PRIVATE_KEY
+PrivateKey = ${wg_server_private_key}
 
 # PostUp
 # IPv4
@@ -144,19 +146,14 @@ PostDown = ip6tables -D INPUT -p udp --dport $LISTEN_PORT -m conntrack --ctstate
 PostDown = ip6tables -D INPUT -p udp --dport $LISTEN_PORT -j DROP
 PostDown = ip6tables -D INPUT -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p udp --dport 53 -j ACCEPT
 PostDown = ip6tables -D INPUT -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p tcp --dport 53 -j ACCEPT
-
-[Peer]
-PublicKey = ${wg_peer.wg_client_public_key}
-AllowedIPs = ${wg_peer.wg_peer_allowed_ipv4}, ${wg_peer.wg_peer_allowed_ipv6}
-PersistentKeepalive = ${wg_peer.wg_peer_persistent_keepalive}
 WGCONF
 
 chmod 600 "/etc/wireguard/$WG_INTERFACE.conf"
 
-printf '%s\n' "$(printf '%s' "$WG_SERVER_PRIVATE_KEY" | wg pubkey)" > "/etc/wireguard/$WG_INTERFACE.publickey"
+awk '/^PrivateKey/ { print $3 }' "/etc/wireguard/$WG_INTERFACE.conf" | wg pubkey > "/etc/wireguard/$WG_INTERFACE.publickey"
 chmod 600 "/etc/wireguard/$WG_INTERFACE.publickey"
 
-echo "==> Step 7/8: Writing unbound configuration"
+echo "==> Step 7/11: Writing unbound configuration"
 if command -v unbound-anchor >/dev/null 2>&1; then
   if ! unbound-anchor -a /var/lib/unbound/root.key; then
     echo "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
@@ -190,7 +187,77 @@ UNBOUNDCONF
 unbound-checkconf
 systemctl enable unbound
 
-echo "==> Step 8/8: Starting WireGuard and unbound"
+echo "==> Step 8/11: Installing CloudLaunch API package"
+%{ for api_path, api_content_base64 in api_source_files ~}
+install -D -m 644 /dev/null "/opt/cloudlaunch/api/${api_path}"
+base64 -d > "/opt/cloudlaunch/api/${api_path}" <<'APIFILE'
+${api_content_base64}
+APIFILE
+%{ endfor ~}
+
+python3 -m venv /opt/cloudlaunch/api/.venv
+/opt/cloudlaunch/api/.venv/bin/pip install --upgrade pip
+/opt/cloudlaunch/api/.venv/bin/pip install /opt/cloudlaunch/api
+
+echo "==> Step 9/11: Writing CloudLaunch API environment"
+install -d -m 700 "$(dirname "${firebase_credentials_file}")"
+%{ if firebase_credentials_json != "" ~}
+cat > "${firebase_credentials_file}" <<'FIREBASECREDS'
+${firebase_credentials_json}
+FIREBASECREDS
+chmod 600 "${firebase_credentials_file}"
+%{ else ~}
+echo "No Firebase credential payload provided; provision ${firebase_credentials_file} manually"
+%{ endif ~}
+
+SERVER_PUBLIC_KEY="$(cat "/etc/wireguard/$WG_INTERFACE.publickey")"
+cat > /etc/cloudlaunch/api.env <<APIENV
+CLOUDLAUNCH_REGION_ID=${region_id}
+CLOUDLAUNCH_API_PORT=${fastapi_port}
+CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE=${firebase_credentials_file}
+CLOUDLAUNCH_WG_INTERFACE=${wg_interface}
+CLOUDLAUNCH_WG_CONFIG_PATH=/etc/wireguard/${wg_interface}.conf
+CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
+CLOUDLAUNCH_WG_ENDPOINT_IPV4=${wg_endpoint_ipv4}
+CLOUDLAUNCH_WG_PORT=${wg_listen_port}
+CLOUDLAUNCH_WG_DNS_IPV4=${wg_dns_address_v4}
+CLOUDLAUNCH_WG_DNS_IPV6=${wg_dns_address_v6}
+CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR=${wg_network_v4}
+CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR=${wg_network_v6}
+APIENV
+chmod 600 /etc/cloudlaunch/api.env
+
+cat > /etc/cloudlaunch/origin.env <<ORIGINENV
+CLOUDLAUNCH_API_HOSTNAME=${api_hostname}
+CLOUDLAUNCH_DASHBOARD_CORS_ORIGIN=${dashboard_cors_origin}
+CLOUDLAUNCH_CADDY_ACME_EMAIL=${caddy_acme_email}
+CLOUDLAUNCH_CLOUDFLARE_ORIGIN_PULL_CA_PATH=${cloudflare_origin_pull_ca_path}
+ORIGINENV
+chmod 644 /etc/cloudlaunch/origin.env
+
+echo "==> Step 10/11: Writing CloudLaunch API service"
+cat > /etc/systemd/system/cloudlaunch-api.service <<'UNIT'
+[Unit]
+Description=CloudLaunch regional API
+Wants=network-online.target
+After=network-online.target wg-quick@${wg_interface}.service
+
+[Service]
+User=root
+WorkingDirectory=/opt/cloudlaunch/api
+EnvironmentFile=/etc/cloudlaunch/api.env
+ExecStart=/opt/cloudlaunch/api/.venv/bin/uvicorn cloudlaunch_api.main:app --host 127.0.0.1 --port $${CLOUDLAUNCH_API_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable cloudlaunch-api
+
+echo "==> Step 11/11: Starting WireGuard, unbound, and CloudLaunch API"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -214,11 +281,13 @@ if ! ip -6 addr show dev "$WG_INTERFACE" | grep -Fq "$${WG_DNS_ADDRESS_V6}/"; th
 fi
 
 systemctl restart unbound
+systemctl restart cloudlaunch-api
 
 # Status check (coalesce because fail would end the script when this is just a status check)
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
 systemctl --no-pager --full status unbound || true
+systemctl --no-pager --full status cloudlaunch-api || true
 
 echo "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"

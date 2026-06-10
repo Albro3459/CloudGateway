@@ -142,27 +142,65 @@ variable "wg_server_private_key" {
 	description = "WireGuard server private key used in /etc/wireguard/wg0.conf"
 }
 
-variable "wg_client_public_key" {
+variable "region_id" {
 	type = string
-	description = "Client peer public key allowed to connect to wg0"
+	description = "CloudLaunch region ID used by the regional API, for example us-sanjose-1"
 }
 
-variable "wg_peer_allowed_ipv4" {
+variable "api_hostname" {
 	type = string
-	description = "Allowed IPv4 CIDR for the client peer"
+	description = "Public regional API hostname served by Caddy, for example us-sanjose-1.gateway.gocloudlaunch.com"
 }
 
-variable "wg_peer_allowed_ipv6" {
+variable "dashboard_cors_origin" {
 	type = string
-	description = "Allowed IPv6 CIDR for the client peer"
+	description = "Dashboard origin allowed for browser CORS requests, for example https://gateway.gocloudlaunch.com"
 }
 
-variable "wg_peer_persistent_keepalive" {
+variable "fastapi_port" {
 	type = number
-	description = "PersistentKeepalive value for the client peer"
+	default = 8000
+	description = "Localhost port the FastAPI control plane binds to"
+}
+
+variable "wg_endpoint_ipv4" {
+	type = string
+	description = "Public IPv4 endpoint written into WireGuard client configs"
+}
+
+variable "firebase_credentials_file" {
+	type = string
+	default = "/etc/cloudlaunch/firebase-credentials.json"
+	description = "Host path for the Firebase Admin credential file"
+}
+
+variable "firebase_credentials_json" {
+	type = string
+	sensitive = true
+	default = ""
+	description = "Firebase Admin credential JSON written to the credential file; leave empty to provision the file manually"
+}
+
+variable "caddy_acme_email" {
+	type = string
+	default = ""
+	description = "Placeholder email for the later Caddy ACME configuration"
+}
+
+variable "cloudflare_origin_pull_ca_path" {
+	type = string
+	default = "/etc/caddy/cloudflare-origin-pull-ca.pem"
+	description = "Placeholder path for the later Cloudflare Authenticated Origin Pull CA"
 }
 
 locals {
+	api_source_files = {
+		for source_path in setunion(
+			fileset("${path.module}/../../API", "pyproject.toml"),
+			fileset("${path.module}/../../API", "cloudlaunch_api/*.py")
+		) : source_path => filebase64("${path.module}/../../API/${source_path}")
+	}
+
 	backdoor_user_data = templatefile("${path.module}/backdoor-cloud-init.yaml", {
 		hashed_password = var.hashed_password
 	})
@@ -179,12 +217,16 @@ locals {
 		wg_server_private_key = var.wg_server_private_key
 		wg_rate_limit = var.wg_rate_limit
 		wg_rate_limit_burst = var.wg_rate_limit_burst
-		wg_peer = {
-			wg_client_public_key = var.wg_client_public_key
-			wg_peer_allowed_ipv4 = var.wg_peer_allowed_ipv4
-			wg_peer_allowed_ipv6 = var.wg_peer_allowed_ipv6
-			wg_peer_persistent_keepalive = var.wg_peer_persistent_keepalive
-		}
+		region_id = var.region_id
+		api_hostname = var.api_hostname
+		dashboard_cors_origin = var.dashboard_cors_origin
+		fastapi_port = var.fastapi_port
+		wg_endpoint_ipv4 = var.wg_endpoint_ipv4
+		firebase_credentials_file = var.firebase_credentials_file
+		firebase_credentials_json = var.firebase_credentials_json
+		caddy_acme_email = var.caddy_acme_email
+		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
+		api_source_files = local.api_source_files
 	})
 
 	combined_user_data = <<-EOT
