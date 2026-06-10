@@ -4,7 +4,7 @@ import { getFirestore, collection, getDocs } from "firebase/firestore";
 import { NavigateFunction } from "react-router-dom";
 
 import { getUserRole } from "./usersHelper";
-import { normalizeVPNStatus, VPN_STATUS, VPNStatus } from "./vpnStatus";
+import { normalizeVPNStatus, VPNStatus } from "./vpnStatus";
 import { useOciRegionsStore } from "../stores/ociRegionsStore";
 
 export const logout = async (navigate: NavigateFunction) => {
@@ -13,7 +13,7 @@ export const logout = async (navigate: NavigateFunction) => {
     navigate("/", { replace: true });
 };
 
-export type VPNData = {
+export type VPNClientData = {
     userID: string;
     email: string | null;
     region: string | null;
@@ -21,9 +21,27 @@ export type VPNData = {
     ipv4: string | null;
     status: VPNStatus;
     wireguardConfig: string | null;
+    ownerUid: string;
+    ownerEmail: string | null;
+    clientId: string;
+    clientName: string | null;
+    regionId: string | null;
+    assignedTunnelIpv4: string | null;
+    assignedTunnelIpv6: string | null;
+    serverEndpointIpv4: string | null;
+    serverPublicKey: string | null;
+    clientPublicKey: string | null;
+    lastErrorCode: string | null;
+    lastErrorMessage: string | null;
 }
 
-export const getUsersVPNs = async (user: User): Promise<VPNData[]> => {
+export type VPNData = VPNClientData;
+
+const stringOrNull = (value: unknown) => typeof value === "string" && value.trim()
+    ? value
+    : null;
+
+export const getUsersVPNs = async (user: User): Promise<VPNClientData[]> => {
 
     if (await getUserRole(user) === "admin") {
         return await getAdminVPNs(user);
@@ -32,7 +50,7 @@ export const getUsersVPNs = async (user: User): Promise<VPNData[]> => {
     return await getVPNs(user.uid, user.email);
 };
 
-const getVPNs = async (userID: string, email: string | null): Promise<VPNData[]> => {
+const getVPNs = async (userID: string, email: string | null): Promise<VPNClientData[]> => {
     try {
         if (!email) {
             console.warn("Email null for user: " + userID);
@@ -43,7 +61,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNData[]>
         const userRef = collection(db, "Users", userID, "Regions");
         const regionSnapshots = await getDocs(userRef);
 
-        const vpnData: VPNData[] = [];
+        const vpnData: VPNClientData[] = [];
 
         for (const regionDoc of regionSnapshots.docs) {
             const regionID = regionDoc.id;
@@ -51,17 +69,45 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNData[]>
             const instanceSnapshots = await getDocs(instancesRef);
 
             instanceSnapshots.forEach((instanceDoc) => {
-                const { ipv4, status: rawStatus, wireguardConfig } = instanceDoc.data();
+                const data = instanceDoc.data();
+                const {
+                    status: rawStatus,
+                    wireguardConfig,
+                    assignedTunnelIpv4,
+                    assignedTunnelIpv6,
+                    serverEndpointIpv4,
+                    serverPublicKey,
+                    clientPublicKey,
+                    clientName,
+                    lastErrorCode,
+                    lastErrorMessage,
+                } = data;
                 const status = normalizeVPNStatus(rawStatus);
-                if (status && status !== VPN_STATUS.TERMINATED) {
+                if (status) {
+                    const clientId = stringOrNull(data.clientId) || instanceDoc.id;
+                    const regionId = stringOrNull(data.regionId) || regionID;
+                    const ownerEmail = stringOrNull(data.ownerEmail) || email;
+
                     vpnData.push({
                         userID: userID,
-                        email: email,
-                        region: regionID,
-                        instanceID: instanceDoc.id,
-                        ipv4: ipv4 || null,
+                        email: ownerEmail,
+                        region: regionId,
+                        instanceID: clientId,
+                        ipv4: stringOrNull(serverEndpointIpv4) || stringOrNull(data.ipv4) || null,
                         status: status,
-                        wireguardConfig: wireguardConfig || null,
+                        wireguardConfig: stringOrNull(wireguardConfig),
+                        ownerUid: stringOrNull(data.ownerUid) || userID,
+                        ownerEmail,
+                        clientId,
+                        clientName: stringOrNull(clientName),
+                        regionId,
+                        assignedTunnelIpv4: stringOrNull(assignedTunnelIpv4),
+                        assignedTunnelIpv6: stringOrNull(assignedTunnelIpv6),
+                        serverEndpointIpv4: stringOrNull(serverEndpointIpv4),
+                        serverPublicKey: stringOrNull(serverPublicKey),
+                        clientPublicKey: stringOrNull(clientPublicKey),
+                        lastErrorCode: stringOrNull(lastErrorCode),
+                        lastErrorMessage: stringOrNull(lastErrorMessage),
                     });
                 }
             });
@@ -75,7 +121,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNData[]>
     }
 };
 
-const getAdminVPNs = async (user: User): Promise<VPNData[]> => {
+const getAdminVPNs = async (user: User): Promise<VPNClientData[]> => {
     try {        
         if (await getUserRole(user) !== "admin") {
             console.warn("Not an admin. Cannot fetch VPNs for admin.");
@@ -85,7 +131,7 @@ const getAdminVPNs = async (user: User): Promise<VPNData[]> => {
         const db = getFirestore();
         const usersSnapshot = await getDocs(collection(db, "Users"));
 
-        let vpnData: VPNData[] = [];
+        let vpnData: VPNClientData[] = [];
 
         // for (const userDoc of usersSnapshot.docs) {
         //     vpnData.push(...await getVPNs(userDoc.id, userDoc.data().email))
