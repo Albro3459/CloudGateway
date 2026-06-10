@@ -18,17 +18,18 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - Remove AWS Lambda from the new flow.
 - Keep AWS only for SES emails.
 - Use FastAPI for the regional API.
-- Run FastAPI bare metal with `systemd`, bound to `127.0.0.1`.
+- Run FastAPI bare metal as root with `systemd`, bound to `127.0.0.1`.
 - Run WireGuard bare metal on the host.
 - Do not run WireGuard in Docker.
 - Use Caddy for automatic HTTPS, `/api/*` stripping, reverse proxy, and rate limiting.
 - Use the StreamTrack Caddy pattern: custom Caddy build with `github.com/mholt/caddy-ratelimit`.
+- Require Cloudflare Authenticated Origin Pulls for the regional API origin.
 - Store user-visible WireGuard configs in Firebase.
 - Firebase is the product source of truth for users, regions, clients, roles, limits, and stored configs.
 - Firebase is the product source of truth, but `/etc/wireguard/wg0.conf` is the persistent host WireGuard config.
 - Add/remove client must update Firebase, update `/etc/wireguard/wg0.conf`, and apply the live `wg0` change.
-- No startup reconciliation job is required. On reboot, the host uses `/etc/wireguard/wg0.conf`.
-- Firebase drift from host WireGuard state is an accepted risk for the initial implementation.
+- No startup reconciliation or startup repair job is required. On reboot, the host uses `/etc/wireguard/wg0.conf` and continues normally.
+- Firebase drift from host WireGuard state is an accepted manual-repair risk for the initial implementation.
 - Users create clients only for themselves. There is no admin-create-client-for-another-user flow.
 - Client IDs must be globally unique UUIDv4 values.
 - Delete requests must identify the target user ID, region ID, and client ID. Normal users can only target their own user ID. Admins can target any user ID.
@@ -79,16 +80,21 @@ Caddy listens on public `80` and `443`.
 Caddy must:
 
 - Manage automatic HTTPS.
-- Rate limit API routes.
+- Require Cloudflare Authenticated Origin Pulls so regional API requests must come through Cloudflare.
+- Rate limit API routes, including `/health`.
 - Strip `/api/*` before proxying to FastAPI.
 - Proxy only to `127.0.0.1:<fastapi_port>`.
 - Log API requests at the HTTP layer, but never VPN traffic.
 
 FastAPI should expose clean routes such as `/clients`, `/clients/{client_id}`, `/health`, and should not need to know it is mounted under `/api`.
 
+The frontend origin is `https://gocloudlaunch.com`. Regional APIs are `https://<region>.gocloudlaunch.com/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls.
+
 ## FastAPI
 
 FastAPI is the regional control plane. It should be small and boring.
+
+FastAPI runs as root because it owns the regional control-plane mutation path for `/etc/wireguard/wg0.conf` and the live `wg0` interface. It must still bind only to `127.0.0.1` and stay reachable only through Caddy.
 
 Required behavior:
 
@@ -116,6 +122,8 @@ Initial routes:
 - `GET /health`
 - `POST /clients`
 - `DELETE /clients/{client_id}`
+
+`GET /health` is intentionally kept for regional deployment checks. It must still be reached through Cloudflare/Caddy and must be rate limited like the rest of the API surface.
 
 `POST /clients` creates one WireGuard client for the authenticated user in the current region.
 
@@ -208,6 +216,8 @@ Initial client statuses must be represented as explicit backend/frontend enums, 
 
 If a later step fails after reservation, mark the client `failed` or roll back the reservation in Firebase. Log the failure and cleanup result. Do not leave `creating` records indefinitely.
 
+If create applies a peer to WireGuard but the final Firebase doc/config write fails, remove the peer, release the assigned IP/counter reservation when possible, and mark the client document `failed` if the document exists. This cleanup is part of the active create operation only. Do not run a startup reconciliation or repair job later.
+
 Do not add a heavy idempotency system for the initial implementation. One direct retry is acceptable only for clearly transient host command failures. Otherwise, retries after a failed create can create a new client, as long as counters/IP reservations are kept clear enough to avoid obvious leaks.
 
 ## Client Delete Flow
@@ -225,7 +235,7 @@ Do not add a heavy idempotency system for the initial implementation. One direct
 11. Log success.
 12. Return success response.
 
-If WireGuard removal fails, log failure and keep Firebase status clear enough for retry/manual repair.
+If WireGuard removal fails because the peer is already gone, treat the WireGuard removal as complete, mark the client `removed`, and release the assigned IP/counter reservation. If WireGuard removal fails for another reason, log failure and keep Firebase status clear enough for retry/manual repair.
 
 ## Firebase
 
@@ -373,7 +383,7 @@ The server keeps local host-only config/secrets:
 
 The server does not keep a second persistent client database outside Firebase. `/etc/wireguard/wg0.conf` is the actual WireGuard service config, not a separate product database.
 
-Add/remove client must update Firebase and `/etc/wireguard/wg0.conf`, then apply the live `wg0` change with WireGuard-native commands/config sync. The persistent config file is what survives reboot. No startup reconciliation job is required.
+Add/remove client must update Firebase and `/etc/wireguard/wg0.conf`, then apply the live `wg0` change with WireGuard-native commands/config sync. The persistent config file is what survives reboot. No startup reconciliation or startup repair job is required. If Firebase and the host drift outside an active create/delete operation, that is a real incident and must be repaired manually.
 
 WireGuard mutation procedure:
 
