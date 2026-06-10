@@ -1,277 +1,84 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
 import QRCode from "qrcode";
 
-import { ACTION, Targets, VPNdeployHelper } from "../helpers/APIHelper";
+import { createClient, deleteClient } from "../helpers/APIHelper";
 import { auth, onAuthStateChanged } from "../firebase";
-import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity } from "../helpers/regionsHelper";
+import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
-import { normalizeVPNStatus, VPN_STATUS } from "../helpers/vpnStatus";
+import { VPN_STATUS } from "../helpers/vpnStatus";
 
-export enum TOGGLE {
-    ADD,
-    REMOVE
-}
+type Banner = {
+    type: "error" | "success";
+    message: string;
+};
+
+const getEnabledRegions = (regions: Region[] | null) => (
+    (regions || []).filter(region => region.enabled !== false)
+);
+
+const getClientKey = (entry: VPNTableEntry) => (
+    `${entry.userID}:${entry.region || ""}:${entry.instanceID}`
+);
 
 const Home: React.FC = () => {
     const navigate = useNavigate();
 
     const [loading, setLoading] = useState(false);
-    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [banner, setBanner] = useState<Banner | null>(null);
 
     const [role, setRole] = useState<string | null>(null);
     const [jwtToken, setJwtToken] = useState<string | null>(null);
 
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
+    const enabledRegions = useMemo(() => getEnabledRegions(ociRegions), [ociRegions]);
 
-    const [region, setRegion] = useState("");
-    const selectedRegion = ociRegions?.find(r => r.value === region) || null;
+    const [activeRegionId, setActiveRegionId] = useState("");
+    const selectedRegion = enabledRegions.find(r => r.value === activeRegionId) || null;
     const selectedRegionFull = isRegionAtCapacity(selectedRegion);
 
+    const [clientName, setClientName] = useState("");
     const [VPNTableEntries, setVPNTableEntries] = useState<VPNTableEntry[] | null>(null);
+    const [selectedClientKeys, setSelectedClientKeys] = useState<Set<string>>(new Set());
     const [vpnRegion, setVpnRegion] = useState<string | null>(null);
+    const [activeConfigClientName, setActiveConfigClientName] = useState<string | null>(null);
     const [IP, setIP] = useState<string | null>(null);
     const [configData, setConfigData] = useState<string | null>(null);
+    const [configCopied, setConfigCopied] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
-    const [showDeployOverrideConfirm, setShowDeployOverrideConfirm] = useState(false);
-    const [overrideDeployChecked, setOverrideDeployChecked] = useState(false);
-    const [existingDeployEntry, setExistingDeployEntry] = useState<VPNTableEntry | null>(null);
 
-    const navigateToExistingVPN = useCallback((vpn: VPNTableEntry) => {
-        const ociRegionName = getRegionName(vpn.region, ociRegions);
+    const activeRegionName = selectedRegion
+        ? getRegionName(selectedRegion.value, ociRegions)
+        : "No region selected";
 
-        navigate("/vpn-success", {
-            replace: true,
-            state: {
-                region: ociRegionName,
-                isNew: false,
-                status: vpn.status,
-                ip: vpn.ipv4 || "",
-                wireguard_config: vpn.wireguardConfig
-            }
-        });
-    }, [navigate, ociRegions]);
+    const showRegionTabs = enabledRegions.length > 1;
 
-    const getCurrentUserActiveVPN = useCallback(() => {
-        const currentUserId = auth.currentUser?.uid;
-        if (!currentUserId || !VPNTableEntries) return null;
+    const activeRegionEntries = useMemo(() => {
+        if (VPNTableEntries === null) return null;
+        if (!activeRegionId) return [];
 
-        return VPNTableEntries.find(vpn => (
-            vpn.userID === currentUserId &&
-            vpn.region === region &&
-            (vpn.status === VPN_STATUS.RUNNING || vpn.status === VPN_STATUS.PENDING)
-        )) || null;
-    }, [VPNTableEntries, region]);
+        return VPNTableEntries.filter(vpn => vpn.region === activeRegionId);
+    }, [VPNTableEntries, activeRegionId]);
 
-    const deployVPN = async (overrideExistingVpn = false) => {
-        setLoading(true);
-        
-        try {
-            if (!jwtToken) {
-                setErrorMessage("Error: JWT token not found");
-                console.error("Error: JWT token not found");
-            }
-            else if (!region) {
-                setErrorMessage("Select a region");
-            }
-            else if (selectedRegionFull) {
-                setErrorMessage(`${getRegionName(region, ociRegions)} is currently full. Choose another region.`);
-            }
-            else {
-                const response = await VPNdeployHelper(ACTION.DEPLOY, null, auth.currentUser?.email || "", region, jwtToken, overrideExistingVpn);
-
-                if (!response.success) {
-                    const responseData = response.data;
-                    if (responseData?.error === "Region capacity reached" && typeof responseData.region === "string") {
-                        setErrorMessage(`${getRegionName(responseData.region, ociRegions)} is currently full. Choose another region.`);
-                        await fetchOciRegions(jwtToken, true);
-                    } else {
-                        setErrorMessage(response.error || "Something went wrong");
-                    }
-                    if (auth.currentUser) {
-                        await fillVPNs(auth.currentUser);
-                    }
-                    return;
-                }
-
-                const { isNew, status, region: deployRegion, ip_addresses, wireguard_config } = response.data;
-                const deployStatus = normalizeVPNStatus(status);
-                const publicIPv4 = ip_addresses?.public_ipv4 || "";
-                const ociRegion = deployRegion?.oci_region || region;
-                const ociRegionName = deployRegion?.oci_region_name || getRegionName(ociRegion, ociRegions);
-
-                void fetchOciRegions(jwtToken, true);
-
-                navigate("/vpn-success", {
-                    replace: true,
-                    state: {
-                        region: ociRegionName,
-                        isNew: isNew,
-                        status: deployStatus,
-                        ip: publicIPv4,
-                        wireguard_config: wireguard_config
-                    }
-                });
-            }
-
-        } catch (error) {
-            setErrorMessage("Error during deployment");
-            console.error("Error during deployment:", error);
-            if (auth.currentUser) {
-                await fillVPNs(auth.currentUser);
-            }
-        } finally {
-            setLoading(false);
-        }
+    const showBanner = (type: Banner["type"], message: string) => {
+        setBanner({ type, message });
     };
 
-    const handleDeploySubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-
-        if (VPNTableEntries === null) {
-            setErrorMessage("VPN instances are still loading");
-            return;
-        }
-        if (!region) {
-            setErrorMessage("Select a region");
-            return;
-        }
-        if (selectedRegionFull) {
-            setErrorMessage(`${getRegionName(region, ociRegions)} is currently full. Choose another region.`);
-            return;
-        }
-
-        const activeVPN = getCurrentUserActiveVPN();
-        if (activeVPN) {
-            if (role === "admin") {
-                setExistingDeployEntry(activeVPN);
-                setOverrideDeployChecked(false);
-                setShowDeployOverrideConfirm(true);
-                return;
-            }
-
-            if (activeVPN.status === VPN_STATUS.RUNNING) {
-                if (activeVPN.wireguardConfig) {
-                    navigateToExistingVPN(activeVPN);
-                    return;
-                }
-
-                await deployVPN();
-                return;
-            }
-
-            setErrorMessage("A VPN deployment is already in progress");
-            return;
-        }
-
-        await deployVPN();
+    const clearSelectedClients = () => {
+        setSelectedClientKeys(new Set());
     };
 
-    // Terminate Action
-
-    const [targets, setTargets] = useState<Targets>({});
-    
-    const toggleTarget = (toggle: TOGGLE, userID: string, region: string | null, instanceID: string) => {
-        if (!region) return;
-    
-        setTargets(prev => {
-            const updated = { ...prev };
-
-            if (toggle === TOGGLE.ADD) {
-                if (!updated[userID]) {
-                    updated[userID] = {};
-                }
-                if (!updated[userID][region]) {
-                    updated[userID][region] = [];
-                }
-                if (!updated[userID][region].includes(instanceID)) {
-                    updated[userID][region].push(instanceID);
-                }
-            }
-            else if (toggle === TOGGLE.REMOVE) {
-                if (updated[userID]?.[region]) {
-                    updated[userID][region] = updated[userID][region].filter(id => id !== instanceID);
-        
-                    if (updated[userID][region].length === 0) {
-                        delete updated[userID][region];
-                    }
-        
-                    if (Object.keys(updated[userID]).length === 0) {
-                        delete updated[userID];
-                    }
-                }
-            }
-    
-            return updated;
-        });
-    };    
-
-    const handleTerminate = async (targets: Targets) => {
-        if (Object.keys(targets).length === 0) {
-            setErrorMessage("No instances selected");
-            return;
-        }
-
-        setLoading(true);
-        
-        try {
-            if (!jwtToken) {
-                setErrorMessage("Error: JWT token not found");
-                console.error("Error: JWT token not found");
-                return;
-            }
-            else {
-                const response = await VPNdeployHelper(ACTION.TERMINATE, targets, null, null, jwtToken);
-            
-                if (!response.success) {
-                    setErrorMessage(response.error || "Something went wrong");
-                    return;
-                }
-
-                setTargets({});
-
-                if (auth.currentUser) {
-                    await Promise.all([
-                        fillVPNs(auth.currentUser),
-                        fetchOciRegions(jwtToken, true),
-                    ]);
-                }
-            }
-
-        } catch (error) {
-            setErrorMessage("Error during termination");
-            console.error("Error during termination:", error);
-        } finally {
-            setLoading(false);
-        }
+    const selectRegion = (regionId: string) => {
+        setActiveRegionId(regionId);
+        clearSelectedClients();
+        setBanner(null);
     };
-
-    // QR code functions
-    
-    const handleQRcode = useCallback((vpn: VPNTableEntry) => {
-        if (!vpn.ipv4 || !vpn.wireguardConfig) {
-            setErrorMessage("Config not available for QR code.");
-            console.error("Config not available for QR code.");
-            return;
-        }
-
-        setIP(vpn.ipv4); 
-        setVpnRegion(vpn.region);
-        setConfigData(vpn.wireguardConfig);
-    }, []);
-    
-    
-    const handleCreateNewAccount = () => {
-        if (role === "admin") {
-            navigate("/create-user", { replace: true });
-        }
-    }
 
     const fillVPNs = useCallback(async (user: User) => {
         setVPNTableEntries(null);
@@ -279,16 +86,182 @@ const Home: React.FC = () => {
             const VPNs: VPNData[] = await getUsersVPNs(user);
             setVPNTableEntries(VPNs);
         } catch (error) {
-            setErrorMessage("Error loading VPN instances");
-            console.error("Error loading VPN instances:", error);
+            showBanner("error", "Error loading VPN clients");
+            console.error("Error loading VPN clients:", error);
             setVPNTableEntries([]);
         }
     }, []);
 
-    const handleDownload = () => {
+    const handleCreateNewAccount = () => {
+        if (role === "admin") {
+            navigate("/create-user", { replace: true });
+        }
+    };
+
+    const handleCreateClient = async (e: React.FormEvent) => {
+        e.preventDefault();
+
+        if (!jwtToken) {
+            showBanner("error", "Error: JWT token not found");
+            return;
+        }
+        if (!auth.currentUser) {
+            showBanner("error", "You must be signed in to create a client");
+            return;
+        }
+        if (!activeRegionId || !selectedRegion) {
+            showBanner("error", "Select a region");
+            return;
+        }
+        if (selectedRegionFull) {
+            showBanner("error", `${activeRegionName} is currently full. Choose another region.`);
+            return;
+        }
+
+        setLoading(true);
+        setBanner(null);
+
+        try {
+            const trimmedClientName = clientName.trim();
+            const response = await createClient({
+                regionId: activeRegionId,
+                ...(trimmedClientName ? { clientName: trimmedClientName } : {}),
+            }, jwtToken);
+
+            if (!response.success) {
+                showBanner("error", response.error || "Unable to create client");
+                if (response.errorCode === "CAPACITY_REACHED" || response.errorCode === "LIMIT_REACHED") {
+                    await fetchOciRegions(jwtToken, true);
+                }
+                await fillVPNs(auth.currentUser);
+                return;
+            }
+
+            setClientName("");
+            showBanner("success", `${response.data.clientName || "Client"} was created in ${activeRegionName}.`);
+            await Promise.all([
+                fillVPNs(auth.currentUser),
+                fetchOciRegions(jwtToken, true),
+            ]);
+        } catch (error) {
+            showBanner("error", "Error creating client");
+            console.error("Error creating client:", error);
+            await fillVPNs(auth.currentUser);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSelectionChange = (entry: VPNTableEntry, selected: boolean) => {
+        if (entry.status === VPN_STATUS.REMOVED) return;
+
+        setSelectedClientKeys(prev => {
+            const updated = new Set(prev);
+            const key = getClientKey(entry);
+
+            if (selected) {
+                updated.add(key);
+            } else {
+                updated.delete(key);
+            }
+
+            return updated;
+        });
+    };
+
+    const handleRemoveSelected = async () => {
+        if (!jwtToken) {
+            showBanner("error", "Error: JWT token not found");
+            return;
+        }
+        if (!auth.currentUser) {
+            showBanner("error", "You must be signed in to remove clients");
+            return;
+        }
+        if (!activeRegionId) {
+            showBanner("error", "Select a region");
+            return;
+        }
+
+        const selectedEntries = (activeRegionEntries || []).filter(entry => selectedClientKeys.has(getClientKey(entry)));
+        if (!selectedEntries.length) {
+            showBanner("error", "No clients selected");
+            return;
+        }
+
+        setLoading(true);
+        setBanner(null);
+
+        try {
+            const results = await Promise.all(selectedEntries.map(entry => (
+                deleteClient(entry.clientId || entry.instanceID, {
+                    userId: entry.ownerUid || entry.userID,
+                    regionId: activeRegionId,
+                }, jwtToken)
+            )));
+            const failedResults = results.filter(result => !result.success);
+
+            clearSelectedClients();
+            await Promise.all([
+                fillVPNs(auth.currentUser),
+                fetchOciRegions(jwtToken, true),
+            ]);
+
+            if (failedResults.length) {
+                const firstFailure = failedResults[0];
+                showBanner("error", firstFailure.error || `${failedResults.length} client removals failed`);
+                return;
+            }
+
+            showBanner("success", `${selectedEntries.length} client${selectedEntries.length === 1 ? "" : "s"} removed from ${activeRegionName}.`);
+        } catch (error) {
+            showBanner("error", "Error removing clients");
+            console.error("Error removing clients:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleQRcode = useCallback((vpn: VPNTableEntry) => {
+        if (!vpn.wireguardConfig) {
+            showBanner("error", "Config not available for QR code.");
+            return;
+        }
+
+        setIP(vpn.assignedTunnelIpv4 || vpn.serverEndpointIpv4 || vpn.ipv4);
+        setVpnRegion(vpn.region);
+        setActiveConfigClientName(vpn.clientName || vpn.clientId);
+        setConfigData(vpn.wireguardConfig);
+        setConfigCopied(false);
+    }, []);
+
+    const handleDownloadConfig = (vpn: VPNTableEntry) => {
+        if (!vpn.wireguardConfig) {
+            showBanner("error", "Config not available for download.");
+            return;
+        }
+
+        const blob = new Blob([vpn.wireguardConfig], { type: "text/plain;charset=utf-8" });
+        saveAs(blob, `${vpn.clientName || vpn.clientId || "wireguard"}.conf`);
+    };
+
+    const handleDownloadActiveConfig = () => {
         if (configData) {
             const blob = new Blob([configData], { type: "text/plain;charset=utf-8" });
-            saveAs(blob, `wireguard.conf`);
+            saveAs(blob, `${activeConfigClientName || "wireguard"}.conf`);
+        }
+    };
+
+    const handleCopyActiveConfig = async () => {
+        if (!configData) return;
+
+        try {
+            await navigator.clipboard.writeText(configData);
+            setConfigCopied(true);
+            window.setTimeout(() => setConfigCopied(false), 1400);
+        } catch (error) {
+            showBanner("error", "Unable to copy config");
+            console.error("Unable to copy config:", error);
         }
     };
 
@@ -306,13 +279,12 @@ const Home: React.FC = () => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
             const fetchUserData = async () => {
                 if (user) {
-                    void fillVPNs(user); // Not awaiting
+                    void fillVPNs(user);
                     const token: string | null = await user.getIdToken();
                     setJwtToken(token);
-                    
                     setRole(await getUserRole(user));
-                    
-                    void fetchOciRegions(token, true); // Not awaiting
+
+                    void fetchOciRegions(token, true);
                 } else {
                     await logout(navigate);
                 }
@@ -323,236 +295,256 @@ const Home: React.FC = () => {
     }, [navigate, fillVPNs]);
 
     useEffect(() => {
-        if (region && ociRegions?.length && !ociRegions.some(r => r.value === region)) {
-            setRegion("");
+        if (!enabledRegions.length) {
+            if (activeRegionId) {
+                setActiveRegionId("");
+                clearSelectedClients();
+            }
+            return;
         }
-    }, [ociRegions, region]);
 
-    const regionSubmitDisabled = !region || !selectedRegion || selectedRegionFull || regionsLoading || VPNTableEntries === null;
+        if (!activeRegionId || !enabledRegions.some(region => region.value === activeRegionId)) {
+            setActiveRegionId(enabledRegions[0].value);
+            clearSelectedClients();
+        }
+    }, [enabledRegions, activeRegionId]);
+
+    useEffect(() => {
+        if (!activeRegionEntries) return;
+
+        setSelectedClientKeys(prev => {
+            const availableKeys = new Set(activeRegionEntries.map(entry => getClientKey(entry)));
+            const selectedKeys = Array.from(prev).filter(key => availableKeys.has(key));
+
+            if (selectedKeys.length === prev.size) {
+                return prev;
+            }
+
+            return new Set(selectedKeys);
+        });
+    }, [activeRegionEntries]);
+
+    const createDisabled = !activeRegionId || !selectedRegion || selectedRegionFull || regionsLoading || VPNTableEntries === null || loading;
 
     return (
-        // <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 px-4">
-        <div className={`flex flex-col items-center min-h-screen bg-gray-100 px-4 
-                                ${role && role === "admin" ? "justify-start pt-24 pb-20 overflow-y-auto" : "justify-center px-4" }`
-                        }>
-            {/* Navbar */}
-            <nav className="w-full bg-blue-600 text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-                <button 
-                    onClick={() => navigate("/about")} 
-                    className="cursor-pointer bg-gray-300 text-blue-600 hover:bg-gray-100 px-4 py-2 rounded-lg transition absolute left-6"
+        <div className="flex min-h-screen flex-col items-center bg-gray-100 px-4 pb-20 pt-24">
+            <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-blue-600 p-4 px-6 text-white shadow-md">
+                <button
+                    onClick={() => navigate("/about")}
+                    className="absolute left-6 cursor-pointer rounded-lg bg-gray-300 px-4 py-2 text-blue-600 transition hover:bg-gray-100"
                 >
                     About
                 </button>
-                <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
-                <button 
-                    onClick={async () => await logout(navigate)} 
-                    className="cursor-pointer bg-gray-300 text-blue-600 hover:bg-gray-100 px-4 py-2 rounded-lg transition absolute right-6"
+                <h1 className="text-xl font-semibold">CloudGateway</h1>
+                <button
+                    onClick={async () => await logout(navigate)}
+                    className="absolute right-6 cursor-pointer rounded-lg bg-gray-300 px-4 py-2 text-blue-600 transition hover:bg-gray-100"
                 >
                     Logout
                 </button>
             </nav>
-            {errorMessage && (
-                <div className="fixed top-20 w-full flex justify-center z-50">
-                <div className="bg-red-500 text-white px-6 py-3 rounded-xl shadow-md w-full max-w-md flex justify-between items-center">
-                    <span className="text-sm">{errorMessage}</span>
-                    <button
-                    className="ml-4 font-bold hover:text-gray-200 transition"
-                    onClick={() => setErrorMessage(null)}
-                    >
-                    ✕
-                    </button>
-                </div>
-                </div>
-            )}
 
-            { /* ADMIN ONLY */ }
-            {role && role === "admin" &&
-            <div className="pb-4">
-                <button 
-                    onClick={handleCreateNewAccount} 
-                    className={"w-full p-3 rounded-lg transition cursor-pointer bg-blue-600 text-white hover:bg-blue-700"}
-                    >
-                        Create Test Account
-                </button>
-            </div>
-            }
-
-            {/* Deployment Form */}
-            <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-md">
-                <h2 className="text-2xl font-semibold text-center mb-6">Deploy VPN Instance</h2>
-
-                <form onSubmit={async (e) => { await handleDeploySubmit(e); }}>
-                {/* Region Display */}
-                <div className="mb-6">
-                    <label htmlFor="region" className="block text-gray-700 font-medium mb-2">Region</label>
-                    <select
-                        id="region"
-                        value={region}
-                        onChange={(e) => setRegion(e.target.value)}
-                        disabled={regionsLoading || !ociRegions?.length}
-                        className="w-full p-3 border border-gray-200 rounded-lg bg-gray-50 text-gray-800"
-                    >
-                        <option value="" disabled>
-                            {regionsLoading ? "Loading regions" : "Select a region"}
-                        </option>
-                        {ociRegions?.map(ociRegion => {
-                            const capacityLabel = getRegionCapacityLabel(ociRegion);
-                            const disabled = ociRegion.enabled === false || isRegionAtCapacity(ociRegion);
-                            return (
-                                <option
-                                    key={ociRegion.value}
-                                    value={ociRegion.value}
-                                    disabled={disabled}
-                                >
-                                    {capacityLabel ? `${ociRegion.name} (${capacityLabel})` : ociRegion.name}
-                                </option>
-                            );
-                        })}
-                    </select>
-                    {selectedRegion?.capacity && (
-                        <p className={`ps-2 mt-2 text-xs ${selectedRegionFull ? "text-red-600" : "text-gray-500"}`}>
-                            {selectedRegionFull
-                                ? `${selectedRegion.name} is currently full. Choose another region.`
-                                : getRegionCapacityLabel(selectedRegion)}
-                        </p>
-                    )}
-                    {regionsError && (
-                        <p className="ps-2 mt-2 text-xs text-red-600">{regionsError}</p>
-                    )}
-                    {role && role !== "admin" &&
-                        <div className="ps-2 mt-2 text-xs">
-                            <a
-                            href="mailto:Brodsky.Alex22@gmail.com"
-                            className="text-blue-600 underline hover:text-blue-800"
-                            >
-                            Email me to request a region
-                            </a>
-                        </div>
-                    }
-                </div>
-                {/* Submit Button */}
-                <button
-                    type="submit"
-                    disabled={regionSubmitDisabled}
-                    className={`w-full p-3 rounded-lg transition ${
-                    !regionSubmitDisabled
-                        ? "cursor-pointer bg-blue-600 text-white hover:bg-blue-700"
-                        : "bg-gray-400 text-gray-200 cursor-not-allowed"
-                    }`}
-                >
-                    Deploy VPN
-                </button>
-                </form>
-            </div>
-            
-            <VPNTable
-                data={VPNTableEntries}
-                isAdmin={role === "admin"}
-                regions={ociRegions}
-                targets={targets}
-                toggleTarget={toggleTarget}
-                actionFunc={handleTerminate}
-                onQRCodeClick={handleQRcode}
-            />
-
-            {showDeployOverrideConfirm && existingDeployEntry && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white p-6 rounded-2xl shadow-lg max-w-md w-full">
-                        <h3 className="text-xl font-semibold mb-3">Existing VPN Found</h3>
-                        <p className="text-sm text-gray-700 mb-4">
-                            You already have an active VPN in <b>{getRegionName(existingDeployEntry.region, ociRegions)}</b>.
-                            To deploy another one, confirm the admin override.
-                        </p>
-                        <label className="flex items-start gap-3 text-sm text-gray-700 mb-6">
-                            <input
-                                type="checkbox"
-                                checked={overrideDeployChecked}
-                                onChange={(e) => setOverrideDeployChecked(e.target.checked)}
-                                className="mt-1"
-                            />
-                            <span>I understand this will deploy another VPN instead of using the existing one.</span>
-                        </label>
-                        <div className="flex flex-col sm:flex-row justify-end gap-3">
-                            {existingDeployEntry.status === VPN_STATUS.RUNNING && (
-                                <button
-                                    onClick={async () => {
-                                        setShowDeployOverrideConfirm(false);
-                                        if (existingDeployEntry.wireguardConfig) {
-                                            navigateToExistingVPN(existingDeployEntry);
-                                            return;
-                                        }
-
-                                        await deployVPN();
-                                    }}
-                                    className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition"
-                                >
-                                    Use Existing
-                                </button>
-                            )}
-                            <button
-                                onClick={() => setShowDeployOverrideConfirm(false)}
-                                className="px-4 py-2 bg-gray-300 text-gray-800 rounded-lg hover:bg-gray-400 transition"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={async () => {
-                                    if (!overrideDeployChecked) return;
-                                    setShowDeployOverrideConfirm(false);
-                                    await deployVPN(true);
-                                }}
-                                disabled={!overrideDeployChecked}
-                                className={`px-4 py-2 rounded-lg transition ${
-                                    overrideDeployChecked
-                                        ? "bg-blue-600 text-white hover:bg-blue-700"
-                                        : "bg-gray-400 text-gray-200 cursor-not-allowed"
-                                }`}
-                            >
-                                Deploy Anyway
-                            </button>
-                        </div>
+            {banner && (
+                <div className="fixed top-20 z-50 flex w-full justify-center px-4">
+                    <div className={`flex w-full max-w-lg items-center justify-between rounded-lg px-5 py-3 text-white shadow-md ${
+                        banner.type === "error" ? "bg-red-500" : "bg-green-600"
+                    }`}>
+                        <span className="text-sm">{banner.message}</span>
+                        <button
+                            className="ml-4 font-bold transition hover:text-gray-200"
+                            onClick={() => setBanner(null)}
+                            aria-label="Dismiss message"
+                        >
+                            x
+                        </button>
                     </div>
                 </div>
             )}
 
-            {/* QR code overlay with download button */}
-            {configData && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white p-6 rounded-2xl shadow-lg text-center relative max-w-md w-full">
-                        <button
-                            onClick={() => { setConfigData(null); setIP(null) }}
-                            className="absolute top-2 right-3 text-gray-500 hover:text-black text-lg font-bold"
-                        >
-                            ×
-                        </button>
-                        <h3 className="text-2xl font-semibold mb-2">VPN QR Code</h3>
+            {role === "admin" && (
+                <div className="mb-4 w-full max-w-md">
+                    <button
+                        onClick={handleCreateNewAccount}
+                        className="w-full cursor-pointer rounded-lg bg-blue-600 p-3 text-white transition hover:bg-blue-700"
+                    >
+                        Create Test Account
+                    </button>
+                </div>
+            )}
 
+            <div className="w-full max-w-7xl rounded-lg bg-white p-4 shadow-lg md:p-6">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <h2 className="text-xl font-semibold text-gray-900">Shared VPN Dashboard</h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                            {role === "admin"
+                                ? "View and remove clients across users. New clients are created only for your account."
+                                : "Create and remove your VPN clients."}
+                        </p>
+                    </div>
+
+                    <form onSubmit={handleCreateClient} className="flex w-full flex-col gap-3 sm:flex-row lg:w-auto">
+                        <label className="flex min-w-0 flex-1 flex-col text-sm font-medium text-gray-700 lg:w-64">
+                            Client display name
+                            <input
+                                value={clientName}
+                                onChange={(e) => setClientName(e.target.value)}
+                                maxLength={80}
+                                placeholder="Optional"
+                                className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                            />
+                        </label>
+                        <button
+                            type="submit"
+                            disabled={createDisabled}
+                            className={`rounded-lg px-5 py-3 text-sm font-medium transition sm:self-end ${
+                                !createDisabled
+                                    ? "cursor-pointer bg-blue-600 text-white hover:bg-blue-700"
+                                    : "cursor-not-allowed bg-gray-300 text-gray-500"
+                            }`}
+                        >
+                            Create Client
+                        </button>
+                    </form>
+                </div>
+
+                <div className="mt-5 border-t border-gray-100 pt-4">
+                    {regionsLoading && (
+                        <p className="text-sm text-gray-500">Loading regions...</p>
+                    )}
+                    {regionsError && (
+                        <p className="text-sm text-red-600">{regionsError}</p>
+                    )}
+                    {!regionsLoading && !enabledRegions.length && (
+                        <p className="text-sm text-red-600">No enabled regions are available.</p>
+                    )}
+                    {showRegionTabs ? (
+                        <div className="flex flex-wrap gap-2">
+                            {enabledRegions.map(region => {
+                                const isActive = region.value === activeRegionId;
+                                const capacityLabel = getRegionCapacityLabel(region);
+                                const regionFull = isRegionAtCapacity(region);
+
+                                return (
+                                    <button
+                                        key={region.value}
+                                        type="button"
+                                        onClick={() => selectRegion(region.value)}
+                                        className={`rounded-lg border px-4 py-2 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                            isActive
+                                                ? "border-blue-600 bg-blue-50 text-blue-700"
+                                                : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:bg-blue-50"
+                                        }`}
+                                        aria-pressed={isActive}
+                                    >
+                                        <span className="block font-medium">{region.name}</span>
+                                        {capacityLabel && (
+                                            <span className={regionFull ? "block text-xs text-red-600" : "block text-xs text-gray-500"}>
+                                                {capacityLabel}
+                                            </span>
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : selectedRegion ? (
+                        <div className="flex flex-wrap items-center gap-3 text-sm text-gray-700">
+                            <span className="font-medium">{selectedRegion.name}</span>
+                            {selectedRegion.capacity && (
+                                <span className={selectedRegionFull ? "text-red-600" : "text-gray-500"}>
+                                    {selectedRegionFull
+                                        ? `${selectedRegion.name} is currently full`
+                                        : getRegionCapacityLabel(selectedRegion)}
+                                </span>
+                            )}
+                        </div>
+                    ) : null}
+
+                    {selectedRegionFull && (
+                        <p className="mt-3 text-sm text-red-600">
+                            {activeRegionName} is currently full. Choose another region before creating a client.
+                        </p>
+                    )}
+                    {role && role !== "admin" && (
+                        <div className="mt-3 text-xs">
+                            <a
+                                href="mailto:Brodsky.Alex22@gmail.com"
+                                className="text-blue-600 underline hover:text-blue-800"
+                            >
+                                Email me to request a region
+                            </a>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <VPNTable
+                data={activeRegionEntries}
+                isAdmin={role === "admin"}
+                regions={ociRegions}
+                selectedClientKeys={selectedClientKeys}
+                getClientKey={getClientKey}
+                onSelectionChange={handleSelectionChange}
+                onRemoveSelected={handleRemoveSelected}
+                onQRCodeClick={handleQRcode}
+                onDownloadConfig={handleDownloadConfig}
+                removing={loading}
+                activeRegionName={activeRegionName}
+            />
+
+            {configData && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="relative w-full max-w-md rounded-lg bg-white p-6 text-center shadow-lg">
+                        <button
+                            onClick={() => {
+                                setConfigData(null);
+                                setIP(null);
+                                setVpnRegion(null);
+                                setActiveConfigClientName(null);
+                            }}
+                            className="absolute right-3 top-2 text-lg font-bold text-gray-500 hover:text-black"
+                            aria-label="Close QR code"
+                        >
+                            x
+                        </button>
+                        <h3 className="mb-2 text-2xl font-semibold">VPN QR Code</h3>
+                        {activeConfigClientName && (
+                            <p className="pt-1 text-gray-700">
+                                Client: <b>{activeConfigClientName}</b>
+                            </p>
+                        )}
                         {vpnRegion && (
                             <p className="pt-1 text-gray-700">
                                 Region: <b>{getRegionName(vpnRegion, ociRegions)}</b>
                             </p>
                         )}
-
                         {IP && (
                             <p className="pt-1 text-gray-700">
-                                IP Address: <b>{IP}</b>
+                                Address: <b>{IP}</b>
                             </p>
                         )}
-                        <canvas ref={canvasRef} className="mt-2 mx-auto" />
-                        <button
-                            onClick={handleDownload}
-                            className="cursor-pointer bg-blue-600 text-white p-3 rounded-lg hover:bg-blue-700 transition mt-4"
-                        >
-                            Download Config
-                        </button>
+                        <canvas ref={canvasRef} className="mx-auto mt-2" />
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                            <button
+                                onClick={handleCopyActiveConfig}
+                                className="flex-1 cursor-pointer rounded-lg bg-gray-200 p-3 text-gray-800 transition hover:bg-gray-300"
+                            >
+                                {configCopied ? "Copied" : "Copy Config"}
+                            </button>
+                            <button
+                                onClick={handleDownloadActiveConfig}
+                                className="flex-1 cursor-pointer rounded-lg bg-blue-600 p-3 text-white transition hover:bg-blue-700"
+                            >
+                                Download Config
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
 
-            {/* Loading Overlay (Blocks clicks and dims background) */}
             {loading && (
-                <div className="fixed inset-0 w-full h-full bg-black/50 flex items-center justify-center z-50">
-                    <div className="border-t-4 border-white border-solid rounded-full w-16 h-16 animate-spin"></div>
+                <div className="fixed inset-0 z-50 flex h-full w-full items-center justify-center bg-black/50">
+                    <div className="h-16 w-16 animate-spin rounded-full border-t-4 border-solid border-white"></div>
                 </div>
             )}
         </div>
