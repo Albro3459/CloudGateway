@@ -13,7 +13,7 @@ service cloud.firestore {
     }
 
     function isUserOwner(userId) {
-      return request.auth.uid == userId;
+      return isAuth() && request.auth.uid == userId;
     }
 
     function isOwnerOrAdmin(userId) {
@@ -21,29 +21,34 @@ service cloud.firestore {
     }
 
     match /Roles/{userId} {
-      allow get: if isAuth() && isOwnerOrAdmin(userId);
-      allow list: if isAuth() && isAdmin();
-      allow write: if isAuth() && isAdmin();
+      allow get, list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /Regions/{regionId} {
+      allow get, list: if isAuth() && (resource.data.enabled == true || isAdmin());
+      allow create, update, delete: if isAdmin();
     }
 
     match /Users/{userId} {
-      allow get: if isAuth() && isOwnerOrAdmin(userId);
+      allow get: if isOwnerOrAdmin(userId);
       allow list: if isAuth() && isAdmin();
-      allow write: if isAuth() && isOwnerOrAdmin(userId);
+      allow create, update, delete: if isAdmin();
 
       match /Regions/{regionId} {
-        allow read: if isAuth() && isOwnerOrAdmin(userId);
-        allow write: if isAuth() && isOwnerOrAdmin(userId);
-    
+        allow get, list: if isOwnerOrAdmin(userId);
+        allow create, update, delete: if false;
+
         match /Instances/{instanceId} {
-          allow read: if isAuth() && isOwnerOrAdmin(userId);
-          allow write: if isAuth() && isOwnerOrAdmin(userId);
+          allow get, list: if isOwnerOrAdmin(userId);
+          allow create, update, delete: if false;
         }
       }
     }
-    match /Live-Regions/{regionId} {
-      allow read, list: if isAuth();
-      allow write: if isAuth() && isAdmin();
+
+    match /{path=**}/Instances/{instanceId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
     }
   }
 }

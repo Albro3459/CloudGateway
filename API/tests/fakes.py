@@ -1,8 +1,92 @@
+import subprocess
+from dataclasses import dataclass, replace
+from pathlib import Path
+from threading import Lock
+
 from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
-from cloudlaunch_api.enums import OperationResult, Role
-from cloudlaunch_api.errors import AuthRequiredError
-from cloudlaunch_api.repository import FirebaseRepository
+from cloudlaunch_api.enums import ClientStatus, OperationResult, Role
+from cloudlaunch_api.errors import AuthRequiredError, ClientNotFoundError
+from cloudlaunch_api.repository import (
+    ALLOCATED_CLIENT_STATUSES,
+    ClientDoc,
+    FirebaseRepository,
+    RegionDoc,
+    UserDoc,
+    assert_capacity_available,
+    assert_user_limit_available,
+    assign_tunnel_ips,
+    clean_client_name,
+    ensure_delete_allowed,
+    ensure_local_region,
+    ensure_region_enabled,
+    new_client_id,
+    utc_now,
+)
 from cloudlaunch_api.wireguard import WireGuardKeypair, WireGuardManager
+
+FAKE_PRIVATE_KEY = "iEMN+PEAADw5Fed0LvTIptC4WGFouhbB4fXi1YcK/ms="
+FAKE_PUBLIC_KEY = "CIQOUMCevSCOGPMz+XafLmitThI7lx0JSIVXqRGzEFg="
+FAKE_SERVER_PUBLIC_KEY = "gkWhpYlsa8erZqnyAHMnMkQ8cMRlLpYF9avPAMWj1GE="
+
+
+@dataclass(frozen=True)
+class FakeCommandCall:
+    args: tuple[str, ...]
+    input: str | None
+    shell: bool
+
+
+class FakeWireGuardCommandRunner:
+    def __init__(
+        self,
+        *,
+        fail_strip_count: int = 0,
+        fail_sync_count: int = 0,
+        failure_stderr: str = "simulated command failure",
+    ):
+        self.calls: list[FakeCommandCall] = []
+        self.strip_modes: list[int] = []
+        self.sync_modes: list[int] = []
+        self.fail_strip_count = fail_strip_count
+        self.fail_sync_count = fail_sync_count
+        self.failure_stderr = failure_stderr
+
+    def __call__(
+        self,
+        args,
+        *,
+        input=None,
+        capture_output=False,
+        text=False,
+        check=False,
+        shell=False,
+    ):
+        if shell is not False:
+            raise AssertionError("WireGuard commands must run with shell=False.")
+
+        args = tuple(args)
+        self.calls.append(FakeCommandCall(args=args, input=input, shell=shell))
+
+        if args == ("wg", "genkey"):
+            return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PRIVATE_KEY}\n", stderr="")
+        if args == ("wg", "pubkey"):
+            return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PUBLIC_KEY}\n", stderr="")
+        if args[:2] == ("wg-quick", "strip"):
+            path = Path(args[2])
+            self.strip_modes.append(path.stat().st_mode & 0o777)
+            if self.fail_strip_count:
+                self.fail_strip_count -= 1
+                raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
+            return subprocess.CompletedProcess(args, 0, stdout=path.read_text(encoding="utf-8"), stderr="")
+        if args[:2] == ("wg", "syncconf"):
+            path = Path(args[3])
+            self.sync_modes.append(path.stat().st_mode & 0o777)
+            if self.fail_sync_count:
+                self.fail_sync_count -= 1
+                raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        raise AssertionError(f"Unexpected WireGuard command: {args}")
 
 
 class FakeTokenVerifier(TokenVerifier):
@@ -17,11 +101,249 @@ class FakeTokenVerifier(TokenVerifier):
 
 
 class FakeRepository(FirebaseRepository):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        local_region_id: str = "us-test-1",
+        ipv4_cidr: str = "10.0.0.0/24",
+        ipv6_cidr: str = "fd42:42:42::/64",
+    ):
+        self.local_region_id = local_region_id
+        self.ipv4_cidr = ipv4_cidr
+        self.ipv6_cidr = ipv6_cidr
+        self._lock = Lock()
         self.roles: dict[str, Role] = {}
+        self.users: dict[str, UserDoc] = {}
+        self.regions: dict[str, RegionDoc] = {}
+        self.clients: dict[tuple[str, str, str], ClientDoc] = {}
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
+
+    def get_user(self, uid: str) -> UserDoc | None:
+        return self.users.get(uid)
+
+    def get_region(self, region_id: str) -> RegionDoc | None:
+        return self.regions.get(region_id)
+
+    def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
+        return self.clients.get((owner_uid, region_id, client_id))
+
+    def reserve_client(
+        self,
+        *,
+        owner_uid: str,
+        owner_email: str | None,
+        owner_display_name: str | None,
+        region_id: str,
+        client_name: str | None,
+    ) -> ClientDoc:
+        ensure_local_region(region_id, self.local_region_id)
+        with self._lock:
+            region = ensure_region_enabled(self.regions.get(region_id))
+            allocated_clients = self._allocated_region_clients(region_id)
+            owner_allocated_count = sum(1 for client in allocated_clients if client.owner_uid == owner_uid)
+            assert_capacity_available(allocated_count=len(allocated_clients), capacity_limit=region.capacity_limit)
+            assert_user_limit_available(
+                requester_role=self.roles.get(owner_uid),
+                owner_allocated_count=owner_allocated_count,
+            )
+            assigned_ipv4, assigned_ipv6 = assign_tunnel_ips(
+                ipv4_cidr=self.ipv4_cidr,
+                ipv6_cidr=self.ipv6_cidr,
+                used_ipv4={client.assigned_tunnel_ipv4 for client in allocated_clients},
+                used_ipv6={client.assigned_tunnel_ipv6 for client in allocated_clients},
+            )
+            client_id = new_client_id()
+            while (owner_uid, region_id, client_id) in self.clients:
+                client_id = new_client_id()
+
+            now = utc_now()
+            self.users.setdefault(
+                owner_uid,
+                UserDoc(
+                    uid=owner_uid,
+                    email=owner_email or "",
+                    display_name=owner_display_name,
+                    created_at=now,
+                ),
+            )
+            client = ClientDoc(
+                client_id=client_id,
+                owner_uid=owner_uid,
+                owner_email=owner_email or "",
+                owner_display_name=owner_display_name,
+                client_name=clean_client_name(client_name),
+                region_id=region.region_id,
+                status=ClientStatus.CREATING,
+                assigned_tunnel_ipv4=assigned_ipv4,
+                assigned_tunnel_ipv6=assigned_ipv6,
+                server_endpoint_ipv4=region.wireguard_endpoint_ipv4,
+                server_public_key=region.wireguard_public_key,
+                client_public_key="",
+                wireguard_config=None,
+                created_at=now,
+                updated_at=now,
+                removed_at=None,
+                last_error_code=None,
+                last_error_message=None,
+            )
+            self.clients[(owner_uid, region_id, client_id)] = client
+            self.regions[region_id] = replace(region, active_client_count=len(allocated_clients) + 1, updated_at=now)
+            return client
+
+    def mark_client_active(
+        self,
+        *,
+        owner_uid: str,
+        region_id: str,
+        client_id: str,
+        client_public_key: str,
+        wireguard_config: str,
+    ) -> ClientDoc:
+        ensure_local_region(region_id, self.local_region_id)
+        with self._lock:
+            client = self._require_client(owner_uid=owner_uid, region_id=region_id, client_id=client_id)
+            if client.status not in {ClientStatus.CREATING, ClientStatus.ACTIVE}:
+                raise ClientNotFoundError()
+            updated = replace(
+                client,
+                status=ClientStatus.ACTIVE,
+                client_public_key=client_public_key,
+                wireguard_config=wireguard_config,
+                updated_at=utc_now(),
+                removed_at=None,
+                last_error_code=None,
+                last_error_message=None,
+            )
+            self.clients[(owner_uid, region_id, client_id)] = updated
+            return updated
+
+    def mark_client_failed(
+        self,
+        *,
+        owner_uid: str,
+        region_id: str,
+        client_id: str,
+        error_code: str,
+        error_message: str,
+    ) -> ClientDoc:
+        return self._mark_client_terminal(
+            owner_uid=owner_uid,
+            region_id=region_id,
+            client_id=client_id,
+            status=ClientStatus.FAILED,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def remove_client_reservation(
+        self,
+        *,
+        owner_uid: str,
+        region_id: str,
+        client_id: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> ClientDoc:
+        return self._mark_client_terminal(
+            owner_uid=owner_uid,
+            region_id=region_id,
+            client_id=client_id,
+            status=ClientStatus.REMOVED,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def delete_client(
+        self,
+        *,
+        requester_uid: str,
+        target_uid: str,
+        region_id: str,
+        client_id: str,
+    ) -> ClientDoc:
+        ensure_local_region(region_id, self.local_region_id)
+        with self._lock:
+            ensure_delete_allowed(
+                requester_uid=requester_uid,
+                requester_role=self.roles.get(requester_uid),
+                target_uid=target_uid,
+            )
+            ensure_region_enabled(self.regions.get(region_id))
+            return self._mark_client_terminal_locked(
+                owner_uid=target_uid,
+                region_id=region_id,
+                client_id=client_id,
+                status=ClientStatus.REMOVED,
+                error_code=None,
+                error_message=None,
+            )
+
+    def _mark_client_terminal(
+        self,
+        *,
+        owner_uid: str,
+        region_id: str,
+        client_id: str,
+        status: ClientStatus,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> ClientDoc:
+        ensure_local_region(region_id, self.local_region_id)
+        with self._lock:
+            ensure_region_enabled(self.regions.get(region_id))
+            return self._mark_client_terminal_locked(
+                owner_uid=owner_uid,
+                region_id=region_id,
+                client_id=client_id,
+                status=status,
+                error_code=error_code,
+                error_message=error_message,
+            )
+
+    def _mark_client_terminal_locked(
+        self,
+        *,
+        owner_uid: str,
+        region_id: str,
+        client_id: str,
+        status: ClientStatus,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> ClientDoc:
+        client = self._require_client(owner_uid=owner_uid, region_id=region_id, client_id=client_id)
+        region = self.regions[region_id]
+        allocated_count = len(self._allocated_region_clients(region_id))
+        next_count = max(0, allocated_count - 1) if client.status in ALLOCATED_CLIENT_STATUSES else allocated_count
+        now = utc_now()
+        updated = replace(
+            client,
+            status=status,
+            wireguard_config=None if status == ClientStatus.REMOVED else client.wireguard_config,
+            updated_at=now,
+            removed_at=now if status == ClientStatus.REMOVED else None,
+            last_error_code=error_code,
+            last_error_message=error_message,
+        )
+        self.clients[(owner_uid, region_id, client_id)] = updated
+        self.regions[region_id] = replace(region, active_client_count=next_count, updated_at=now)
+        return updated
+
+    def _allocated_region_clients(self, region_id: str) -> list[ClientDoc]:
+        return [
+            client
+            for client in self.clients.values()
+            if client.region_id == region_id and client.status in ALLOCATED_CLIENT_STATUSES
+        ]
+
+    def _require_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc:
+        client = self.clients.get((owner_uid, region_id, client_id))
+        if client is None:
+            raise ClientNotFoundError()
+        if client.client_id != client_id or client.owner_uid != owner_uid or client.region_id != region_id:
+            raise ClientNotFoundError()
+        return client
 
 
 class FakeWireGuardManager(WireGuardManager):
