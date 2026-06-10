@@ -25,31 +25,112 @@ Purpose: make the API/frontend/Firebase contract explicit before parallel work s
 
 Tasks:
 
-- Add a shared contract note under `TODO/` or docs covering:
-  - API routes: `GET /health`, `POST /clients`, `DELETE /clients/{clientId}`, and admin-only `POST /users`.
-  - Request/response fields and naming.
+- Add `TODO/Shared_VPN_Contract.md` as the source-of-truth contract for all later tracks. Do not leave open decisions, `TODO`, `confirm`, or `decide` language in this contract.
+- Define JSON and Firestore naming as camelCase everywhere. Use `clientId`, not `client_id`, in route docs, frontend helpers, responses, and contract examples. Python internals may use snake_case only behind Pydantic aliases.
+- Define external API URLs as regional Cloudflare-proxied origins:
+  - Regional API base URL is `https://<regionId>.<origin>/api`.
+  - `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com` or `gateway.gocloudlaunch.com`.
+  - For a frontend loaded from `https://gateway.gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gateway.gocloudlaunch.com/api/*`.
+  - FastAPI internal routes do not include `/api`; Caddy strips `/api/*` before proxying to FastAPI.
+  - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API calls to `${REACT_APP_API_ORIGIN}/api/*`. In production, leave it unset and derive the regional API URL from `window.location.origin` plus the selected `regionId`.
+  - There is no global API router and no frontend base-domain config.
+- Define API routes:
+  - `GET /health` is unauthenticated, rate limited by Caddy, and returns `{ "status": "ok", "regionId": "us-sanjose-1" }`.
+  - `POST /clients` requires Firebase bearer auth, creates a client only for the authenticated user, and accepts `{ "regionId": "us-sanjose-1", "clientName": "Phone" }`. `clientName` is optional; blank/missing values use a simple server default.
+  - `POST /clients` returns `{ "clientId": "...", "regionId": "...", "clientName": "...", "status": "active", "assignedTunnelIpv4": "10.0.0.2/32", "assignedTunnelIpv6": "fd42:42:42::2/128", "serverEndpointIpv4": "1.2.3.4", "wireguardConfig": "..." }`.
+  - `DELETE /clients/{clientId}` requires Firebase bearer auth and accepts `{ "userId": "firebase-uid", "regionId": "us-sanjose-1" }`. Normal users can only pass their own UID. Admins can pass any target UID.
+  - `DELETE /clients/{clientId}` returns `{ "userId": "...", "clientId": "...", "regionId": "...", "status": "removed" }`.
+  - `POST /users` requires Firebase bearer auth with admin role, is logically global, and is hosted by every regional API. It does not accept `regionId` and does not mutate regional state.
+  - `POST /users` accepts `{ "email": "user@example.com", "password": "temporary-password", "displayName": "User Name" }`. `displayName` is optional.
+  - `POST /users` returns `{ "userId": "...", "email": "user@example.com", "role": "user" }`.
+- Define typed error response shape for all controlled failures:
+  - Response body is `{ "error": { "code": "REGION_MISMATCH", "message": "Requested region does not match this API server.", "requestId": "..." } }`.
+  - Error codes are uppercase snake case. Initial required codes are `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `INVALID_REQUEST`, `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`, `DUPLICATE_EMAIL`, `INVALID_PASSWORD`, `WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, and `INTERNAL_ERROR`.
+  - HTTP status mapping: auth failures use `401`, permission failures use `403`, invalid request/region mismatch/invalid password use `400`, missing clients use `404`, duplicate email and capacity/limit failures use `409`, host mutation failures use `500`, and unexpected failures use `500`.
+- Define enum values:
+  - Roles: `user`, `admin`.
   - Client statuses: `creating`, `active`, `failed`, `removed`.
-  - Region document fields.
-  - Client document fields.
-  - Admin vs normal user permissions.
-- Confirm that `Users/{uid}/Regions/{regionId}/Instances/{clientId}` remains the client document path.
-- Confirm create-user stays supported and moves from `lambda/CreateUser` into the new `API/` service.
-- Decide whether create-user is regional only by deployment path or logically global but hosted by a regional API, then document that choice as fixed contract.
-- Confirm frontend keeps the existing `APP/src/helpers/apiEndpoints.ts` pattern:
-  - `REACT_APP_API_ORIGIN` may be set for local/dev API targets.
-  - production leaves it unset so browser requests use same-origin `/api/*` paths.
-  - no new frontend origin/base-domain config is needed for this redesign.
-- Define the API deployment handoff used by infrastructure:
-  - install/deploy directory expected on the host.
-  - app module/import path used by uvicorn.
-  - Python dependency install strategy.
-  - environment/config file path and required variable names.
-  - systemd service name, user/root expectations, working directory, and bind address.
-- Note that API, frontend, and infrastructure agents should treat this contract as source of truth.
+  - Operation results: `success`, `failed`, `noop`.
+- Define Firebase paths:
+  - Region documents: `Regions/{regionId}`.
+  - User documents: `Users/{uid}`.
+  - Client documents: `Users/{uid}/Regions/{regionId}/Instances/{clientId}`.
+  - Role documents: `Roles/{uid}`.
+- Define `Regions/{regionId}` fields:
+  - `regionId`: string, same as document ID.
+  - `displayName`: string.
+  - `enabled`: boolean.
+  - `wireguardEndpointIpv4`: string raw public IPv4 used in client configs.
+  - `wireguardEndpointIpv6`: string or null.
+  - `wireguardPort`: number, default `51820`.
+  - `wireguardDnsIpv4`: string.
+  - `wireguardDnsIpv6`: string.
+  - `wireguardPublicKey`: string.
+  - `capacityLimit`: number.
+  - `activeClientCount`: number.
+  - `displayOrder`: number, optional.
+  - `healthStatus`: string, optional.
+  - `updatedAt`: Firestore timestamp.
+- Define `Users/{uid}` fields used by the new flow:
+  - `uid`: string, same as document ID.
+  - `email`: string.
+  - `displayName`: string or null.
+  - `createdAt`: Firestore timestamp.
+  - `disabled`: boolean, optional.
+- Define `Roles/{uid}` fields:
+  - `role`: `user` or `admin`.
+  - `updatedAt`: Firestore timestamp.
+- Define client document fields:
+  - `clientId`: string UUIDv4, same as document ID.
+  - `ownerUid`: string.
+  - `ownerEmail`: string.
+  - `ownerDisplayName`: string or null.
+  - `clientName`: string.
+  - `regionId`: string.
+  - `status`: `creating`, `active`, `failed`, or `removed`.
+  - `assignedTunnelIpv4`: string CIDR.
+  - `assignedTunnelIpv6`: string CIDR.
+  - `serverEndpointIpv4`: string raw public IPv4.
+  - `serverPublicKey`: string.
+  - `clientPublicKey`: string.
+  - `wireguardConfig`: string or null.
+  - `createdAt`: Firestore timestamp.
+  - `updatedAt`: Firestore timestamp.
+  - `removedAt`: Firestore timestamp or null.
+  - `lastErrorCode`: string or null.
+  - `lastErrorMessage`: string or null.
+- Define frontend permissions:
+  - Authenticated users can read enabled region docs.
+  - Normal users can read their own user document and own client documents.
+  - Admins can read all user, role, and client documents.
+  - Frontend clients cannot create, update, or delete VPN client documents directly. Client mutation goes through regional FastAPI using the Firebase Admin SDK.
+  - Admins can write `Regions`, `Users`, and `Roles` documents from the frontend where existing admin UI needs it, but not client documents.
+- Define user-limit behavior:
+  - Normal users default to 3 active clients per region.
+  - Admins can create clients only for themselves, but can exceed the normal user limit up to server capacity.
+  - Admins can delete clients for any user.
+- Define frontend API selection:
+  - Client create/delete calls use the active region tab's `regionId` to derive `https://<regionId>.<origin>/api/*`.
+  - Derive `<origin>` from `window.location.host`, preserving the current frontend port only for localhost/dev hosts.
+  - For localhost/dev, prefer `REACT_APP_API_ORIGIN` when set instead of deriving a regional hostname.
+  - Missing `displayOrder` sorts as `1000`.
+  - `POST /users` uses `REACT_APP_API_ORIGIN` in local/dev when set. In production it uses the first enabled region sorted by `displayOrder` then `regionId`, because the route is logically global and hosted by every regional API. If there is no enabled region, the frontend shows a controlled error and does not call the API.
+- Define API deployment handoff used by infrastructure:
+  - Host install directory: `/opt/cloudlaunch/api`.
+  - Python virtualenv: `/opt/cloudlaunch/api/.venv`.
+  - App import path: `cloudlaunch_api.main:app`.
+  - Dependency metadata: `API/pyproject.toml`; infrastructure installs the package into the venv from `/opt/cloudlaunch/api`.
+  - systemd service name: `cloudlaunch-api.service`.
+  - systemd runs as `root`, working directory `/opt/cloudlaunch/api`, binding only to `127.0.0.1`.
+  - Environment file path: `/etc/cloudlaunch/api.env`, mode `0600`, owned by `root`.
+  - Required environment variables: `CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_API_PORT`, `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`, `CLOUDLAUNCH_WG_INTERFACE`, `CLOUDLAUNCH_WG_CONFIG_PATH`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`, `CLOUDLAUNCH_WG_ENDPOINT_IPV4`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR`, and `CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR`.
+  - Default values: `CLOUDLAUNCH_API_PORT=8000`, `CLOUDLAUNCH_WG_INTERFACE=wg0`, `CLOUDLAUNCH_WG_CONFIG_PATH=/etc/wireguard/wg0.conf`, and `CLOUDLAUNCH_WG_PORT=51820`.
+- Note that API, frontend, infrastructure, and documentation agents must treat `TODO/Shared_VPN_Contract.md` as source of truth after Commit 1.
 
 Validation:
 
 - Manual review against `TODO/Shared_VPN_Plan.md`.
+- Search `TODO/Shared_VPN_Contract.md` for `TODO`, `decide`, `confirm`, `TBD`, and `client_id`; the only allowed `client_id` occurrence is an explicit "do not use" note if retained.
 - No runtime validation required.
 
 ## API Track
@@ -72,7 +153,7 @@ Tasks:
   - WireGuard boundary with test doubles.
 - Implement `GET /health` returning `status` and configured `regionId`.
 - Add admin-only `POST /users` scaffolding so the old create-user Lambda can be folded into this API.
-- Add dependency metadata and local test setup for the API folder.
+- Add `API/pyproject.toml` dependency metadata and local test setup for the API folder.
 - Ensure FastAPI binds cleanly to localhost when run by uvicorn.
 
 Validation:
@@ -272,7 +353,7 @@ Tasks:
 - Rename frontend types from VPN instance language to VPN client language where practical.
 - Read regions from Firebase `Regions/{regionId}` instead of SecureGet Lambda.
 - Parse region fields for display name, enabled flag, endpoint IPs, DNS IPs, public key, port, capacity, and active count.
-- Keep existing `apiEndpoints.ts` behavior where deployed builds use same-origin `/api/*` paths.
+- Update `apiEndpoints.ts` around the Commit 1 regional API selection contract: local/dev may use `REACT_APP_API_ORIGIN`, production derives `https://<regionId>.<origin>/api/*` from the selected region ID and current frontend origin.
 - Read client docs from `Users/{uid}/Regions/{regionId}/Instances/{clientId}`.
 - Preserve admin read path for support across users.
 - Stop frontend writes to client docs.
@@ -288,8 +369,8 @@ Purpose: make frontend call the new API routes for VPN clients and admin user cr
 
 Tasks:
 
-- Add API helper for `POST /api/clients` through existing endpoint builder.
-- Add API helper for `DELETE /api/clients/{clientId}` with body `{ userId, regionId }` through existing endpoint builder.
+- Add API helper for `POST /api/clients` through the region-aware endpoint builder.
+- Add API helper for `DELETE /api/clients/{clientId}` with body `{ userId, regionId }` through the region-aware endpoint builder.
 - Add admin create-user helper pointed at `POST /api/users`, not Lambda.
 - Include Firebase bearer token on protected calls.
 - Handle typed error responses from FastAPI.
@@ -357,7 +438,7 @@ Tasks:
 - Rewrite root `README.md` for shared regional VPN platform.
 - Update architecture diagram and component descriptions.
 - Replace Lambda/Worker/Resource Manager deployment story with regional FastAPI/Caddy/WireGuard story.
-- Document deployed frontend API behavior: production uses same-origin `/api/*`, while local/dev can still use `REACT_APP_API_ORIGIN`.
+- Document deployed frontend API behavior: production derives `https://<regionId>.<origin>/api/*` from the selected region ID and current frontend origin, while local/dev can still use `REACT_APP_API_ORIGIN`.
 - Document Firebase as product source of truth and `/etc/wireguard/wg0.conf` as persistent host WireGuard config.
 - Document clean cutoff: no migration, no old stack compatibility, old configs must be recreated.
 - Document privacy/logging boundaries: API logs allowed, VPN traffic logs forbidden.
@@ -407,7 +488,7 @@ Tasks:
   - old statuses `pending`, `running`, `terminated`.
   - old deploy/terminate copy.
 - Verify file ownership boundaries did not leave duplicate concepts.
-- Verify frontend still uses the existing same-origin `/api/*` endpoint pattern for production builds.
+- Verify frontend uses the Commit 1 regional API selection contract for production builds.
 - Verify create-user works through the new API and no longer depends on Lambda/Worker.
 - Update `TODO/Shared_VPN_Plan.md` only if implementation decisions changed.
 

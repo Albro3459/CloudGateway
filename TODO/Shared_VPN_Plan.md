@@ -255,7 +255,6 @@ Region documents should include:
 
 - display name
 - enabled flag
-- API hostname
 - WireGuard public endpoint IPv4/IPv6
 - WireGuard DNS tunnel IPv4/IPv6
 - WireGuard public key
