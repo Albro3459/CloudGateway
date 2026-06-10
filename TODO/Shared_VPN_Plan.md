@@ -27,7 +27,9 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - Firebase is the product source of truth for users, regions, clients, roles, limits, and stored configs.
 - Firebase is the product source of truth, but `/etc/wireguard/wg0.conf` is the persistent host WireGuard config.
 - Add/remove client must update Firebase, update `/etc/wireguard/wg0.conf`, and apply the live `wg0` change.
-- No startup reconciliation job is required.
+- No startup reconciliation job is required. On reboot, the host uses `/etc/wireguard/wg0.conf`.
+- Firebase drift from host WireGuard state is an accepted risk for the initial implementation.
+- Users create clients only for themselves. There is no admin-create-client-for-another-user flow.
 
 ## Architecture
 
@@ -57,6 +59,7 @@ The Terraform/cloud-init setup should install and configure:
 
 - WireGuard.
 - IP forwarding and firewall/NAT rules.
+- WireGuard UDP `iptables`/`ip6tables` rate limits.
 - Optional AdGuard/Unbound DNS stack.
 - Python runtime and FastAPI app.
 - Firebase Admin credentials.
@@ -88,12 +91,14 @@ Required behavior:
 - Verify Firebase ID tokens on every protected request.
 - Use typed Pydantic request/response models.
 - Use enums for event names, roles, statuses, and operation results.
+- Explicitly type API fields and internal values that cross module boundaries. Do not pass raw status/action/result strings around when an enum fits.
 - Use structured JSON logs.
 - Wrap route handlers and major operation steps in `try/except`.
 - Raise typed exceptions from helpers and map them to clear HTTP responses.
 - Avoid broad exception swallowing. Failures must log and return a controlled response.
 - Generate a fresh WireGuard keypair per client.
 - Assign a unique tunnel IPv4/IPv6 per client.
+- Accept an optional user-provided client display name.
 - Store generated client config in Firebase.
 - Apply peer changes to local WireGuard immediately.
 - Read server deployment config from local env/files, including region ID, public IPv4, WireGuard port, server tunnel DNS IPs, and server public key.
@@ -107,20 +112,79 @@ Initial routes:
 - `GET /health`
 - `POST /clients`
 - `DELETE /clients/{client_id}`
-- Optional admin route: `POST /users`
 
-`POST /clients` creates one WireGuard client in the current region.
+`POST /clients` creates one WireGuard client for the authenticated user in the current region.
 
-`DELETE /clients/{client_id}` removes one WireGuard client from the current region.
+`DELETE /clients/{client_id}` removes one WireGuard client owned by the authenticated user from the current region. Admins can remove clients across users when acting from the admin UI.
 
 The UI selects the regional API hostname instead of asking one global API to route the request.
 
 Each server must have its own region ID in deployment config created by the Terraform stack. Add/remove client requests must include a region ID. The API must compare the requested region ID against the server configured region ID and return an error on mismatch. Do not depend on parsing the region from the hostname.
 
+`GET /health` response:
+
+```json
+{
+  "status": "ok",
+  "regionId": "us-sanjose-1"
+}
+```
+
+`POST /clients` request:
+
+```json
+{
+  "regionId": "us-sanjose-1",
+  "clientName": "Phone"
+}
+```
+
+`clientName` is optional. If provided, save it to the Firebase client document. If blank or missing, the API can use a simple default display name.
+
+`POST /clients` response:
+
+```json
+{
+  "clientId": "abc123",
+  "regionId": "us-sanjose-1",
+  "clientName": "Phone",
+  "status": "active",
+  "assignedTunnelIpv4": "10.0.0.2/32",
+  "assignedTunnelIpv6": "fd42:42:42::2/128",
+  "serverEndpointIpv4": "1.2.3.4",
+  "wireguardConfig": "..."
+}
+```
+
+`DELETE /clients/{client_id}` request:
+
+```json
+{
+  "regionId": "us-sanjose-1"
+}
+```
+
+`DELETE /clients/{client_id}` response:
+
+```json
+{
+  "clientId": "abc123",
+  "regionId": "us-sanjose-1",
+  "status": "removed"
+}
+```
+
+Initial client statuses must be represented as explicit backend/frontend enums, not loose strings:
+
+- `creating`
+- `active`
+- `failed`
+- `removed`
+
 ## Client Create Flow
 
 1. Receive request.
-2. Log request received with request ID, action, user UID, email, display name, target email/name if admin-specified, and region.
+2. Log request received with request ID, action, user UID, email, display name, optional client name, and region.
 3. Verify Firebase token.
 4. Validate request body.
 5. Read user/role/region metadata from Firebase.
@@ -136,10 +200,12 @@ Each server must have its own region ID in deployment config created by the Terr
 
 If a later step fails after reservation, mark the client failed or roll back the reservation in Firebase. Log the failure and cleanup result.
 
+Do not add a heavy idempotency system for the initial implementation. Retries after a failed create can create a new client, as long as counters/IP reservations are kept clear enough to avoid obvious leaks.
+
 ## Client Delete Flow
 
 1. Receive request.
-2. Log request received with request ID, action, user UID, email, display name, target client ID, target email/name if known, and region.
+2. Log request received with request ID, action, user UID, email, display name, target client ID, and region.
 3. Verify Firebase token.
 4. Validate request region ID against server configured region ID.
 5. Validate ownership/admin permissions.
@@ -193,6 +259,14 @@ Client documents should include:
 
 Configs are intentionally stored in Firebase so users can view, copy, download, and QR-code them from the dashboard.
 
+Firestore rules must be updated for the shared-client model:
+
+- Normal users can read their own user, region, client, and stored config documents.
+- Normal users cannot directly create, remove, or update VPN client documents from the frontend.
+- Client create/remove writes must go through regional FastAPI using the Firebase Admin SDK.
+- Admins can read and update other users' documents for support and management.
+- Public region metadata can be readable by authenticated users when needed by the dashboard.
+
 ## Logging
 
 API logs are required. VPN traffic logs are forbidden.
@@ -243,11 +317,19 @@ Required changes:
 - Show regions from Firebase.
 - Let users select a region.
 - Let users add/remove clients in that region.
+- Let users provide an optional display name when adding a client.
 - Show stored configs from Firebase.
 - Keep QR code and download/copy config behavior.
 - Show active/failed/removed statuses.
-- Admins can view/manage users across regions.
+- Admins can view/manage users across regions, but do not create clients for other users.
 - Normal users manage their own clients.
+- Show region tabs above the VPN table when there is more than one region.
+- Switching region tabs clears selected clients.
+- Remove/delete actions apply only to clients in the active region tab.
+- All IP addresses shown in the frontend must be copyable.
+- On mouse hover, copyable IPs should show copy affordance such as pointer cursor, subtle highlight, underline, or copy icon.
+- On click/tap, copy the raw IP/address to the clipboard and show immediate copied feedback.
+- Copyable IP controls must be keyboard accessible.
 
 The frontend calls the selected regional API at `https://<region>.gocloudlaunch.com/api/*`.
 
@@ -260,7 +342,7 @@ Normal users:
 
 Admins:
 
-- Can create/remove clients for any user.
+- Can view and remove clients across users.
 - Can exceed normal user limits up to server capacity.
 
 Server capacity:
@@ -283,6 +365,8 @@ The server keeps local host-only config/secrets:
 The server does not keep a second persistent client database outside Firebase. `/etc/wireguard/wg0.conf` is the actual WireGuard service config, not a separate product database.
 
 Add/remove client must update Firebase and `/etc/wireguard/wg0.conf`, then apply the live `wg0` change with WireGuard-native commands/config sync. The persistent config file is what survives reboot. No startup reconciliation job is required.
+
+WireGuard UDP rate limiting must remain in the host firewall rules. Caddy rate limiting protects the regional API only and does not protect UDP VPN traffic.
 
 Use the existing example configs as the template source:
 
