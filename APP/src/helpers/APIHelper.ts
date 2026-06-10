@@ -1,4 +1,71 @@
-import { DEPLOY_API_PATH, SECURE_GET_API_PATH } from "./apiEndpoints";
+import { buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
+import type { ApiRegionOption } from "./apiEndpoints";
+
+type FastApiError = {
+    code?: string;
+    message?: string;
+    requestId?: string;
+};
+
+type FastApiErrorResponse = {
+    error?: FastApiError | string;
+};
+
+export type ApiHelperSuccess<T> = {
+    success: true;
+    data: T;
+};
+
+export type ApiHelperFailure = {
+    success: false;
+    error: string;
+    errorCode?: string;
+    requestId?: string;
+    status?: number;
+    data?: unknown;
+};
+
+export type ApiHelperResult<T> = ApiHelperSuccess<T> | ApiHelperFailure;
+
+export type CreateClientRequest = {
+    regionId: string;
+    clientName?: string;
+};
+
+export type CreateClientResponse = {
+    clientId: string;
+    regionId: string;
+    clientName: string;
+    status: string;
+    assignedTunnelIpv4: string;
+    assignedTunnelIpv6: string;
+    serverEndpointIpv4: string;
+    wireguardConfig: string;
+};
+
+export type DeleteClientRequest = {
+    userId: string;
+    regionId: string;
+};
+
+export type DeleteClientResponse = {
+    userId: string;
+    clientId: string;
+    regionId: string;
+    status: string;
+};
+
+export type CreateUserRequest = {
+    email: string;
+    password: string;
+    displayName?: string;
+};
+
+export type CreateUserResponse = {
+    userId: string;
+    email: string;
+    role: string;
+};
 
 const parseApiResponse = async (response: Response) => {
     const responseText = await response.text();
@@ -13,160 +80,152 @@ const parseApiResponse = async (response: Response) => {
     }
 };
 
-const getApiErrorMessage = (result: unknown, status: number) => {
-    if (result && typeof result === "object" && "error" in result) {
-        const error = (result as { error?: unknown }).error;
-        if (typeof error === "string" && error) {
-            return error;
-        }
+const getFastApiError = (result: unknown) => {
+    if (!result || typeof result !== "object" || !("error" in result)) {
+        return null;
     }
 
-    if (typeof result === "string" && result) {
-        return result;
+    const error = (result as FastApiErrorResponse).error;
+    if (typeof error === "string" && error) {
+        return { message: error };
     }
 
-    return `Error ${status}`;
+    if (error && typeof error === "object") {
+        return {
+            code: typeof error.code === "string" ? error.code : undefined,
+            message: typeof error.message === "string" ? error.message : undefined,
+            requestId: typeof error.requestId === "string" ? error.requestId : undefined,
+        };
+    }
+
+    return null;
 };
 
-export const SecureGetRegionsHelper = async (token: string) => {
-    try {
-        const myHeaders = new Headers();
-        myHeaders.append("Authorization", `Bearer ${token}`);
-        myHeaders.append("Content-Type", "application/json");
-
-        const raw = JSON.stringify({ "requested": "regions" });
-
-        const requestOptions: RequestInit = {
-            method: "POST",
-            headers: myHeaders,
-            body: raw,
-            redirect: "follow"
-        };
-
-        const response = await fetch(SECURE_GET_API_PATH, requestOptions);
-        const result = await parseApiResponse(response);
-
-        if (!response.ok) {
-            return {
-                success: false,
-                error: getApiErrorMessage(result, response.status),
-                data: result
-            };
-        }
-
-        return {
-            success: true,
-            data: result
-        };
-        
-    } catch (error) {
-        console.error("Secure Get Regions API Error:", error);
+const getApiFailure = (result: unknown, status: number): ApiHelperFailure => {
+    const apiError = getFastApiError(result);
+    if (apiError) {
         return {
             success: false,
-            error: error instanceof Error ? error.message : "Unknown Secure Get Regions API Error"
+            error: apiError.message || apiError.code || `Error ${status}`,
+            errorCode: apiError.code,
+            requestId: apiError.requestId,
+            status,
+            data: result,
         };
     }
-};
 
-export const SecureGetWireguardConfigHelper = async (public_ipv4: string, token: string) => {
-    try {
-        const myHeaders = new Headers();
-        myHeaders.append("Authorization", `Bearer ${token}`);
-        myHeaders.append("Content-Type", "application/json");
-
-        const raw = JSON.stringify({
-            "requested": "config",
-            "ip_addresses": {
-                "public_ipv4": public_ipv4
-            }
-        });
-
-        const requestOptions: RequestInit = {
-            method: "POST",
-            headers: myHeaders,
-            body: raw,
-            redirect: "follow"
-        };
-
-        const response = await fetch(SECURE_GET_API_PATH, requestOptions);
-        const result = await parseApiResponse(response);
-
-        if (!response.ok) {
-            return {
-                success: false,
-                error: getApiErrorMessage(result, response.status),
-                data: result
-            };
-        }
-
-        return {
-            success: true,
-            data: result
-        };
-        
-    } catch (error) {
-        console.error("Secure Get Config API Error:", error);
-        return {
-            success: false,
-            error: error instanceof Error ? error.message : "Unknown Secure Get Config API Error"
-        };
-    }
-};
-
-
-export type Targets = {
-    [userID: string]: {
-      [region: string]: string[]; // Array of instance IDs
+    return {
+        success: false,
+        error: typeof result === "string" && result ? result : `Error ${status}`,
+        status,
+        data: result,
     };
 };
 
-export enum ACTION {
-    DEPLOY = "deploy",
-    TERMINATE = "terminate"
-}
+const authHeaders = (token: string) => {
+    const headers = new Headers();
+    headers.append("Authorization", `Bearer ${token}`);
+    headers.append("Content-Type", "application/json");
 
-export const VPNdeployHelper = async (action: ACTION, targets: Targets | null, email: string | null, region: string | null, token: string, overrideExistingVpn = false) => {
+    return headers;
+};
+
+const sendJsonRequest = async <TResponse>(
+    endpoint: string,
+    token: string,
+    method: "POST" | "DELETE",
+    body: unknown,
+): Promise<ApiHelperResult<TResponse>> => {
     try {
-        const myHeaders = new Headers();
-        myHeaders.append("Authorization", `Bearer ${token}`);
-        myHeaders.append("Content-Type", "application/json");
-
-        const raw = JSON.stringify({
-            "action": action,
-            "targets": targets,
-            "email" : email,
-            "region": region,
-            "override_existing_vpn": overrideExistingVpn,
+        const response = await fetch(endpoint, {
+            method,
+            headers: authHeaders(token),
+            body: JSON.stringify(body),
+            redirect: "follow",
         });
-
-        const requestOptions: RequestInit = {
-            method: "POST",
-            headers: myHeaders,
-            body: raw,
-            redirect: "follow"
-        };
-
-        const response = await fetch(DEPLOY_API_PATH, requestOptions);
         const result = await parseApiResponse(response);
 
         if (!response.ok) {
-            return {
-                success: false,
-                error: getApiErrorMessage(result, response.status),
-                data: result
-            };
+            return getApiFailure(result, response.status);
         }
 
         return {
             success: true,
-            data: result
+            data: result as TResponse,
         };
-        
     } catch (error) {
-        console.error("Deploy API Error:", error);
         return {
             success: false,
-            error: error instanceof Error ? error.message : "Unknown Deploy API Error"
+            error: error instanceof Error ? error.message : "Unknown API Error",
         };
+    }
+};
+
+export const createClient = (
+    request: CreateClientRequest,
+    token: string,
+): Promise<ApiHelperResult<CreateClientResponse>> => {
+    try {
+        return sendJsonRequest<CreateClientResponse>(
+            buildRegionalApiEndpoint(request.regionId, "clients"),
+            token,
+            "POST",
+            {
+                regionId: request.regionId,
+                ...(request.clientName ? { clientName: request.clientName } : {}),
+            },
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
+    }
+};
+
+export const deleteClient = (
+    clientId: string,
+    request: DeleteClientRequest,
+    token: string,
+): Promise<ApiHelperResult<DeleteClientResponse>> => {
+    try {
+        return sendJsonRequest<DeleteClientResponse>(
+            buildRegionalApiEndpoint(request.regionId, `clients/${encodeURIComponent(clientId)}`),
+            token,
+            "DELETE",
+            {
+                userId: request.userId,
+                regionId: request.regionId,
+            },
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
+    }
+};
+
+export const createAdminUser = (
+    request: CreateUserRequest,
+    token: string,
+    regions: ApiRegionOption[] | null | undefined,
+): Promise<ApiHelperResult<CreateUserResponse>> => {
+    try {
+        return sendJsonRequest<CreateUserResponse>(
+            buildCreateUserApiEndpoint(regions),
+            token,
+            "POST",
+            {
+                email: request.email,
+                password: request.password,
+                ...(request.displayName ? { displayName: request.displayName } : {}),
+            },
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
     }
 };

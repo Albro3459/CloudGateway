@@ -4,13 +4,16 @@ import { getIdToken, onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faHouse } from "@fortawesome/free-solid-svg-icons";
-import { createUser, getUserRole } from "../helpers/usersHelper";
+import { createAdminUser } from "../helpers/APIHelper";
+import { getUserRole } from "../helpers/usersHelper";
 import { logout } from "../helpers/firebaseDbHelper";
 import { validatePassword } from "../helpers/passwordHelper";
+import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 
 const CreateUser: React.FC = () => {
     const navigate = useNavigate();
     const [jwtToken, setJwtToken] = useState<string | null>(null);
+    const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
 
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -31,6 +34,7 @@ const CreateUser: React.FC = () => {
                     try {
                         const token = await getIdToken(user);
                         setJwtToken(token);
+                        void fetchOciRegions(token, true);
                     } catch (error) {
                         console.error("Error fetching JWT token:", error);
                     }
@@ -74,7 +78,17 @@ const CreateUser: React.FC = () => {
                     setErrorMessage("Error: Not a valid email.");
                     return;
                 }
-                const result = await createUser(trimmedEmail, password, jwtToken);
+                if (regionsLoading) {
+                    setLoading(false);
+                    setErrorMessage("Regions are still loading");
+                    return;
+                }
+                if (regionsError) {
+                    setLoading(false);
+                    setErrorMessage(regionsError);
+                    return;
+                }
+                const result = await createAdminUser({ email: trimmedEmail, password }, jwtToken, ociRegions);
                 setLoading(false);
                 if (result.success) {
                     setSuccessMessage(`Created user: ${trimmedEmail}`);
