@@ -12,7 +12,7 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 
 - One VPN server per region.
 - WireGuard traffic does not go through Cloudflare.
-- Regional API traffic uses Cloudflare DNS/proxy at `https://<region>.gocloudlaunch.com/api/*`.
+- Regional API traffic uses Cloudflare DNS/proxy at `https://<region>.<origin>/api/*`.
 - WireGuard client configs use the server's actual public IPv4 endpoint.
 - Remove Cloudflare Worker from the new flow.
 - Remove AWS Lambda from the new flow.
@@ -43,7 +43,7 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 React dashboard
   -> Firebase Auth
   -> Firebase reads for dashboard data/config display
-  -> https://<region>.gocloudlaunch.com/api/*
+  -> https://<region>.<origin>/api/*
       -> Cloudflare proxied DNS
       -> Caddy on regional OCI server
       -> FastAPI on 127.0.0.1
@@ -91,7 +91,7 @@ Caddy must:
 
 FastAPI should expose clean routes such as `/clients`, `/clients/{client_id}`, `/health`, and should not need to know it is mounted under `/api`.
 
-The frontend origin is `https://gocloudlaunch.com`. Regional APIs are `https://<region>.gocloudlaunch.com/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
+The frontend origin will be something like `https://gocloudlaunch.com` or `https://gateway.gocloudlaunch.com`. This will be referred to as `<origin>`. Regional APIs are `https://<region>.<origin>/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
 
 ## FastAPI
 
@@ -353,7 +353,7 @@ Required changes:
 - On click/tap, copy the raw IP/address to the clipboard and show immediate copied feedback.
 - Copyable IP controls must be keyboard accessible.
 
-The frontend calls the selected regional API at `https://<region>.gocloudlaunch.com/api/*`.
+The frontend calls the selected regional API at `https://<region>.<origin>/api/*`.
 
 ## Limits
 
@@ -423,7 +423,7 @@ Flow:
 2. Apply Terraform stack for the regional server.
 3. Cloud-init configures host services.
 4. Add/update the region document in Firebase.
-5. Add/update Cloudflare DNS record for `https://<region>.gocloudlaunch.com/api/*`.
+5. Add/update Cloudflare DNS record for `https://<region>.<origin>/api/*`.
 6. Verify `/api/health`.
 7. Verify add/remove client from the dashboard.
 8. Verify WireGuard connects using the raw server public IPv4 endpoint.
