@@ -9,11 +9,13 @@ This PR is intentionally large because it replaces the active architecture. Work
 ## Worktree Ownership
 
 - API worktree owns `API/`, `firebase.rules`, and legacy `lambda/` removal.
-- Infrastructure worktree owns `OCI/`, `cloudflare/` removal, host bootstrap, Caddy, and Terraform.
+- Infrastructure worktree owns `OCI/` implementation files, `cloudflare/` removal, host bootstrap, Caddy, and Terraform.
 - Frontend worktree owns `APP/`.
 - Documentation worktree owns `README.md`, `APP/README.md`, `OCI/README.md`, and new runbooks/docs.
 
-Avoid cross-track edits unless the task explicitly says to touch a shared contract file.
+Avoid cross-track edits unless the task explicitly says to touch a shared contract file. Implementation tracks may remove documentation files only when deleting the obsolete folder that contains them, such as `lambda/README.md` or `cloudflare/README.md`; durable documentation updates belong to the documentation track.
+
+After Commit 1, API, infrastructure, frontend, and documentation work should not depend on uncommitted outputs from another track. If a later task discovers an unresolved cross-track decision, update the shared contract before continuing parallel work.
 
 ## Base Contract Commit
 
@@ -32,10 +34,17 @@ Tasks:
   - Admin vs normal user permissions.
 - Confirm that `Users/{uid}/Regions/{regionId}/Instances/{clientId}` remains the client document path.
 - Confirm create-user stays supported and moves from `lambda/CreateUser` into the new `API/` service.
+- Decide whether create-user is regional only by deployment path or logically global but hosted by a regional API, then document that choice as fixed contract.
 - Confirm frontend keeps the existing `APP/src/helpers/apiEndpoints.ts` pattern:
   - `REACT_APP_API_ORIGIN` may be set for local/dev API targets.
   - production leaves it unset so browser requests use same-origin `/api/*` paths.
   - no new frontend origin/base-domain config is needed for this redesign.
+- Define the API deployment handoff used by infrastructure:
+  - install/deploy directory expected on the host.
+  - app module/import path used by uvicorn.
+  - Python dependency install strategy.
+  - environment/config file path and required variable names.
+  - systemd service name, user/root expectations, working directory, and bind address.
 - Note that API, frontend, and infrastructure agents should treat this contract as source of truth.
 
 Validation:
@@ -86,7 +95,8 @@ Tasks:
 - Enforce per-region user limits and server capacity.
 - Generate UUIDv4 client IDs.
 - Reserve client documents, assigned tunnel IPv4/IPv6, and counters in Firestore transactions.
-- Write client docs with owner UID/email/display name, client name, status, assigned tunnel IPs, public key, config, created/removed timestamps, and last error fields.
+- Write reservation/update helpers for owner UID/email/display name, client name, status, assigned tunnel IPs, client public key, created/removed timestamps, and last error fields.
+- Leave final WireGuard config generation/storage to the route integration commit after the WireGuard helper exists.
 - Implement failure cleanup so `creating` records do not remain indefinitely.
 - Update `firebase.rules` so normal users/admins can read allowed documents, but frontend cannot create/update/delete client docs directly.
 
@@ -153,7 +163,7 @@ Tasks:
 - Create Firebase Auth user and Firestore `Users/{uid}` plus `Roles/{uid}` documents.
 - Return controlled typed errors for duplicate email, invalid password, missing auth, and Firebase failures.
 - Make route reachable through the same `/api/*` path style as the rest of the new API.
-- Decide whether create-user is regional only by deployment path or logically global but hosted by regional API; document the choice in contract/docs.
+- Implement the create-user placement documented by the Commit 1 contract.
 
 Validation:
 
@@ -169,12 +179,11 @@ Tasks:
 - Remove `lambda/` code, packaging scripts, Lambda README content, and stale Lambda references owned by backend.
 - Remove old AWS Secrets Manager / DynamoDB assumptions from active backend docs.
 - Keep AWS references only where SES email sending remains relevant.
-- Ensure no active API helper or doc still treats Lambda as VPN control plane.
+- Ensure no backend-owned active path still treats Lambda as VPN control plane.
 
 Validation:
 
-- Repository search for `Lambda`, `/api/deploy`, `/api/secureget`, `/api/createuser`, old worker secret headers, and DynamoDB VPN limits.
-- Confirm create-user references now point to the new API route, not old Lambda.
+- Repository search backend-owned files for `Lambda`, `/api/deploy`, `/api/secureget`, `/api/createuser`, old worker secret headers, and DynamoDB VPN limits.
 - API tests still pass.
 
 ## Infrastructure Track
@@ -197,8 +206,8 @@ Tasks:
 - Remove deploy-time client peer variables from Terraform.
 - Update cloud-init to write server `wg0.conf` with no initial `[Peer]`.
 - Preserve WireGuard bare-metal install, IP forwarding, NAT, UDP rate limits, and Unbound setup.
-- Install Python runtime and API service files or deployment directory expected by `API/`.
-- Add systemd service for FastAPI bound to `127.0.0.1`.
+- Install Python runtime and API service files according to the Commit 1 deployment handoff.
+- Add systemd service for FastAPI using the Commit 1 service name, working directory, config path, root expectation, and `127.0.0.1` bind address.
 - Keep WireGuard running through `wg-quick@wg0`.
 - Update `OCI/wireguard_configs/example.wg0-server.conf` to shared-server no-peer shape.
 
@@ -242,14 +251,14 @@ Purpose: complete infrastructure cutoff after Caddy owns the regional API path.
 Tasks:
 
 - Remove `cloudflare/` Worker code and wrangler config.
-- Remove old Worker secret configuration from active docs.
-- Remove old same-origin `/api/deploy`, `/api/secureget`, and `/api/createuser` assumptions from infra docs.
-- Document required Cloudflare DNS/proxy setup for each regional API hostname.
+- Remove old Worker secret configuration from infrastructure-owned files or deleted `cloudflare/` docs.
+- Remove old same-origin `/api/deploy`, `/api/secureget`, and `/api/createuser` assumptions from infrastructure-owned files or deleted `cloudflare/` docs.
+- Keep any required Cloudflare DNS/proxy variables or templates aligned with the Commit 1 contract; durable prose documentation belongs to the documentation track.
 
 Validation:
 
-- Repository search for Worker-only headers and old Worker route names.
-- Frontend and docs use the new `/api/*` routes instead of Worker proxy routes.
+- Repository search infrastructure-owned files for Worker-only headers and old Worker route names.
+- Infrastructure-owned files use the new `/api/*` routes instead of Worker proxy routes.
 
 ## Frontend Track
 
@@ -356,7 +365,7 @@ Tasks:
 Validation:
 
 - Manual doc review against `TODO/Shared_VPN_Plan.md`.
-- Repository search for stale architecture claims.
+- Repository search documentation-owned files for stale architecture claims.
 
 ### Commit 16: Add deployment and operations runbooks
 

@@ -89,7 +89,7 @@ Caddy must:
 - Proxy only to `127.0.0.1:<fastapi_port>`.
 - Log API requests at the HTTP layer, but never VPN traffic.
 
-FastAPI should expose clean routes such as `/clients`, `/clients/{client_id}`, `/health`, and should not need to know it is mounted under `/api`.
+FastAPI should expose clean routes such as `/clients`, `/clients/{clientId}`, `/health`, and should not need to know it is mounted under `/api`.
 
 The frontend origin will be something like `https://gocloudlaunch.com` or `https://gateway.gocloudlaunch.com`. This will be referred to as `<origin>`. Regional APIs are `https://<region>.<origin>/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
 
@@ -124,13 +124,13 @@ Initial routes:
 
 - `GET /health`
 - `POST /clients`
-- `DELETE /clients/{client_id}`
+- `DELETE /clients/{clientId}`
 
 `GET /health` is intentionally kept for regional deployment checks. It must still be reached through Cloudflare/Caddy and must be rate limited like the rest of the API surface.
 
 `POST /clients` creates one WireGuard client for the authenticated user in the current region.
 
-`DELETE /clients/{client_id}` removes one WireGuard client owned by the authenticated user from the current region. Admins can remove clients across users when acting from the admin UI.
+`DELETE /clients/{clientId}` removes one WireGuard client owned by the authenticated user from the current region. Admins can remove clients across users when acting from the admin UI.
 
 The UI selects the regional API hostname instead of asking one global API to route the request.
 
@@ -171,7 +171,7 @@ Each server must have its own region ID in deployment config created by the Terr
 }
 ```
 
-`DELETE /clients/{client_id}` request:
+`DELETE /clients/{clientId}` request:
 
 ```json
 {
@@ -182,7 +182,7 @@ Each server must have its own region ID in deployment config created by the Terr
 
 For normal users, `userId` must match the authenticated UID. For admins, `userId` can identify any target user. The API must still verify that the client document at `Users/{userId}/Regions/{regionId}/Instances/{clientId}` exists and matches the requested IDs before mutating WireGuard.
 
-`DELETE /clients/{client_id}` response:
+`DELETE /clients/{clientId}` response:
 
 ```json
 {
