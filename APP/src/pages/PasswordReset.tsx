@@ -75,7 +75,7 @@ const PasswordReset: React.FC = () => {
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 px-4">
             <nav className="w-full bg-blue-600 text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-                <h1 className="text-xl font-semibold align-self-center">CloudLaunch</h1>
+                <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
             </nav>
 
             {(errorMessage || successMessage) && (

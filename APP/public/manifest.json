@@ -1,6 +1,6 @@
 {
-  "short_name": "CloudLaunch",
-  "name": "Cloud-Automated WireGuard VPN Deployer",
+  "short_name": "CloudGateway",
+  "name": "Cloud-Automated VPN Service",
   "icons": [
     {
       "src": "favicon.ico",

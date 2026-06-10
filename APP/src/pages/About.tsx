@@ -45,12 +45,12 @@ const About: React.FC = () => {
     
             {/* About Section */}
             <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-xl text-center mx-4">
-                <h2 className="text-2xl font-semibold mb-2">What is CloudLaunch?</h2>
+                <h2 className="text-2xl font-semibold mb-2">What is CloudGateway?</h2>
                 <div className="ps-2 text-sm mb-2">
                     <b>Created by: </b>Alex Brodsky 
                     <br></br>
                     <a
-                        href="https://github.com/Albro3459/CloudLaunch/"
+                        href="https://github.com/Albro3459/CloudGateway/"
                         className="text-xs text-blue-600 underline hover:text-blue-800"
                         >
                         GitHub

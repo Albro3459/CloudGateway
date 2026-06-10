@@ -343,7 +343,7 @@ const Home: React.FC = () => {
                 >
                     About
                 </button>
-                <h1 className="text-xl font-semibold align-self-center">CloudLaunch</h1>
+                <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
                 <button 
                     onClick={async () => await logout(navigate)} 
                     className="cursor-pointer bg-gray-300 text-blue-600 hover:bg-gray-100 px-4 py-2 rounded-lg transition absolute right-6"
