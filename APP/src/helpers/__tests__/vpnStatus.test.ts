@@ -14,14 +14,8 @@ describe("vpnStatus", () => {
         ]);
     });
 
-    it("maps legacy deploy statuses to client statuses", () => {
-        expect(normalizeVPNStatus("pending")).toBe(VPN_STATUS.CREATING);
-        expect(normalizeVPNStatus("running")).toBe(VPN_STATUS.ACTIVE);
-        expect(normalizeVPNStatus("terminated")).toBe(VPN_STATUS.REMOVED);
-    });
-
     it("rejects unknown statuses", () => {
-        expect(normalizeVPNStatus("deploying")).toBeNull();
+        expect(normalizeVPNStatus("unknown")).toBeNull();
         expect(normalizeVPNStatus(null)).toBeNull();
     });
 });

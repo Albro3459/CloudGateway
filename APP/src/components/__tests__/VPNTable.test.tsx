@@ -4,13 +4,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { VPNTable, VPNTableEntry } from "../VPNTable";
 import { VPN_STATUS } from "../../helpers/vpnStatus";
 
-const getClientKey = (entry: VPNTableEntry) => `${entry.userID}:${entry.region || ""}:${entry.instanceID}`;
+const getClientKey = (entry: VPNTableEntry) => `${entry.userID}:${entry.region || ""}:${entry.clientId}`;
 
 const baseEntry = (overrides: Partial<VPNTableEntry>): VPNTableEntry => ({
     userID: "user-1",
     email: "user@example.com",
     region: "us-sanjose-1",
-    instanceID: "client-1",
     ipv4: "203.0.113.10",
     status: VPN_STATUS.ACTIVE,
     wireguardConfig: "[Interface]\nPrivateKey = key",
@@ -41,7 +40,6 @@ describe("VPNTable", () => {
     it("renders client states, copies shown IPs, and removes selected clients", async () => {
         const activeEntry = baseEntry({});
         const removedEntry = baseEntry({
-            instanceID: "client-removed",
             clientId: "client-removed",
             clientName: "Old phone",
             status: VPN_STATUS.REMOVED,
@@ -54,8 +52,8 @@ describe("VPNTable", () => {
             <VPNTable
                 data={[
                     activeEntry,
-                    baseEntry({ instanceID: "client-creating", clientId: "client-creating", clientName: "Tablet", status: VPN_STATUS.CREATING }),
-                    baseEntry({ instanceID: "client-failed", clientId: "client-failed", clientName: "Router", status: VPN_STATUS.FAILED, lastErrorMessage: "Apply failed" }),
+                    baseEntry({ clientId: "client-creating", clientName: "Tablet", status: VPN_STATUS.CREATING }),
+                    baseEntry({ clientId: "client-failed", clientName: "Router", status: VPN_STATUS.FAILED, lastErrorMessage: "Apply failed" }),
                     removedEntry,
                 ]}
                 isAdmin={true}

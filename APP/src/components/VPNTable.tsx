@@ -9,7 +9,6 @@ export type VPNTableEntry = {
     userID: string;
     email: string | null;
     region: string | null;
-    instanceID: string;
     ipv4: string | null;
     status: VPNStatus;
     wireguardConfig: string | null;

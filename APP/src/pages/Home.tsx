@@ -24,7 +24,7 @@ const getEnabledRegions = (regions: Region[] | null) => (
 );
 
 const getClientKey = (entry: VPNTableEntry) => (
-    `${entry.userID}:${entry.region || ""}:${entry.instanceID}`
+    `${entry.userID}:${entry.region || ""}:${entry.clientId}`
 );
 
 const Home: React.FC = () => {
@@ -194,7 +194,7 @@ const Home: React.FC = () => {
 
         try {
             const results = await Promise.all(selectedEntries.map(entry => (
-                deleteClient(entry.clientId || entry.instanceID, {
+                deleteClient(entry.clientId, {
                     userId: entry.ownerUid || entry.userID,
                     regionId: activeRegionId,
                 }, jwtToken)

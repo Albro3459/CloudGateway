@@ -17,7 +17,6 @@ export type VPNClientData = {
     userID: string;
     email: string | null;
     region: string | null;
-    instanceID: string;
     ipv4: string | null;
     status: VPNStatus;
     wireguardConfig: string | null;
@@ -92,7 +91,6 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
                         userID: userID,
                         email: ownerEmail,
                         region: regionId,
-                        instanceID: clientId,
                         ipv4: stringOrNull(serverEndpointIpv4) || stringOrNull(data.ipv4) || null,
                         status: status,
                         wireguardConfig: stringOrNull(wireguardConfig),
