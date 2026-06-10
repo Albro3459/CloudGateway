@@ -24,6 +24,7 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - Use Caddy for automatic HTTPS, `/api/*` stripping, reverse proxy, and rate limiting.
 - Use the StreamTrack Caddy pattern: custom Caddy build with `github.com/mholt/caddy-ratelimit`.
 - Require Cloudflare Authenticated Origin Pulls for the regional API origin.
+- Restrict regional API origin access with exact regional Host/SNI allowlisting and host firewall rules that only allow HTTP/HTTPS origin traffic from Cloudflare IP ranges.
 - Store user-visible WireGuard configs in Firebase.
 - Firebase is the product source of truth for users, regions, clients, roles, limits, and stored configs.
 - Firebase is the product source of truth, but `/etc/wireguard/wg0.conf` is the persistent host WireGuard config.
@@ -81,6 +82,8 @@ Caddy must:
 
 - Manage automatic HTTPS.
 - Require Cloudflare Authenticated Origin Pulls so regional API requests must come through Cloudflare.
+- Require the expected regional hostname in Host/SNI and reject requests for unknown hostnames.
+- Configure the OCI/security-list/host firewall so public `80`/`443` origin traffic is accepted only from Cloudflare IP ranges.
 - Rate limit API routes, including `/health`.
 - Strip `/api/*` before proxying to FastAPI.
 - Proxy only to `127.0.0.1:<fastapi_port>`.
@@ -88,7 +91,7 @@ Caddy must:
 
 FastAPI should expose clean routes such as `/clients`, `/clients/{client_id}`, `/health`, and should not need to know it is mounted under `/api`.
 
-The frontend origin is `https://gocloudlaunch.com`. Regional APIs are `https://<region>.gocloudlaunch.com/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls.
+The frontend origin is `https://gocloudlaunch.com`. Regional APIs are `https://<region>.gocloudlaunch.com/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
 
 ## FastAPI
 
