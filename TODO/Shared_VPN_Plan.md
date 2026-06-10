@@ -30,6 +30,10 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - No startup reconciliation job is required. On reboot, the host uses `/etc/wireguard/wg0.conf`.
 - Firebase drift from host WireGuard state is an accepted risk for the initial implementation.
 - Users create clients only for themselves. There is no admin-create-client-for-another-user flow.
+- Client IDs must be globally unique UUIDv4 values.
+- Delete requests must identify the target user ID, region ID, and client ID. Normal users can only target their own user ID. Admins can target any user ID.
+- Admins can view all stored client config data for support.
+- If a regional VM or boot volume is lost, users in that region must rotate/recreate clients. This is acceptable for the initial implementation.
 
 ## Architecture
 
@@ -145,7 +149,7 @@ Each server must have its own region ID in deployment config created by the Terr
 
 ```json
 {
-  "clientId": "abc123",
+  "clientId": "6f77fd32-ecf5-4dd7-9d96-6bb84de92df1",
   "regionId": "us-sanjose-1",
   "clientName": "Phone",
   "status": "active",
@@ -160,15 +164,19 @@ Each server must have its own region ID in deployment config created by the Terr
 
 ```json
 {
+  "userId": "firebase-uid",
   "regionId": "us-sanjose-1"
 }
 ```
+
+For normal users, `userId` must match the authenticated UID. For admins, `userId` can identify any target user. The API must still verify that the client document at `Users/{userId}/Regions/{regionId}/Instances/{clientId}` exists and matches the requested IDs before mutating WireGuard.
 
 `DELETE /clients/{client_id}` response:
 
 ```json
 {
-  "clientId": "abc123",
+  "userId": "firebase-uid",
+  "clientId": "6f77fd32-ecf5-4dd7-9d96-6bb84de92df1",
   "regionId": "us-sanjose-1",
   "status": "removed"
 }
@@ -189,8 +197,8 @@ Initial client statuses must be represented as explicit backend/frontend enums, 
 4. Validate request body.
 5. Read user/role/region metadata from Firebase.
 6. Check per-region user limit and server capacity.
-7. Use a Firestore transaction to reserve the client document, assigned tunnel IP, and counters.
-8. Generate fresh WireGuard client keys.
+7. Generate a globally unique UUIDv4 client ID and fresh WireGuard client keys.
+8. Use a Firestore transaction to reserve the client document, assigned tunnel IP, and counters.
 9. Build the client config using the generated client private key, assigned tunnel IPs, server tunnel DNS IPs, server public key, and server public IPv4 endpoint.
 10. Acquire local WireGuard mutation lock.
 11. Apply the peer to `wg0`.
@@ -198,23 +206,24 @@ Initial client statuses must be represented as explicit backend/frontend enums, 
 13. Log success.
 14. Return the client/config data needed by the UI.
 
-If a later step fails after reservation, mark the client failed or roll back the reservation in Firebase. Log the failure and cleanup result.
+If a later step fails after reservation, mark the client `failed` or roll back the reservation in Firebase. Log the failure and cleanup result. Do not leave `creating` records indefinitely.
 
-Do not add a heavy idempotency system for the initial implementation. Retries after a failed create can create a new client, as long as counters/IP reservations are kept clear enough to avoid obvious leaks.
+Do not add a heavy idempotency system for the initial implementation. One direct retry is acceptable only for clearly transient host command failures. Otherwise, retries after a failed create can create a new client, as long as counters/IP reservations are kept clear enough to avoid obvious leaks.
 
 ## Client Delete Flow
 
 1. Receive request.
 2. Log request received with request ID, action, user UID, email, display name, target client ID, and region.
 3. Verify Firebase token.
-4. Validate request region ID against server configured region ID.
-5. Validate ownership/admin permissions.
-6. Read client document from Firebase.
-7. Acquire local WireGuard mutation lock.
-8. Remove the peer from `wg0`.
-9. Use Firebase transaction/update to mark the client removed and release counters/IP reservation.
-10. Log success.
-11. Return success response.
+4. Validate request user ID, region ID, and client ID.
+5. Validate request region ID against server configured region ID.
+6. Validate ownership/admin permissions. Normal users can only delete clients under their own UID. Admins can delete clients across users.
+7. Read client document from Firebase.
+8. Acquire local WireGuard mutation lock.
+9. Remove the peer from `wg0`.
+10. Use Firebase transaction/update to mark the client removed and release counters/IP reservation.
+11. Log success.
+12. Return success response.
 
 If WireGuard removal fails, log failure and keep Firebase status clear enough for retry/manual repair.
 
@@ -247,7 +256,7 @@ Client documents should include:
 - owner UID
 - owner email
 - owner display name
-- client ID
+- globally unique UUIDv4 client ID
 - client display name
 - region
 - status
@@ -365,6 +374,20 @@ The server keeps local host-only config/secrets:
 The server does not keep a second persistent client database outside Firebase. `/etc/wireguard/wg0.conf` is the actual WireGuard service config, not a separate product database.
 
 Add/remove client must update Firebase and `/etc/wireguard/wg0.conf`, then apply the live `wg0` change with WireGuard-native commands/config sync. The persistent config file is what survives reboot. No startup reconciliation job is required.
+
+WireGuard mutation procedure:
+
+1. Acquire an exclusive local lock, such as `/run/cloudlaunch-wireguard.lock`, before reading or writing WireGuard state.
+2. Read `/etc/wireguard/wg0.conf` and render a complete candidate config from the existing interface settings plus the desired peer set.
+3. Write a timestamped `0600` backup before replacing the active config.
+4. Write the candidate to a `0600` temporary file in `/etc/wireguard`.
+5. Validate the candidate by running `wg-quick strip <candidate>` with `subprocess.run([...], shell=False)`.
+6. Atomically replace `/etc/wireguard/wg0.conf` with the candidate using `os.replace`.
+7. Apply the live interface using `wg syncconf wg0 <stripped_config_file>` generated from `wg-quick strip`.
+8. If live apply fails, restore the backup config, attempt to sync the live interface back to the backup, mark the Firebase operation `failed`, and log the cleanup result.
+9. Release the lock only after persistent config, live interface state, and Firebase operation status have been updated or the failure has been recorded.
+
+The helper must never pass private keys, full configs, or auth tokens to logs. Log peer public key fingerprints or client IDs instead.
 
 WireGuard UDP rate limiting must remain in the host firewall rules. Caddy rate limiting protects the regional API only and does not protect UDP VPN traffic.
 
