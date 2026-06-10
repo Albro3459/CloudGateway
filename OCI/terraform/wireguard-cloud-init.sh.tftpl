@@ -28,6 +28,22 @@ WG_NETWORK_V4="${wg_network_v4}"
 WG_NETWORK_V6="${wg_network_v6}"
 RATE_LIMIT="${wg_rate_limit}"
 RATE_LIMIT_BURST="${wg_rate_limit_burst}"
+CADDY_VERSION="${caddy_version}"
+XCADDY_VERSION="${xcaddy_version}"
+CADDY_RATE_LIMIT_MODULE="${caddy_rate_limit_module}"
+CLOUDFLARE_ORIGIN_PULL_CA_PATH="${cloudflare_origin_pull_ca_path}"
+CLOUDFLARE_ORIGIN_PULL_CA_URL="${cloudflare_origin_pull_ca_url}"
+CADDYFILE_CONTENT_BASE64="${caddyfile_content_base64}"
+CLOUDFLARE_IPV4_RANGES=(
+%{ for cidr in cloudflare_ipv4_ranges ~}
+  "${cidr}"
+%{ endfor ~}
+)
+CLOUDFLARE_IPV6_RANGES=(
+%{ for cidr in cloudflare_ipv6_ranges ~}
+  "${cidr}"
+%{ endfor ~}
+)
 PRIMARY_IFACE="$(ip route show default | awk '/default/ { print $5; exit }')"
 
 if [[ -z "$PRIMARY_IFACE" ]]; then
@@ -35,14 +51,14 @@ if [[ -z "$PRIMARY_IFACE" ]]; then
   exit 1
 fi
 
-echo "==> Step 1/11: Installing required packages"
+echo "==> Step 1/12: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip
+apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl golang-go
 systemctl stop unbound || true
 
-echo "==> Step 2/11: Preparing configuration directories"
+echo "==> Step 2/12: Preparing configuration directories"
 # Essentially mkdir -p /etc/wireguard && chmod 700 /etc/wireguard
 install -d -m 700 /etc/wireguard
 install -d -m 755 /etc/sysctl.d
@@ -52,8 +68,11 @@ install -d -m 755 /etc/unbound/unbound.conf.d
 install -d -o unbound -g unbound -m 750 /var/lib/unbound
 install -d -m 700 /etc/cloudlaunch
 install -d -m 755 /opt/cloudlaunch/api
+install -d -m 755 /etc/caddy
+install -d -m 755 /var/log/caddy
+install -d -m 755 /var/lib/caddy
 
-echo "==> Step 3/11: Hardening SSH access"
+echo "==> Step 3/12: Hardening SSH access"
 SSHD_BACKUP="/etc/ssh/sshd_config.bak.$(date +%F_%H-%M-%S)"
 cp /etc/ssh/sshd_config "$SSHD_BACKUP"
 install -d -m 755 /run/sshd
@@ -67,7 +86,7 @@ sshd -t
 systemctl reload-or-restart ssh || systemctl reload-or-restart sshd || systemctl start ssh
 sshd -T | grep -E '^(passwordauthentication|permitrootlogin) ' || true
 
-echo "==> Step 4/11: Configuring fail2ban"
+echo "==> Step 4/12: Configuring fail2ban"
 cat > /etc/fail2ban/jail.d/sshd.local <<'FAIL2BAN'
 [sshd]
 enabled = true
@@ -85,7 +104,7 @@ systemctl --no-pager --full status fail2ban || true
 fail2ban-client status || true
 fail2ban-client status sshd || true
 
-echo "==> Step 5/11: Enabling IP forwarding"
+echo "==> Step 5/12: Enabling IP forwarding"
 # IP forwarding
 cat > /etc/sysctl.d/99-wireguard-forwarding.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
@@ -98,7 +117,7 @@ SYSCTL
 # Apply IP forwarding changes
 sysctl --system
 
-echo "==> Step 6/11: Writing WireGuard configuration"
+echo "==> Step 6/12: Writing WireGuard configuration"
 # Create WireGuard config. Shared server: no static peer sections here.
 # Peers are added and removed at runtime by the CloudLaunch API.
 cat > "/etc/wireguard/$WG_INTERFACE.conf" <<WGCONF
@@ -153,7 +172,7 @@ chmod 600 "/etc/wireguard/$WG_INTERFACE.conf"
 awk '/^PrivateKey/ { print $3 }' "/etc/wireguard/$WG_INTERFACE.conf" | wg pubkey > "/etc/wireguard/$WG_INTERFACE.publickey"
 chmod 600 "/etc/wireguard/$WG_INTERFACE.publickey"
 
-echo "==> Step 7/11: Writing unbound configuration"
+echo "==> Step 7/12: Writing unbound configuration"
 if command -v unbound-anchor >/dev/null 2>&1; then
   if ! unbound-anchor -a /var/lib/unbound/root.key; then
     echo "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
@@ -187,7 +206,7 @@ UNBOUNDCONF
 unbound-checkconf
 systemctl enable unbound
 
-echo "==> Step 8/11: Installing CloudLaunch API package"
+echo "==> Step 8/12: Installing CloudLaunch API package"
 %{ for api_path, api_content_base64 in api_source_files ~}
 install -D -m 644 /dev/null "/opt/cloudlaunch/api/${api_path}"
 base64 -d > "/opt/cloudlaunch/api/${api_path}" <<'APIFILE'
@@ -199,7 +218,7 @@ python3 -m venv /opt/cloudlaunch/api/.venv
 /opt/cloudlaunch/api/.venv/bin/pip install --upgrade pip
 /opt/cloudlaunch/api/.venv/bin/pip install /opt/cloudlaunch/api
 
-echo "==> Step 9/11: Writing CloudLaunch API environment"
+echo "==> Step 9/12: Writing CloudLaunch API environment"
 install -d -m 700 "$(dirname "${firebase_credentials_file}")"
 %{ if firebase_credentials_json != "" ~}
 cat > "${firebase_credentials_file}" <<'FIREBASECREDS'
@@ -235,7 +254,107 @@ CLOUDLAUNCH_CLOUDFLARE_ORIGIN_PULL_CA_PATH=${cloudflare_origin_pull_ca_path}
 ORIGINENV
 chmod 644 /etc/cloudlaunch/origin.env
 
-echo "==> Step 10/11: Writing CloudLaunch API service"
+echo "==> Step 10/12: Installing Caddy origin proxy"
+if ! id -u caddy >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
+fi
+
+chown -R caddy:caddy /var/lib/caddy /var/log/caddy
+install -d -m 755 "$(dirname "$CLOUDFLARE_ORIGIN_PULL_CA_PATH")"
+curl -fsSL "$CLOUDFLARE_ORIGIN_PULL_CA_URL" -o "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
+chmod 644 "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
+
+GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION"
+/usr/local/bin/xcaddy build "$CADDY_VERSION" --with "$CADDY_RATE_LIMIT_MODULE" --output /usr/local/bin/caddy
+chmod 755 /usr/local/bin/caddy
+
+echo "$CADDYFILE_CONTENT_BASE64" | base64 -d > /etc/caddy/Caddyfile
+chmod 644 /etc/caddy/Caddyfile
+
+cat > /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
+#!/bin/bash
+set -euo pipefail
+
+iptables -N CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null || true
+iptables -F CLOUDLAUNCH_HTTP_ORIGIN
+if ! iptables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null; then
+  iptables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN
+fi
+FIREWALL
+
+for cidr in "$${CLOUDFLARE_IPV4_RANGES[@]}"; do
+  echo "iptables -A CLOUDLAUNCH_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudlaunch-origin-firewall
+done
+
+cat >> /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
+iptables -A CLOUDLAUNCH_HTTP_ORIGIN -j DROP
+
+ip6tables -N CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null || true
+ip6tables -F CLOUDLAUNCH_HTTP_ORIGIN
+if ! ip6tables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null; then
+  ip6tables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN
+fi
+FIREWALL
+
+for cidr in "$${CLOUDFLARE_IPV6_RANGES[@]}"; do
+  echo "ip6tables -A CLOUDLAUNCH_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudlaunch-origin-firewall
+done
+
+cat >> /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
+ip6tables -A CLOUDLAUNCH_HTTP_ORIGIN -j DROP
+FIREWALL
+
+chmod 755 /usr/local/sbin/cloudlaunch-origin-firewall
+
+cat > /etc/systemd/system/cloudlaunch-origin-firewall.service <<'UNIT'
+[Unit]
+Description=CloudLaunch Cloudflare-only HTTP/HTTPS origin firewall
+Wants=network-online.target
+After=network-online.target
+Before=caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cloudlaunch-origin-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > /etc/systemd/system/caddy.service <<'UNIT'
+[Unit]
+Description=Caddy origin proxy
+Documentation=https://caddyserver.com/docs/
+After=network-online.target cloudlaunch-origin-firewall.service cloudlaunch-api.service
+Wants=network-online.target cloudlaunch-origin-firewall.service
+
+[Service]
+User=caddy
+Group=caddy
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/caddy /var/log/caddy
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+/usr/local/sbin/cloudlaunch-origin-firewall
+/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile
+systemctl daemon-reload
+systemctl enable cloudlaunch-origin-firewall
+systemctl enable caddy
+
+echo "==> Step 11/12: Writing CloudLaunch API service"
 cat > /etc/systemd/system/cloudlaunch-api.service <<'UNIT'
 [Unit]
 Description=CloudLaunch regional API
@@ -257,7 +376,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable cloudlaunch-api
 
-echo "==> Step 11/11: Starting WireGuard, unbound, and CloudLaunch API"
+echo "==> Step 12/12: Starting WireGuard, unbound, CloudLaunch API, and Caddy"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -282,12 +401,16 @@ fi
 
 systemctl restart unbound
 systemctl restart cloudlaunch-api
+systemctl restart cloudlaunch-origin-firewall
+systemctl restart caddy
 
 # Status check (coalesce because fail would end the script when this is just a status check)
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
 systemctl --no-pager --full status unbound || true
 systemctl --no-pager --full status cloudlaunch-api || true
+systemctl --no-pager --full status cloudlaunch-origin-firewall || true
+systemctl --no-pager --full status caddy || true
 
 echo "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"

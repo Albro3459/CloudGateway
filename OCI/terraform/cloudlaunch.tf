@@ -184,13 +184,85 @@ variable "firebase_credentials_json" {
 variable "caddy_acme_email" {
 	type = string
 	default = ""
-	description = "Placeholder email for the later Caddy ACME configuration"
+	description = "Email used by Caddy ACME for the regional API hostname"
 }
 
 variable "cloudflare_origin_pull_ca_path" {
 	type = string
 	default = "/etc/caddy/cloudflare-origin-pull-ca.pem"
-	description = "Placeholder path for the later Cloudflare Authenticated Origin Pull CA"
+	description = "Host path for the Cloudflare Authenticated Origin Pull CA"
+}
+
+variable "cloudflare_origin_pull_ca_url" {
+	type = string
+	default = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
+	description = "Download URL for the Cloudflare Authenticated Origin Pull CA"
+}
+
+variable "caddy_version" {
+	type = string
+	default = "v2.8.4"
+	description = "Caddy version built by xcaddy"
+}
+
+variable "xcaddy_version" {
+	type = string
+	default = "latest"
+	description = "xcaddy version installed by go install"
+}
+
+variable "caddy_rate_limit_module" {
+	type = string
+	default = "github.com/mholt/caddy-ratelimit"
+	description = "xcaddy module path for Caddy API rate limiting"
+}
+
+variable "caddy_api_rate_limit_events" {
+	type = number
+	default = 300
+	description = "Maximum API requests allowed per Cloudflare client IP in the Caddy rate-limit window"
+}
+
+variable "caddy_api_rate_limit_window" {
+	type = string
+	default = "1m"
+	description = "Caddy rate-limit window for /api/*"
+}
+
+variable "cloudflare_ipv4_ranges" {
+	type = list(string)
+	default = [
+		"173.245.48.0/20",
+		"103.21.244.0/22",
+		"103.22.200.0/22",
+		"103.31.4.0/22",
+		"141.101.64.0/18",
+		"108.162.192.0/18",
+		"190.93.240.0/20",
+		"188.114.96.0/20",
+		"197.234.240.0/22",
+		"198.41.128.0/17",
+		"162.158.0.0/15",
+		"104.16.0.0/13",
+		"104.24.0.0/14",
+		"172.64.0.0/13",
+		"131.0.72.0/22",
+	]
+	description = "Cloudflare IPv4 CIDR ranges allowed to reach origin HTTP/HTTPS"
+}
+
+variable "cloudflare_ipv6_ranges" {
+	type = list(string)
+	default = [
+		"2400:cb00::/32",
+		"2606:4700::/32",
+		"2803:f800::/32",
+		"2405:b500::/32",
+		"2405:8100::/32",
+		"2a06:98c0::/29",
+		"2c0f:f248::/32",
+	]
+	description = "Cloudflare IPv6 CIDR ranges allowed to reach origin HTTP/HTTPS"
 }
 
 locals {
@@ -200,6 +272,16 @@ locals {
 			fileset("${path.module}/../../API", "cloudlaunch_api/*.py")
 		) : source_path => filebase64("${path.module}/../../API/${source_path}")
 	}
+
+	caddyfile = templatefile("${path.module}/Caddyfile.tftpl", {
+		api_hostname = var.api_hostname
+		dashboard_cors_origin = var.dashboard_cors_origin
+		fastapi_port = var.fastapi_port
+		caddy_acme_email = var.caddy_acme_email
+		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
+		caddy_api_rate_limit_events = var.caddy_api_rate_limit_events
+		caddy_api_rate_limit_window = var.caddy_api_rate_limit_window
+	})
 
 	backdoor_user_data = templatefile("${path.module}/backdoor-cloud-init.yaml", {
 		hashed_password = var.hashed_password
@@ -226,6 +308,13 @@ locals {
 		firebase_credentials_json = var.firebase_credentials_json
 		caddy_acme_email = var.caddy_acme_email
 		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
+		cloudflare_origin_pull_ca_url = var.cloudflare_origin_pull_ca_url
+		caddy_version = var.caddy_version
+		xcaddy_version = var.xcaddy_version
+		caddy_rate_limit_module = var.caddy_rate_limit_module
+		caddyfile_content_base64 = base64encode(local.caddyfile)
+		cloudflare_ipv4_ranges = var.cloudflare_ipv4_ranges
+		cloudflare_ipv6_ranges = var.cloudflare_ipv6_ranges
 		api_source_files = local.api_source_files
 	})
 

@@ -28,6 +28,12 @@ dashboard_cors_origin  = "https://gateway.gocloudlaunch.com"
 fastapi_port           = 8000
 caddy_acme_email       = "admin@example.com"
 cloudflare_origin_pull_ca_path = "/etc/caddy/cloudflare-origin-pull-ca.pem"
+cloudflare_origin_pull_ca_url  = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
+caddy_version                  = "v2.8.4"
+xcaddy_version                 = "latest"
+caddy_rate_limit_module        = "github.com/mholt/caddy-ratelimit"
+caddy_api_rate_limit_events    = 300
+caddy_api_rate_limit_window    = "1m"
 
 wg_interface                    = "wg0"
 wg_listen_port                  = 51820

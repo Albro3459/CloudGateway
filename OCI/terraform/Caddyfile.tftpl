@@ -1,0 +1,55 @@
+{
+%{ if caddy_acme_email != "" ~}
+	email ${caddy_acme_email}
+%{ endif ~}
+	order rate_limit before reverse_proxy
+}
+
+${api_hostname} {
+	tls {
+		client_auth {
+			mode require_and_verify
+			trusted_ca_cert_file ${cloudflare_origin_pull_ca_path}
+		}
+	}
+
+	@api path /api /api/*
+	@api_preflight {
+		method OPTIONS
+		path /api /api/*
+	}
+	@non_api not path /api /api/*
+
+	log {
+		output file /var/log/caddy/cloudlaunch-api-access.log
+		format json
+		skip_log @non_api
+	}
+
+	header @api {
+		Access-Control-Allow-Origin "${dashboard_cors_origin}"
+		Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS"
+		Access-Control-Allow-Headers "Authorization, Content-Type"
+		Access-Control-Max-Age "3600"
+		Vary "Origin"
+	}
+
+	handle @api_preflight {
+		respond "" 204
+	}
+
+	handle @api {
+		rate_limit {
+			zone api {
+				key {http.request.header.CF-Connecting-IP}
+				events ${caddy_api_rate_limit_events}
+				window ${caddy_api_rate_limit_window}
+			}
+		}
+
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:${fastapi_port}
+	}
+
+	respond 404
+}
