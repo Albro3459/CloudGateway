@@ -9,6 +9,7 @@ import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } fro
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
@@ -328,31 +329,34 @@ const Home: React.FC = () => {
     const createDisabled = !activeRegionId || !selectedRegion || selectedRegionFull || regionsLoading || VPNTableEntries === null || loading;
 
     return (
-        <div className="flex min-h-screen flex-col items-center bg-gray-100 px-4 pb-20 pt-24">
-            <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-blue-600 p-4 px-6 text-white shadow-md">
+        <div className="flex min-h-screen flex-col items-center bg-page px-4 pb-20 pt-24">
+            <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-nav p-4 px-6 text-white shadow-md">
                 <button
                     onClick={() => navigate("/about")}
-                    className="absolute left-6 cursor-pointer rounded-lg bg-gray-300 px-4 py-2 text-blue-600 transition hover:bg-gray-100"
+                    className="absolute left-6 cursor-pointer rounded-lg bg-nav-btn px-4 py-2 text-accent transition hover:bg-nav-btn-hover"
                 >
                     About
                 </button>
                 <h1 className="text-xl font-semibold">CloudGateway</h1>
-                <button
-                    onClick={async () => await logout(navigate)}
-                    className="absolute right-6 cursor-pointer rounded-lg bg-gray-300 px-4 py-2 text-blue-600 transition hover:bg-gray-100"
-                >
-                    Logout
-                </button>
+                <div className="absolute right-6 flex items-center gap-3">
+                    <ThemeToggle />
+                    <button
+                        onClick={async () => await logout(navigate)}
+                        className="cursor-pointer rounded-lg bg-nav-btn px-4 py-2 text-accent transition hover:bg-nav-btn-hover"
+                    >
+                        Logout
+                    </button>
+                </div>
             </nav>
 
             {banner && (
                 <div className="fixed top-20 z-50 flex w-full justify-center px-4">
                     <div className={`flex w-full max-w-lg items-center justify-between rounded-lg px-5 py-3 text-white shadow-md ${
-                        banner.type === "error" ? "bg-red-500" : "bg-green-600"
+                        banner.type === "error" ? "bg-danger" : "bg-success"
                     }`}>
                         <span className="text-sm">{banner.message}</span>
                         <button
-                            className="ml-4 font-bold transition hover:text-gray-200"
+                            className="ml-4 font-bold transition hover:text-inset-strong"
                             onClick={() => setBanner(null)}
                             aria-label="Dismiss message"
                         >
@@ -366,18 +370,18 @@ const Home: React.FC = () => {
                 <div className="mb-4 w-full max-w-md">
                     <button
                         onClick={handleCreateNewAccount}
-                        className="w-full cursor-pointer rounded-lg bg-blue-600 p-3 text-white transition hover:bg-blue-700"
+                        className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
                     >
                         Create Test Account
                     </button>
                 </div>
             )}
 
-            <div className="w-full max-w-7xl rounded-lg bg-white p-4 shadow-lg md:p-6">
+            <div className="w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                     <div>
-                        <h2 className="text-xl font-semibold text-gray-900">Shared VPN Dashboard</h2>
-                        <p className="mt-1 text-sm text-gray-500">
+                        <h2 className="text-xl font-semibold text-content">Shared VPN Dashboard</h2>
+                        <p className="mt-1 text-sm text-content-muted">
                             {role === "admin"
                                 ? "View and remove clients across users. New clients are created only for your account."
                                 : "Create and remove your VPN clients."}
@@ -385,14 +389,14 @@ const Home: React.FC = () => {
                     </div>
 
                     <form onSubmit={handleCreateClient} className="flex w-full flex-col gap-3 sm:flex-row lg:w-auto">
-                        <label className="flex min-w-0 flex-1 flex-col text-sm font-medium text-gray-700 lg:w-64">
+                        <label className="flex min-w-0 flex-1 flex-col text-sm font-medium text-content-secondary lg:w-64">
                             Client display name
                             <input
                                 value={clientName}
                                 onChange={(e) => setClientName(e.target.value)}
                                 maxLength={80}
                                 placeholder="Optional"
-                                className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 p-3 text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                                className="mt-1 w-full rounded-lg border border-edge-subtle bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
                             />
                         </label>
                         <button
@@ -400,8 +404,8 @@ const Home: React.FC = () => {
                             disabled={createDisabled}
                             className={`rounded-lg px-5 py-3 text-sm font-medium transition sm:self-end ${
                                 !createDisabled
-                                    ? "cursor-pointer bg-blue-600 text-white hover:bg-blue-700"
-                                    : "cursor-not-allowed bg-gray-300 text-gray-500"
+                                    ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
+                                    : "cursor-not-allowed bg-disabled text-content-disabled"
                             }`}
                         >
                             Create Client
@@ -409,15 +413,15 @@ const Home: React.FC = () => {
                     </form>
                 </div>
 
-                <div className="mt-5 border-t border-gray-100 pt-4">
+                <div className="mt-5 border-t border-edge-faint pt-4">
                     {regionsLoading && (
-                        <p className="text-sm text-gray-500">Loading regions...</p>
+                        <p className="text-sm text-content-muted">Loading regions...</p>
                     )}
                     {regionsError && (
-                        <p className="text-sm text-red-600">{regionsError}</p>
+                        <p className="text-sm text-danger-content">{regionsError}</p>
                     )}
                     {!regionsLoading && !enabledRegions.length && (
-                        <p className="text-sm text-red-600">No enabled regions are available.</p>
+                        <p className="text-sm text-danger-content">No enabled regions are available.</p>
                     )}
                     {showRegionTabs ? (
                         <div className="flex flex-wrap gap-2">
@@ -431,16 +435,16 @@ const Home: React.FC = () => {
                                         key={region.value}
                                         type="button"
                                         onClick={() => selectRegion(region.value)}
-                                        className={`rounded-lg border px-4 py-2 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                        className={`rounded-lg border px-4 py-2 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-focus ${
                                             isActive
-                                                ? "border-blue-600 bg-blue-50 text-blue-700"
-                                                : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:bg-blue-50"
+                                                ? "border-primary bg-primary-soft text-accent"
+                                                : "border-edge-subtle bg-card text-content-secondary hover:border-primary-soft-edge hover:bg-primary-soft"
                                         }`}
                                         aria-pressed={isActive}
                                     >
                                         <span className="block font-medium">{region.name}</span>
                                         {capacityLabel && (
-                                            <span className={regionFull ? "block text-xs text-red-600" : "block text-xs text-gray-500"}>
+                                            <span className={regionFull ? "block text-xs text-danger-content" : "block text-xs text-content-muted"}>
                                                 {capacityLabel}
                                             </span>
                                         )}
@@ -449,10 +453,10 @@ const Home: React.FC = () => {
                             })}
                         </div>
                     ) : selectedRegion ? (
-                        <div className="flex flex-wrap items-center gap-3 text-sm text-gray-700">
+                        <div className="flex flex-wrap items-center gap-3 text-sm text-content-secondary">
                             <span className="font-medium">{selectedRegion.name}</span>
                             {selectedRegion.capacity && (
-                                <span className={selectedRegionFull ? "text-red-600" : "text-gray-500"}>
+                                <span className={selectedRegionFull ? "text-danger-content" : "text-content-muted"}>
                                     {selectedRegionFull
                                         ? `${selectedRegion.name} is currently full`
                                         : getRegionCapacityLabel(selectedRegion)}
@@ -462,7 +466,7 @@ const Home: React.FC = () => {
                     ) : null}
 
                     {selectedRegionFull && (
-                        <p className="mt-3 text-sm text-red-600">
+                        <p className="mt-3 text-sm text-danger-content">
                             {activeRegionName} is currently full. Choose another region before creating a client.
                         </p>
                     )}
@@ -470,7 +474,7 @@ const Home: React.FC = () => {
                         <div className="mt-3 text-xs">
                             <a
                                 href="mailto:Brodsky.Alex22@gmail.com"
-                                className="text-blue-600 underline hover:text-blue-800"
+                                className="text-accent underline hover:text-accent-strong"
                             >
                                 Email me to request a region
                             </a>
@@ -495,7 +499,7 @@ const Home: React.FC = () => {
 
             {configData && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div className="relative w-full max-w-md rounded-lg bg-white p-6 text-center shadow-lg">
+                    <div className="relative w-full max-w-md rounded-lg bg-card p-6 text-center shadow-lg">
                         <button
                             onClick={() => {
                                 setConfigData(null);
@@ -503,24 +507,24 @@ const Home: React.FC = () => {
                                 setVpnRegion(null);
                                 setActiveConfigClientName(null);
                             }}
-                            className="absolute right-3 top-2 text-lg font-bold text-gray-500 hover:text-black"
+                            className="absolute right-3 top-2 text-lg font-bold text-content-muted hover:text-content"
                             aria-label="Close QR code"
                         >
                             x
                         </button>
                         <h3 className="mb-2 text-2xl font-semibold">VPN QR Code</h3>
                         {activeConfigClientName && (
-                            <p className="pt-1 text-gray-700">
+                            <p className="pt-1 text-content-secondary">
                                 Client: <b>{activeConfigClientName}</b>
                             </p>
                         )}
                         {vpnRegion && (
-                            <p className="pt-1 text-gray-700">
+                            <p className="pt-1 text-content-secondary">
                                 Region: <b>{getRegionName(vpnRegion, ociRegions)}</b>
                             </p>
                         )}
                         {IP && (
-                            <p className="flex items-center justify-center gap-1 pt-1 text-gray-700">
+                            <p className="flex items-center justify-center gap-1 pt-1 text-content-secondary">
                                 Address: <CopyableValue value={IP} label={`${activeConfigClientName || "client"} address`} />
                             </p>
                         )}
@@ -528,13 +532,13 @@ const Home: React.FC = () => {
                         <div className="mt-4 flex flex-col gap-3 sm:flex-row">
                             <button
                                 onClick={handleCopyActiveConfig}
-                                className="flex-1 cursor-pointer rounded-lg bg-gray-200 p-3 text-gray-800 transition hover:bg-gray-300"
+                                className="flex-1 cursor-pointer rounded-lg bg-inset-strong p-3 text-content-secondary transition hover:bg-inset-strong-hover"
                             >
                                 {configCopied ? "Copied" : "Copy Config"}
                             </button>
                             <button
                                 onClick={handleDownloadActiveConfig}
-                                className="flex-1 cursor-pointer rounded-lg bg-blue-600 p-3 text-white transition hover:bg-blue-700"
+                                className="flex-1 cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
                             >
                                 Download Config
                             </button>

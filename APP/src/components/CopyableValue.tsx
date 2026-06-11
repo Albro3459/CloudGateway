@@ -29,10 +29,10 @@ export const CopyableValue: React.FC<CopyableValueProps> = ({ value, label, clas
             type="button"
             onClick={copyValue}
             disabled={!canCopy}
-            className={`group inline-flex max-w-full items-center justify-center gap-1.5 rounded border border-transparent px-1.5 py-1 font-mono text-xs transition focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            className={`group inline-flex max-w-full items-center justify-center gap-1.5 rounded border border-transparent px-1.5 py-1 font-mono text-xs transition focus:outline-none focus:ring-2 focus:ring-focus ${
                 canCopy
-                    ? "cursor-pointer text-gray-800 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                    : "cursor-not-allowed text-gray-400"
+                    ? "cursor-pointer text-content-secondary hover:border-primary-soft-edge hover:bg-primary-soft hover:text-accent"
+                    : "cursor-not-allowed text-content-faint"
             } ${className}`}
             title={canCopy ? `Copy ${label}` : `${label} not available`}
             aria-label={canCopy ? `Copy ${label}: ${value}` : `${label} not available`}

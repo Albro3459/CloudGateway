@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { confirmPasswordReset, verifyPasswordResetCode } from "firebase/auth";
 import { auth, signInWithEmailAndPassword } from "../firebase";
 import { validatePassword } from "../helpers/passwordHelper";
+import { ThemeToggle } from "../components/ThemeToggle";
 
 const PasswordReset: React.FC = () => {
     const navigate = useNavigate();
@@ -73,21 +74,24 @@ const PasswordReset: React.FC = () => {
     };
 
     return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 px-4">
-            <nav className="w-full bg-blue-600 text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
+        <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
+            <nav className="w-full bg-nav text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
                 <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
+                <div className="absolute right-6">
+                    <ThemeToggle />
+                </div>
             </nav>
 
             {(errorMessage || successMessage) && (
                 <div className="fixed top-20 w-full flex justify-center z-50">
                 <div className={`px-6 py-3 rounded-xl shadow-md w-full max-w-md flex justify-between items-center ${
-                    errorMessage ? "bg-red-500 text-white" : "bg-green-500 text-white"
+                    errorMessage ? "bg-danger text-white" : "bg-success text-white"
                 }`}>
                     <span className="text-sm">
                     {errorMessage || successMessage}
                     </span>
                     <button
-                    className="ml-4 font-bold hover:text-gray-200 transition"
+                    className="ml-4 font-bold hover:text-inset-strong transition"
                     onClick={() => {
                         setErrorMessage(null);
                         setSuccessMessage(null);
@@ -99,42 +103,42 @@ const PasswordReset: React.FC = () => {
                 </div>
             )}
 
-            <div className="bg-white p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-md mt-24">
+            <div className="bg-card p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-md mt-24">
                 <h2 className="text-2xl font-semibold text-center mb-6">Reset Password</h2>
 
                 {loading ? (
                     <div className="flex justify-center py-6">
-                        <div className="border-t-4 border-blue-600 border-solid rounded-full w-12 h-12 animate-spin"></div>
+                        <div className="border-t-4 border-primary border-solid rounded-full w-12 h-12 animate-spin"></div>
                     </div>
                 ) : (
                     <form onSubmit={handleResetPassword}>
                     {email && (
-                        <p className="text-sm text-gray-600 mb-6 text-center">
+                        <p className="text-sm text-content-secondary mb-6 text-center">
                             Resetting password for <b>{email}</b>
                         </p>
                     )}
                     <div className="mb-6">
-                        <label className="block text-gray-700 font-medium mb-2">New Password</label>
+                        <label className="block text-content-secondary font-medium mb-2">New Password</label>
                         <input
                         type="password"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        className="w-full p-3 border border-edge bg-inset text-content rounded-lg focus:ring-2 focus:ring-focus focus:outline-none"
                         placeholder="At least 8 characters"
                         required
                         disabled={!email || submitting}
                         />
-                        <p className="mt-2 text-xs text-gray-500">
+                        <p className="mt-2 text-xs text-content-muted">
                         Must include uppercase, lowercase, number, and special character.
                         </p>
                     </div>
                     <div className="mb-6">
-                        <label className="block text-gray-700 font-medium mb-2">Confirm Password</label>
+                        <label className="block text-content-secondary font-medium mb-2">Confirm Password</label>
                         <input
                         type="password"
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        className="w-full p-3 border border-edge bg-inset text-content rounded-lg focus:ring-2 focus:ring-focus focus:outline-none"
                         placeholder="Passwords Must Match"
                         required
                         disabled={!email || submitting}
@@ -145,8 +149,8 @@ const PasswordReset: React.FC = () => {
                         type="submit"
                         className={`w-full p-3 rounded-lg transition ${
                         email && password && confirmPassword && !submitting
-                            ? "cursor-pointer bg-blue-600 text-white hover:bg-blue-700"
-                            : "bg-gray-400 text-gray-200 cursor-not-allowed"
+                            ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
+                            : "bg-disabled text-content-disabled cursor-not-allowed"
                         }`}
                         disabled={!email || !password || !confirmPassword || submitting}
                     >
