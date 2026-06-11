@@ -80,15 +80,3 @@ export const buildCreateUserApiEndpoint = (
 
     return buildRegionalApiEndpoint(regionId, "users", location);
 };
-
-const buildCurrentHostApiEndpoint = (path: string) => {
-    const apiPath = normalizeApiPath(path);
-    return API_ORIGIN ? `${API_ORIGIN}/api/${apiPath}` : `/api/${apiPath}`;
-};
-
-export const CLIENTS_API_PATH = buildCurrentHostApiEndpoint("clients");
-export const USERS_API_PATH = buildCurrentHostApiEndpoint("users");
-
-export const DEPLOY_API_PATH = CLIENTS_API_PATH;
-export const SECURE_GET_API_PATH = buildCurrentHostApiEndpoint("regions");
-export const CREATE_USER_API_PATH = USERS_API_PATH;

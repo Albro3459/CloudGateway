@@ -1,8 +1,8 @@
 import logging
 from collections.abc import Callable
-from typing import TypeVar
+from typing import Annotated, TypeVar
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Path, Request
 
 from .auth import AuthenticatedUser, get_current_user, require_admin_user
 from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
@@ -166,9 +166,9 @@ async def create_client(
     return _create_client_response(active_client)
 
 
-@router.delete("/clients/{client_id}", response_model=DeleteClientResponse)
+@router.delete("/clients/{clientId}", response_model=DeleteClientResponse)
 async def delete_client(
-    client_id: str,
+    client_id: Annotated[str, Path(alias="clientId")],
     request: Request,
     body: DeleteClientRequest,
     user: AuthenticatedUser = Depends(get_current_user),
