@@ -21,6 +21,7 @@ const baseEntry = (overrides: Partial<VPNTableEntry>): VPNTableEntry => ({
     assignedTunnelIpv4: "10.0.0.2/32",
     assignedTunnelIpv6: "fd42:42:42::2/128",
     serverEndpointIpv4: "203.0.113.10",
+    serverEndpointHostname: "wg.us-sanjose-1.example.com",
     serverPublicKey: "server-key",
     clientPublicKey: "client-key",
     lastErrorCode: null,
@@ -85,6 +86,9 @@ describe("VPNTable", () => {
         fireEvent.click(screen.getAllByLabelText(/Copy Laptop tunnel IPv4/)[0]);
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("10.0.0.2/32"));
         await waitFor(() => expect(screen.getByText("Copied")).toBeTruthy());
+
+        fireEvent.click(screen.getAllByLabelText(/Copy Laptop server endpoint/)[0]);
+        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("wg.us-sanjose-1.example.com"));
 
         const removedCheckbox = screen.getByLabelText("Select Old phone for removal") as HTMLInputElement;
         expect(removedCheckbox.disabled).toBe(true);

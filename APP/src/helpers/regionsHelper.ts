@@ -16,6 +16,7 @@ export type Region = {
     enabled?: boolean;
     wireguardEndpointIpv4?: string | null;
     wireguardEndpointIpv6?: string | null;
+    wireguardEndpointHostname?: string | null;
     wireguardPort?: number;
     wireguardDnsIpv4?: string | null;
     wireguardDnsIpv6?: string | null;
@@ -53,6 +54,7 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         enabled: data.enabled === true,
         wireguardEndpointIpv4: stringOrNull(data.wireguardEndpointIpv4),
         wireguardEndpointIpv6: stringOrNull(data.wireguardEndpointIpv6),
+        wireguardEndpointHostname: stringOrNull(data.wireguardEndpointHostname),
         wireguardPort: numberOrDefault(data.wireguardPort, 51820),
         wireguardDnsIpv4: stringOrNull(data.wireguardDnsIpv4),
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),

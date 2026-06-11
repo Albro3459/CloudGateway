@@ -28,6 +28,7 @@ export type VPNClientData = {
     assignedTunnelIpv4: string | null;
     assignedTunnelIpv6: string | null;
     serverEndpointIpv4: string | null;
+    serverEndpointHostname: string | null;
     serverPublicKey: string | null;
     clientPublicKey: string | null;
     lastErrorCode: string | null;
@@ -75,6 +76,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
                     assignedTunnelIpv4,
                     assignedTunnelIpv6,
                     serverEndpointIpv4,
+                    serverEndpointHostname,
                     serverPublicKey,
                     clientPublicKey,
                     clientName,
@@ -102,6 +104,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
                         assignedTunnelIpv4: stringOrNull(assignedTunnelIpv4),
                         assignedTunnelIpv6: stringOrNull(assignedTunnelIpv6),
                         serverEndpointIpv4: stringOrNull(serverEndpointIpv4),
+                        serverEndpointHostname: stringOrNull(serverEndpointHostname),
                         serverPublicKey: stringOrNull(serverPublicKey),
                         clientPublicKey: stringOrNull(clientPublicKey),
                         lastErrorCode: stringOrNull(lastErrorCode),

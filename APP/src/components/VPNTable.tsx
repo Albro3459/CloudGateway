@@ -20,6 +20,7 @@ export type VPNTableEntry = {
     assignedTunnelIpv4: string | null;
     assignedTunnelIpv6: string | null;
     serverEndpointIpv4: string | null;
+    serverEndpointHostname: string | null;
     serverPublicKey: string | null;
     clientPublicKey: string | null;
     lastErrorCode: string | null;
@@ -155,7 +156,10 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
                 <CopyableValue value={entry.assignedTunnelIpv6} label={`${entry.clientName || entry.clientId} tunnel IPv6`} />
             </td>
             <td className="px-3 py-3 text-center align-middle">
-                <CopyableValue value={entry.serverEndpointIpv4 || entry.ipv4} label={`${entry.clientName || entry.clientId} server endpoint IPv4`} />
+                <CopyableValue
+                    value={entry.serverEndpointHostname || entry.serverEndpointIpv4 || entry.ipv4}
+                    label={`${entry.clientName || entry.clientId} server endpoint`}
+                />
             </td>
             <td className="px-3 py-3 align-middle">
                 <div className="flex items-center justify-center gap-2">
@@ -316,7 +320,7 @@ export const VPNTable: React.FC<VPNTableData> = ({
                             </th>
                             <th className="px-3 py-2 text-center">Tunnel IPv4</th>
                             <th className="px-3 py-2 text-center">Tunnel IPv6</th>
-                            <th className="px-3 py-2 text-center">Endpoint IPv4</th>
+                            <th className="px-3 py-2 text-center">Endpoint</th>
                             <th className="px-3 py-2 text-center">Config</th>
                         </tr>
                     </thead>
