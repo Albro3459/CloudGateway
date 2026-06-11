@@ -39,6 +39,17 @@ describe("apiEndpoints", () => {
         })).toBe("https://us-sanjose-1.localhost:3000/api/health");
     });
 
+    it("uses REACT_APP_API_ORIGIN for user creation without requiring regions", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
+        const { buildCreateUserApiEndpoint } = await import("../apiEndpoints");
+
+        expect(buildCreateUserApiEndpoint([], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("http://localhost:8787/api/users");
+    });
+
     it("selects first enabled region for global user creation", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";

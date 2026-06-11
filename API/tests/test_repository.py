@@ -239,6 +239,21 @@ def test_admin_can_delete_any_users_client(repository: FakeRepository):
     assert repository.get_region(REGION_ID).active_client_count == 0
 
 
+def test_delete_works_in_disabled_region(repository: FakeRepository):
+    client = reserve(repository)
+    repository.regions[REGION_ID] = replace(repository.regions[REGION_ID], enabled=False)
+
+    removed = repository.delete_client(
+        requester_uid="user-1",
+        target_uid="user-1",
+        region_id=REGION_ID,
+        client_id=client.client_id,
+    )
+
+    assert removed.status == ClientStatus.REMOVED
+    assert repository.get_region(REGION_ID).active_client_count == 0
+
+
 def test_delete_missing_client_raises_not_found(repository: FakeRepository):
     with pytest.raises(ClientNotFoundError):
         repository.delete_client(

@@ -90,6 +90,14 @@ def ensure_region_enabled(region: RegionDoc | None) -> RegionDoc:
     return region
 
 
+def require_region(region: RegionDoc | None) -> RegionDoc:
+    # Delete/cleanup paths must keep working when a region is disabled for
+    # maintenance or drain; they only need the region doc for counter updates.
+    if region is None:
+        raise RegionDisabledError()
+    return region
+
+
 def role_or_user(role: Role | None) -> Role:
     return role or Role.USER
 

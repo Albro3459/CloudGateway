@@ -78,6 +78,15 @@ Client documents never contain the server private key. The stored `wireguardConf
 * Client statuses: `creating`, `active`, `failed`, `removed`
 * Operation results: `success`, `failed`, `noop`
 
+## Required Indexes
+
+The regional API counts allocated clients per region with a collection group query: `collectionGroup("Instances").where("regionId", "==", ...)`. Firestore single-field indexes default to collection scope, so this query needs a one-time, project-wide index:
+
+* In the Firebase console under Firestore Indexes, add a single-field index exemption for collection group `Instances`, field `regionId`, ascending, with collection group scope enabled.
+* Without it, `POST /clients` and `DELETE /clients/{clientId}` fail with a Firestore `FAILED_PRECONDITION` error that includes an index creation link; following that link creates the same index.
+
+The admin dashboard's cross-user reads use direct document/collection reads and need no extra index.
+
 ## Rules Summary (frontend permissions)
 
 Enforced by `firebase.rules`:

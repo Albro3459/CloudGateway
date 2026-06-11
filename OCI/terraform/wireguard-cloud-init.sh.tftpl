@@ -206,17 +206,27 @@ UNBOUNDCONF
 unbound-checkconf
 systemctl enable unbound
 
-echo "==> Step 8/12: Installing CloudLaunch API package"
-%{ for api_path, api_content_base64 in api_source_files ~}
-install -D -m 644 /dev/null "/opt/cloudlaunch/api/${api_path}"
-base64 -d > "/opt/cloudlaunch/api/${api_path}" <<'APIFILE'
-${api_content_base64}
-APIFILE
-%{ endfor ~}
-
+echo "==> Step 8/12: Preparing CloudLaunch API runtime"
+# The API source is too large for OCI instance user-data. After boot, copy the
+# repository API/ contents (pyproject.toml plus cloudlaunch_api/) to
+# /opt/cloudlaunch/api and run cloudlaunch-install-api.
 python3 -m venv /opt/cloudlaunch/api/.venv
 /opt/cloudlaunch/api/.venv/bin/pip install --upgrade pip
+
+cat > /usr/local/sbin/cloudlaunch-install-api <<'INSTALLAPI'
+#!/bin/bash
+set -euo pipefail
+
+if [[ ! -f /opt/cloudlaunch/api/pyproject.toml ]]; then
+  echo "Copy the repository API/ contents (pyproject.toml plus cloudlaunch_api/) to /opt/cloudlaunch/api first." >&2
+  exit 1
+fi
+
 /opt/cloudlaunch/api/.venv/bin/pip install /opt/cloudlaunch/api
+systemctl restart cloudlaunch-api
+systemctl --no-pager --full status cloudlaunch-api || true
+INSTALLAPI
+chmod 755 /usr/local/sbin/cloudlaunch-install-api
 
 echo "==> Step 9/12: Writing CloudLaunch API environment"
 install -d -m 700 "$(dirname "${firebase_credentials_file}")"
@@ -360,6 +370,7 @@ cat > /etc/systemd/system/cloudlaunch-api.service <<'UNIT'
 Description=CloudLaunch regional API
 Wants=network-online.target
 After=network-online.target wg-quick@${wg_interface}.service
+ConditionPathExists=/opt/cloudlaunch/api/.venv/bin/uvicorn
 
 [Service]
 User=root
@@ -400,7 +411,11 @@ if ! ip -6 addr show dev "$WG_INTERFACE" | grep -Fq "$${WG_DNS_ADDRESS_V6}/"; th
 fi
 
 systemctl restart unbound
-systemctl restart cloudlaunch-api
+if [[ -x /opt/cloudlaunch/api/.venv/bin/uvicorn ]]; then
+  systemctl restart cloudlaunch-api
+else
+  echo "CloudLaunch API not installed yet; copy API/ to /opt/cloudlaunch/api and run cloudlaunch-install-api"
+fi
 systemctl restart cloudlaunch-origin-firewall
 systemctl restart caddy
 

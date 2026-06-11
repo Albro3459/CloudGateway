@@ -19,11 +19,12 @@ Cloud-init installs and configures:
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written with interface settings and <b>no initial `[Peer]`</b>, started through `wg-quick@wg0`.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * Unbound DNS for VPN clients (tunnel DNS IPs).
-* Python runtime and the regional FastAPI app per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
+* Python runtime and the regional FastAPI app scaffolding per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
   * install directory `/opt/cloudlaunch/api` with venv `/opt/cloudlaunch/api/.venv`
   * systemd service `cloudlaunch-api.service`, running as root, bound only to `127.0.0.1`
   * environment file `/etc/cloudlaunch/api.env` (mode `0600`, root-owned) with the `CLOUDLAUNCH_*` variables, including `CLOUDLAUNCH_REGION_ID`
   * Firebase Admin credentials file referenced by `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
+  * the API source itself is too large for OCI user-data; the operator copies `API/` to `/opt/cloudlaunch/api` and runs `cloudlaunch-install-api` after boot (see [docs/regional-deployment.md](../docs/regional-deployment.md))
 * Custom Caddy binary built with `github.com/mholt/caddy-ratelimit`, listening on public `80`/`443`:
   * automatic HTTPS for the regional API hostname
   * Cloudflare Authenticated Origin Pulls required

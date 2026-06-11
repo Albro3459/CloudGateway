@@ -26,6 +26,7 @@ from .repository import (
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    require_region,
     role_or_user,
     utc_now,
 )
@@ -321,7 +322,7 @@ class FirestoreRepository(FirebaseRepository):
 
             role = _role_from_snapshot(role_ref.get(transaction=transaction))
             ensure_delete_allowed(requester_uid=requester_uid, requester_role=role, target_uid=target_uid)
-            ensure_region_enabled(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
+            require_region(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
             client = _require_client(
                 client_ref.get(transaction=transaction),
                 client_id,
@@ -362,7 +363,7 @@ class FirestoreRepository(FirebaseRepository):
         def mark_terminal(transaction):
             region_ref = db.collection("Regions").document(region_id)
             client_ref = _client_ref(db, owner_uid, region_id, client_id)
-            ensure_region_enabled(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
+            require_region(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
             client = _require_client(
                 client_ref.get(transaction=transaction),
                 client_id,

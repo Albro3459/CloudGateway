@@ -135,6 +135,8 @@ describe("APIHelper", () => {
     });
 
     it("does not call users API when no enabled region exists", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
         const { createAdminUser } = await import("../APIHelper");
 
         const result = await createAdminUser({

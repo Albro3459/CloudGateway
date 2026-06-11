@@ -73,6 +73,10 @@ export const buildCreateUserApiEndpoint = (
     regions: ApiRegionOption[] | null | undefined,
     location: LocationLike = getWindowLocation(),
 ) => {
+    if (API_ORIGIN) {
+        return `${API_ORIGIN}/api/users`;
+    }
+
     const regionId = getFirstEnabledRegionId(regions);
     if (!regionId) {
         throw new Error("No enabled regions are available for user creation");

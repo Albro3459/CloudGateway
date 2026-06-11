@@ -23,8 +23,8 @@ ${api_hostname} {
 	log {
 		output file /var/log/caddy/cloudlaunch-api-access.log
 		format json
-		skip_log @non_api
 	}
+	log_skip @non_api
 
 	header @api {
 		Access-Control-Allow-Origin "${dashboard_cors_origin}"

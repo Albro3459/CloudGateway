@@ -24,7 +24,7 @@ from .models import (
     DeleteClientResponse,
     HealthResponse,
 )
-from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, ensure_region_enabled
+from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region
 from .wireguard import WireGuardManager
 
 logger = logging.getLogger("cloudlaunch_api.routes")
@@ -56,6 +56,9 @@ async def create_client(
         Event.CLIENT_CREATE_STARTED,
         request_id=request_id,
         user_id=user.uid,
+        user_email=user.email,
+        user_display_name=user.display_name,
+        client_name=body.client_name,
         region_id=body.region_id,
     )
     try:
@@ -182,6 +185,8 @@ async def delete_client(
         Event.CLIENT_DELETE_STARTED,
         request_id=request_id,
         requester_uid=user.uid,
+        requester_email=user.email,
+        requester_display_name=user.display_name,
         target_uid=body.user_id,
         region_id=body.region_id,
         client_id=client_id,
@@ -193,7 +198,6 @@ async def delete_client(
             requester_role=repository.get_role(user.uid),
             target_uid=body.user_id,
         )
-        ensure_region_enabled(repository.get_region(body.region_id))
         client = repository.get_client(owner_uid=body.user_id, region_id=body.region_id, client_id=client_id)
         if client is None:
             raise ClientNotFoundError()

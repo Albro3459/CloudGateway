@@ -25,6 +25,7 @@ from cloudlaunch_api.repository import (
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    require_region,
     utc_now,
 )
 from cloudlaunch_api.wireguard import WireGuardKeypair, WireGuardManager
@@ -299,7 +300,7 @@ class FakeRepository(FirebaseRepository):
                 requester_role=self.roles.get(requester_uid),
                 target_uid=target_uid,
             )
-            ensure_region_enabled(self.regions.get(region_id))
+            require_region(self.regions.get(region_id))
             return self._mark_client_terminal_locked(
                 owner_uid=target_uid,
                 region_id=region_id,
@@ -321,7 +322,7 @@ class FakeRepository(FirebaseRepository):
     ) -> ClientDoc:
         ensure_local_region(region_id, self.local_region_id)
         with self._lock:
-            ensure_region_enabled(self.regions.get(region_id))
+            require_region(self.regions.get(region_id))
             return self._mark_client_terminal_locked(
                 owner_uid=owner_uid,
                 region_id=region_id,

@@ -266,13 +266,6 @@ variable "cloudflare_ipv6_ranges" {
 }
 
 locals {
-	api_source_files = {
-		for source_path in setunion(
-			fileset("${path.module}/../../API", "pyproject.toml"),
-			fileset("${path.module}/../../API", "cloudlaunch_api/*.py")
-		) : source_path => filebase64("${path.module}/../../API/${source_path}")
-	}
-
 	caddyfile = templatefile("${path.module}/Caddyfile.tftpl", {
 		api_hostname = var.api_hostname
 		dashboard_cors_origin = var.dashboard_cors_origin
@@ -315,7 +308,6 @@ locals {
 		caddyfile_content_base64 = base64encode(local.caddyfile)
 		cloudflare_ipv4_ranges = var.cloudflare_ipv4_ranges
 		cloudflare_ipv6_ranges = var.cloudflare_ipv6_ranges
-		api_source_files = local.api_source_files
 	})
 
 	combined_user_data = <<-EOT

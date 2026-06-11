@@ -8,6 +8,7 @@ import { auth, onAuthStateChanged } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
+import { CopyableValue } from "../components/CopyableValue";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
@@ -519,8 +520,8 @@ const Home: React.FC = () => {
                             </p>
                         )}
                         {IP && (
-                            <p className="pt-1 text-gray-700">
-                                Address: <b>{IP}</b>
+                            <p className="flex items-center justify-center gap-1 pt-1 text-gray-700">
+                                Address: <CopyableValue value={IP} label={`${activeConfigClientName || "client"} address`} />
                             </p>
                         )}
                         <canvas ref={canvasRef} className="mx-auto mt-2" />
