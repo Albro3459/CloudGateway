@@ -38,6 +38,7 @@ class CreateClientResponse(ApiModel):
     assigned_tunnel_ipv4: str
     assigned_tunnel_ipv6: str
     server_endpoint_ipv4: str
+    server_endpoint_hostname: str
     wireguard_config: str
 
 

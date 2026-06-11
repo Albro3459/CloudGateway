@@ -32,6 +32,7 @@ class RegionDoc:
     wireguard_public_key: str
     capacity_limit: int
     active_client_count: int
+    wireguard_endpoint_hostname: str = ""
     display_order: int | None = None
     health_status: str | None = None
     updated_at: datetime | None = None
@@ -61,6 +62,7 @@ class ClientDoc:
     server_public_key: str
     client_public_key: str
     wireguard_config: str | None
+    server_endpoint_hostname: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
     removed_at: datetime | None = None
@@ -157,6 +159,10 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         """Return a client document, or None when it does not exist."""
+
+    @abstractmethod
+    def list_active_clients(self, region_id: str) -> list[ClientDoc]:
+        """Return active clients with a public key for one region (peer sync input)."""
 
     @abstractmethod
     def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:

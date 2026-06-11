@@ -50,9 +50,8 @@ def create_app(
     app.state.repository = repository
     app.state.wireguard = wireguard or LocalWireGuardManager(
         interface=settings.wg_interface,
-        config_path=settings.wg_config_path,
         server_public_key=settings.wg_server_public_key,
-        endpoint_ipv4=settings.wg_endpoint_ipv4,
+        endpoint_host=settings.wg_endpoint_hostname,
         listen_port=settings.wg_port,
         dns_ipv4=settings.wg_dns_ipv4,
         dns_ipv6=settings.wg_dns_ipv6,

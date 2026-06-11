@@ -50,3 +50,6 @@ class Event(str, Enum):
     WIREGUARD_APPLY_STARTED = "wireguard_apply_started"
     WIREGUARD_APPLY_COMPLETED = "wireguard_apply_completed"
     WIREGUARD_APPLY_FAILED = "wireguard_apply_failed"
+    PEER_SYNC_STARTED = "peer_sync_started"
+    PEER_SYNC_COMPLETED = "peer_sync_completed"
+    PEER_SYNC_FAILED = "peer_sync_failed"

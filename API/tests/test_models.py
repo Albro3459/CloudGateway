@@ -31,6 +31,7 @@ def test_response_serializes_camel_case():
         assigned_tunnel_ipv4="10.0.0.2/32",
         assigned_tunnel_ipv6="fd42:42:42::2/128",
         server_endpoint_ipv4="1.2.3.4",
+        server_endpoint_hostname="wg.us-test-1.example.com",
         wireguard_config="[Interface]",
     )
 
@@ -42,6 +43,7 @@ def test_response_serializes_camel_case():
         "assignedTunnelIpv4": "10.0.0.2/32",
         "assignedTunnelIpv6": "fd42:42:42::2/128",
         "serverEndpointIpv4": "1.2.3.4",
+        "serverEndpointHostname": "wg.us-test-1.example.com",
         "wireguardConfig": "[Interface]",
     }
 

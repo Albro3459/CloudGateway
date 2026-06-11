@@ -16,7 +16,7 @@ def make_settings(**overrides) -> Settings:
         "region_id": REGION_ID,
         "firebase_credentials_file": "/tmp/test-firebase-credentials.json",
         "wg_server_public_key": "server-public-key",
-        "wg_endpoint_ipv4": "1.2.3.4",
+        "wg_endpoint_hostname": "wg.us-test-1.example.com",
         "wg_dns_ipv4": "10.0.0.1",
         "wg_dns_ipv6": "fd42:42:42::1",
         "wg_tunnel_ipv4_cidr": "10.0.0.0/24",

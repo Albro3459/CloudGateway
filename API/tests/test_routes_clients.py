@@ -21,6 +21,7 @@ def enabled_region(*, capacity_limit: int = 10) -> RegionDoc:
         wireguard_public_key="server-public-key",
         capacity_limit=capacity_limit,
         active_client_count=0,
+        wireguard_endpoint_hostname="wg.us-test-1.example.com",
     )
 
 
@@ -47,7 +48,7 @@ def create_active_client(repository, wireguard, *, uid: str = "user-1"):
         client_public_key="fake-public-existing",
         wireguard_config="[Interface]\nPrivateKey = hidden",
     )
-    wireguard.peers[active.client_public_key] = active.client_id
+    wireguard.peers[active.client_public_key] = (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6)
     return active
 
 
@@ -79,6 +80,7 @@ def test_create_client_reserves_applies_and_activates(client, repository, wiregu
         "assignedTunnelIpv4",
         "assignedTunnelIpv6",
         "serverEndpointIpv4",
+        "serverEndpointHostname",
         "wireguardConfig",
     }
     assert payload["regionId"] == REGION_ID
@@ -87,13 +89,15 @@ def test_create_client_reserves_applies_and_activates(client, repository, wiregu
     assert payload["assignedTunnelIpv4"] == "10.0.0.2/32"
     assert payload["assignedTunnelIpv6"] == "fd42:42:42::2/128"
     assert payload["serverEndpointIpv4"] == "203.0.113.10"
+    assert payload["serverEndpointHostname"] == "wg.us-test-1.example.com"
     assert payload["wireguardConfig"].startswith("[Interface]\n")
     assert "client_id" not in payload
 
     stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=payload["clientId"])
     assert stored.status == ClientStatus.ACTIVE
     assert stored.client_public_key == "fake-public-1"
-    assert wireguard.peers == {"fake-public-1": payload["clientId"]}
+    assert set(wireguard.peers) == {"fake-public-1"}
+    assert wireguard.peers["fake-public-1"] == ("10.0.0.2/32", "fd42:42:42::2/128")
 
 
 def test_create_client_retries_one_transient_wireguard_add_failure(client, repository, wireguard):
@@ -216,7 +220,7 @@ def test_delete_client_normal_user_cannot_remove_another_users_client(client, re
 
     assert response.status_code == 403
     assert_error_shape(response.json(), "ADMIN_REQUIRED")
-    assert wireguard.peers == {"fake-public-existing": active.client_id}
+    assert set(wireguard.peers) == {"fake-public-existing"}
 
 
 def test_delete_client_admin_can_remove_any_users_client(client, repository, wireguard):
@@ -267,7 +271,7 @@ def test_delete_client_mismatched_document_fields_returns_not_found_before_peer_
 
     assert response.status_code == 404
     assert_error_shape(response.json(), "CLIENT_NOT_FOUND")
-    assert wireguard.peers == {"fake-public-existing": active.client_id}
+    assert set(wireguard.peers) == {"fake-public-existing"}
 
 
 def test_delete_client_uses_removed_status_even_if_document_was_already_removed(client, repository, wireguard):

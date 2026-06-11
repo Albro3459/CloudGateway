@@ -1,6 +1,6 @@
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from pathlib import Path
 from threading import Lock
 
 from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
@@ -28,10 +28,11 @@ from cloudlaunch_api.repository import (
     require_region,
     utc_now,
 )
-from cloudlaunch_api.wireguard import WireGuardKeypair, WireGuardManager
+from cloudlaunch_api.wireguard import PeerSyncResult, WireGuardKeypair, WireGuardManager
 
 FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
 FAKE_PUBLIC_KEY="eZEOz7uD1jjbTD70Uv+aJcZ0ASxsxz9bTKZQ9vdOQCo="
+FAKE_PUBLIC_KEY_2="QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
 FAKE_SERVER_PUBLIC_KEY="4jVSiiUySTwbsm72pcNxtEUhE37gESbsLPo3nCAaBks="
 
 
@@ -43,18 +44,19 @@ class FakeCommandCall:
 
 
 class FakeWireGuardCommandRunner:
+    """Emulates the wg CLI: peer state lives in self.peers (pubkey -> allowed-ips csv)."""
+
     def __init__(
         self,
         *,
-        fail_strip_count: int = 0,
-        fail_sync_count: int = 0,
+        fail_set_count: int = 0,
+        fail_show_count: int = 0,
         failure_stderr: str = "simulated command failure",
     ):
         self.calls: list[FakeCommandCall] = []
-        self.strip_modes: list[int] = []
-        self.sync_modes: list[int] = []
-        self.fail_strip_count = fail_strip_count
-        self.fail_sync_count = fail_sync_count
+        self.peers: dict[str, str] = {}
+        self.fail_set_count = fail_set_count
+        self.fail_show_count = fail_show_count
         self.failure_stderr = failure_stderr
 
     def __call__(
@@ -77,19 +79,23 @@ class FakeWireGuardCommandRunner:
             return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PRIVATE_KEY}\n", stderr="")
         if args == ("wg", "pubkey"):
             return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PUBLIC_KEY}\n", stderr="")
-        if args[:2] == ("wg-quick", "strip"):
-            path = Path(args[2])
-            self.strip_modes.append(path.stat().st_mode & 0o777)
-            if self.fail_strip_count:
-                self.fail_strip_count -= 1
+        if args[:2] == ("wg", "show") and args[3:] == ("dump",):
+            if self.fail_show_count:
+                self.fail_show_count -= 1
                 raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
-            return subprocess.CompletedProcess(args, 0, stdout=path.read_text(encoding="utf-8"), stderr="")
-        if args[:2] == ("wg", "syncconf"):
-            path = Path(args[3])
-            self.sync_modes.append(path.stat().st_mode & 0o777)
-            if self.fail_sync_count:
-                self.fail_sync_count -= 1
+            lines = [f"{FAKE_PRIVATE_KEY}\t{FAKE_SERVER_PUBLIC_KEY}\t51820\toff"]
+            for public_key, allowed_ips in self.peers.items():
+                lines.append(f"{public_key}\t(none)\t(none)\t{allowed_ips or '(none)'}\t0\t0\t0\t25")
+            return subprocess.CompletedProcess(args, 0, stdout="\n".join(lines) + "\n", stderr="")
+        if args[:2] == ("wg", "set") and len(args) >= 5 and args[3] == "peer":
+            if self.fail_set_count:
+                self.fail_set_count -= 1
                 raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
+            public_key = args[4]
+            if args[5:] == ("remove",):
+                self.peers.pop(public_key, None)
+            else:
+                self.peers[public_key] = args[args.index("allowed-ips") + 1]
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
         raise AssertionError(f"Unexpected WireGuard command: {args}")
@@ -138,6 +144,15 @@ class FakeRepository(FirebaseRepository):
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         return self.clients.get((owner_uid, region_id, client_id))
+
+    def list_active_clients(self, region_id: str) -> list[ClientDoc]:
+        return [
+            client
+            for client in self.clients.values()
+            if client.region_id == region_id
+            and client.status == ClientStatus.ACTIVE
+            and client.client_public_key
+        ]
 
     def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
         if self.create_user_error is not None:
@@ -205,6 +220,7 @@ class FakeRepository(FirebaseRepository):
                 assigned_tunnel_ipv4=assigned_ipv4,
                 assigned_tunnel_ipv6=assigned_ipv6,
                 server_endpoint_ipv4=region.wireguard_endpoint_ipv4,
+                server_endpoint_hostname=region.wireguard_endpoint_hostname,
                 server_public_key=region.wireguard_public_key,
                 client_public_key="",
                 wireguard_config=None,
@@ -378,15 +394,31 @@ class FakeRepository(FirebaseRepository):
 
 class FakeWireGuardManager(WireGuardManager):
     def __init__(self):
-        self.peers: dict[str, str] = {}
+        self.peers: dict[str, tuple[str, str]] = {}
         self.keypair_count = 0
         self.add_peer_calls = 0
         self.remove_peer_calls = 0
+        self.sync_calls = 0
         self.fail_generate_count = 0
         self.fail_add_count = 0
         self.fail_remove_count = 0
         self.fail_add_transient = False
         self.fail_remove_transient = False
+        self.locked = False
+
+    @contextmanager
+    def lock(self):
+        if self.locked:
+            raise AssertionError("WireGuard lock() is not reentrant.")
+        self.locked = True
+        try:
+            yield
+        finally:
+            self.locked = False
+
+    def _require_lock(self) -> None:
+        if not self.locked:
+            raise AssertionError("WireGuard mutation must run inside lock().")
 
     def generate_keypair(self) -> WireGuardKeypair:
         if self.fail_generate_count:
@@ -412,24 +444,19 @@ class FakeWireGuardManager(WireGuardManager):
             "\n"
             "[Peer]\n"
             "PublicKey = fake-server-public\n"
-            "Endpoint = 203.0.113.10:51820\n"
+            "Endpoint = wg.us-test-1.example.com:51820\n"
         )
 
-    def add_peer(
-        self,
-        *,
-        client_id: str,
-        public_key: str,
-        tunnel_ipv4: str,
-        tunnel_ipv6: str,
-    ) -> None:
+    def add_peer(self, *, public_key: str, tunnel_ipv4: str, tunnel_ipv6: str) -> None:
+        self._require_lock()
         self.add_peer_calls += 1
         if self.fail_add_count:
             self.fail_add_count -= 1
             raise WireGuardApplyFailedError("Simulated add peer failure.", transient=self.fail_add_transient)
-        self.peers[public_key] = client_id
+        self.peers[public_key] = (tunnel_ipv4, tunnel_ipv6)
 
-    def remove_peer(self, *, client_id: str, public_key: str) -> OperationResult:
+    def remove_peer(self, *, public_key: str) -> OperationResult:
+        self._require_lock()
         self.remove_peer_calls += 1
         if self.fail_remove_count:
             self.fail_remove_count -= 1
@@ -438,3 +465,26 @@ class FakeWireGuardManager(WireGuardManager):
             return OperationResult.NOOP
         del self.peers[public_key]
         return OperationResult.SUCCESS
+
+    def current_peers(self) -> dict[str, frozenset[str]]:
+        return {
+            public_key: frozenset({tunnel_ipv4, tunnel_ipv6})
+            for public_key, (tunnel_ipv4, tunnel_ipv6) in self.peers.items()
+        }
+
+    def sync_peers(self, desired: dict[str, tuple[str, str]]) -> PeerSyncResult:
+        self._require_lock()
+        self.sync_calls += 1
+        added = updated = removed = 0
+        for public_key, ips in desired.items():
+            if public_key not in self.peers:
+                self.peers[public_key] = ips
+                added += 1
+            elif self.peers[public_key] != ips:
+                self.peers[public_key] = ips
+                updated += 1
+        for public_key in list(self.peers):
+            if public_key not in desired:
+                del self.peers[public_key]
+                removed += 1
+        return PeerSyncResult(added=added, updated=updated, removed=removed)

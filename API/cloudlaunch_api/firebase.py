@@ -108,6 +108,18 @@ class FirestoreRepository(FirebaseRepository):
             return None
         return _client_from_data(doc.to_dict() or {}, client_id)
 
+    def list_active_clients(self, region_id: str) -> list[ClientDoc]:
+        snapshots = self._db().collection_group("Instances").where("regionId", "==", region_id).stream()
+        clients = []
+        for snapshot in snapshots:
+            try:
+                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
+            except ValueError:
+                continue
+            if client.status == ClientStatus.ACTIVE and client.client_public_key:
+                clients.append(client)
+        return clients
+
     def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
         from firebase_admin import auth, firestore
 
@@ -465,6 +477,7 @@ def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
         wireguard_public_key=data.get("wireguardPublicKey") or "",
         capacity_limit=int(data.get("capacityLimit") or 0),
         active_client_count=int(data.get("activeClientCount") or 0),
+        wireguard_endpoint_hostname=data.get("wireguardEndpointHostname") or "",
         display_order=data.get("displayOrder"),
         health_status=data.get("healthStatus"),
         updated_at=data.get("updatedAt"),
@@ -496,6 +509,7 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
         server_public_key=data.get("serverPublicKey") or "",
         client_public_key=data.get("clientPublicKey") or "",
         wireguard_config=data.get("wireguardConfig"),
+        server_endpoint_hostname=data.get("serverEndpointHostname") or "",
         created_at=data.get("createdAt") if now is None else now,
         updated_at=data.get("updatedAt") if now is None else now,
         removed_at=data.get("removedAt"),
@@ -542,6 +556,7 @@ def _client_write_data(
         "assignedTunnelIpv4": assigned_tunnel_ipv4,
         "assignedTunnelIpv6": assigned_tunnel_ipv6,
         "serverEndpointIpv4": region.wireguard_endpoint_ipv4,
+        "serverEndpointHostname": region.wireguard_endpoint_hostname,
         "serverPublicKey": region.wireguard_public_key,
         "clientPublicKey": "",
         "wireguardConfig": None,

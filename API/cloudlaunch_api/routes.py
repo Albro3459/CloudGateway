@@ -49,7 +49,6 @@ async def create_client(
     wireguard: WireGuardManager = request.app.state.wireguard
     request_id = request.state.request_id
     reserved_client: ClientDoc | None = None
-    peer_added = False
 
     log_event(
         logger,
@@ -75,19 +74,6 @@ async def create_client(
             tunnel_ipv4=reserved_client.assigned_tunnel_ipv4,
             tunnel_ipv6=reserved_client.assigned_tunnel_ipv6,
         )
-        _run_wireguard_operation(
-            lambda: wireguard.add_peer(
-                client_id=reserved_client.client_id,
-                public_key=keypair.public_key,
-                tunnel_ipv4=reserved_client.assigned_tunnel_ipv4,
-                tunnel_ipv6=reserved_client.assigned_tunnel_ipv6,
-            ),
-            request_id=request_id,
-            client_id=reserved_client.client_id,
-            region_id=reserved_client.region_id,
-            operation="add_peer",
-        )
-        peer_added = True
     except WireGuardApplyFailedError as exc:
         if reserved_client is not None:
             _mark_reserved_client_failed(
@@ -120,42 +106,76 @@ async def create_client(
         )
         raise
 
-    try:
-        active_client = repository.mark_client_active(
-            owner_uid=user.uid,
-            region_id=reserved_client.region_id,
-            client_id=reserved_client.client_id,
-            client_public_key=keypair.public_key,
-            wireguard_config=wireguard_config,
-        )
-    except Exception as exc:
-        if peer_added:
+    # The lock spans peer apply plus the final Firebase write so a concurrent
+    # peer sync never observes a creating doc with a live peer.
+    with wireguard.lock():
+        try:
+            _run_wireguard_operation(
+                lambda: wireguard.add_peer(
+                    public_key=keypair.public_key,
+                    tunnel_ipv4=reserved_client.assigned_tunnel_ipv4,
+                    tunnel_ipv6=reserved_client.assigned_tunnel_ipv6,
+                ),
+                request_id=request_id,
+                client_id=reserved_client.client_id,
+                region_id=reserved_client.region_id,
+                operation="add_peer",
+            )
+        except WireGuardApplyFailedError as exc:
+            _mark_reserved_client_failed(
+                repository,
+                client=reserved_client,
+                error_code=ErrorCode.WIREGUARD_APPLY_FAILED,
+                error_message=exc.message,
+                request_id=request_id,
+            )
+            log_event(
+                logger,
+                Event.CLIENT_CREATE_FAILED,
+                level=logging.WARNING,
+                request_id=request_id,
+                user_id=user.uid,
+                region_id=body.region_id,
+                client_id=reserved_client.client_id,
+                error_code=ErrorCode.WIREGUARD_APPLY_FAILED.value,
+            )
+            raise
+
+        try:
+            active_client = repository.mark_client_active(
+                owner_uid=user.uid,
+                region_id=reserved_client.region_id,
+                client_id=reserved_client.client_id,
+                client_public_key=keypair.public_key,
+                wireguard_config=wireguard_config,
+            )
+        except Exception as exc:
             _cleanup_peer_after_create_failure(
                 wireguard,
                 client=reserved_client,
                 public_key=keypair.public_key,
                 request_id=request_id,
             )
-        _remove_reserved_client_after_create_failure(
-            repository,
-            client=reserved_client,
-            error_code=ErrorCode.FIREBASE_WRITE_FAILED,
-            error_message="Failed to write to Firebase.",
-            request_id=request_id,
-        )
-        log_event(
-            logger,
-            Event.CLIENT_CREATE_FAILED,
-            level=logging.ERROR,
-            request_id=request_id,
-            user_id=user.uid,
-            region_id=reserved_client.region_id,
-            client_id=reserved_client.client_id,
-            error_code=getattr(exc, "code", ErrorCode.FIREBASE_WRITE_FAILED).value,
-        )
-        if isinstance(exc, ApiError):
-            raise
-        raise FirebaseWriteFailedError() from exc
+            _remove_reserved_client_after_create_failure(
+                repository,
+                client=reserved_client,
+                error_code=ErrorCode.FIREBASE_WRITE_FAILED,
+                error_message="Failed to write to Firebase.",
+                request_id=request_id,
+            )
+            log_event(
+                logger,
+                Event.CLIENT_CREATE_FAILED,
+                level=logging.ERROR,
+                request_id=request_id,
+                user_id=user.uid,
+                region_id=reserved_client.region_id,
+                client_id=reserved_client.client_id,
+                error_code=getattr(exc, "code", ErrorCode.FIREBASE_WRITE_FAILED).value,
+            )
+            if isinstance(exc, ApiError):
+                raise
+            raise FirebaseWriteFailedError() from exc
 
     log_event(
         logger,
@@ -208,20 +228,23 @@ async def delete_client(
             client_id=client_id,
         )
 
-        if client.client_public_key:
-            _run_wireguard_operation(
-                lambda: wireguard.remove_peer(client_id=client.client_id, public_key=client.client_public_key),
-                request_id=request_id,
-                client_id=client.client_id,
-                region_id=client.region_id,
-                operation="remove_peer",
+        # The lock spans peer removal plus the Firebase write so a concurrent
+        # peer sync never re-adds a peer whose doc is about to be removed.
+        with wireguard.lock():
+            if client.client_public_key:
+                _run_wireguard_operation(
+                    lambda: wireguard.remove_peer(public_key=client.client_public_key),
+                    request_id=request_id,
+                    client_id=client.client_id,
+                    region_id=client.region_id,
+                    operation="remove_peer",
+                )
+            removed_client = repository.delete_client(
+                requester_uid=user.uid,
+                target_uid=body.user_id,
+                region_id=body.region_id,
+                client_id=client_id,
             )
-        removed_client = repository.delete_client(
-            requester_uid=user.uid,
-            target_uid=body.user_id,
-            region_id=body.region_id,
-            client_id=client_id,
-        )
     except ApiError:
         log_event(
             logger,
@@ -323,6 +346,7 @@ def _create_client_response(client: ClientDoc) -> CreateClientResponse:
         assigned_tunnel_ipv4=client.assigned_tunnel_ipv4,
         assigned_tunnel_ipv6=client.assigned_tunnel_ipv6,
         server_endpoint_ipv4=client.server_endpoint_ipv4,
+        server_endpoint_hostname=client.server_endpoint_hostname,
         wireguard_config=client.wireguard_config or "",
     )
 
@@ -463,7 +487,7 @@ def _cleanup_peer_after_create_failure(
 ) -> None:
     try:
         _run_wireguard_operation(
-            lambda: wireguard.remove_peer(client_id=client.client_id, public_key=public_key),
+            lambda: wireguard.remove_peer(public_key=public_key),
             request_id=request_id,
             client_id=client.client_id,
             region_id=client.region_id,

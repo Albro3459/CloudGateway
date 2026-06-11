@@ -10,9 +10,8 @@ class Settings(BaseSettings):
     api_port: int = 8000
     firebase_credentials_file: str = "/tmp/cloudlaunch-firebase-credentials.json"
     wg_interface: str = "wg0"
-    wg_config_path: str = "/etc/wireguard/wg0.conf"
     wg_server_public_key: str = "local-server-public-key"
-    wg_endpoint_ipv4: str = "127.0.0.1"
+    wg_endpoint_hostname: str = "127.0.0.1"
     wg_port: int = 51820
     wg_dns_ipv4: str = "1.1.1.1"
     wg_dns_ipv6: str = "2606:4700:4700::1111"
