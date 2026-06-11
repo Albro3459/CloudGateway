@@ -1,18 +1,26 @@
 {
     "configurations": [
-    {
-        "name": "Debug React",
-        "type": "pwa-node",
-        "request": "launch",
-        "runtimeExecutable": "npm",
-        "runtimeArgs": [ "run", "start" ],
-        "cwd": "${workspaceFolder}/react-frontend",
-        "console": "integratedTerminal",
-        "serverReadyAction": {
-            "pattern": "Local:.*(https?://localhost:\\d+)",
-            "uriFormat": "%s",
-            "action": "debugWithChrome"
+        {
+            "name": "Debug React",
+            "type": "pwa-node",
+            "request": "launch",
+            "runtimeExecutable": "npm",
+            "runtimeArgs": [ "run", "start" ],
+            "cwd": "${workspaceFolder}/react-frontend",
+            "console": "integratedTerminal",
+            "serverReadyAction": {
+                "pattern": "Local:.*(https?://localhost:\\d+)",
+                "uriFormat": "%s",
+                "action": "debugWithChrome"
+            }
+        },
+        {
+            "name": "Test Everything",
+            "type": "pwa-node",
+            "request": "launch",
+            "runtimeExecutable": "bash",
+            "runtimeArgs": ["./test.sh"],
+            "console": "integratedTerminal"
         }
-    },
     ]
 }
