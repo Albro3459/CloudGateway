@@ -1,27 +1,31 @@
 # VM / Boot Volume Loss Recovery
 
-If a regional VM or its boot volume is lost, the server's WireGuard private key and `/etc/wireguard/wg0.conf` are gone with it. Existing client configs for that region are permanently dead: users must rotate by deleting old clients and creating new ones. This is the accepted recovery model - there is no config recovery and no migration.
+A lost regional VM or boot volume is recoverable without users recreating clients, because nothing client-critical lives only on the host:
 
-The server never stores client private keys, and Firebase stores product state, not host secrets, so nothing in Firebase can resurrect the old tunnel.
+* The server WireGuard private key comes from `terraform.tfvars`, so a rebuilt host has the same public key.
+* Client configs point at the non-proxied DNS endpoint `wg.<regionId>.<origin>`, not a raw IP.
+* Peers are never stored on the host; Firebase is the single source of truth and `cloudlaunch-sync-peers` rebuilds the live peer set at boot.
 
-## Steps
+Existing client configs therefore keep working after a rebuild - users just toggle their tunnel off/on so WireGuard re-resolves the DNS name.
 
-1. Disable the region so the dashboard stops offering it and the API rejects new work:
-   * Set `Regions/{regionId}.enabled` to `false` and update `updatedAt`.
+## Standard Recovery (server key retained)
 
-2. Redeploy the regional host by following [docs/regional-deployment.md](regional-deployment.md) end to end. A fresh deployment generates a new server WireGuard keypair and may receive a new public IPv4.
+1. Optionally set `Regions/{regionId}.enabled` to `false` to pause new client work during the rebuild.
+2. Rebuild the host: `terraform apply` per [docs/regional-deployment.md](regional-deployment.md) (the plan will show the instance being replaced). Use the same `wg_server_private_key` and a `source_ref` matching what should run.
+3. Update the **grey-cloud** `wg.<regionId>.<origin>` A record to the new public IPv4, and the proxied API record if the IP changed.
+4. Update `Regions/{regionId}.wireguardEndpointIpv4` (and `wireguardEndpointIpv6` if used) to the new IP. `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs are unchanged.
+5. Confirm the boot peer sync succeeded: `systemctl status cloudlaunch-sync-peers` (or run `sudo cloudlaunch-sync-peers`). The live peer set is rebuilt from the region's `active` client docs.
+6. Validate `/api/health` through Cloudflare, then re-enable the region if it was disabled.
+7. Tell affected users to toggle their WireGuard tunnel off and on (clients resolve the endpoint DNS at tunnel-up). No config changes are needed.
 
-3. Update the `Regions/{regionId}` doc for the new host:
-   * `wireguardEndpointIpv4` (and `wireguardEndpointIpv6` if used) to the new public IP
-   * `wireguardPublicKey` to the new server public key
-   * `wireguardPort`, `wireguardDnsIpv4`, `wireguardDnsIpv6` if they changed
-   * `activeClientCount` to `0` - the new host starts with no peers
-   * `updatedAt`
+`activeClientCount` stays correct - it tracks Firebase state, which did not change.
 
-4. Update the Cloudflare `A` record for `<regionId>.<origin>` if the public IPv4 changed. Keep the record proxied with Authenticated Origin Pulls enforced.
+## Key-Loss Recovery (server key rotated or compromised)
 
-5. Clean up the dead client docs in that region: set each previously `active` doc to `removed` with `removedAt` (admin/Admin SDK, not the frontend). Their stored configs point at the old server key/IP and will never connect.
+Only if the server private key must change (compromise, or the tfvars secret is lost): existing client configs embed the old server public key and are permanently dead.
 
-6. Re-enable the region (`enabled: true`) after the deployment runbook validation passes (`/api/health`, test client create/delete, WireGuard handshake).
-
-7. Notify affected users that they must create new clients in that region. Old configs cannot be repaired and should be deleted from their devices.
+1. Disable the region (`enabled: false`).
+2. Generate a new server keypair, update `wg_server_private_key` in tfvars, and rebuild.
+3. Update the region doc: `wireguardPublicKey` to the new public key, endpoint IP as above, `activeClientCount` to `0`.
+4. Mark each previously `active` client doc `removed` with `removedAt` (admin/Admin SDK, not the frontend).
+5. Re-enable the region after validation and notify users to delete old tunnels and create new clients.

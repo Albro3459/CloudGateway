@@ -22,7 +22,7 @@ The host fetches its bootstrap script and API source from GitHub at boot using `
 cd OCI/terraform
 cp terraform.tfvars.example terraform.tfvars
 # fill in real values for this region (source ref, region ID, API hostname,
-# CORS origin, FastAPI port, WireGuard endpoint IPv4, tunnel DNS IPs,
+# CORS origin, FastAPI port, WireGuard endpoint hostname, tunnel DNS IPs,
 # Firebase credentials, Caddy/Cloudflare settings)
 terraform init
 terraform validate
@@ -32,9 +32,10 @@ terraform apply
 
 Record the instance's public IPv4. After cloud-init finishes, confirm on the host:
 
-* `wg0` is up with no peers: `sudo wg show wg0`
-* `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks
+* `wg0` is up: `sudo wg show wg0`
+* `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudlaunch-sync-peers` rebuilds the live peer set at boot)
 * `cloudlaunch-api.service` is active and listening only on `127.0.0.1`
+* `cloudlaunch-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
 * Caddy is active on `80`/`443`
 * `/etc/cloudlaunch/api.env` is mode `0600`, root-owned, and `CLOUDLAUNCH_REGION_ID` matches this region
 
@@ -45,10 +46,11 @@ If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (r
 The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gateway.gocloudlaunch.com`.
 
 1. In the Cloudflare zone for `<origin>`, add an `A` record for `<regionId>.<origin>` pointing at the server public IPv4, with proxy enabled (orange cloud).
-2. Enable Authenticated Origin Pulls for the zone (or per-hostname) so the origin only accepts TLS from Cloudflare. Caddy on the host requires the Cloudflare client certificate.
-3. Set the zone SSL/TLS mode to Full (strict).
+2. Add an `A` record for the WireGuard endpoint `wg.<regionId>.<origin>` pointing at the server public IPv4, with proxy **disabled** (grey cloud) and a low TTL (300s). This must match the `wg_endpoint_hostname` tfvar - it is the endpoint inside every client config, and it must never be proxied (Cloudflare does not proxy WireGuard UDP).
+3. Enable Authenticated Origin Pulls for the zone (or per-hostname) so the origin only accepts TLS from Cloudflare. Caddy on the host requires the Cloudflare client certificate.
+4. Set the zone SSL/TLS mode to Full (strict).
 
-WireGuard traffic does not go through Cloudflare. Only the API hostname is proxied; clients connect to the raw server public IPv4.
+WireGuard traffic does not go through Cloudflare. Only the API hostname is proxied; clients resolve `wg.<regionId>.<origin>` directly to the server public IPv4 at tunnel-up.
 
 ## 4. Create/Update the Firebase Region Doc
 
@@ -59,8 +61,9 @@ Create or update `Regions/{regionId}` in Firestore with the contract fields (see
 * `regionId`: same as the document ID
 * `displayName`
 * `enabled`: `true` once validation passes (keep `false` while validating)
-* `wireguardEndpointIpv4`: raw server public IPv4
+* `wireguardEndpointIpv4`: raw server public IPv4 (operations/display)
 * `wireguardEndpointIpv6`: string or `null`
+* `wireguardEndpointHostname`: the grey-cloud `wg.<regionId>.<origin>` hostname used in client configs
 * `wireguardPort`: `51820` by default
 * `wireguardDnsIpv4` / `wireguardDnsIpv6`: server tunnel DNS IPs
 * `wireguardPublicKey`: server WireGuard public key
@@ -70,7 +73,7 @@ Create or update `Regions/{regionId}` in Firestore with the contract fields (see
 * `healthStatus`: optional
 * `updatedAt`: Firestore timestamp
 
-These values must match the host's `/etc/cloudlaunch/api.env` (`CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_WG_ENDPOINT_IPV4`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`).
+These values must match the host's `/etc/cloudlaunch/api.env` (`CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`).
 
 ## 5. Validate `/api/health` Through Cloudflare
 
@@ -96,15 +99,15 @@ This must be rejected. If it returns a healthy response, the origin is reachable
 
 1. Set `enabled: true` on the region doc so the dashboard shows the region.
 2. Log in to the dashboard, select the new region tab, and create a client with an optional display name.
-3. Confirm the response shows status `active`, assigned tunnel IPv4/IPv6, and a config whose `Endpoint` is the raw server public IPv4.
+3. Confirm the response shows status `active`, assigned tunnel IPv4/IPv6, and a config whose `Endpoint` is `wg.<regionId>.<origin>:51820`.
 4. Confirm the client doc exists at `Users/{uid}/Regions/{regionId}/Instances/{clientId}` and `activeClientCount` incremented.
-5. On the host, confirm the peer appears in `sudo wg show wg0` and in `/etc/wireguard/wg0.conf`.
-6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0` and `wg0.conf`, the doc status is `removed`, and the counter decremented.
+5. On the host, confirm the peer appears in `sudo wg show wg0` (`/etc/wireguard/wg0.conf` stays peer-free by design).
+6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0`, the doc status is `removed`, and the counter decremented.
 
 ## 7. Verify WireGuard Connects
 
 1. Create a client and load its config in the WireGuard app (QR or download).
-2. Confirm the config endpoint is `<server public IPv4>:51820`, not a Cloudflare hostname.
+2. Confirm the config endpoint is `wg.<regionId>.<origin>:51820` and that the name resolves to the server public IPv4 (grey cloud, not proxied).
 3. Activate the tunnel and confirm a handshake on the host:
 
 ```sh

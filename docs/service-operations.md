@@ -50,9 +50,22 @@ wg show wg0
 wg show wg0 latest-handshakes
 ```
 
-* Avoid `systemctl restart wg-quick@wg0` during normal operations: it tears down and re-creates the interface, briefly dropping every client and re-running the firewall `PostUp`/`PostDown` rules. Peer changes are applied by the API with `wg syncconf`; manual peer repair uses [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
-* A restart is acceptable when the interface itself is wedged or after host-level interface config changes. On boot, the service brings `wg0` up from `/etc/wireguard/wg0.conf` with the current peer set.
+* Avoid `systemctl restart wg-quick@wg0` during normal operations: it tears down and re-creates the interface, briefly dropping every client and re-running the firewall `PostUp`/`PostDown` rules. Peer changes are applied live by the API with `wg set`.
+* A restart is acceptable when the interface itself is wedged or after host-level interface config changes. `/etc/wireguard/wg0.conf` is interface-only (never contains peers), so after any `wg-quick` restart the peer set is empty until the sync restores it - run `sudo cloudlaunch-sync-peers` immediately afterward rather than waiting for the next boot.
 * WireGuard exposes runtime handshake/transfer counters via `wg show`; reading them live is fine, persisting them per user is not.
+
+## cloudlaunch-sync-peers.service (Firebase peer sync)
+
+* Rebuilds the live `wg0` peer set from the region's `active` client docs. Firebase is the single source of truth for peers; nothing on the host persists them. Runs at boot (with on-failure retries every 30s until Firebase is reachable) and on demand.
+
+```sh
+sudo cloudlaunch-sync-peers
+systemctl status cloudlaunch-sync-peers
+journalctl -u cloudlaunch-sync-peers --since "1 hour ago"
+```
+
+* Logs structured JSON with added/updated/removed counts. Semantics and drift cases are documented in [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
+* It shares the API's mutation lock, so running it during live create/delete traffic is safe.
 
 ## Unbound (VPN DNS), if present
 

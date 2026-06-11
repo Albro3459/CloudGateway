@@ -18,8 +18,9 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 | `regionId` | string | same as document ID |
 | `displayName` | string | |
 | `enabled` | boolean | dashboard shows enabled regions only |
-| `wireguardEndpointIpv4` | string | raw public IPv4 used in client configs |
+| `wireguardEndpointIpv4` | string | raw server public IPv4 (operations/display) |
 | `wireguardEndpointIpv6` | string or null | |
+| `wireguardEndpointHostname` | string | grey-cloud `wg.<regionId>.<origin>` used as the client config endpoint |
 | `wireguardPort` | number | default `51820` |
 | `wireguardDnsIpv4` | string | tunnel DNS |
 | `wireguardDnsIpv6` | string | tunnel DNS |
@@ -61,6 +62,7 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 | `assignedTunnelIpv4` | string | CIDR, e.g. `10.0.0.2/32` |
 | `assignedTunnelIpv6` | string | CIDR, e.g. `fd42:42:42::2/128` |
 | `serverEndpointIpv4` | string | raw public IPv4 |
+| `serverEndpointHostname` | string | DNS endpoint hostname used in the stored config |
 | `serverPublicKey` | string | |
 | `clientPublicKey` | string | |
 | `wireguardConfig` | string or null | full client config for dashboard QR/download/copy |
@@ -80,7 +82,7 @@ Client documents never contain the server private key. The stored `wireguardConf
 
 ## Required Indexes
 
-The regional API counts allocated clients per region with a collection group query: `collectionGroup("Instances").where("regionId", "==", ...)`. Firestore single-field indexes default to collection scope, so this query needs a one-time, project-wide collection group index.
+The regional API counts allocated clients per region - and the boot-time peer sync lists active clients - with the same collection group query shape: `collectionGroup("Instances").where("regionId", "==", ...)` (status filtering happens client-side, so no composite index is needed). Firestore single-field indexes default to collection scope, so this query needs a one-time, project-wide collection group index.
 
 In the Firebase console:
 

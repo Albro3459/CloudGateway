@@ -1,94 +1,44 @@
-# WireGuard Drift Repair Runbook
+# WireGuard Peer Drift Repair
 
-Firebase is the product source of truth; `/etc/wireguard/wg0.conf` is the persistent host WireGuard config. Create/delete operations update both in one operation, and there is no startup reconciliation job. If Firebase and host WireGuard state disagree outside an active create/delete operation, that is an incident and must be repaired manually with this runbook.
+Firebase is the single source of truth for WireGuard peers. Peers are never saved to `/etc/wireguard/wg0.conf` or any other host state file - the live `wg0` peer set is a disposable projection of the region's `active` client docs, rebuilt by `cloudlaunch-sync-peers` on every boot.
 
-Secrets hygiene: never paste WireGuard private keys, full WireGuard configs, Firebase credentials, or auth tokens into logs, tickets, or chat. Identify peers by client ID or public key only.
-
-## 1. Detect Drift
-
-On the host, list live peers and persistent peers:
+Because of that, drift repair is one command on the regional host:
 
 ```sh
-sudo wg show wg0 peers
-sudo grep -A3 '^\[Peer\]' /etc/wireguard/wg0.conf
+sudo cloudlaunch-sync-peers
 ```
 
-In Firestore, list client docs for the region with `status: active` (collection group `Instances` filtered by `regionId`, or per-user `Users/{uid}/Regions/{regionId}/Instances/{clientId}`).
+It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with added/updated/removed counts) and exits nonzero on failure. The same binary runs at boot via `cloudlaunch-sync-peers.service`, which retries on failure until Firebase is reachable.
 
-Match on `clientPublicKey`. Drift cases:
+## What the Sync Does
 
-* live `wg0` and `wg0.conf` disagree with each other
-* a peer exists on the host with no `active` Firebase client doc
-* an `active` Firebase client doc has no peer on the host
+One-directional, Firebase to server. After a pass, the live peer set equals exactly the set of `active` client docs (with a `clientPublicKey`) for this region:
 
-Also check `Regions/{regionId}.activeClientCount` against the number of `active` docs.
+| Drift case | Result |
+| --- | --- |
+| Firebase has an `active` client the server is missing | Peer is added - the user's tunnel starts working again |
+| Peer's allowed-ips differ from the client doc | Peer is updated to match Firebase |
+| Client doc is `removed`/`failed`/`creating` but a matching peer exists | Peer is removed |
+| Server has a peer Firebase does not know | Peer is removed - unknown peers are never adopted into Firebase |
 
-## 2. Decide Repair Direction
+The sync never writes to Firebase and never creates client docs from server state. An unknown server peer is either leftover drift or tampering; both deserve removal.
 
-* Host peer with no `active` doc: remove the peer from the host. The product never promised that client.
-* `active` doc with no host peer: the stored config is dead. Either re-add the peer using the doc's `clientPublicKey` and assigned tunnel IPs, or set the doc `status` to `failed` (with `lastErrorCode`/`lastErrorMessage`) and have the user recreate the client. Prefer re-adding the peer when the doc data is complete and trusted; prefer recreate when in doubt, since the server never stores client private keys and cannot regenerate configs.
-* `wg0.conf` and live `wg0` disagree: `wg0.conf` is the persistent state; sync the live interface to it after confirming `wg0.conf` matches Firebase.
+A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudlaunch-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete.
 
-## 3. Repair on the Host (Lock + syncconf)
-
-Hold the same lock the API uses for the whole repair so the control plane cannot mutate WireGuard mid-repair. All commands as root.
+## Diagnosing Before/After
 
 ```sh
-sudo flock /run/cloudlaunch-wireguard.lock bash
+sudo wg show wg0                      # live peers (public keys, handshakes)
+sudo systemctl status cloudlaunch-sync-peers
+sudo journalctl -u cloudlaunch-sync-peers --since "1 hour ago"
 ```
 
-Inside the locked shell:
+Compare against Firestore: the region's client docs live at `Users/{uid}/Regions/{regionId}/Instances/{clientId}` with `status` and `clientPublicKey` fields (admin/Admin SDK access).
 
-1. Back up the current config (mode `0600`, timestamped):
+If a user's tunnel is down but their doc is `active` and the peer is present after a sync, the problem is not peer drift - check the endpoint DNS record, handshakes (`wg show wg0 latest-handshakes`), and Unbound per [docs/service-operations.md](service-operations.md).
 
-   ```sh
-   install -m 600 /etc/wireguard/wg0.conf "/etc/wireguard/wg0.conf.bak-$(date +%F_%H-%M-%S)"
-   ```
+## Counter Drift
 
-2. Write a candidate config with the desired peer set (mode `0600`, must end in `.conf` for validation):
+`Regions/{regionId}.activeClientCount` is maintained by API transactions and is display/capacity metadata, not peer state. If it drifts (for example after manual doc edits), recount the region's `active` client docs and update the field directly in the console. The peer sync does not touch it.
 
-   ```sh
-   install -m 600 /etc/wireguard/wg0.conf /etc/wireguard/wg0.candidate.conf
-   # edit /etc/wireguard/wg0.candidate.conf: add/remove [Peer] blocks only,
-   # leave [Interface] untouched
-   ```
-
-3. Validate the candidate:
-
-   ```sh
-   wg-quick strip /etc/wireguard/wg0.candidate.conf > /dev/null
-   ```
-
-4. Atomically replace the active config:
-
-   ```sh
-   mv /etc/wireguard/wg0.candidate.conf /etc/wireguard/wg0.conf
-   ```
-
-5. Sync the live interface to the persistent config:
-
-   ```sh
-   wg syncconf wg0 <(wg-quick strip /etc/wireguard/wg0.conf)
-   ```
-
-6. Verify:
-
-   ```sh
-   wg show wg0 peers
-   ```
-
-If the live apply fails, restore the timestamped backup over `wg0.conf` and rerun the `wg syncconf` step against the restored file, then exit the locked shell and investigate before retrying.
-
-Only exit the locked shell after `wg0.conf`, the live interface, and the Firebase updates below are consistent (or the failure is recorded).
-
-## 4. Repair Firebase
-
-Using the Firebase console or Admin SDK (not the frontend):
-
-* Mark abandoned docs: set `status` to `removed` (with `removedAt`) or `failed` (with `lastErrorCode`/`lastErrorMessage`) to match what the host now serves.
-* Correct `Regions/{regionId}.activeClientCount` to the number of `active` client docs.
-* Set `updatedAt` on every doc you change.
-
-## 5. Record the Incident
-
-Note what drifted, the suspected cause (failed operation, manual host edit, restored volume), and the repair performed - peer public keys and client IDs only, no key material.
+Never paste WireGuard private keys, full configs, Firebase credentials, or auth tokens into logs or tickets. Reference peers by client ID or public key.

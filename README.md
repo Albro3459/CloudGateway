@@ -24,11 +24,11 @@ React dashboard
       -> WireGuard host commands
 
 WireGuard client
-  -> server public IPv4:51820
+  -> wg.<regionId>.<origin>:51820 (non-proxied DNS -> server public IPv4)
   -> wg0 on regional OCI server
 ```
 
-Cloudflare fronts the regional API only. It is not part of the VPN data path; WireGuard clients connect directly to the server's raw public IPv4 endpoint.
+Cloudflare fronts the regional API only. It is not part of the VPN data path; WireGuard clients resolve the non-proxied (grey-cloud) `wg.<regionId>.<origin>` record and connect directly to the server's public IPv4.
 
 ### Components
 
@@ -36,7 +36,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudlaunch-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: custom build with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
-* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is the persistent host config; peers are added/removed by the API, never at deploy time.
+* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudlaunch-sync-peers`.
 * <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
 
 ## Regional API URLs
@@ -47,9 +47,9 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 ## Source of Truth
 
-* Firebase is the product source of truth: users, regions, clients, roles, limits, and stored configs.
-* `/etc/wireguard/wg0.conf` is the persistent host WireGuard config. Client create/delete updates Firebase, updates `wg0.conf`, and applies the live `wg0` change in the same operation.
-* On reboot the host uses `wg0.conf` and continues normally. There is no startup reconciliation job. If Firebase and the host drift outside an active operation, that is an incident; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
+* Firebase is the single source of truth: users, regions, clients, roles, limits, stored configs, and the WireGuard peer set.
+* Peers are never saved to `wg0.conf` or any other host state file. Client create/delete updates Firebase and applies the live `wg0` change in one locked operation.
+* On reboot, `wg-quick` brings up the interface from the static config and `cloudlaunch-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
 
 ## Clean Cutoff
 

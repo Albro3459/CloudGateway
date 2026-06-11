@@ -13,7 +13,7 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - One VPN server per region.
 - WireGuard traffic does not go through Cloudflare.
 - Regional API traffic uses Cloudflare DNS/proxy at `https://<region>.<origin>/api/*`.
-- WireGuard client configs use the server's actual public IPv4 endpoint.
+- WireGuard client configs use a non-proxied DNS endpoint `wg.<regionId>.<origin>` (grey-cloud A record pointing at the server public IPv4) so a rebuilt host with a new IP keeps existing clients after a tunnel toggle.
 - Remove Cloudflare Worker from the new flow.
 - Remove AWS Lambda from the new flow.
 - Keep AWS only for SES emails.
@@ -27,15 +27,16 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - Restrict regional API origin access with exact regional Host/SNI allowlisting and host firewall rules that only allow HTTP/HTTPS origin traffic from Cloudflare IP ranges.
 - Store user-visible WireGuard configs in Firebase.
 - Firebase is the product source of truth for users, regions, clients, roles, limits, and stored configs.
-- Firebase is the product source of truth, but `/etc/wireguard/wg0.conf` is the persistent host WireGuard config.
-- Add/remove client must update Firebase, update `/etc/wireguard/wg0.conf`, and apply the live `wg0` change.
-- No startup reconciliation or startup repair job is required. On reboot, the host uses `/etc/wireguard/wg0.conf` and continues normally.
-- Firebase drift from host WireGuard state is an accepted manual-repair risk for the initial implementation.
+- Firebase is the single source of truth for WireGuard peers. Peers are never saved to `/etc/wireguard/wg0.conf` or any other host state file.
+- `/etc/wireguard/wg0.conf` is written once by bootstrap with interface settings only and never contains `[Peer]` blocks.
+- Add/remove client updates Firebase and applies the live `wg0` change with `wg set`. There is no peer file to update.
+- A startup sync (`cloudlaunch-sync-peers`) pulls the active client list from Firebase on every boot and rebuilds the live peer set. The same command runs on demand for drift repair.
+- Sync is one-directional, Firebase to server: missing peers are added, drifted allowed-ips are fixed, unknown server peers are removed. Sync never writes to Firebase.
 - Users create clients only for themselves. There is no admin-create-client-for-another-user flow.
 - Client IDs must be globally unique UUIDv4 values.
 - Delete requests must identify the target user ID, region ID, and client ID. Normal users can only target their own user ID. Admins can target any user ID.
 - Admins can view all stored client config data for support.
-- If a regional VM or boot volume is lost, users in that region must rotate/recreate clients. This is acceptable for the initial implementation.
+- If a regional VM or boot volume is lost, the host is rebuilt with the same server key (from tfvars), the grey-cloud DNS record is pointed at the new IP, and the boot sync restores peers from Firebase. Clients survive by toggling their tunnel. Full client rotation is required only if the server private key is rotated or compromised.
 
 ## Architecture
 
@@ -51,7 +52,7 @@ React dashboard
       -> WireGuard host commands
 
 WireGuard client
-  -> server public IPv4:51820
+  -> wg.<region>.<origin>:51820 (non-proxied DNS -> server public IPv4)
   -> wg0 on regional OCI server
 ```
 
@@ -97,7 +98,7 @@ The frontend origin will be something like `https://gocloudlaunch.com` or `https
 
 FastAPI is the regional control plane. It should be small and boring.
 
-FastAPI runs as root because it owns the regional control-plane mutation path for `/etc/wireguard/wg0.conf` and the live `wg0` interface. It must still bind only to `127.0.0.1` and stay reachable only through Caddy.
+FastAPI runs as root because it owns the regional control-plane mutation path for the live `wg0` interface. It must still bind only to `127.0.0.1` and stay reachable only through Caddy.
 
 Required behavior:
 
@@ -114,7 +115,7 @@ Required behavior:
 - Accept an optional user-provided client display name.
 - Store generated client config in Firebase.
 - Apply peer changes to local WireGuard immediately.
-- Read server deployment config from local env/files, including region ID, public IPv4, WireGuard port, server tunnel DNS IPs, and server public key.
+- Read server deployment config from local env/files, including region ID, WireGuard endpoint hostname, WireGuard port, server tunnel DNS IPs, and server public key.
 
 Do not use shell string execution for privileged commands. Use `subprocess.run([...], shell=False)`, strict validation, and a local lock around WireGuard mutation.
 
@@ -167,6 +168,7 @@ Each server must have its own region ID in deployment config created by the Terr
   "assignedTunnelIpv4": "10.0.0.2/32",
   "assignedTunnelIpv6": "fd42:42:42::2/128",
   "serverEndpointIpv4": "1.2.3.4",
+  "serverEndpointHostname": "wg.us-sanjose-1.gateway.gocloudlaunch.com",
   "wireguardConfig": "..."
 }
 ```
@@ -210,16 +212,16 @@ Initial client statuses must be represented as explicit backend/frontend enums, 
 6. Check per-region user limit and server capacity.
 7. Generate a globally unique UUIDv4 client ID and fresh WireGuard client keys.
 8. Use a Firestore transaction to reserve the client document, assigned tunnel IP, and counters.
-9. Build the client config using the generated client private key, assigned tunnel IPs, server tunnel DNS IPs, server public key, and server public IPv4 endpoint.
-10. Acquire local WireGuard mutation lock.
-11. Apply the peer to `wg0`.
+9. Build the client config using the generated client private key, assigned tunnel IPs, server tunnel DNS IPs, server public key, and the regional WireGuard endpoint hostname.
+10. Acquire the local WireGuard mutation lock. The lock is held across the live peer change and the final Firebase write so a concurrent peer sync never observes mid-operation state.
+11. Apply the peer to `wg0` with `wg set`.
 12. Store final config and running status in Firebase.
-13. Log success.
+13. Release the lock, log success.
 14. Return the client/config data needed by the UI.
 
 If a later step fails after reservation, mark the client `failed` or roll back the reservation in Firebase. Log the failure and cleanup result. Do not leave `creating` records indefinitely.
 
-If create applies a peer to WireGuard but the final Firebase doc/config write fails, remove the peer, release the assigned IP/counter reservation when possible, and mark the client document `failed` if the document exists. This cleanup is part of the active create operation only. Do not run a startup reconciliation or repair job later.
+If create applies a peer to WireGuard but the final Firebase doc/config write fails, remove the peer, release the assigned IP/counter reservation when possible, and mark the client document `failed` if the document exists. This cleanup is part of the active create operation; any residue is also converged away by the next peer sync.
 
 Do not add a heavy idempotency system for the initial implementation. One direct retry is acceptable only for clearly transient host command failures. Otherwise, retries after a failed create can create a new client, as long as counters/IP reservations are kept clear enough to avoid obvious leaks.
 
@@ -232,10 +234,10 @@ Do not add a heavy idempotency system for the initial implementation. One direct
 5. Validate request region ID against server configured region ID.
 6. Validate ownership/admin permissions. Normal users can only delete clients under their own UID. Admins can delete clients across users.
 7. Read client document from Firebase.
-8. Acquire local WireGuard mutation lock.
-9. Remove the peer from `wg0`.
+8. Acquire the local WireGuard mutation lock. The lock is held across the live peer change and the Firebase write so a concurrent peer sync never re-adds a peer mid-delete.
+9. Remove the peer from `wg0` with `wg set`.
 10. Use Firebase transaction/update to mark the client removed and release counters/IP reservation.
-11. Log success.
+11. Release the lock, log success.
 12. Return success response.
 
 If WireGuard removal fails because the peer is already gone, treat the WireGuard removal as complete, mark the client `removed`, and release the assigned IP/counter reservation. If WireGuard removal fails for another reason, log failure and keep Firebase status clear enough for retry/manual repair.
@@ -256,6 +258,7 @@ Region documents should include:
 - display name
 - enabled flag
 - WireGuard public endpoint IPv4/IPv6
+- WireGuard endpoint DNS hostname (`wg.<regionId>.<origin>`)
 - WireGuard DNS tunnel IPv4/IPv6
 - WireGuard public key
 - port
@@ -379,25 +382,26 @@ WireGuard must run directly on the host.
 The server keeps local host-only config/secrets:
 
 - server private key
-- persistent `/etc/wireguard/wg0.conf` with interface settings and active peers
+- `/etc/wireguard/wg0.conf` with interface settings only, written once by bootstrap and never mutated afterward
 - systemd service files
-- temporary apply files if needed
 
-The server does not keep a second persistent client database outside Firebase. `/etc/wireguard/wg0.conf` is the actual WireGuard service config, not a separate product database.
-
-Add/remove client must update Firebase and `/etc/wireguard/wg0.conf`, then apply the live `wg0` change with WireGuard-native commands/config sync. The persistent config file is what survives reboot. No startup reconciliation or startup repair job is required. If Firebase and the host drift outside an active create/delete operation, that is a real incident and must be repaired manually.
+Peers are explicitly NOT saved to `wg0.conf` or any other host state file. Firebase is the single source of truth for the peer set; the live `wg0` interface is a disposable projection of it. `wg-quick` brings up the interface from the static config on boot, and `cloudlaunch-sync-peers` then pulls the active client list from Firebase and rebuilds the live peer set.
 
 WireGuard mutation procedure:
 
-1. Acquire an exclusive local lock, such as `/run/cloudlaunch-wireguard.lock`, before reading or writing WireGuard state.
-2. Read `/etc/wireguard/wg0.conf` and render a complete candidate config from the existing interface settings plus the desired peer set.
-3. Write a timestamped `0600` backup before replacing the active config.
-4. Write the candidate to a `0600` temporary file in `/etc/wireguard`.
-5. Validate the candidate by running `wg-quick strip <candidate>` with `subprocess.run([...], shell=False)`.
-6. Atomically replace `/etc/wireguard/wg0.conf` with the candidate using `os.replace`.
-7. Apply the live interface using `wg syncconf wg0 <stripped_config_file>` generated from `wg-quick strip`.
-8. If live apply fails, restore the backup config, attempt to sync the live interface back to the backup, mark the Firebase operation `failed`, and log the cleanup result.
-9. Release the lock only after persistent config, live interface state, and Firebase operation status have been updated or the failure has been recorded.
+1. Acquire an exclusive local lock (`/run/cloudlaunch-wireguard.lock`) before mutating WireGuard state.
+2. Add or update a peer with `wg set wg0 peer <publicKey> allowed-ips <ipv4>,<ipv6> persistent-keepalive 25` using `subprocess.run([...], shell=False)` and strict input validation.
+3. Remove a peer with `wg set wg0 peer <publicKey> remove`. An already-absent peer counts as removed (`noop`).
+4. Complete the matching Firebase write (mark active/removed, counters) while still holding the lock.
+5. Release the lock only after the live interface and Firebase operation status agree or the failure has been recorded.
+
+Peer sync procedure (`cloudlaunch-sync-peers`, run at boot by systemd with on-failure retries and on demand for drift repair):
+
+1. Read the region's `active` client docs (with public keys) from Firebase.
+2. Acquire the same exclusive lock.
+3. Read the live peer set with `wg show wg0 dump`.
+4. Add missing peers, fix drifted allowed-ips, and remove peers Firebase does not know about. Unknown server peers are always removed, never adopted.
+5. Sync never writes to Firebase. A missing region doc or empty client list is a successful empty sync.
 
 The helper must never pass private keys, full configs, or auth tokens to logs. Log peer public key fingerprints or client IDs instead.
 
@@ -408,7 +412,7 @@ Use the existing example configs as the template source:
 - Client config shape: `OCI/wireguard_configs/example.wg0-client.conf`
 - Server config shape: `OCI/wireguard_configs/example.wg0-server.conf`
 
-The client endpoint is public IPv4 only for the initial implementation. IPv6 is still supported inside the tunnel through the assigned IPv6 address and `AllowedIPs = ::/0`.
+The client endpoint is the regional DNS hostname `wg.<regionId>.<origin>` resolving to the server public IPv4 (clients resolve it at tunnel-up). IPv6 is still supported inside the tunnel through the assigned IPv6 address and `AllowedIPs = ::/0`.
 
 The server example and cloud-init template must be updated for shared-server mode: no initial static `[Peer]` should be written during Terraform/cloud-init. Peers are added and removed later by the FastAPI control plane.
 
@@ -422,17 +426,17 @@ Flow:
 2. Apply Terraform stack for the regional server.
 3. Cloud-init configures host services.
 4. Add/update the region document in Firebase.
-5. Add/update Cloudflare DNS record for `https://<region>.<origin>/api/*`.
+5. Add/update the proxied Cloudflare DNS record for `https://<region>.<origin>/api/*` and the non-proxied (grey-cloud, low TTL) `wg.<region>.<origin>` A record pointing at the server public IPv4.
 6. Verify `/api/health`.
-7. Verify add/remove client from the dashboard.
-8. Verify WireGuard connects using the raw server public IPv4 endpoint.
+7. Verify add/remove client from the dashboard and that the boot peer sync succeeded.
+8. Verify WireGuard connects using the `wg.<region>.<origin>` endpoint.
 
 ## Implementation Order
 
 1. Finalize Firebase schema and region documents.
 2. Create regional FastAPI app from reusable Lambda code where it still fits.
 3. Add structured logging, typed models, enums, and typed exceptions.
-4. Implement WireGuard helper with fresh key generation, IP assignment, local lock, persistent `wg0.conf` updates, and live apply/remove peer actions.
+4. Implement WireGuard helper with fresh key generation, IP assignment, local lock, live `wg set` peer actions, and the Firebase peer sync.
 5. Update OCI Terraform/cloud-init for shared regional server setup.
 6. Add custom Caddy build/config using the StreamTrack rate-limit pattern.
 7. Update frontend to remove deploy/terminate server flows and add client management.

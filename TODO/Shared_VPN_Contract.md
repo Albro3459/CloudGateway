@@ -55,6 +55,7 @@ Source-of-truth contract for the shared regional VPN platform. API, frontend, in
   "assignedTunnelIpv4": "10.0.0.2/32",
   "assignedTunnelIpv6": "fd42:42:42::2/128",
   "serverEndpointIpv4": "1.2.3.4",
+  "serverEndpointHostname": "wg.us-sanjose-1.gateway.gocloudlaunch.com",
   "wireguardConfig": "..."
 }
 ```
@@ -151,8 +152,9 @@ All controlled failures return this shape:
 - `regionId`: string, same as document ID.
 - `displayName`: string.
 - `enabled`: boolean.
-- `wireguardEndpointIpv4`: string raw public IPv4 used in client configs.
+- `wireguardEndpointIpv4`: string raw public IPv4 of the server, for operations/display.
 - `wireguardEndpointIpv6`: string or null.
+- `wireguardEndpointHostname`: string non-proxied DNS hostname used as the client config endpoint, `wg.<regionId>.<origin>`.
 - `wireguardPort`: number, default `51820`.
 - `wireguardDnsIpv4`: string.
 - `wireguardDnsIpv6`: string.
@@ -188,6 +190,7 @@ All controlled failures return this shape:
 - `assignedTunnelIpv4`: string CIDR.
 - `assignedTunnelIpv6`: string CIDR.
 - `serverEndpointIpv4`: string raw public IPv4.
+- `serverEndpointHostname`: string DNS endpoint hostname used in the stored config.
 - `serverPublicKey`: string.
 - `clientPublicKey`: string.
 - `wireguardConfig`: string or null.
@@ -233,12 +236,12 @@ All controlled failures return this shape:
   - `CLOUDLAUNCH_API_PORT`
   - `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
   - `CLOUDLAUNCH_WG_INTERFACE`
-  - `CLOUDLAUNCH_WG_CONFIG_PATH`
   - `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`
-  - `CLOUDLAUNCH_WG_ENDPOINT_IPV4`
+  - `CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME`
   - `CLOUDLAUNCH_WG_PORT`
   - `CLOUDLAUNCH_WG_DNS_IPV4`
   - `CLOUDLAUNCH_WG_DNS_IPV6`
   - `CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR`
   - `CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR`
-- Default values: `CLOUDLAUNCH_API_PORT=8000`, `CLOUDLAUNCH_WG_INTERFACE=wg0`, `CLOUDLAUNCH_WG_CONFIG_PATH=/etc/wireguard/wg0.conf`, `CLOUDLAUNCH_WG_PORT=51820`.
+- Default values: `CLOUDLAUNCH_API_PORT=8000`, `CLOUDLAUNCH_WG_INTERFACE=wg0`, `CLOUDLAUNCH_WG_PORT=51820`.
+- Peer state: Firebase is the single source of truth for WireGuard peers. Peers are never written to `/etc/wireguard/wg0.conf` or any other host state file; the file is written once by bootstrap with interface settings only. The `cloudlaunch-sync-peers` entry point (systemd `cloudlaunch-sync-peers.service`) rebuilds the live peer set from Firebase on every boot and on demand, one-directionally (Firebase wins; unknown server peers are removed; sync never writes to Firebase). API routes hold the `/run/cloudlaunch-wireguard.lock` flock across each WireGuard mutation plus its matching Firebase write.
