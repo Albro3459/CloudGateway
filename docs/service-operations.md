@@ -19,9 +19,10 @@ journalctl -u cloudlaunch-api.service -f
 journalctl -u cloudlaunch-api.service --since "1 hour ago"
 ```
 
-* Logs are structured JSON: request ID, event, region, route, status, UID/email, client ID, duration, exception type/message. If you see key material or full configs in API logs, that is a bug — report it immediately.
+* Logs are structured JSON: request ID, event, region, route, status, UID/email, client ID, duration, exception type/message. If you see key material or full configs in API logs, that is a bug - report it immediately.
 * After editing `/etc/cloudlaunch/api.env`, restart the service. Verify the file stays `0600` root-owned.
 * Restarting the API does not touch `wg0`; existing tunnels keep working.
+* To roll the API to a new version, run `sudo cloudlaunch-install-api <ref>` with a pushed tag/SHA (no argument re-fetches the deployed ref). It downloads `API/` from GitHub, reinstalls into the venv, and restarts the service - see [docs/github-deployment-setup.md](github-deployment-setup.md).
 
 ## Caddy
 
@@ -38,7 +39,7 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy   # prefer reload over restart for config changes
 ```
 
-* The binary is a custom build with `github.com/mholt/caddy-ratelimit`. A stock `caddy` binary will fail on the rate-limit directives — confirm the installed binary with `caddy list-modules | grep rate` if validation errors mention unknown directives.
+* The binary is a custom build with `github.com/mholt/caddy-ratelimit`. A stock `caddy` binary will fail on the rate-limit directives - confirm the installed binary with `caddy list-modules | grep rate` if validation errors mention unknown directives.
 * Caddy logs HTTP API requests only. While Caddy is down, the dashboard cannot reach the regional API, but VPN tunnels are unaffected.
 
 ## wg-quick@wg0 (WireGuard)

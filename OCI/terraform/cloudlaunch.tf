@@ -142,6 +142,17 @@ variable "wg_server_private_key" {
 	description = "WireGuard server private key used in /etc/wireguard/wg0.conf"
 }
 
+variable "source_repo" {
+	type = string
+	default = "Albro3459/CloudGateway"
+	description = "Public GitHub owner/repo the host fetches bootstrap and API source from"
+}
+
+variable "source_ref" {
+	type = string
+	description = "Git ref fetched at boot: a pushed tag like deploy-v1.0.0, a full commit SHA, or a branch name. See docs/github-deployment-setup.md"
+}
+
 variable "region_id" {
 	type = string
 	description = "CloudLaunch region ID used by the regional API, for example us-sanjose-1"
@@ -266,21 +277,13 @@ variable "cloudflare_ipv6_ranges" {
 }
 
 locals {
-	caddyfile = templatefile("${path.module}/Caddyfile.tftpl", {
-		api_hostname = var.api_hostname
-		dashboard_cors_origin = var.dashboard_cors_origin
-		fastapi_port = var.fastapi_port
-		caddy_acme_email = var.caddy_acme_email
-		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
-		caddy_api_rate_limit_events = var.caddy_api_rate_limit_events
-		caddy_api_rate_limit_window = var.caddy_api_rate_limit_window
-	})
-
 	backdoor_user_data = templatefile("${path.module}/backdoor-cloud-init.yaml", {
 		hashed_password = var.hashed_password
 	})
 
-	wireguard_user_data = templatefile("${path.module}/wireguard-cloud-init.sh.tftpl", {
+	wireguard_user_data = templatefile("${path.module}/stub-cloud-init.sh.tftpl", {
+		source_repo = var.source_repo
+		source_ref = var.source_ref
 		wg_interface = var.wg_interface
 		wg_listen_port = var.wg_listen_port
 		wg_address_v4 = var.wg_address_v4
@@ -305,7 +308,8 @@ locals {
 		caddy_version = var.caddy_version
 		xcaddy_version = var.xcaddy_version
 		caddy_rate_limit_module = var.caddy_rate_limit_module
-		caddyfile_content_base64 = base64encode(local.caddyfile)
+		caddy_api_rate_limit_events = var.caddy_api_rate_limit_events
+		caddy_api_rate_limit_window = var.caddy_api_rate_limit_window
 		cloudflare_ipv4_ranges = var.cloudflare_ipv4_ranges
 		cloudflare_ipv6_ranges = var.cloudflare_ipv6_ranges
 	})

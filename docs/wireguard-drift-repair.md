@@ -91,4 +91,4 @@ Using the Firebase console or Admin SDK (not the frontend):
 
 ## 5. Record the Incident
 
-Note what drifted, the suspected cause (failed operation, manual host edit, restored volume), and the repair performed — peer public keys and client IDs only, no key material.
+Note what drifted, the suspected cause (failed operation, manual host edit, restored volume), and the repair performed - peer public keys and client IDs only, no key material.

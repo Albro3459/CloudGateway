@@ -16,12 +16,14 @@ Follow the network prerequisites in [OCI/README.md](../OCI/README.md):
 
 ## 2. Apply Terraform
 
+The host fetches its bootstrap script and API source from GitHub at boot using `source_repo`/`source_ref`. The ref must be pushed to GitHub before applying - see [docs/github-deployment-setup.md](github-deployment-setup.md) for the tag workflow and the fetched-path contract.
+
 ```sh
 cd OCI/terraform
 cp terraform.tfvars.example terraform.tfvars
-# fill in real values for this region (region ID, API hostname, CORS origin,
-# FastAPI port, WireGuard endpoint IPv4, tunnel DNS IPs, Firebase credentials,
-# Caddy/Cloudflare settings)
+# fill in real values for this region (source ref, region ID, API hostname,
+# CORS origin, FastAPI port, WireGuard endpoint IPv4, tunnel DNS IPs,
+# Firebase credentials, Caddy/Cloudflare settings)
 terraform init
 terraform validate
 terraform plan
@@ -32,34 +34,13 @@ Record the instance's public IPv4. After cloud-init finishes, confirm on the hos
 
 * `wg0` is up with no peers: `sudo wg show wg0`
 * `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks
+* `cloudlaunch-api.service` is active and listening only on `127.0.0.1`
 * Caddy is active on `80`/`443`
 * `/etc/cloudlaunch/api.env` is mode `0600`, root-owned, and `CLOUDLAUNCH_REGION_ID` matches this region
 
-`cloudlaunch-api.service` stays inactive until the API source is installed in the next step.
+If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudlaunch-install-api <ref>` - no redeploy needed.
 
-## 3. Install the Regional API
-
-The API source is too large for OCI instance user-data, so cloud-init only prepares the venv, env file, and systemd unit. Copy the source and install it:
-
-```sh
-rsync -r --exclude '.venv' --exclude '__pycache__' --exclude 'build' \
-  --exclude '*.egg-info' --exclude '.pytest_cache' --exclude 'tests' \
-  API/ ubuntu@<server-public-ipv4>:/tmp/cloudlaunch-api/
-ssh ubuntu@<server-public-ipv4>
-sudo cp -R /tmp/cloudlaunch-api/. /opt/cloudlaunch/api/
-sudo cloudlaunch-install-api
-```
-
-`cloudlaunch-install-api` installs the package into `/opt/cloudlaunch/api/.venv` and restarts `cloudlaunch-api.service`. Confirm the service is active and listening only on `127.0.0.1`:
-
-```sh
-sudo systemctl status cloudlaunch-api
-sudo ss -tlnp | grep <fastapi_port>
-```
-
-Repeat this step to deploy API updates.
-
-## 4. Configure Cloudflare DNS and Origin Pulls
+## 3. Configure Cloudflare DNS and Origin Pulls
 
 The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gateway.gocloudlaunch.com`.
 
@@ -69,7 +50,7 @@ The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.ga
 
 WireGuard traffic does not go through Cloudflare. Only the API hostname is proxied; clients connect to the raw server public IPv4.
 
-## 5. Create/Update the Firebase Region Doc
+## 4. Create/Update the Firebase Region Doc
 
 One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [docs/firebase-schema.md](firebase-schema.md), "Required Indexes"). The API's create/delete transactions fail without it.
 
@@ -91,7 +72,7 @@ Create or update `Regions/{regionId}` in Firestore with the contract fields (see
 
 These values must match the host's `/etc/cloudlaunch/api.env` (`CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_WG_ENDPOINT_IPV4`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`).
 
-## 6. Validate `/api/health` Through Cloudflare
+## 5. Validate `/api/health` Through Cloudflare
 
 ```sh
 curl -s https://<regionId>.<origin>/api/health
@@ -111,7 +92,7 @@ curl -sk --resolve <regionId>.<origin>:443:<server-public-ipv4> https://<regionI
 
 This must be rejected. If it returns a healthy response, the origin is reachable without Cloudflare; stop and fix the firewall/Caddy configuration before enabling the region.
 
-## 7. Create and Delete a Test Client from the Dashboard
+## 6. Create and Delete a Test Client from the Dashboard
 
 1. Set `enabled: true` on the region doc so the dashboard shows the region.
 2. Log in to the dashboard, select the new region tab, and create a client with an optional display name.
@@ -120,7 +101,7 @@ This must be rejected. If it returns a healthy response, the origin is reachable
 5. On the host, confirm the peer appears in `sudo wg show wg0` and in `/etc/wireguard/wg0.conf`.
 6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0` and `wg0.conf`, the doc status is `removed`, and the counter decremented.
 
-## 8. Verify WireGuard Connects
+## 7. Verify WireGuard Connects
 
 1. Create a client and load its config in the WireGuard app (QR or download).
 2. Confirm the config endpoint is `<server public IPv4>:51820`, not a Cloudflare hostname.

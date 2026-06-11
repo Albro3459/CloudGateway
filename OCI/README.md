@@ -14,17 +14,19 @@ WireGuard peers are never created at deploy time. The regional FastAPI control p
 
 ## What the Host Runs
 
-Cloud-init installs and configures:
+Cloud-init is a small stub: Terraform bakes only the per-region config and secrets into user-data, and the stub fetches the versioned bootstrap script and API source from GitHub at `source_repo`/`source_ref` before running it. Any deployable ref must contain `OCI/host/bootstrap.sh`, `OCI/host/Caddyfile.template`, and `API/` - see [docs/github-deployment-setup.md](../docs/github-deployment-setup.md).
+
+The fetched bootstrap installs and configures:
 
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written with interface settings and <b>no initial `[Peer]`</b>, started through `wg-quick@wg0`.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * Unbound DNS for VPN clients (tunnel DNS IPs).
-* Python runtime and the regional FastAPI app scaffolding per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
-  * install directory `/opt/cloudlaunch/api` with venv `/opt/cloudlaunch/api/.venv`
+* Python runtime and the regional FastAPI app per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
+  * install directory `/opt/cloudlaunch/api` with venv `/opt/cloudlaunch/api/.venv`, installed from the fetched `API/` source
   * systemd service `cloudlaunch-api.service`, running as root, bound only to `127.0.0.1`
   * environment file `/etc/cloudlaunch/api.env` (mode `0600`, root-owned) with the `CLOUDLAUNCH_*` variables, including `CLOUDLAUNCH_REGION_ID`
   * Firebase Admin credentials file referenced by `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
-  * the API source itself is too large for OCI user-data; the operator copies `API/` to `/opt/cloudlaunch/api` and runs `cloudlaunch-install-api` after boot (see [docs/regional-deployment.md](../docs/regional-deployment.md))
+  * `cloudlaunch-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
 * Custom Caddy binary built with `github.com/mholt/caddy-ratelimit`, listening on public `80`/`443`:
   * automatic HTTPS for the regional API hostname
   * Cloudflare Authenticated Origin Pulls required
@@ -33,7 +35,7 @@ Cloud-init installs and configures:
   * strips `/api/*` and proxies only to `127.0.0.1:<fastapi_port>`
   * logs API HTTP requests only, never VPN traffic
 
-Terraform inputs cover the shared-server deployment config: region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard public endpoint IPv4, server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. There are no deploy-time client peer variables.
+Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard public endpoint IPv4, server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. There are no deploy-time client peer variables.
 
 The recommended server shape is 2 OCPU and 8-12 GB RAM, with capacity for roughly 15-25 clients per region.
 
@@ -63,12 +65,23 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 * Renders the cloud-init templates.
 * Creates the OCI compute instance and passes SSH keys plus multipart `user_data`.
 
-[wireguard-cloud-init.sh.tftpl](terraform/wireguard-cloud-init.sh.tftpl)
+[stub-cloud-init.sh.tftpl](terraform/stub-cloud-init.sh.tftpl)
 
-* Shell script template rendered by Terraform and run by cloud-init.
-* Installs and configures the host services described above.
+* Small shell script template rendered by Terraform and run by cloud-init.
+* Writes `/etc/cloudlaunch/bootstrap.env`, the WireGuard server key, and the optional Firebase credential file from Terraform inputs.
+* Fetches the repo tarball from GitHub at `source_repo`/`source_ref` and runs the versioned bootstrap.
+* Starts the step-marker logging to `/var/log/wireguard-bootstrap.log` so bootstrap failures are easier to pinpoint.
+
+[host/bootstrap.sh](host/bootstrap.sh)
+
+* Full host bootstrap, fetched from GitHub by the stub (never rendered by Terraform).
+* Installs and configures the host services described above from `/etc/cloudlaunch/bootstrap.env`.
 * Disables SSH password auth and root SSH login.
-* Writes step markers into `/var/log/wireguard-bootstrap.log` so bootstrap failures are easier to pinpoint.
+* Installs the API from the fetched source and writes the `cloudlaunch-install-api` update helper.
+
+[host/Caddyfile.template](host/Caddyfile.template)
+
+* Caddy configuration template fetched alongside the bootstrap and rendered on the host with `envsubst`.
 
 [backdoor-cloud-init.yaml](terraform/backdoor-cloud-init.yaml)
 

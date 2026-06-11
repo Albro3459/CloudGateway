@@ -1,6 +1,6 @@
 # VM / Boot Volume Loss Recovery
 
-If a regional VM or its boot volume is lost, the server's WireGuard private key and `/etc/wireguard/wg0.conf` are gone with it. Existing client configs for that region are permanently dead: users must rotate by deleting old clients and creating new ones. This is the accepted recovery model — there is no config recovery and no migration.
+If a regional VM or its boot volume is lost, the server's WireGuard private key and `/etc/wireguard/wg0.conf` are gone with it. Existing client configs for that region are permanently dead: users must rotate by deleting old clients and creating new ones. This is the accepted recovery model - there is no config recovery and no migration.
 
 The server never stores client private keys, and Firebase stores product state, not host secrets, so nothing in Firebase can resurrect the old tunnel.
 
@@ -15,7 +15,7 @@ The server never stores client private keys, and Firebase stores product state, 
    * `wireguardEndpointIpv4` (and `wireguardEndpointIpv6` if used) to the new public IP
    * `wireguardPublicKey` to the new server public key
    * `wireguardPort`, `wireguardDnsIpv4`, `wireguardDnsIpv6` if they changed
-   * `activeClientCount` to `0` — the new host starts with no peers
+   * `activeClientCount` to `0` - the new host starts with no peers
    * `updatedAt`
 
 4. Update the Cloudflare `A` record for `<regionId>.<origin>` if the public IPv4 changed. Keep the record proxied with Authenticated Origin Pulls enforced.

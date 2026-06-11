@@ -30,9 +30,9 @@ from cloudlaunch_api.repository import (
 )
 from cloudlaunch_api.wireguard import WireGuardKeypair, WireGuardManager
 
-FAKE_PRIVATE_KEY = "iEMN+PEAADw5Fed0LvTIptC4WGFouhbB4fXi1YcK/ms="
-FAKE_PUBLIC_KEY = "CIQOUMCevSCOGPMz+XafLmitThI7lx0JSIVXqRGzEFg="
-FAKE_SERVER_PUBLIC_KEY = "gkWhpYlsa8erZqnyAHMnMkQ8cMRlLpYF9avPAMWj1GE="
+FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
+FAKE_PUBLIC_KEY="eZEOz7uD1jjbTD70Uv+aJcZ0ASxsxz9bTKZQ9vdOQCo="
+FAKE_SERVER_PUBLIC_KEY="4jVSiiUySTwbsm72pcNxtEUhE37gESbsLPo3nCAaBks="
 
 
 @dataclass(frozen=True)
