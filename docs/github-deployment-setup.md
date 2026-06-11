@@ -60,7 +60,15 @@ ssh ubuntu@<server-public-ipv4>
 sudo cloudlaunch-install-api deploy-v1.1.0
 ```
 
-With no argument, `cloudlaunch-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`; host-level changes (Caddy, WireGuard, firewall, systemd) still require re-running the bootstrap or redeploying. Update `source_ref` in tfvars afterward so the next `terraform apply` matches what is running.
+With no argument, `cloudlaunch-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in `terraform.tfvars` afterward so any future host build uses the same code.
+
+**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next `terraform apply` plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4 and an empty peer set, which kills every existing client config - that is the VM-loss scenario, and the full checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (Cloudflare DNS, Firebase region doc, users recreate clients).
+
+The operating rule for a live region:
+
+* API change: `sudo cloudlaunch-install-api <ref>`. Running tunnels are unaffected.
+* Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `terraform apply` and walk the VM-loss recovery checklist. Do not re-run the bootstrap on a live host (see below).
+* Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
 
 ## Troubleshooting Fetch Failures
 
@@ -68,10 +76,12 @@ Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl
 
 * `Failed to download <repo>@<ref>`: the ref is not on GitHub (not pushed), the repo went private, or the host has no egress. Fix the cause, then either re-run the stub's fetch manually or terminate and re-apply Terraform.
 * `does not contain OCI/host/bootstrap.sh`: the ref predates the fetched-path contract. Pin a ref that satisfies the contract.
-* If the tarball extracted but the bootstrap failed partway, it is safe to re-run after fixing the cause:
+* If the tarball extracted but the bootstrap failed partway during initial deployment, it is safe to re-run after fixing the cause:
 
 ```sh
 sudo bash /opt/cloudlaunch/src/OCI/host/bootstrap.sh
 ```
 
-The bootstrap overwrites its own config files and re-enables services, so re-running is idempotent for practical purposes. Never paste the contents of `/etc/cloudlaunch/bootstrap.env` secrets, `/etc/cloudlaunch/wireguard-server.key`, or the Firebase credential file into logs or tickets.
+Re-running the bootstrap is safe **only while the region has no clients** (a fresh deployment that has not passed validation yet). On a live host it rewrites `/etc/wireguard/wg0.conf` with no `[Peer]` blocks, silently dropping every API-managed peer from the persistent config - live tunnels keep working until the next reboot or syncconf, then die, with Firebase now drifted from the host. Host-level changes on a live region are a rebuild, not a bootstrap re-run.
+
+Never paste the contents of `/etc/cloudlaunch/bootstrap.env` secrets, `/etc/cloudlaunch/wireguard-server.key`, or the Firebase credential file into logs or tickets.
