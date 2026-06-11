@@ -37,14 +37,14 @@ npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch
 
 ---
 
-### Publish GitHub page:
+### Deploy GitHub page:
 
 * [CNAME](./public/CNAME) specifies the host name. This must match DNS records.
-* NOTE: This uses your local build code to publish. It does NOT pull from any remote branch. It compiles your code to the build folder and publishes that.
+* NOTE: This uses your local build code to deploy. It does NOT pull from any remote branch. It compiles your code to the build folder and deploys that.
     * Pro: Can be ran from any branch
     * Con: Must be run locally and it can be confusing
 
 ```sh
 cd APP
-npm run publish # publishes to gh-pages branch
+npm run deploy # deploys to gh-pages branch
 ```

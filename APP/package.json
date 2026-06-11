@@ -36,8 +36,8 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "prepublish": "npm version patch --no-git-tag-version && npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css && npm run build",
-    "publish": "gh-pages -d build"
+    "predeploy": "npm version patch --no-git-tag-version && npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css && npm run build",
+    "deploy": "gh-pages -d build"
   },
   "eslintConfig": {
     "extends": [
