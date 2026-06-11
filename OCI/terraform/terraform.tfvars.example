@@ -53,7 +53,8 @@ wg_dns_address_v6               = "fd42:42:42::1"
 wg_rate_limit                   = "25/second"
 wg_rate_limit_burst             = 100
 wg_server_private_key           = "..._WITH_SERVER_PRIVATE_KEY"
-wg_endpoint_ipv4                = "1.2.3.4"
+# Grey-cloud (non-proxied) A record pointing at the server public IPv4.
+wg_endpoint_hostname            = "wg.us-sanjose-1.gateway.gocloudlaunch.com"
 
 # Firebase Admin credential written to the host for the regional API.
 # Leave firebase_credentials_json empty to copy the file manually instead.

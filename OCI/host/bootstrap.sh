@@ -98,8 +98,9 @@ SYSCTL
 sysctl --system
 
 echo "==> Step 6/12: Writing WireGuard configuration"
-# Create WireGuard config. Shared server: no static peer sections here.
-# Peers are added and removed at runtime by the CloudLaunch API.
+# Interface-only config. Peers are never written to this or any other file:
+# Firebase is the single source of truth and cloudlaunch-sync-peers rebuilds
+# the live peer set from it on every boot.
 # xtrace stays off while the private key is in play.
 set +x
 cat > "/etc/wireguard/$WG_INTERFACE.conf" <<WGCONF
@@ -233,9 +234,8 @@ CLOUDLAUNCH_REGION_ID=$REGION_ID
 CLOUDLAUNCH_API_PORT=$FASTAPI_PORT
 CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE=$FIREBASE_CREDENTIALS_FILE
 CLOUDLAUNCH_WG_INTERFACE=$WG_INTERFACE
-CLOUDLAUNCH_WG_CONFIG_PATH=/etc/wireguard/$WG_INTERFACE.conf
 CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
-CLOUDLAUNCH_WG_ENDPOINT_IPV4=$WG_ENDPOINT_IPV4
+CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME=$WG_ENDPOINT_HOSTNAME
 CLOUDLAUNCH_WG_PORT=$WG_LISTEN_PORT
 CLOUDLAUNCH_WG_DNS_IPV4=$WG_DNS_ADDRESS_V4
 CLOUDLAUNCH_WG_DNS_IPV6=$WG_DNS_ADDRESS_V6
@@ -361,7 +361,7 @@ systemctl daemon-reload
 systemctl enable cloudlaunch-origin-firewall
 systemctl enable caddy
 
-echo "==> Step 11/12: Writing CloudLaunch API service"
+echo "==> Step 11/12: Writing CloudLaunch API and peer sync services"
 cat > /etc/systemd/system/cloudlaunch-api.service <<UNIT
 [Unit]
 Description=CloudLaunch regional API
@@ -381,8 +381,31 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
+# Rebuilds the live wg peer set from Firebase on every boot. Retries via
+# systemd until Firebase is reachable; an empty region syncs successfully.
+cat > /etc/systemd/system/cloudlaunch-sync-peers.service <<UNIT
+[Unit]
+Description=CloudLaunch WireGuard peer sync from Firebase
+Wants=network-online.target
+After=network-online.target wg-quick@$WG_INTERFACE.service
+ConditionPathExists=/opt/cloudlaunch/api/.venv/bin/cloudlaunch-sync-peers
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/cloudlaunch/api.env
+ExecStart=/opt/cloudlaunch/api/.venv/bin/cloudlaunch-sync-peers
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 systemctl daemon-reload
 systemctl enable cloudlaunch-api
+systemctl enable cloudlaunch-sync-peers
 
 echo "==> Step 12/12: Starting WireGuard, unbound, CloudLaunch API, and Caddy"
 # Start Wireguard
@@ -412,11 +435,17 @@ systemctl restart cloudlaunch-api
 systemctl restart cloudlaunch-origin-firewall
 systemctl restart caddy
 
+# First sync. On a brand-new region (no region doc / no clients) this succeeds
+# with an empty peer set; if Firebase credentials are not provisioned yet it
+# fails here and systemd keeps retrying in the background.
+systemctl start cloudlaunch-sync-peers || true
+
 # Status check (coalesce because fail would end the script when this is just a status check)
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
 systemctl --no-pager --full status unbound || true
 systemctl --no-pager --full status cloudlaunch-api || true
+systemctl --no-pager --full status cloudlaunch-sync-peers || true
 systemctl --no-pager --full status cloudlaunch-origin-firewall || true
 systemctl --no-pager --full status caddy || true
 

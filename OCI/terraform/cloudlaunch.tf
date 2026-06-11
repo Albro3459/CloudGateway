@@ -174,9 +174,9 @@ variable "fastapi_port" {
 	description = "Localhost port the FastAPI control plane binds to"
 }
 
-variable "wg_endpoint_ipv4" {
+variable "wg_endpoint_hostname" {
 	type = string
-	description = "Public IPv4 endpoint written into WireGuard client configs"
+	description = "Non-proxied DNS hostname written into WireGuard client configs, for example wg.us-sanjose-1.gateway.gocloudlaunch.com"
 }
 
 variable "firebase_credentials_file" {
@@ -299,7 +299,7 @@ locals {
 		api_hostname = var.api_hostname
 		dashboard_cors_origin = var.dashboard_cors_origin
 		fastapi_port = var.fastapi_port
-		wg_endpoint_ipv4 = var.wg_endpoint_ipv4
+		wg_endpoint_hostname = var.wg_endpoint_hostname
 		firebase_credentials_file = var.firebase_credentials_file
 		firebase_credentials_json = var.firebase_credentials_json
 		caddy_acme_email = var.caddy_acme_email
