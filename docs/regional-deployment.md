@@ -54,9 +54,9 @@ WireGuard traffic does not go through Cloudflare. Only the API hostname is proxi
 
 ## 4. Create/Update the Firebase Region Doc
 
-One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [docs/firebase-schema.md](firebase-schema.md), "Required Indexes"). The API's create/delete transactions fail without it.
+One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [Firebase/indexes.md](../Firebase/indexes.md)). The API's create/delete transactions fail without it.
 
-Create or update `Regions/{regionId}` in Firestore with the contract fields (see [docs/firebase-schema.md](firebase-schema.md)):
+Create or update `Regions/{regionId}` in Firestore with the contract fields (see [Firebase/README.md](../Firebase/README.md)):
 
 * `regionId`: same as the document ID
 * `displayName`
