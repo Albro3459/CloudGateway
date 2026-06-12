@@ -8,7 +8,7 @@ This PR is intentionally large because it replaces the active architecture. Work
 
 ## Worktree Ownership
 
-- API worktree owns `API/`, `firebase.rules`, and legacy `lambda/` removal.
+- API worktree owns `API/`, `Firebase/firestore.rules`, and legacy `lambda/` removal.
 - Infrastructure worktree owns `OCI/` implementation files, `cloudflare/` removal, host bootstrap, Caddy, and Terraform.
 - Frontend worktree owns `APP/`.
 - Documentation worktree owns `README.md`, `APP/README.md`, `OCI/README.md`, and new runbooks/docs.
@@ -179,7 +179,7 @@ Tasks:
 - Write reservation/update helpers for owner UID/email/display name, client name, status, assigned tunnel IPs, client public key, created/removed timestamps, and last error fields.
 - Leave final WireGuard config generation/storage to the route integration commit after the WireGuard helper exists.
 - Implement failure cleanup so `creating` records do not remain indefinitely.
-- Update `firebase.rules` so normal users/admins can read allowed documents, but frontend cannot create/update/delete client docs directly.
+- Update `Firebase/firestore.rules` so normal users/admins can read allowed documents, but frontend cannot create/update/delete client docs directly.
 
 Validation:
 
