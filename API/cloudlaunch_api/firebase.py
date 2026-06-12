@@ -142,21 +142,30 @@ class FirestoreRepository(FirebaseRepository):
         now = utc_now()
         try:
             db = self._db()
-            db.collection("Users").document(uid).set(
+            batch = db.batch()
+            batch.set(
+                db.collection("Users").document(uid),
                 {
                     "uid": uid,
                     "email": auth_user.email or email,
                     "displayName": display_name,
                     "createdAt": firestore.SERVER_TIMESTAMP,
-                }
+                },
             )
-            db.collection("Roles").document(uid).set(
+            batch.set(
+                db.collection("Roles").document(uid),
                 {
                     "role": Role.USER.value,
                     "updatedAt": firestore.SERVER_TIMESTAMP,
-                }
+                },
             )
+            batch.commit()
         except Exception as exc:
+            # Roll back the auth account so a retry does not hit duplicate email
+            try:
+                auth.delete_user(uid)
+            except Exception:
+                pass
             raise FirebaseWriteFailedError() from exc
 
         return UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)

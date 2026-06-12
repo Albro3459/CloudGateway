@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { collection, getDocs, getFirestore } from 'firebase/firestore';
+import { collection, getDocs, getFirestore, query, where } from 'firebase/firestore';
 import { parseRegionDocument, Region, sortRegions } from '../helpers/regionsHelper';
 
 interface OciRegionsStore {
@@ -37,7 +37,9 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
 
     try {
       const db = getFirestore();
-      const regionsSnapshot = await getDocs(collection(db, "Regions"));
+      // Security rules only allow non-admins to read enabled regions, so the
+      // query must match or it is rejected outright.
+      const regionsSnapshot = await getDocs(query(collection(db, "Regions"), where("enabled", "==", true)));
       const regions = sortRegions(
         regionsSnapshot.docs.reduce<Region[]>((result, regionDoc) => {
           const region = parseRegionDocument(regionDoc.id, regionDoc.data());
