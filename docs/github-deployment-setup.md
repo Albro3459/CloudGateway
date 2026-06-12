@@ -13,7 +13,7 @@ Any ref used for deployment must contain these paths:
 
 * `OCI/host/bootstrap.sh` - the full host bootstrap run by the stub.
 * `OCI/host/Caddyfile.template` - rendered on the host with `envsubst`.
-* `API/` - `pyproject.toml` plus the `cloudlaunch_api/` package, installed into the host venv.
+* `API/` - `pyproject.toml` plus the `src/` package, installed into the host venv.
 
 The stub baked into an instance's user-data expects these exact paths. Renaming or moving them is a breaking change: older tfvars pinned to newer refs (or the reverse) will fail the stub's path check. If the layout must change, update `OCI/terraform/stub-cloud-init.sh.tftpl` in the same commit and only deploy refs at or after that commit.
 

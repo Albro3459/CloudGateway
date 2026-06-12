@@ -3,10 +3,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from cloudlaunch_api.app import create_app
-from cloudlaunch_api.auth import AuthenticatedUser
-from cloudlaunch_api.enums import Role
-from cloudlaunch_api.settings import Settings
+from src.app import create_app
+from src.auth import AuthenticatedUser
+from src.enums import Role
+from src.settings import Settings
 
 from .fakes import FakeRepository, FakeTokenVerifier, FakeWireGuardManager
 

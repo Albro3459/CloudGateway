@@ -6,7 +6,7 @@ from .repository import FirebaseRepository
 from .settings import Settings
 from .wireguard import PeerSyncResult, WireGuardManager
 
-logger = logging.getLogger("cloudlaunch_api.sync")
+logger = logging.getLogger("src.sync")
 
 
 def desired_peers(repository: FirebaseRepository, region_id: str) -> dict[str, tuple[str, str]]:

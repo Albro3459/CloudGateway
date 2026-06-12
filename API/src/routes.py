@@ -26,7 +26,7 @@ from .models import (
 from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region
 from .wireguard import WireGuardManager
 
-logger = logging.getLogger("cloudlaunch_api.routes")
+logger = logging.getLogger("src.routes")
 router = APIRouter()
 T = TypeVar("T")
 

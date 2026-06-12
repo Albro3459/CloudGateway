@@ -373,7 +373,7 @@ ConditionPathExists=/opt/cloudlaunch/api/.venv/bin/uvicorn
 User=root
 WorkingDirectory=/opt/cloudlaunch/api
 EnvironmentFile=/etc/cloudlaunch/api.env
-ExecStart=/opt/cloudlaunch/api/.venv/bin/uvicorn cloudlaunch_api.main:app --host 127.0.0.1 --port \$CLOUDLAUNCH_API_PORT
+ExecStart=/opt/cloudlaunch/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port \$CLOUDLAUNCH_API_PORT
 Restart=on-failure
 RestartSec=5
 

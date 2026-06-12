@@ -1,8 +1,8 @@
 import json
 import logging
 
-from cloudlaunch_api.enums import Event
-from cloudlaunch_api.logs import REDACTED, JsonFormatter, log_event
+from src.enums import Event
+from src.logs import REDACTED, JsonFormatter, log_event
 
 
 def make_logger(name):

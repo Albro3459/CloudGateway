@@ -1,8 +1,8 @@
 import pytest
 
-from cloudlaunch_api.enums import OperationResult
-from cloudlaunch_api.errors import WireGuardApplyFailedError
-from cloudlaunch_api.wireguard import LocalWireGuardManager, PeerSyncResult
+from src.enums import OperationResult
+from src.errors import WireGuardApplyFailedError
+from src.wireguard import LocalWireGuardManager, PeerSyncResult
 
 from .fakes import (
     FAKE_PRIVATE_KEY,
