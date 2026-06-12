@@ -9,6 +9,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 interface CreateUserSuccessState {
     email: string | null;
     password: string | null;
+    alreadyExisted: boolean;
 }
 
 const CreateUserSuccess: React.FC = () => {
@@ -18,6 +19,7 @@ const CreateUserSuccess: React.FC = () => {
     const { 
         email,
         password,
+        alreadyExisted = false,
     } = (location.state || {}) as Partial<CreateUserSuccessState>;
 
     const userExists = useCallback(() => {
@@ -69,18 +71,19 @@ const CreateUserSuccess: React.FC = () => {
             </nav>
 
             <div className="bg-card p-6 xs:p-8 rounded-2xl shadow-lg w-full max-w-sm text-center">
-                <h2 className="text-2xl font-semibold mb-4">{userExists() ? "Created User 🎉" : "Failed to Create User ❌"}</h2>
+                <h2 className="text-2xl font-semibold mb-4">{userExists() ? "User Has Access" : "Failed to Create User ❌"}</h2>
 
                 {userExists() ? (
                     <p className="text-content-secondary">
-                    User{" "}
-                    { <b>{email}</b>} has been created.
+                    {alreadyExisted ? "An account already existed for " : "User "}
+                    { <b>{email}</b>}
+                    {alreadyExisted ? " and has now been given access." : " has been created."}
                     </p>
                 ) : (
                     <p className="text-content-secondary">No user was created.</p>
                 )}
 
-                {userExists() && (
+                {userExists() && !alreadyExisted && (
                     <p className="pt-1 text-content-secondary">
                     Password: <b>{password}</b>
                     </p>

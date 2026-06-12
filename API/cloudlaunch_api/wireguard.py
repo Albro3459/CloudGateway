@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -48,7 +48,7 @@ class WireGuardManager(ABC):
     """
 
     @abstractmethod
-    def lock(self):
+    def lock(self) -> AbstractContextManager[None]:
         """Exclusive cross-process lock context manager for peer mutations."""
 
     @abstractmethod

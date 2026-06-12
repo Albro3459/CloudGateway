@@ -26,6 +26,7 @@ def test_create_user_admin_creates_auth_user_and_role(client, repository):
         "userId": "created-user-1",
         "email": "new.user@example.com",
         "role": "user",
+        "alreadyExisted": False,
     }
     assert "user_id" not in payload
     stored = repository.get_user("created-user-1")

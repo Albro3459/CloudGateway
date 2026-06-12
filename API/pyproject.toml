@@ -21,6 +21,8 @@ cloudlaunch-sync-peers = "cloudlaunch_api.sync:main"
 [project.optional-dependencies]
 dev = [
     "httpx>=0.27",
+    "httpx2>=0.28",
+    "pyright>=1.1",
     "pytest>=8",
 ]
 

@@ -48,6 +48,12 @@ class UserDoc:
 
 
 @dataclass(frozen=True)
+class CreateUserResult:
+    user: UserDoc
+    already_existed: bool = False
+
+
+@dataclass(frozen=True)
 class ClientDoc:
     client_id: str
     owner_uid: str
@@ -165,8 +171,12 @@ class FirebaseRepository(ABC):
         """Return active clients with a public key for one region (peer sync input)."""
 
     @abstractmethod
-    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
-        """Create an Auth user and matching Users/Roles documents."""
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> CreateUserResult:
+        """Create an Auth user and matching Users/Roles documents.
+
+        When the Auth account already exists but has no provisioning docs,
+        provision it instead and report already_existed.
+        """
 
     @abstractmethod
     def reserve_client(

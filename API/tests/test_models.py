@@ -75,4 +75,5 @@ def test_user_models_serialize_camel_case():
         "userId": "uid",
         "email": "user@example.com",
         "role": "user",
+        "alreadyExisted": False,
     }

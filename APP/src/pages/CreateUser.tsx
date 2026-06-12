@@ -92,11 +92,18 @@ const CreateUser: React.FC = () => {
                 const result = await createAdminUser({ email: trimmedEmail, password }, jwtToken, ociRegions);
                 setLoading(false);
                 if (result.success) {
-                    setSuccessMessage(`Created user: ${trimmedEmail}`);
+                    const successText = result.data.alreadyExisted
+                        ? `Existing account granted access: ${trimmedEmail}`
+                        : `Created user: ${trimmedEmail}`;
+                    setSuccessMessage(successText);
                     setEmail(""); setPassword(""); setConfirmPassword("");
                     navigate("/create-user-success", {
                         replace: true,
-                        state: { email: trimmedEmail, password: password }
+                        state: {
+                            email: trimmedEmail,
+                            password: password,
+                            alreadyExisted: result.data.alreadyExisted,
+                        }
                     });
                 }
                 else {

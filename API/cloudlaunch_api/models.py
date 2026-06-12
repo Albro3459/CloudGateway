@@ -80,6 +80,7 @@ class CreateUserResponse(ApiModel):
     user_id: str
     email: str
     role: Role
+    already_existed: bool = False
 
 
 class ErrorDetail(ApiModel):

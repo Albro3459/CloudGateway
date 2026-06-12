@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,7 +14,7 @@ REGION_ID = "us-test-1"
 
 
 def make_settings(**overrides) -> Settings:
-    values = {
+    values: dict[str, Any] = {
         "region_id": REGION_ID,
         "firebase_credentials_file": "/tmp/test-firebase-credentials.json",
         "wg_server_public_key": "server-public-key",

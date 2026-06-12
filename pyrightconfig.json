@@ -1,0 +1,15 @@
+{
+  "include": [
+    "API/cloudlaunch_api",
+    "API/tests"
+  ],
+  "exclude": [
+    "API/build",
+    "**/__pycache__"
+  ],
+  "extraPaths": [
+    "API"
+  ],
+  "venvPath": "API",
+  "venv": ".venv"
+}
