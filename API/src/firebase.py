@@ -75,7 +75,7 @@ class FirebaseTokenVerifier(TokenVerifier):
 
         _firebase_app(self._settings)
         try:
-            decoded = auth.verify_id_token(token)
+            decoded = auth.verify_id_token(token, check_revoked=True)
         except Exception as exc:
             raise AuthRequiredError("Invalid or expired token.") from exc
         uid = decoded.get("uid")
@@ -140,6 +140,7 @@ class FirestoreRepository(FirebaseRepository):
 
         _firebase_app(self._settings)
         already_existed = False
+        reenabled_existing_auth = False
         try:
             auth_data = {"email": email}
             if display_name is not None:
@@ -156,7 +157,13 @@ class FirestoreRepository(FirebaseRepository):
 
         uid = auth_user.uid
         if bool(getattr(auth_user, "disabled", False)):
-            raise AccountDisabledError()
+            role_exists = self._role_exists_after_failure(uid)
+            if role_exists is None:
+                raise FirebaseWriteFailedError()
+            if role_exists:
+                raise AccountDisabledError("This user already has access, but their Firebase account is disabled.")
+            self.enable_auth_user(uid)
+            reenabled_existing_auth = True
         if display_name is None:
             display_name = auth_user.display_name
         now = utc_now()
@@ -167,12 +174,16 @@ class FirestoreRepository(FirebaseRepository):
                 display_name=display_name,
             )
         except DuplicateEmailError:
+            # If a role now exists, another request provisioned this account;
+            # keep any re-enabled Auth user enabled so that successful grant works.
             self._rollback_created_auth_user(auth=auth, uid=uid, already_existed=already_existed)
             raise
         except Exception as exc:
             role_exists = self._role_exists_after_failure(uid)
             if role_exists:
                 raise DuplicateEmailError() from exc
+            if reenabled_existing_auth:
+                self._rollback_reenabled_auth_user(uid=uid, role_exists=role_exists)
             # Roll back the auth account so a retry does not hit duplicate email,
             # but never delete an account that existed before this request
             self._rollback_created_auth_user(
@@ -185,6 +196,25 @@ class FirestoreRepository(FirebaseRepository):
 
         user = UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
         return CreateUserResult(user=user, already_existed=already_existed)
+
+    def disable_auth_user(self, uid: str) -> None:
+        from firebase_admin import auth
+
+        _firebase_app(self._settings)
+        try:
+            auth.update_user(uid, disabled=True)
+            auth.revoke_refresh_tokens(uid)
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+    def enable_auth_user(self, uid: str) -> None:
+        from firebase_admin import auth
+
+        _firebase_app(self._settings)
+        try:
+            auth.update_user(uid, disabled=False)
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
 
     def _get_existing_auth_user(self, *, email: str) -> Any:
         from firebase_admin import auth
@@ -219,6 +249,14 @@ class FirestoreRepository(FirebaseRepository):
             return
         try:
             auth.delete_user(uid)
+        except Exception:
+            pass
+
+    def _rollback_reenabled_auth_user(self, *, uid: str, role_exists: bool | None) -> None:
+        if role_exists is not False:
+            return
+        try:
+            self.disable_auth_user(uid)
         except Exception:
             pass
 

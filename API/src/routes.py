@@ -4,7 +4,7 @@ from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, Path, Request
 
-from .auth import AuthenticatedUser, require_admin_user, require_provisioned_user
+from .auth import AuthenticatedUser, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
 from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
 from .errors import (
     ApiError,
@@ -15,6 +15,7 @@ from .errors import (
 )
 from .logs import log_event
 from .models import (
+    AccessCheckResponse,
     CreateClientRequest,
     CreateClientResponse,
     CreateUserRequest,
@@ -34,6 +35,19 @@ T = TypeVar("T")
 @router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> HealthResponse:
     return HealthResponse(region_id=request.app.state.settings.region_id)
+
+
+@router.post("/auth/check-access", response_model=AccessCheckResponse)
+async def check_access(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AccessCheckResponse:
+    role = require_role_or_disable_unprovisioned(request, user)
+    return AccessCheckResponse(
+        user_id=user.uid,
+        email=user.email,
+        role=role,
+    )
 
 
 @router.post("/clients", response_model=CreateClientResponse)

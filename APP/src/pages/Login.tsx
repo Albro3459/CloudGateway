@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
-import { isUserProvisioned } from "../helpers/usersHelper";
+import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 
 const Login: React.FC = () => {
     const navigate = useNavigate();
@@ -14,6 +15,16 @@ const Login: React.FC = () => {
     const [error, setError] = useState<string | null>();
     const [success, setSuccess] = useState<string | null>();
     const manualSignInRef = useRef(false);
+
+    const getAuthErrorCode = (err: unknown) => (
+        err && typeof err === "object" && "code" in err
+            ? (err as { code?: string }).code
+            : null
+    );
+
+    const getDisabledAccountMessage = () => (
+        "Your account is disabled. Contact an admin for access to CloudGateway."
+    );
 
     const getGoogleSignInError = (err: unknown) => {
         const code = err && typeof err === "object" && "code" in err
@@ -29,14 +40,35 @@ const Login: React.FC = () => {
         if (code === "auth/account-exists-with-different-credential") {
             return "An account already exists for this email. Sign in with email and password first.";
         }
+        if (code === "auth/user-disabled") {
+            return getDisabledAccountMessage();
+        }
 
         return "Unable to sign in with Google.";
     };
 
     const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
-        let provisioned: boolean;
         try {
-            provisioned = await isUserProvisioned(user);
+            const token = await user.getIdToken();
+            await fetchOciRegions(token);
+            const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
+
+            if (regionsError || !ociRegions?.length) {
+                throw new Error(regionsError || "Regions are unavailable");
+            }
+
+            const access = await checkAccountAccess(token, ociRegions);
+            if (!access.success) {
+                await signOut(auth);
+                if (showAccessError) {
+                    setError(
+                        access.errorCode === "USER_NOT_PROVISIONED"
+                            ? access.error
+                            : "Unable to verify account access. Please try again.",
+                    );
+                }
+                return;
+            }
         } catch {
             await signOut(auth);
             if (showAccessError) {
@@ -45,15 +77,7 @@ const Login: React.FC = () => {
             return;
         }
 
-        if (provisioned) {
-            navigate("/home", { replace: true });
-            return;
-        }
-
-        await signOut(auth);
-        if (showAccessError) {
-            setError("This account is not provisioned for CloudGateway.");
-        }
+        navigate("/home", { replace: true });
     }, [navigate]);
 
     const handleLogin = async (e: React.FormEvent) => {
@@ -72,7 +96,7 @@ const Login: React.FC = () => {
             const result = await signInWithEmailAndPassword(auth, email, password);
             await navigateProvisionedUser(result.user, true);
         } catch (err) {
-            setError("Invalid email or password.");
+            setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
         } finally {
             manualSignInRef.current = false;
         }
@@ -124,7 +148,7 @@ const Login: React.FC = () => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
             const fetchUserData = async () => {
                 if (user && !cancelled && !manualSignInRef.current) {
-                    await navigateProvisionedUser(user);
+                    await navigateProvisionedUser(user, true);
                 }
             };
             fetchUserData();

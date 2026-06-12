@@ -89,6 +89,12 @@ class CreateUserResponse(ApiModel):
     already_existed: bool = False
 
 
+class AccessCheckResponse(ApiModel):
+    user_id: str
+    email: str | None = None
+    role: Role
+
+
 class ErrorDetail(ApiModel):
     code: ErrorCode
     message: str

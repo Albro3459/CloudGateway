@@ -28,19 +28,5 @@ export const getUserRole = async (user: User): Promise<string | null> => {
 };
 
 export const isUserProvisioned = async (user: User): Promise<boolean> => {
-    try {
-      const db = getFirestore();
-      const docRef = doc(db, "Users", user.uid);
-      const docSnap = await getDoc(docRef);
-
-      return docSnap.exists();
-    } catch (error: any) {
-      if (error.code === "permission-denied") {
-        console.warn("Permission denied checking user provisioning.");
-        return false;
-      }
-
-      console.error("Unexpected error checking user provisioning:", error);
-      throw error;
-    }
+    return (await getUserRole(user)) !== null;
 };
