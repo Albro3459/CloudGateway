@@ -82,15 +82,39 @@ const Home: React.FC = () => {
         setBanner(null);
     };
 
+    // A fetch only applies if nothing newer has already applied, so a slow poll
+    // can't overwrite newer data and an awaited refresh can't be invalidated by
+    // an in-flight poll that may never land.
+    const vpnFetchGen = useRef(0);
+    const vpnAppliedGen = useRef(0);
+
     const fillVPNs = useCallback(async (user: User) => {
+        const gen = ++vpnFetchGen.current;
         setVPNTableEntries(null);
         try {
             const VPNs: VPNData[] = await getUsersVPNs(user);
+            if (gen <= vpnAppliedGen.current) return;
+            vpnAppliedGen.current = gen;
             setVPNTableEntries(VPNs);
         } catch (error) {
+            if (gen <= vpnAppliedGen.current) return;
+            vpnAppliedGen.current = gen;
             showBanner("error", "Error loading VPN clients");
             console.error("Error loading VPN clients:", error);
             setVPNTableEntries([]);
+        }
+    }, []);
+
+    // Refreshes the table in place, without the loading skeleton or an error banner.
+    const refreshVPNs = useCallback(async (user: User) => {
+        const gen = ++vpnFetchGen.current;
+        try {
+            const VPNs: VPNData[] = await getUsersVPNs(user);
+            if (gen <= vpnAppliedGen.current) return;
+            vpnAppliedGen.current = gen;
+            setVPNTableEntries(VPNs);
+        } catch (error) {
+            console.error("Error refreshing VPN clients:", error);
         }
     }, []);
 
@@ -135,20 +159,20 @@ const Home: React.FC = () => {
                 if (response.errorCode === "CAPACITY_REACHED" || response.errorCode === "LIMIT_REACHED") {
                     await fetchOciRegions(jwtToken, true);
                 }
-                await fillVPNs(auth.currentUser);
+                await refreshVPNs(auth.currentUser);
                 return;
             }
 
             setClientName("");
             showBanner("success", `${response.data.clientName || "Client"} was created in ${activeRegionName}.`);
             await Promise.all([
-                fillVPNs(auth.currentUser),
+                refreshVPNs(auth.currentUser),
                 fetchOciRegions(jwtToken, true),
             ]);
         } catch (error) {
             showBanner("error", "Error creating client");
             console.error("Error creating client:", error);
-            await fillVPNs(auth.currentUser);
+            await refreshVPNs(auth.currentUser);
         } finally {
             setLoading(false);
         }
@@ -205,7 +229,7 @@ const Home: React.FC = () => {
 
             clearSelectedClients();
             await Promise.all([
-                fillVPNs(auth.currentUser),
+                refreshVPNs(auth.currentUser),
                 fetchOciRegions(jwtToken, true),
             ]);
 
@@ -276,6 +300,19 @@ const Home: React.FC = () => {
             });
         }
     }, [configData]);
+
+    // Poll Firestore while a create/remove is running so the table shows
+    // status transitions (creating -> active, active -> removed) live.
+    useEffect(() => {
+        if (!loading) return;
+
+        const interval = window.setInterval(() => {
+            if (auth.currentUser) {
+                void refreshVPNs(auth.currentUser);
+            }
+        }, 2000);
+        return () => window.clearInterval(interval);
+    }, [loading, refreshVPNs]);
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
