@@ -144,7 +144,7 @@ const Login: React.FC = () => {
                 {error || success}
                 </span>
                 <button
-                className="ml-4 font-bold hover:text-inset-strong transition"
+                className="ml-4 font-bold hover:text-white/70 transition"
                 onClick={() => {
                     setError(null);
                     setSuccess(null);

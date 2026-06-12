@@ -356,7 +356,7 @@ const Home: React.FC = () => {
                     }`}>
                         <span className="text-sm">{banner.message}</span>
                         <button
-                            className="ml-4 font-bold transition hover:text-inset-strong"
+                            className="ml-4 font-bold transition hover:text-white/70"
                             onClick={() => setBanner(null)}
                             aria-label="Dismiss message"
                         >
