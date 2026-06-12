@@ -43,8 +43,11 @@ test_app() (
     npm install
   fi
 
-  CI=true npm test -- --watchAll=false
+  echo "Running APP Jest"
+  CI=true npm run test -- --watchAll=false --runInBand
+  echo "Running APP TypeScript"
   npx tsc --noEmit
+  echo "Running APP production build"
   npm run build
 )
 

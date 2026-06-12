@@ -84,3 +84,19 @@ export const buildCreateUserApiEndpoint = (
 
     return buildRegionalApiEndpoint(regionId, "users", location);
 };
+
+export const buildAccessCheckApiEndpoint = (
+    regions: ApiRegionOption[] | null | undefined,
+    location: LocationLike = getWindowLocation(),
+) => {
+    if (API_ORIGIN) {
+        return `${API_ORIGIN}/api/auth/check-access`;
+    }
+
+    const regionId = getFirstEnabledRegionId(regions);
+    if (!regionId) {
+        throw new Error("No enabled regions are available for access verification");
+    }
+
+    return buildRegionalApiEndpoint(regionId, "auth/check-access", location);
+};

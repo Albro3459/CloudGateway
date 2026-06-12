@@ -107,8 +107,12 @@ class FakeWireGuardCommandRunner:
 class FakeTokenVerifier(TokenVerifier):
     def __init__(self, users: dict[str, AuthenticatedUser] | None = None):
         self.users = users or {}
+        self.disabled_tokens: set[str] = set()
+        self.revoked_tokens: set[str] = set()
 
     def verify_token(self, token: str) -> AuthenticatedUser:
+        if token in self.disabled_tokens or token in self.revoked_tokens:
+            raise AuthRequiredError("Invalid or expired token.")
         user = self.users.get(token)
         if user is None:
             raise AuthRequiredError("Invalid or expired token.")
@@ -132,6 +136,7 @@ class FakeRepository(FirebaseRepository):
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
         self.disabled_auth_uids: set[str] = set()
+        self.revoked_auth_uids: list[str] = []
         self.created_user_count = 0
         self.mark_client_active_error: Exception | None = None
         self.create_user_error: Exception | None = None
@@ -167,10 +172,12 @@ class FakeRepository(FirebaseRepository):
                 None,
             )
             if existing is not None:
-                if existing.uid in self.disabled_auth_uids:
-                    raise AccountDisabledError()
                 if self.roles.get(existing.uid) is not None:
+                    if existing.uid in self.disabled_auth_uids:
+                        raise AccountDisabledError("This user already has access, but their Firebase account is disabled.")
                     raise DuplicateEmailError()
+                if existing.uid in self.disabled_auth_uids:
+                    self.enable_auth_user(existing.uid)
                 if display_name is not None:
                     existing = replace(existing, display_name=display_name)
                     self.users[existing.uid] = existing
@@ -185,6 +192,13 @@ class FakeRepository(FirebaseRepository):
             self.users[uid] = user
             self.roles[uid] = Role.USER
             return CreateUserResult(user=user)
+
+    def disable_auth_user(self, uid: str) -> None:
+        self.disabled_auth_uids.add(uid)
+        self.revoked_auth_uids.append(uid)
+
+    def enable_auth_user(self, uid: str) -> None:
+        self.disabled_auth_uids.discard(uid)
 
     def reserve_client(
         self,

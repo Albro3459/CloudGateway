@@ -179,6 +179,14 @@ class FirebaseRepository(ABC):
         """
 
     @abstractmethod
+    def disable_auth_user(self, uid: str) -> None:
+        """Disable an Auth user and revoke refresh tokens."""
+
+    @abstractmethod
+    def enable_auth_user(self, uid: str) -> None:
+        """Enable a disabled Auth user."""
+
+    @abstractmethod
     def reserve_client(
         self,
         *,

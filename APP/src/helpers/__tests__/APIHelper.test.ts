@@ -131,6 +131,27 @@ describe("APIHelper", () => {
         });
     });
 
+    it("checks account access through the regional auth endpoint", async () => {
+        const responseBody = {
+            userId: "user-1",
+            email: "user@example.com",
+            role: "user",
+        };
+        mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
+        const { checkAccountAccess } = require("../APIHelper");
+
+        const result = await checkAccountAccess("firebase-token", [
+            { regionId: "us-sanjose-1", enabled: true },
+        ]);
+        const request = mockFetch.mock.calls[0][1] as RequestInit;
+
+        expect(mockFetch).toHaveBeenCalledWith("http://localhost:8787/api/auth/check-access", expect.any(Object));
+        expect(request.method).toBe("POST");
+        expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
+        expect(JSON.parse(request.body as string)).toEqual({});
+        expect(result).toEqual({ success: true, data: responseBody });
+    });
+
     it("does not call users API when no enabled region exists", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";

@@ -1,4 +1,4 @@
-import { buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
+import { buildAccessCheckApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
 import type { ApiRegionOption } from "./apiEndpoints";
 
 type FastApiError = {
@@ -65,6 +65,12 @@ export type CreateUserResponse = {
     email: string;
     role: string;
     alreadyExisted: boolean;
+};
+
+export type AccessCheckResponse = {
+    userId: string;
+    email?: string | null;
+    role: string;
 };
 
 const parseApiResponse = async (response: Response) => {
@@ -220,6 +226,25 @@ export const createAdminUser = (
                 email: request.email,
                 ...(request.displayName ? { displayName: request.displayName } : {}),
             },
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
+    }
+};
+
+export const checkAccountAccess = (
+    token: string,
+    regions: ApiRegionOption[] | null | undefined,
+): Promise<ApiHelperResult<AccessCheckResponse>> => {
+    try {
+        return sendJsonRequest<AccessCheckResponse>(
+            buildAccessCheckApiEndpoint(regions),
+            token,
+            "POST",
+            {},
         );
     } catch (error) {
         return Promise.resolve({

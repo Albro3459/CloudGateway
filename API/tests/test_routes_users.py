@@ -1,3 +1,4 @@
+from src.enums import Role
 from src.errors import FirebaseWriteFailedError
 from src.repository import UserDoc, utc_now
 
@@ -108,7 +109,7 @@ def test_create_user_provisions_existing_auth_user_without_role(client, reposito
     assert repository.get_user("existing-user").display_name == "Existing User"
 
 
-def test_create_user_rejects_disabled_existing_auth_user(client, repository):
+def test_create_user_enables_and_provisions_disabled_existing_auth_user_without_role(client, repository):
     repository.users["disabled-user"] = UserDoc(
         uid="disabled-user",
         email="disabled@example.com",
@@ -119,13 +120,42 @@ def test_create_user_rejects_disabled_existing_auth_user(client, repository):
 
     response = client.post(
         "/users",
+        json=valid_payload(email="disabled@example.com", displayName=None),
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "userId": "disabled-user",
+        "email": "disabled@example.com",
+        "role": "user",
+        "alreadyExisted": True,
+    }
+    assert "disabled-user" not in repository.disabled_auth_uids
+    assert repository.get_role("disabled-user").value == "user"
+
+
+def test_create_user_rejects_disabled_existing_auth_user_with_role(client, repository):
+    repository.users["disabled-user"] = UserDoc(
+        uid="disabled-user",
+        email="disabled@example.com",
+        display_name=None,
+        created_at=utc_now(),
+    )
+    repository.roles["disabled-user"] = Role.USER
+    repository.disabled_auth_uids.add("disabled-user")
+
+    response = client.post(
+        "/users",
         json=valid_payload(email="disabled@example.com"),
         headers=auth_header(),
     )
 
     assert response.status_code == 409
-    assert_error_shape(response.json(), "ACCOUNT_DISABLED")
-    assert repository.get_role("disabled-user") is None
+    payload = response.json()
+    assert_error_shape(payload, "ACCOUNT_DISABLED")
+    assert payload["error"]["message"] == "This user already has access, but their Firebase account is disabled."
+    assert "disabled-user" in repository.disabled_auth_uids
 
 
 def test_create_user_rejects_invalid_email(client):

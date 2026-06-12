@@ -50,6 +50,17 @@ describe("apiEndpoints", () => {
         })).toBe("http://localhost:8787/api/users");
     });
 
+    it("uses REACT_APP_API_ORIGIN for access checks without requiring regions", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
+        const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildAccessCheckApiEndpoint([], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("http://localhost:8787/api/auth/check-access");
+    });
+
     it("selects first enabled region for global user creation", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
@@ -63,6 +74,21 @@ describe("apiEndpoints", () => {
             hostname: "gateway.gocloudlaunch.com",
             host: "gateway.gocloudlaunch.com",
         })).toBe("https://eu-frankfurt-1.gateway.gocloudlaunch.com/api/users");
+    });
+
+    it("selects first enabled region for access checks", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildAccessCheckApiEndpoint([
+            { value: "us-sanjose-1", enabled: true },
+            { value: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
+            { value: "us-ashburn-1", enabled: false, displayOrder: 1 },
+        ], {
+            hostname: "gateway.gocloudlaunch.com",
+            host: "gateway.gocloudlaunch.com",
+        })).toBe("https://eu-frankfurt-1.gateway.gocloudlaunch.com/api/auth/check-access");
     });
 });
 
