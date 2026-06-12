@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
@@ -13,6 +13,7 @@ const Login: React.FC = () => {
     const [password, setPassword] = useState("");
     const [error, setError] = useState<string | null>();
     const [success, setSuccess] = useState<string | null>();
+    const manualSignInRef = useRef(false);
 
     const getGoogleSignInError = (err: unknown) => {
         const code = err && typeof err === "object" && "code" in err
@@ -33,7 +34,18 @@ const Login: React.FC = () => {
     };
 
     const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
-        if (await isUserProvisioned(user)) {
+        let provisioned: boolean;
+        try {
+            provisioned = await isUserProvisioned(user);
+        } catch {
+            await signOut(auth);
+            if (showAccessError) {
+                setError("Unable to verify account access. Please try again.");
+            }
+            return;
+        }
+
+        if (provisioned) {
             navigate("/home", { replace: true });
             return;
         }
@@ -46,6 +58,7 @@ const Login: React.FC = () => {
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
+        manualSignInRef.current = true;
         try {
             if (!email.includes('@') || !email.includes('.')) {
                 setError("Not a valid email.");
@@ -60,12 +73,15 @@ const Login: React.FC = () => {
             await navigateProvisionedUser(result.user, true);
         } catch (err) {
             setError("Invalid email or password.");
+        } finally {
+            manualSignInRef.current = false;
         }
     };
 
     const handleGoogleLogin = async () => {
         setError(null);
         setSuccess(null);
+        manualSignInRef.current = true;
 
         try {
             const result = await signInWithGoogle();
@@ -75,6 +91,8 @@ const Login: React.FC = () => {
             if (message) {
                 setError(message);
             }
+        } finally {
+            manualSignInRef.current = false;
         }
     };
 
@@ -105,7 +123,7 @@ const Login: React.FC = () => {
         let cancelled = false;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
             const fetchUserData = async () => {
-                if (user && !cancelled) {
+                if (user && !cancelled && !manualSignInRef.current) {
                     await navigateProvisionedUser(user);
                 }
             };

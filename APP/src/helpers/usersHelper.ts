@@ -34,8 +34,13 @@ export const isUserProvisioned = async (user: User): Promise<boolean> => {
       const docSnap = await getDoc(docRef);
 
       return docSnap.exists();
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === "permission-denied") {
+        console.warn("Permission denied checking user provisioning.");
+        return false;
+      }
+
       console.error("Unexpected error checking user provisioning:", error);
-      return false;
+      throw error;
     }
 };
