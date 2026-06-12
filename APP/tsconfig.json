@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
-   "target": "ES2022",
-    "module": "ESNext",
-    "lib": ["ES2023", "DOM"],
-    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "module": "Node16",
+    "lib": ["ES2022", "DOM"],
+    "moduleResolution": "node16",
     "esModuleInterop": true,
     "skipLibCheck": true,
 
@@ -15,7 +15,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["node", "jest"]
   },
   "include": [
     "src"

@@ -4,6 +4,7 @@ import { saveAs } from "file-saver";
 import QRCode from "qrcode";
 
 import { createClient, deleteClient } from "../helpers/APIHelper";
+import type { ApiHelperFailure } from "../helpers/APIHelper";
 import { auth, onAuthStateChanged } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
@@ -225,7 +226,7 @@ const Home: React.FC = () => {
                     regionId: activeRegionId,
                 }, jwtToken)
             )));
-            const failedResults = results.filter(result => !result.success);
+            const failedResults = results.filter((result): result is ApiHelperFailure => !result.success);
 
             clearSelectedClients();
             await Promise.all([

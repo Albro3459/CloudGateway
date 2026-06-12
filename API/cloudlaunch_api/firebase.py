@@ -8,11 +8,11 @@ from google.cloud.firestore_v1.transforms import Sentinel
 from .auth import AuthenticatedUser, TokenVerifier
 from .enums import ClientStatus, Role
 from .errors import (
+    AccountDisabledError,
     AuthRequiredError,
     ClientNotFoundError,
     DuplicateEmailError,
     FirebaseWriteFailedError,
-    InvalidPasswordError,
     InvalidRequestError,
 )
 from .repository import (
@@ -135,13 +135,13 @@ class FirestoreRepository(FirebaseRepository):
                 clients.append(client)
         return clients
 
-    def create_user(self, *, email: str, password: str, display_name: str | None) -> CreateUserResult:
+    def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
         from firebase_admin import auth
 
         _firebase_app(self._settings)
         already_existed = False
         try:
-            auth_data = {"email": email, "password": password}
+            auth_data = {"email": email}
             if display_name is not None:
                 auth_data["display_name"] = display_name
             auth_user = auth.create_user(**auth_data)
@@ -149,14 +149,14 @@ class FirestoreRepository(FirebaseRepository):
             if _exception_is_named(exc, "EmailAlreadyExistsError"):
                 auth_user = self._get_existing_auth_user(email=email)
                 already_existed = True
-            elif _exception_is_named(exc, "InvalidPasswordError"):
-                raise InvalidPasswordError() from exc
             elif isinstance(exc, ValueError):
                 raise InvalidRequestError() from exc
             else:
                 raise FirebaseWriteFailedError() from exc
 
         uid = auth_user.uid
+        if bool(getattr(auth_user, "disabled", False)):
+            raise AccountDisabledError()
         if display_name is None:
             display_name = auth_user.display_name
         now = utc_now()
@@ -167,24 +167,20 @@ class FirestoreRepository(FirebaseRepository):
                 display_name=display_name,
             )
         except DuplicateEmailError:
-            if not already_existed:
-                try:
-                    auth.delete_user(uid)
-                except Exception:
-                    pass
+            self._rollback_created_auth_user(auth=auth, uid=uid, already_existed=already_existed)
             raise
         except Exception as exc:
-            if already_existed and self._role_exists(uid):
-                raise DuplicateEmailError(
-                    "An account already exists for this email and already has access."
-                ) from exc
+            role_exists = self._role_exists_after_failure(uid)
+            if role_exists:
+                raise DuplicateEmailError() from exc
             # Roll back the auth account so a retry does not hit duplicate email,
             # but never delete an account that existed before this request
-            if not already_existed:
-                try:
-                    auth.delete_user(uid)
-                except Exception:
-                    pass
+            self._rollback_created_auth_user(
+                auth=auth,
+                uid=uid,
+                already_existed=already_existed,
+                role_exists=role_exists,
+            )
             raise FirebaseWriteFailedError() from exc
 
         user = UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
@@ -199,10 +195,32 @@ class FirestoreRepository(FirebaseRepository):
             raise FirebaseWriteFailedError() from exc
 
     def _role_exists(self, uid: str) -> bool:
+        return self.get_role(uid) is not None
+
+    def _role_exists_after_failure(self, uid: str) -> bool | None:
         try:
-            return self.get_role(uid) is not None
+            return self._role_exists(uid)
         except Exception:
-            return False
+            return None
+
+    def _rollback_created_auth_user(
+        self,
+        *,
+        auth: Any,
+        uid: str,
+        already_existed: bool,
+        role_exists: bool | None = None,
+    ) -> None:
+        if already_existed:
+            return
+        if role_exists is None:
+            role_exists = self._role_exists_after_failure(uid)
+        if role_exists is not False:
+            return
+        try:
+            auth.delete_user(uid)
+        except Exception:
+            pass
 
     def _provision_user_documents(self, *, uid: str, email: str, display_name: str | None) -> None:
         db = self._db()
@@ -215,9 +233,7 @@ class FirestoreRepository(FirebaseRepository):
             role_snapshot = _sync_snapshot(role_ref.get(transaction=transaction))
             user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
             if role_snapshot.exists:
-                raise DuplicateEmailError(
-                    "An account already exists for this email and already has access."
-                )
+                raise DuplicateEmailError()
 
             transaction.set(
                 user_ref,
@@ -588,11 +604,12 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
 
 
 def _user_write_data(*, uid: str, email: str | None, display_name: str | None, exists: bool) -> dict[str, Any]:
-    data = {
+    data: dict[str, Any] = {
         "uid": uid,
         "email": email or "",
-        "displayName": display_name,
     }
+    if display_name is not None:
+        data["displayName"] = display_name
     if not exists:
         data["createdAt"] = _server_timestamp()
         data["disabled"] = False

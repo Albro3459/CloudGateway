@@ -7,6 +7,7 @@ from threading import Lock
 from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
 from cloudlaunch_api.enums import ClientStatus, OperationResult, Role
 from cloudlaunch_api.errors import (
+    AccountDisabledError,
     AuthRequiredError,
     ClientNotFoundError,
     DuplicateEmailError,
@@ -130,6 +131,7 @@ class FakeRepository(FirebaseRepository):
         self.users: dict[str, UserDoc] = {}
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
+        self.disabled_auth_uids: set[str] = set()
         self.created_user_count = 0
         self.mark_client_active_error: Exception | None = None
         self.create_user_error: Exception | None = None
@@ -156,7 +158,7 @@ class FakeRepository(FirebaseRepository):
             and client.client_public_key
         ]
 
-    def create_user(self, *, email: str, password: str, display_name: str | None) -> CreateUserResult:
+    def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
         if self.create_user_error is not None:
             raise self.create_user_error
         with self._lock:
@@ -165,10 +167,13 @@ class FakeRepository(FirebaseRepository):
                 None,
             )
             if existing is not None:
+                if existing.uid in self.disabled_auth_uids:
+                    raise AccountDisabledError()
                 if self.roles.get(existing.uid) is not None:
-                    raise DuplicateEmailError(
-                        "An account already exists for this email and already has access."
-                    )
+                    raise DuplicateEmailError()
+                if display_name is not None:
+                    existing = replace(existing, display_name=display_name)
+                    self.users[existing.uid] = existing
                 self.roles[existing.uid] = Role.USER
                 return CreateUserResult(user=existing, already_existed=True)
             self.created_user_count += 1

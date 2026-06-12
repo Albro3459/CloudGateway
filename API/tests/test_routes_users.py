@@ -1,4 +1,5 @@
 from cloudlaunch_api.errors import FirebaseWriteFailedError
+from cloudlaunch_api.repository import UserDoc, utc_now
 
 from .test_errors import assert_error_shape
 
@@ -10,7 +11,6 @@ def auth_header(token: str = "admin-token") -> dict[str, str]:
 def valid_payload(**overrides):
     payload = {
         "email": "new.user@example.com",
-        "password": "Password1!",
         "displayName": " New User ",
     }
     payload.update(overrides)
@@ -72,36 +72,60 @@ def test_create_user_rejects_duplicate_email(client, repository):
     assert_error_shape(response.json(), "DUPLICATE_EMAIL")
 
 
-def test_create_user_rejects_invalid_passwords(client):
-    bad_passwords = [
-        "",
-        "Pass1!",
-        "password1!",
-        "PASSWORD1!",
-        "Password!",
-        "Password1",
-    ]
-
-    for password in bad_passwords:
-        response = client.post(
-            "/users",
-            json=valid_payload(password=password),
-            headers=auth_header(),
-        )
-
-        assert response.status_code == 400
-        assert_error_shape(response.json(), "INVALID_PASSWORD")
-
-
-def test_create_user_rejects_too_long_password(client):
+def test_create_user_rejects_legacy_password_field(client):
     response = client.post(
         "/users",
-        json=valid_payload(password=f"{'A' * 4094}a1!"),
+        json=valid_payload(password="Password1!"),
         headers=auth_header(),
     )
 
     assert response.status_code == 400
-    assert_error_shape(response.json(), "INVALID_PASSWORD")
+    assert_error_shape(response.json(), "INVALID_REQUEST")
+
+
+def test_create_user_provisions_existing_auth_user_without_role(client, repository):
+    repository.users["existing-user"] = UserDoc(
+        uid="existing-user",
+        email="existing@example.com",
+        display_name="Existing User",
+        created_at=utc_now(),
+    )
+
+    response = client.post(
+        "/users",
+        json=valid_payload(email="existing@example.com", displayName=None),
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "userId": "existing-user",
+        "email": "existing@example.com",
+        "role": "user",
+        "alreadyExisted": True,
+    }
+    assert repository.get_role("existing-user").value == "user"
+    assert repository.get_user("existing-user").display_name == "Existing User"
+
+
+def test_create_user_rejects_disabled_existing_auth_user(client, repository):
+    repository.users["disabled-user"] = UserDoc(
+        uid="disabled-user",
+        email="disabled@example.com",
+        display_name=None,
+        created_at=utc_now(),
+    )
+    repository.disabled_auth_uids.add("disabled-user")
+
+    response = client.post(
+        "/users",
+        json=valid_payload(email="disabled@example.com"),
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 409
+    assert_error_shape(response.json(), "ACCOUNT_DISABLED")
+    assert repository.get_role("disabled-user") is None
 
 
 def test_create_user_rejects_invalid_email(client):

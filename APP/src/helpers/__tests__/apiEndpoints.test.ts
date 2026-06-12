@@ -9,7 +9,7 @@ describe("apiEndpoints", () => {
     it("uses REACT_APP_API_ORIGIN for local/dev override", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "http://localhost:8787/";
-        const { buildRegionalApiEndpoint } = await import("../apiEndpoints");
+        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "/clients", {
             hostname: "localhost",
@@ -20,7 +20,7 @@ describe("apiEndpoints", () => {
     it("derives production regional URLs from the current frontend host", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
-        const { buildRegionalApiEndpoint } = await import("../apiEndpoints");
+        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "clients", {
             hostname: "gateway.gocloudlaunch.com",
@@ -31,7 +31,7 @@ describe("apiEndpoints", () => {
     it("preserves ports for localhost derived URLs", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
-        const { buildRegionalApiEndpoint } = await import("../apiEndpoints");
+        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "health", {
             hostname: "localhost",
@@ -42,7 +42,7 @@ describe("apiEndpoints", () => {
     it("uses REACT_APP_API_ORIGIN for user creation without requiring regions", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
-        const { buildCreateUserApiEndpoint } = await import("../apiEndpoints");
+        const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
 
         expect(buildCreateUserApiEndpoint([], {
             hostname: "localhost",
@@ -53,7 +53,7 @@ describe("apiEndpoints", () => {
     it("selects first enabled region for global user creation", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
-        const { buildCreateUserApiEndpoint } = await import("../apiEndpoints");
+        const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
 
         expect(buildCreateUserApiEndpoint([
             { value: "us-sanjose-1", enabled: true },
@@ -65,3 +65,5 @@ describe("apiEndpoints", () => {
         })).toBe("https://eu-frankfurt-1.gateway.gocloudlaunch.com/api/users");
     });
 });
+
+export {};

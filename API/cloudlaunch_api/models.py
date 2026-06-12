@@ -55,8 +55,14 @@ class DeleteClientResponse(ApiModel):
 
 
 class CreateUserRequest(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        use_enum_values=True,
+        extra="forbid",
+    )
+
     email: str = Field(min_length=1, max_length=320)
-    password: str
     display_name: str | None = Field(default=None, max_length=256)
 
     @field_validator("email")

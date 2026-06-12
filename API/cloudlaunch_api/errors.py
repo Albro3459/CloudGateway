@@ -11,6 +11,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_PASSWORD: 400,
     ErrorCode.CLIENT_NOT_FOUND: 404,
     ErrorCode.DUPLICATE_EMAIL: 409,
+    ErrorCode.ACCOUNT_DISABLED: 409,
     ErrorCode.LIMIT_REACHED: 409,
     ErrorCode.CAPACITY_REACHED: 409,
     ErrorCode.WIREGUARD_APPLY_FAILED: 500,
@@ -79,7 +80,12 @@ class ClientNotFoundError(ApiError):
 
 class DuplicateEmailError(ApiError):
     code = ErrorCode.DUPLICATE_EMAIL
-    default_message = "An account already exists for this email."
+    default_message = "An account already exists for this email and already has access."
+
+
+class AccountDisabledError(ApiError):
+    code = ErrorCode.ACCOUNT_DISABLED
+    default_message = "Account is disabled and cannot be granted access."
 
 
 class InvalidPasswordError(ApiError):

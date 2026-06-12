@@ -1,4 +1,4 @@
-import { parseRegionDocument, sortRegions } from "../regionsHelper";
+import { parseRegionDocument, sortRegions, Region } from "../regionsHelper";
 
 describe("regionsHelper", () => {
     it("parses shared VPN region documents", () => {
@@ -47,7 +47,7 @@ describe("regionsHelper", () => {
             parseRegionDocument("us-sanjose-1", { displayName: "California", enabled: true, displayOrder: 2 }),
             parseRegionDocument("us-ashburn-1", { displayName: "Virginia", enabled: true, displayOrder: 1 }),
             parseRegionDocument("eu-frankfurt-1", { displayName: "Frankfurt", enabled: true, displayOrder: 1 }),
-        ].filter(region => region !== null);
+        ].filter((region): region is Region => region !== null);
 
         expect(sortRegions(regions).map(region => region.regionId)).toEqual([
             "eu-frankfurt-1",

@@ -7,7 +7,6 @@ import { faHouse } from "@fortawesome/free-solid-svg-icons";
 import { createAdminUser } from "../helpers/APIHelper";
 import { getUserRole } from "../helpers/usersHelper";
 import { logout } from "../helpers/firebaseDbHelper";
-import { validatePassword } from "../helpers/passwordHelper";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { ThemeToggle } from "../components/ThemeToggle";
 
@@ -17,8 +16,6 @@ const CreateUser: React.FC = () => {
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
 
     const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
 
     const [loading, setLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -56,17 +53,6 @@ const CreateUser: React.FC = () => {
 
         try {
             const trimmedEmail = email.trim();
-            const passwordError = validatePassword(password);
-            if (passwordError) {
-                setLoading(false);
-                setErrorMessage(passwordError);
-                return;
-            }
-            if (password !== confirmPassword) {
-                setLoading(false);
-                setErrorMessage("Error: Passwords don't match");
-                return;
-            }
 
             if (!jwtToken) {
                 setLoading(false);
@@ -89,19 +75,18 @@ const CreateUser: React.FC = () => {
                     setErrorMessage(regionsError);
                     return;
                 }
-                const result = await createAdminUser({ email: trimmedEmail, password }, jwtToken, ociRegions);
+                const result = await createAdminUser({ email: trimmedEmail }, jwtToken, ociRegions);
                 setLoading(false);
                 if (result.success) {
                     const successText = result.data.alreadyExisted
                         ? `Existing account granted access: ${trimmedEmail}`
-                        : `Created user: ${trimmedEmail}`;
+                        : `User access granted: ${trimmedEmail}`;
                     setSuccessMessage(successText);
-                    setEmail(""); setPassword(""); setConfirmPassword("");
+                    setEmail("");
                     navigate("/create-user-success", {
                         replace: true,
                         state: {
                             email: trimmedEmail,
-                            password: password,
                             alreadyExisted: result.data.alreadyExisted,
                         }
                     });
@@ -125,7 +110,7 @@ const CreateUser: React.FC = () => {
                     onClick={() => navigate("/home")}
                     className="text-2xl cursor-pointer absolute left-6" 
                 />
-                <h1 className="text-xl font-semibold align-self-center">Create User</h1>
+                <h1 className="text-xl font-semibold align-self-center">Grant User Access</h1>
                 <div className="absolute right-6 flex items-center gap-3">
                     <ThemeToggle />
                     <button
@@ -161,7 +146,7 @@ const CreateUser: React.FC = () => {
 
             {/* Form */}
             <div className="bg-card p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-md mt-24">
-                <h2 className="text-2xl font-semibold text-center mb-6">Create New User</h2>
+                <h2 className="text-2xl font-semibold text-center mb-6">Grant User Access</h2>
 
                 <form onSubmit={handleCreateAccount}>
                 {/* Email */}
@@ -175,45 +160,17 @@ const CreateUser: React.FC = () => {
                     placeholder="Email"
                     />
                 </div>
-                {/* Password */}
-                <div className="mb-6">
-                    <label className="block text-content-secondary font-medium mb-2">Password</label>
-                    <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full p-3 border border-edge bg-inset text-content rounded-lg focus:ring-2 focus:ring-focus focus:outline-none"
-                    placeholder="At least 8 characters"
-                    required
-                    />
-                    <p className="mt-2 text-xs text-content-muted">
-                    Must include uppercase, lowercase, number, and special character.
-                    </p>
-                </div>
-                {/* Confirm Password */}
-                <div className="mb-6">
-                    <label className="block text-content-secondary font-medium mb-2">Confirm Password</label>
-                    <input
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full p-3 border border-edge bg-inset text-content rounded-lg focus:ring-2 focus:ring-focus focus:outline-none"
-                    placeholder="Passwords Must Match"
-                    required
-                    />
-                </div>
-
                 {/* Submit */}
                 <button
                     type="submit"
                     className={`w-full p-3 rounded-lg transition ${
-                    email && password
+                    email
                         ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
                         : "bg-disabled text-content-disabled cursor-not-allowed"
                     }`}
-                    disabled={!email || !password}
+                    disabled={!email}
                 >
-                    Create Account
+                    Grant Access
                 </button>
                 </form>
             </div>

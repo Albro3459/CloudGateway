@@ -11,7 +11,6 @@ from .errors import (
     ClientNotFoundError,
     FirebaseWriteFailedError,
     InternalError,
-    InvalidPasswordError,
     WireGuardApplyFailedError,
 )
 from .logs import log_event
@@ -30,8 +29,6 @@ from .wireguard import WireGuardManager
 logger = logging.getLogger("cloudlaunch_api.routes")
 router = APIRouter()
 T = TypeVar("T")
-PASSWORD_MIN_LENGTH = 8
-PASSWORD_MAX_LENGTH = 4096
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -308,10 +305,8 @@ async def create_user(
         email=body.email,
     )
     try:
-        _validate_create_user_password(body.password)
         result = repository.create_user(
             email=body.email,
-            password=body.password,
             display_name=body.display_name,
         )
     except ApiError:
@@ -361,22 +356,6 @@ def _create_client_response(client: ClientDoc) -> CreateClientResponse:
 def _ensure_client_matches_request(*, client: ClientDoc, owner_uid: str, region_id: str, client_id: str) -> None:
     if client.owner_uid != owner_uid or client.region_id != region_id or client.client_id != client_id:
         raise ClientNotFoundError()
-
-
-def _validate_create_user_password(password: str) -> None:
-    if len(password) < PASSWORD_MIN_LENGTH:
-        raise InvalidPasswordError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters long")
-    if len(password) > PASSWORD_MAX_LENGTH:
-        raise InvalidPasswordError(f"Password must be no more than {PASSWORD_MAX_LENGTH} characters long")
-    if not any(char.isupper() for char in password):
-        raise InvalidPasswordError("Password must include an uppercase character")
-    if not any(char.islower() for char in password):
-        raise InvalidPasswordError("Password must include a lowercase character")
-    if not any(char.isdigit() for char in password):
-        raise InvalidPasswordError("Password must include a numeric character")
-    if not any(not char.isalnum() for char in password):
-        raise InvalidPasswordError("Password must include a special character")
-
 
 def _run_wireguard_operation(
     operation_call: Callable[[], T],
