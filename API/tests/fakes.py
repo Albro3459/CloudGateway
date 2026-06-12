@@ -1,5 +1,6 @@
 import subprocess
 from contextlib import contextmanager
+from typing import Iterator
 from dataclasses import dataclass, replace
 from threading import Lock
 
@@ -14,6 +15,7 @@ from cloudlaunch_api.errors import (
 from cloudlaunch_api.repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
+    CreateUserResult,
     FirebaseRepository,
     RegionDoc,
     UserDoc,
@@ -154,12 +156,21 @@ class FakeRepository(FirebaseRepository):
             and client.client_public_key
         ]
 
-    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> CreateUserResult:
         if self.create_user_error is not None:
             raise self.create_user_error
         with self._lock:
-            if any(user.email.lower() == email.lower() for user in self.users.values()):
-                raise DuplicateEmailError()
+            existing = next(
+                (user for user in self.users.values() if user.email.lower() == email.lower()),
+                None,
+            )
+            if existing is not None:
+                if self.roles.get(existing.uid) is not None:
+                    raise DuplicateEmailError(
+                        "An account already exists for this email and already has access."
+                    )
+                self.roles[existing.uid] = Role.USER
+                return CreateUserResult(user=existing, already_existed=True)
             self.created_user_count += 1
             uid = f"created-user-{self.created_user_count}"
             while uid in self.users or uid in self.roles:
@@ -168,7 +179,7 @@ class FakeRepository(FirebaseRepository):
             user = UserDoc(uid=uid, email=email, display_name=display_name, created_at=utc_now())
             self.users[uid] = user
             self.roles[uid] = Role.USER
-            return user
+            return CreateUserResult(user=user)
 
     def reserve_client(
         self,
@@ -407,7 +418,7 @@ class FakeWireGuardManager(WireGuardManager):
         self.locked = False
 
     @contextmanager
-    def lock(self):
+    def lock(self) -> Iterator[None]:
         if self.locked:
             raise AssertionError("WireGuard lock() is not reentrant.")
         self.locked = True

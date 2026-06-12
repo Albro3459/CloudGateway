@@ -24,12 +24,13 @@ test_api() (
     python3 -m venv .venv
     ./.venv/bin/python -m pip install --quiet --upgrade pip
   fi
-  if ! ./.venv/bin/python -c "import pytest" >/dev/null 2>&1; then
+  if ! ./.venv/bin/python -c "import pytest" >/dev/null 2>&1 || [[ ! -x .venv/bin/pyright ]]; then
     echo "Installing API dependencies"
     ./.venv/bin/python -m pip install --quiet -e '.[dev]'
   fi
 
   ./.venv/bin/python -m compileall -q cloudlaunch_api tests
+  ./.venv/bin/pyright --project ../pyrightconfig.json
   ./.venv/bin/python -m pytest
 )
 
@@ -83,7 +84,7 @@ fi
 
 for target in "${targets[@]}"; do
   case "$target" in
-    api) run_step "API tests (pytest + compile)" test_api ;;
+    api) run_step "API tests (pyright + pytest + compile)" test_api ;;
     app) run_step "APP tests + build (jest + CRA)" test_app ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     *)

@@ -68,6 +68,7 @@ async def create_client(
             region_id=body.region_id,
             client_name=body.client_name,
         )
+        assert reserved_client is not None
         keypair = wireguard.generate_keypair()
         wireguard_config = wireguard.render_client_config(
             private_key=keypair.private_key,
@@ -106,6 +107,7 @@ async def create_client(
         )
         raise
 
+    assert reserved_client is not None
     # The lock spans peer apply plus the final Firebase write so a concurrent
     # peer sync never observes a creating doc with a live peer.
     with wireguard.lock():
@@ -307,7 +309,7 @@ async def create_user(
     )
     try:
         _validate_create_user_password(body.password)
-        created_user = repository.create_user(
+        result = repository.create_user(
             email=body.email,
             password=body.password,
             display_name=body.display_name,
@@ -334,7 +336,12 @@ async def create_user(
         )
         raise InternalError() from exc
 
-    return CreateUserResponse(user_id=created_user.uid, email=created_user.email, role=Role.USER)
+    return CreateUserResponse(
+        user_id=result.user.uid,
+        email=result.user.email,
+        role=Role.USER,
+        already_existed=result.already_existed,
+    )
 
 
 def _create_client_response(client: ClientDoc) -> CreateClientResponse:

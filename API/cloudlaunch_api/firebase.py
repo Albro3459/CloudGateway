@@ -1,6 +1,9 @@
 import threading
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
+
+from google.cloud.firestore_v1.base_document import DocumentSnapshot
+from google.cloud.firestore_v1.transforms import Sentinel
 
 from .auth import AuthenticatedUser, TokenVerifier
 from .enums import ClientStatus, Role
@@ -15,6 +18,7 @@ from .errors import (
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
+    CreateUserResult,
     FirebaseRepository,
     RegionDoc,
     UserDoc,
@@ -39,6 +43,16 @@ def _transactional():
     from google.cloud.firestore_v1 import transactional
 
     return transactional
+
+
+def _server_timestamp() -> Sentinel:
+    from google.cloud.firestore_v1 import SERVER_TIMESTAMP
+
+    return SERVER_TIMESTAMP
+
+
+def _sync_snapshot(snapshot: Any) -> DocumentSnapshot:
+    return cast(DocumentSnapshot, snapshot)
 
 
 def _firebase_app(settings: Settings):
@@ -85,25 +99,25 @@ class FirestoreRepository(FirebaseRepository):
         return firestore.client()
 
     def get_role(self, uid: str) -> Role | None:
-        doc = self._db().collection("Roles").document(uid).get()
+        doc = _sync_snapshot(self._db().collection("Roles").document(uid).get())
         if not doc.exists:
             return None
         return _role_from_data(doc.to_dict() or {})
 
     def get_user(self, uid: str) -> UserDoc | None:
-        doc = self._db().collection("Users").document(uid).get()
+        doc = _sync_snapshot(self._db().collection("Users").document(uid).get())
         if not doc.exists:
             return None
         return _user_from_data(doc.to_dict() or {}, uid)
 
     def get_region(self, region_id: str) -> RegionDoc | None:
-        doc = self._db().collection("Regions").document(region_id).get()
+        doc = _sync_snapshot(self._db().collection("Regions").document(region_id).get())
         if not doc.exists:
             return None
         return _region_from_data(doc.to_dict() or {}, region_id)
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
-        doc = _client_ref(self._db(), owner_uid, region_id, client_id).get()
+        doc = _sync_snapshot(_client_ref(self._db(), owner_uid, region_id, client_id).get())
         if not doc.exists:
             return None
         return _client_from_data(doc.to_dict() or {}, client_id)
@@ -111,7 +125,8 @@ class FirestoreRepository(FirebaseRepository):
     def list_active_clients(self, region_id: str) -> list[ClientDoc]:
         snapshots = self._db().collection_group("Instances").where("regionId", "==", region_id).stream()
         clients = []
-        for snapshot in snapshots:
+        for raw_snapshot in snapshots:
+            snapshot = _sync_snapshot(raw_snapshot)
             try:
                 client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
             except ValueError:
@@ -120,10 +135,11 @@ class FirestoreRepository(FirebaseRepository):
                 clients.append(client)
         return clients
 
-    def create_user(self, *, email: str, password: str, display_name: str | None) -> UserDoc:
-        from firebase_admin import auth, firestore
+    def create_user(self, *, email: str, password: str, display_name: str | None) -> CreateUserResult:
+        from firebase_admin import auth
 
         _firebase_app(self._settings)
+        already_existed = False
         try:
             auth_data = {"email": email, "password": password}
             if display_name is not None:
@@ -131,44 +147,97 @@ class FirestoreRepository(FirebaseRepository):
             auth_user = auth.create_user(**auth_data)
         except Exception as exc:
             if _exception_is_named(exc, "EmailAlreadyExistsError"):
-                raise DuplicateEmailError() from exc
-            if _exception_is_named(exc, "InvalidPasswordError"):
+                auth_user = self._get_existing_auth_user(email=email)
+                already_existed = True
+            elif _exception_is_named(exc, "InvalidPasswordError"):
                 raise InvalidPasswordError() from exc
-            if isinstance(exc, ValueError):
+            elif isinstance(exc, ValueError):
                 raise InvalidRequestError() from exc
-            raise FirebaseWriteFailedError() from exc
+            else:
+                raise FirebaseWriteFailedError() from exc
 
         uid = auth_user.uid
+        if display_name is None:
+            display_name = auth_user.display_name
         now = utc_now()
         try:
-            db = self._db()
-            batch = db.batch()
-            batch.set(
-                db.collection("Users").document(uid),
-                {
-                    "uid": uid,
-                    "email": auth_user.email or email,
-                    "displayName": display_name,
-                    "createdAt": firestore.SERVER_TIMESTAMP,
-                },
+            self._provision_user_documents(
+                uid=uid,
+                email=auth_user.email or email,
+                display_name=display_name,
             )
-            batch.set(
-                db.collection("Roles").document(uid),
-                {
-                    "role": Role.USER.value,
-                    "updatedAt": firestore.SERVER_TIMESTAMP,
-                },
-            )
-            batch.commit()
+        except DuplicateEmailError:
+            if not already_existed:
+                try:
+                    auth.delete_user(uid)
+                except Exception:
+                    pass
+            raise
         except Exception as exc:
-            # Roll back the auth account so a retry does not hit duplicate email
-            try:
-                auth.delete_user(uid)
-            except Exception:
-                pass
+            if already_existed and self._role_exists(uid):
+                raise DuplicateEmailError(
+                    "An account already exists for this email and already has access."
+                ) from exc
+            # Roll back the auth account so a retry does not hit duplicate email,
+            # but never delete an account that existed before this request
+            if not already_existed:
+                try:
+                    auth.delete_user(uid)
+                except Exception:
+                    pass
             raise FirebaseWriteFailedError() from exc
 
-        return UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
+        user = UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
+        return CreateUserResult(user=user, already_existed=already_existed)
+
+    def _get_existing_auth_user(self, *, email: str) -> Any:
+        from firebase_admin import auth
+
+        try:
+            return auth.get_user_by_email(email)
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+    def _role_exists(self, uid: str) -> bool:
+        try:
+            return self.get_role(uid) is not None
+        except Exception:
+            return False
+
+    def _provision_user_documents(self, *, uid: str, email: str, display_name: str | None) -> None:
+        db = self._db()
+
+        @_transactional()
+        def provision(transaction):
+            user_ref = db.collection("Users").document(uid)
+            role_ref = db.collection("Roles").document(uid)
+
+            role_snapshot = _sync_snapshot(role_ref.get(transaction=transaction))
+            user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
+            if role_snapshot.exists:
+                raise DuplicateEmailError(
+                    "An account already exists for this email and already has access."
+                )
+
+            transaction.set(
+                user_ref,
+                _user_write_data(
+                    uid=uid,
+                    email=email,
+                    display_name=display_name,
+                    exists=user_snapshot.exists,
+                ),
+                merge=True,
+            )
+            transaction.create(
+                role_ref,
+                {
+                    "role": Role.USER.value,
+                    "updatedAt": _server_timestamp(),
+                },
+            )
+
+        provision(db.transaction())
 
     def reserve_client(
         self,
@@ -182,17 +251,17 @@ class FirestoreRepository(FirebaseRepository):
         ensure_local_region(region_id, self._settings.region_id)
         db = self._db()
 
-        from firebase_admin import firestore
-
         @_transactional()
         def reserve(transaction):
             role_ref = db.collection("Roles").document(owner_uid)
             user_ref = db.collection("Users").document(owner_uid)
             region_ref = db.collection("Regions").document(region_id)
 
-            role = role_or_user(_role_from_snapshot(role_ref.get(transaction=transaction)))
-            user_snapshot = user_ref.get(transaction=transaction)
-            region = ensure_region_enabled(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
+            role = role_or_user(_role_from_snapshot(_sync_snapshot(role_ref.get(transaction=transaction))))
+            user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
+            region = ensure_region_enabled(
+                _region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id)
+            )
             allocated_clients = _allocated_region_clients(db, transaction, region_id)
             owner_allocated_count = sum(1 for client in allocated_clients if client.owner_uid == owner_uid)
 
@@ -233,7 +302,7 @@ class FirestoreRepository(FirebaseRepository):
                 region_ref,
                 {
                     "activeClientCount": len(allocated_clients) + 1,
-                    "updatedAt": firestore.SERVER_TIMESTAMP,
+                    "updatedAt": _server_timestamp(),
                 },
             )
             return _client_from_data(client_data, client_id, now=now)
@@ -252,12 +321,10 @@ class FirestoreRepository(FirebaseRepository):
         ensure_local_region(region_id, self._settings.region_id)
         db = self._db()
 
-        from firebase_admin import firestore
-
         @_transactional()
         def activate(transaction):
             client_ref = _client_ref(db, owner_uid, region_id, client_id)
-            snapshot = client_ref.get(transaction=transaction)
+            snapshot = _sync_snapshot(client_ref.get(transaction=transaction))
             client = _require_client(snapshot, client_id, owner_uid=owner_uid, region_id=region_id)
             if client.status not in {ClientStatus.CREATING, ClientStatus.ACTIVE}:
                 raise ClientNotFoundError()
@@ -267,7 +334,7 @@ class FirestoreRepository(FirebaseRepository):
                 "status": ClientStatus.ACTIVE.value,
                 "clientPublicKey": client_public_key,
                 "wireguardConfig": wireguard_config,
-                "updatedAt": firestore.SERVER_TIMESTAMP,
+                "updatedAt": _server_timestamp(),
                 "removedAt": None,
                 "lastErrorCode": None,
                 "lastErrorMessage": None,
@@ -333,19 +400,17 @@ class FirestoreRepository(FirebaseRepository):
         ensure_local_region(region_id, self._settings.region_id)
         db = self._db()
 
-        from firebase_admin import firestore
-
         @_transactional()
         def delete(transaction):
             role_ref = db.collection("Roles").document(requester_uid)
             region_ref = db.collection("Regions").document(region_id)
             client_ref = _client_ref(db, target_uid, region_id, client_id)
 
-            role = _role_from_snapshot(role_ref.get(transaction=transaction))
+            role = _role_from_snapshot(_sync_snapshot(role_ref.get(transaction=transaction)))
             ensure_delete_allowed(requester_uid=requester_uid, requester_role=role, target_uid=target_uid)
-            require_region(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
+            require_region(_region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id))
             client = _require_client(
-                client_ref.get(transaction=transaction),
+                _sync_snapshot(client_ref.get(transaction=transaction)),
                 client_id,
                 owner_uid=target_uid,
                 region_id=region_id,
@@ -353,7 +418,6 @@ class FirestoreRepository(FirebaseRepository):
             allocated_clients = _allocated_region_clients(db, transaction, region_id)
             return self._write_terminal_client(
                 transaction=transaction,
-                firestore=firestore,
                 region_ref=region_ref,
                 client_ref=client_ref,
                 client=client,
@@ -378,15 +442,13 @@ class FirestoreRepository(FirebaseRepository):
         ensure_local_region(region_id, self._settings.region_id)
         db = self._db()
 
-        from firebase_admin import firestore
-
         @_transactional()
         def mark_terminal(transaction):
             region_ref = db.collection("Regions").document(region_id)
             client_ref = _client_ref(db, owner_uid, region_id, client_id)
-            require_region(_region_from_snapshot(region_ref.get(transaction=transaction), region_id))
+            require_region(_region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id))
             client = _require_client(
-                client_ref.get(transaction=transaction),
+                _sync_snapshot(client_ref.get(transaction=transaction)),
                 client_id,
                 owner_uid=owner_uid,
                 region_id=region_id,
@@ -394,7 +456,6 @@ class FirestoreRepository(FirebaseRepository):
             allocated_clients = _allocated_region_clients(db, transaction, region_id)
             return self._write_terminal_client(
                 transaction=transaction,
-                firestore=firestore,
                 region_ref=region_ref,
                 client_ref=client_ref,
                 client=client,
@@ -410,7 +471,6 @@ class FirestoreRepository(FirebaseRepository):
         self,
         *,
         transaction,
-        firestore,
         region_ref,
         client_ref,
         client: ClientDoc,
@@ -425,8 +485,8 @@ class FirestoreRepository(FirebaseRepository):
         removed_at = now if status == ClientStatus.REMOVED else None
         updates = {
             "status": status.value,
-            "updatedAt": firestore.SERVER_TIMESTAMP,
-            "removedAt": firestore.SERVER_TIMESTAMP if removed_at is not None else None,
+            "updatedAt": _server_timestamp(),
+            "removedAt": _server_timestamp() if removed_at is not None else None,
             "wireguardConfig": None if status == ClientStatus.REMOVED else client.wireguard_config,
             "lastErrorCode": error_code,
             "lastErrorMessage": error_message,
@@ -436,7 +496,7 @@ class FirestoreRepository(FirebaseRepository):
             region_ref,
             {
                 "activeClientCount": next_count,
-                "updatedAt": firestore.SERVER_TIMESTAMP,
+                "updatedAt": _server_timestamp(),
             },
         )
         return replace(
@@ -450,7 +510,7 @@ class FirestoreRepository(FirebaseRepository):
         )
 
 
-def _role_from_snapshot(snapshot) -> Role | None:
+def _role_from_snapshot(snapshot: DocumentSnapshot) -> Role | None:
     if not snapshot.exists:
         return None
     return _role_from_data(snapshot.to_dict() or {})
@@ -467,7 +527,7 @@ def _role_from_data(data: dict[str, Any]) -> Role | None:
         return None
 
 
-def _region_from_snapshot(snapshot, region_id: str) -> RegionDoc | None:
+def _region_from_snapshot(snapshot: DocumentSnapshot, region_id: str) -> RegionDoc | None:
     if not snapshot.exists:
         return None
     return _region_from_data(snapshot.to_dict() or {}, region_id)
@@ -528,15 +588,13 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
 
 
 def _user_write_data(*, uid: str, email: str | None, display_name: str | None, exists: bool) -> dict[str, Any]:
-    from firebase_admin import firestore
-
     data = {
         "uid": uid,
         "email": email or "",
         "displayName": display_name,
     }
     if not exists:
-        data["createdAt"] = firestore.SERVER_TIMESTAMP
+        data["createdAt"] = _server_timestamp()
         data["disabled"] = False
     return data
 
@@ -552,8 +610,6 @@ def _client_write_data(
     assigned_tunnel_ipv4: str,
     assigned_tunnel_ipv6: str,
 ) -> dict[str, Any]:
-    from firebase_admin import firestore
-
     return {
         "clientId": client_id,
         "ownerUid": owner_uid,
@@ -569,8 +625,8 @@ def _client_write_data(
         "serverPublicKey": region.wireguard_public_key,
         "clientPublicKey": "",
         "wireguardConfig": None,
-        "createdAt": firestore.SERVER_TIMESTAMP,
-        "updatedAt": firestore.SERVER_TIMESTAMP,
+        "createdAt": _server_timestamp(),
+        "updatedAt": _server_timestamp(),
         "removedAt": None,
         "lastErrorCode": None,
         "lastErrorMessage": None,
@@ -592,7 +648,7 @@ def _new_client_ref(db, transaction, owner_uid: str, region_id: str):
     for _ in range(5):
         client_id = new_client_id()
         client_ref = _client_ref(db, owner_uid, region_id, client_id)
-        if not client_ref.get(transaction=transaction).exists:
+        if not _sync_snapshot(client_ref.get(transaction=transaction)).exists:
             return client_id, client_ref
     raise FirebaseWriteFailedError("Unable to reserve a unique client id.")
 
@@ -600,7 +656,8 @@ def _new_client_ref(db, transaction, owner_uid: str, region_id: str):
 def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc]:
     snapshots = db.collection_group("Instances").where("regionId", "==", region_id).stream(transaction=transaction)
     clients = []
-    for snapshot in snapshots:
+    for raw_snapshot in snapshots:
+        snapshot = _sync_snapshot(raw_snapshot)
         try:
             client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
         except ValueError:
@@ -610,7 +667,7 @@ def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc
     return clients
 
 
-def _require_client(snapshot, client_id: str, *, owner_uid: str, region_id: str) -> ClientDoc:
+def _require_client(snapshot: DocumentSnapshot, client_id: str, *, owner_uid: str, region_id: str) -> ClientDoc:
     if not snapshot.exists:
         raise ClientNotFoundError()
     try:

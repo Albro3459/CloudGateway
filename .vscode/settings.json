@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "/Users/abrodsky/GitHub/CloudGateway/API/.venv/bin/python",
+  "python.analysis.extraPaths": [
+    "/Users/abrodsky/GitHub/CloudGateway/API"
+  ]
+}

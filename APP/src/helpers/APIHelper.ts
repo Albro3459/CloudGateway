@@ -65,6 +65,7 @@ export type CreateUserResponse = {
     userId: string;
     email: string;
     role: string;
+    alreadyExisted: boolean;
 };
 
 const parseApiResponse = async (response: Response) => {
