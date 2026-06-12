@@ -110,5 +110,6 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 ## More Docs
 
 * Frontend: [APP/README.md](APP/README.md)
+* Regional API: [API/README.md](API/README.md)
 * Regional server / Terraform: [OCI/README.md](OCI/README.md)
 * Deployment and operations runbooks: [docs/](docs/)
