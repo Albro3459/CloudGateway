@@ -26,3 +26,16 @@ export const getUserRole = async (user: User): Promise<string | null> => {
       return null;
     }
 };
+
+export const isUserProvisioned = async (user: User): Promise<boolean> => {
+    try {
+      const db = getFirestore();
+      const docRef = doc(db, "Users", user.uid);
+      const docSnap = await getDoc(docRef);
+
+      return docSnap.exists();
+    } catch (error) {
+      console.error("Unexpected error checking user provisioning:", error);
+      return false;
+    }
+};

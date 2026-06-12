@@ -4,6 +4,7 @@ from .enums import ErrorCode
 HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.AUTH_REQUIRED: 401,
     ErrorCode.ADMIN_REQUIRED: 403,
+    ErrorCode.USER_NOT_PROVISIONED: 403,
     ErrorCode.INVALID_REQUEST: 400,
     ErrorCode.REGION_DISABLED: 400,
     ErrorCode.REGION_MISMATCH: 400,
@@ -39,6 +40,11 @@ class AuthRequiredError(ApiError):
 class AdminRequiredError(ApiError):
     code = ErrorCode.ADMIN_REQUIRED
     default_message = "Admin role required."
+
+
+class UserNotProvisionedError(ApiError):
+    code = ErrorCode.USER_NOT_PROVISIONED
+    default_message = "User is not provisioned for CloudGateway."
 
 
 class InvalidRequestError(ApiError):

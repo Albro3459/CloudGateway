@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword } from "../firebase";
+import type { User } from "firebase/auth";
+import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
+import { isUserProvisioned } from "../helpers/usersHelper";
 import packageJson from "../../package.json";
 import { ThemeToggle } from "../components/ThemeToggle";
 
@@ -11,6 +13,36 @@ const Login: React.FC = () => {
     const [password, setPassword] = useState("");
     const [error, setError] = useState<string | null>();
     const [success, setSuccess] = useState<string | null>();
+
+    const getGoogleSignInError = (err: unknown) => {
+        const code = err && typeof err === "object" && "code" in err
+            ? (err as { code?: string }).code
+            : null;
+
+        if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+            return null;
+        }
+        if (code === "auth/unauthorized-domain") {
+            return "This domain is not authorized for Google sign-in.";
+        }
+        if (code === "auth/account-exists-with-different-credential") {
+            return "An account already exists for this email. Sign in with email and password first.";
+        }
+
+        return "Unable to sign in with Google.";
+    };
+
+    const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
+        if (await isUserProvisioned(user)) {
+            navigate("/home", { replace: true });
+            return;
+        }
+
+        await signOut(auth);
+        if (showAccessError) {
+            setError("This account is not provisioned for CloudGateway.");
+        }
+    }, [navigate]);
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -24,10 +56,25 @@ const Login: React.FC = () => {
                 return;
             }
 
-            await signInWithEmailAndPassword(auth, email, password);
-            navigate("/home", { replace: true });
+            const result = await signInWithEmailAndPassword(auth, email, password);
+            await navigateProvisionedUser(result.user, true);
         } catch (err) {
             setError("Invalid email or password.");
+        }
+    };
+
+    const handleGoogleLogin = async () => {
+        setError(null);
+        setSuccess(null);
+
+        try {
+            const result = await signInWithGoogle();
+            await navigateProvisionedUser(result.user, true);
+        } catch (err) {
+            const message = getGoogleSignInError(err);
+            if (message) {
+                setError(message);
+            }
         }
     };
 
@@ -55,16 +102,20 @@ const Login: React.FC = () => {
     };
 
     useEffect(() => {
+        let cancelled = false;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
             const fetchUserData = async () => {
-                if (user) {
-                    navigate("/home", { replace: true });
+                if (user && !cancelled) {
+                    await navigateProvisionedUser(user);
                 }
             };
             fetchUserData();
         });
-        return () => unsubscribe();
-    }, [navigate]);
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, [navigateProvisionedUser]);
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
@@ -143,6 +194,21 @@ const Login: React.FC = () => {
                     className="cursor-pointer w-full bg-primary text-white p-3 rounded-lg hover:bg-primary-hover transition"
                 >
                     Login
+                </button>
+
+                <div className="my-4 flex items-center gap-3 text-xs text-content-faint">
+                    <div className="h-px flex-1 bg-edge-subtle"></div>
+                    <span>or</span>
+                    <div className="h-px flex-1 bg-edge-subtle"></div>
+                </div>
+
+                <button
+                    type="button"
+                    onClick={handleGoogleLogin}
+                    className="flex w-full cursor-pointer items-center justify-center gap-3 rounded-lg border border-edge bg-inset p-3 text-content transition hover:bg-inset-strong"
+                >
+                    <span className="text-lg font-semibold text-accent">G</span>
+                    Continue with Google
                 </button>
 
                 <div className="ps-2 mt-2 text-xs">

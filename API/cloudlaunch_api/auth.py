@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from fastapi import Depends, Request
 
 from .enums import Role
-from .errors import AdminRequiredError, AuthRequiredError
+from .errors import AdminRequiredError, AuthRequiredError, UserNotProvisionedError
 
 
 @dataclass(frozen=True)
@@ -40,4 +40,13 @@ def require_admin_user(
     role = request.app.state.repository.get_role(user.uid)
     if role != Role.ADMIN:
         raise AdminRequiredError()
+    return user
+
+
+def require_provisioned_user(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    if request.app.state.repository.get_role(user.uid) is None:
+        raise UserNotProvisionedError()
     return user

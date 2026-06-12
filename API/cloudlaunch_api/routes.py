@@ -4,7 +4,7 @@ from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, Path, Request
 
-from .auth import AuthenticatedUser, get_current_user, require_admin_user
+from .auth import AuthenticatedUser, require_admin_user, require_provisioned_user
 from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
 from .errors import (
     ApiError,
@@ -43,7 +43,7 @@ async def health(request: Request) -> HealthResponse:
 async def create_client(
     request: Request,
     body: CreateClientRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(require_provisioned_user),
 ) -> CreateClientResponse:
     repository = request.app.state.repository
     wireguard: WireGuardManager = request.app.state.wireguard
@@ -194,7 +194,7 @@ async def delete_client(
     client_id: Annotated[str, Path(alias="clientId")],
     request: Request,
     body: DeleteClientRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
+    user: AuthenticatedUser = Depends(require_provisioned_user),
 ) -> DeleteClientResponse:
     repository = request.app.state.repository
     wireguard: WireGuardManager = request.app.state.wireguard
