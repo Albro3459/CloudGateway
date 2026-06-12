@@ -12,6 +12,7 @@ from cloudlaunch_api.errors import (
     RegionDisabledError,
     RegionMismatchError,
 )
+from cloudlaunch_api.firebase import FirestoreRepository, _user_write_data
 from cloudlaunch_api.repository import RegionDoc
 
 from .fakes import FakeRepository
@@ -45,6 +46,22 @@ def repository() -> FakeRepository:
     return repo
 
 
+class AuthDeleteRecorder:
+    def __init__(self):
+        self.deleted_uids: list[str] = []
+
+    def delete_user(self, uid: str) -> None:
+        self.deleted_uids.append(uid)
+
+
+class RollbackRepository(FirestoreRepository):
+    def __init__(self, role: Role | None):
+        self.role = role
+
+    def get_role(self, uid: str) -> Role | None:
+        return self.role
+
+
 def reserve(
     repository: FakeRepository,
     *,
@@ -60,6 +77,30 @@ def reserve(
         region_id=REGION_ID,
         client_name=client_name,
     )
+
+
+def test_rollback_does_not_delete_auth_when_role_exists():
+    repository = RollbackRepository(Role.USER)
+    auth = AuthDeleteRecorder()
+
+    repository._rollback_created_auth_user(auth=auth, uid="user-1", already_existed=False)
+
+    assert auth.deleted_uids == []
+
+
+def test_rollback_deletes_created_auth_when_role_absent():
+    repository = RollbackRepository(None)
+    auth = AuthDeleteRecorder()
+
+    repository._rollback_created_auth_user(auth=auth, uid="user-1", already_existed=False)
+
+    assert auth.deleted_uids == ["user-1"]
+
+
+def test_user_write_data_omits_missing_display_name():
+    data = _user_write_data(uid="user-1", email="user@example.com", display_name=None, exists=True)
+
+    assert "displayName" not in data
 
 
 def require_test_region(repository: FakeRepository) -> RegionDoc:

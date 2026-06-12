@@ -19,6 +19,7 @@ def test_status_mapping_matches_contract():
     assert HTTP_STATUS_BY_CODE[ErrorCode.INVALID_PASSWORD] == 400
     assert HTTP_STATUS_BY_CODE[ErrorCode.CLIENT_NOT_FOUND] == 404
     assert HTTP_STATUS_BY_CODE[ErrorCode.DUPLICATE_EMAIL] == 409
+    assert HTTP_STATUS_BY_CODE[ErrorCode.ACCOUNT_DISABLED] == 409
     assert HTTP_STATUS_BY_CODE[ErrorCode.LIMIT_REACHED] == 409
     assert HTTP_STATUS_BY_CODE[ErrorCode.CAPACITY_REACHED] == 409
     assert HTTP_STATUS_BY_CODE[ErrorCode.WIREGUARD_APPLY_FAILED] == 500
@@ -27,7 +28,7 @@ def test_status_mapping_matches_contract():
 
 
 def test_users_requires_auth(client):
-    response = client.post("/users", json={"email": "a@b.com", "password": "Password1!"})
+    response = client.post("/users", json={"email": "a@b.com"})
 
     assert response.status_code == 401
     assert_error_shape(response.json(), "AUTH_REQUIRED")
@@ -36,7 +37,7 @@ def test_users_requires_auth(client):
 def test_users_rejects_bad_token(client):
     response = client.post(
         "/users",
-        json={"email": "a@b.com", "password": "Password1!"},
+        json={"email": "a@b.com"},
         headers={"Authorization": "Bearer nope"},
     )
 
@@ -47,7 +48,7 @@ def test_users_rejects_bad_token(client):
 def test_users_rejects_non_admin(client):
     response = client.post(
         "/users",
-        json={"email": "a@b.com", "password": "Password1!"},
+        json={"email": "a@b.com"},
         headers={"Authorization": "Bearer user-token"},
     )
 
@@ -58,7 +59,7 @@ def test_users_rejects_non_admin(client):
 def test_users_admin_can_create_user(client):
     response = client.post(
         "/users",
-        json={"email": "a@b.com", "password": "Password1!"},
+        json={"email": "a@b.com"},
         headers={"Authorization": "Bearer admin-token"},
     )
 
@@ -69,7 +70,7 @@ def test_users_admin_can_create_user(client):
 def test_invalid_body_maps_to_invalid_request(client):
     response = client.post(
         "/users",
-        json={"email": "a@b.com"},
+        json={},
         headers={"Authorization": "Bearer admin-token"},
     )
 

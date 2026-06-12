@@ -44,6 +44,7 @@ test_app() (
   fi
 
   CI=true npm test -- --watchAll=false
+  npx tsc --noEmit
   npm run build
 )
 
@@ -85,7 +86,7 @@ fi
 for target in "${targets[@]}"; do
   case "$target" in
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
-    app) run_step "APP tests + build (jest + CRA)" test_app ;;
+    app) run_step "APP tests + typecheck + build (jest + tsc + CRA)" test_app ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     *)
       echo "Unknown target: $target (expected: api, app, infra)" >&2

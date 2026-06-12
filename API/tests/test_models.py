@@ -66,7 +66,7 @@ def test_delete_response_serializes_camel_case():
 
 def test_user_models_serialize_camel_case():
     request = CreateUserRequest.model_validate(
-        {"email": "user@example.com", "password": "temporary-password", "displayName": " User "}
+        {"email": "user@example.com", "displayName": " User "}
     )
     response = CreateUserResponse(user_id="uid", email=request.email, role=Role.USER)
 

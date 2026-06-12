@@ -31,7 +31,7 @@ describe("APIHelper", () => {
             wireguardConfig: "[Interface]",
         };
         mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
-        const { createClient } = await import("../APIHelper");
+        const { createClient } = require("../APIHelper");
 
         const result = await createClient({ regionId: "us-sanjose-1", clientName: "Phone" }, "firebase-token");
         const request = mockFetch.mock.calls[0][1] as RequestInit;
@@ -54,7 +54,7 @@ describe("APIHelper", () => {
             status: "removed",
         };
         mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
-        const { deleteClient } = await import("../APIHelper");
+        const { deleteClient } = require("../APIHelper");
 
         const result = await deleteClient("client/id", {
             userId: "user-1",
@@ -79,11 +79,10 @@ describe("APIHelper", () => {
             role: "user",
         };
         mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
-        const { createAdminUser } = await import("../APIHelper");
+        const { createAdminUser } = require("../APIHelper");
 
         const result = await createAdminUser({
             email: "user@example.com",
-            password: "Password1!",
             displayName: "Test User",
         }, "firebase-token", [
             { regionId: "us-sanjose-1", enabled: true, displayOrder: 20 },
@@ -95,7 +94,6 @@ describe("APIHelper", () => {
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({
             email: "user@example.com",
-            password: "Password1!",
             displayName: "Test User",
         });
         expect(result).toEqual({ success: true, data: responseBody });
@@ -109,11 +107,10 @@ describe("APIHelper", () => {
                 requestId: "request-1",
             },
         }, false, 409));
-        const { createAdminUser } = await import("../APIHelper");
+        const { createAdminUser } = require("../APIHelper");
 
         const result = await createAdminUser({
             email: "user@example.com",
-            password: "Password1!",
         }, "firebase-token", [
             { regionId: "us-sanjose-1", enabled: true },
         ]);
@@ -137,11 +134,10 @@ describe("APIHelper", () => {
     it("does not call users API when no enabled region exists", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
-        const { createAdminUser } = await import("../APIHelper");
+        const { createAdminUser } = require("../APIHelper");
 
         const result = await createAdminUser({
             email: "user@example.com",
-            password: "Password1!",
         }, "firebase-token", [
             { regionId: "us-sanjose-1", enabled: false },
         ]);
@@ -153,3 +149,5 @@ describe("APIHelper", () => {
         });
     });
 });
+
+export {};

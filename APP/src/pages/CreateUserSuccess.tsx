@@ -8,7 +8,6 @@ import { ThemeToggle } from "../components/ThemeToggle";
 
 interface CreateUserSuccessState {
     email: string | null;
-    password: string | null;
     alreadyExisted: boolean;
 }
 
@@ -18,16 +17,15 @@ const CreateUserSuccess: React.FC = () => {
     const location = useLocation();
     const { 
         email,
-        password,
-        alreadyExisted = false,
     } = (location.state || {}) as Partial<CreateUserSuccessState>;
+    const websiteOrigin = window.location.origin;
 
     const userExists = useCallback(() => {
         return (
-            email && password &&
-            email.length > 0 && password.length > 0
+            email &&
+            email.length > 0
         );
-      }, [email, password]);
+      }, [email]);
 
     useEffect(() => {
         if (!userExists()
@@ -71,22 +69,16 @@ const CreateUserSuccess: React.FC = () => {
             </nav>
 
             <div className="bg-card p-6 xs:p-8 rounded-2xl shadow-lg w-full max-w-sm text-center">
-                <h2 className="text-2xl font-semibold mb-4">{userExists() ? "User Has Access" : "Failed to Create User ❌"}</h2>
+                <h2 className="text-2xl font-semibold mb-4">{userExists() ? "User Has Access" : "Failed to Grant Access"}</h2>
 
                 {userExists() ? (
-                    <p className="text-content-secondary">
-                    {alreadyExisted ? "An account already existed for " : "User "}
-                    { <b>{email}</b>}
-                    {alreadyExisted ? " and has now been given access." : " has been created."}
-                    </p>
+                    <div className="space-y-3 text-content-secondary">
+                    <p>Email: <b>{email}</b></p>
+                    <p>Website: <b>{websiteOrigin}</b></p>
+                    <p>They can sign in with Google, or open the website and choose Reset password for this email.</p>
+                    </div>
                 ) : (
-                    <p className="text-content-secondary">No user was created.</p>
-                )}
-
-                {userExists() && !alreadyExisted && (
-                    <p className="pt-1 text-content-secondary">
-                    Password: <b>{password}</b>
-                    </p>
+                    <p className="text-content-secondary">Access was not granted.</p>
                 )}
                 </div>
 

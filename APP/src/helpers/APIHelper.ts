@@ -57,7 +57,6 @@ export type DeleteClientResponse = {
 
 export type CreateUserRequest = {
     email: string;
-    password: string;
     displayName?: string;
 };
 
@@ -219,7 +218,6 @@ export const createAdminUser = (
             "POST",
             {
                 email: request.email,
-                password: request.password,
                 ...(request.displayName ? { displayName: request.displayName } : {}),
             },
         );
