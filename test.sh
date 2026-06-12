@@ -29,7 +29,7 @@ test_api() (
     ./.venv/bin/python -m pip install --quiet -e '.[dev]'
   fi
 
-  ./.venv/bin/python -m compileall -q cloudlaunch_api tests
+  ./.venv/bin/python -m compileall -q src tests
   ./.venv/bin/pyright --project ../pyrightconfig.json
   ./.venv/bin/python -m pytest
 )

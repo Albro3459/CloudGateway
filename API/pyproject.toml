@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cloudlaunch-sync-peers = "cloudlaunch_api.sync:main"
+cloudlaunch-sync-peers = "src.sync:main"
 
 [project.optional-dependencies]
 dev = [
@@ -26,7 +26,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["cloudlaunch_api*"]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

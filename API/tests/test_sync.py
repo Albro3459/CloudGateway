@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from cloudlaunch_api.enums import ClientStatus
-from cloudlaunch_api.sync import desired_peers, run_sync
-from cloudlaunch_api.wireguard import PeerSyncResult
+from src.enums import ClientStatus
+from src.sync import desired_peers, run_sync
+from src.wireguard import PeerSyncResult
 
 from .fakes import FakeRepository, FakeWireGuardManager
 from .test_repository import REGION_ID, enabled_region, reserve

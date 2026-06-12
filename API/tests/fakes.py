@@ -4,16 +4,16 @@ from typing import Iterator
 from dataclasses import dataclass, replace
 from threading import Lock
 
-from cloudlaunch_api.auth import AuthenticatedUser, TokenVerifier
-from cloudlaunch_api.enums import ClientStatus, OperationResult, Role
-from cloudlaunch_api.errors import (
+from src.auth import AuthenticatedUser, TokenVerifier
+from src.enums import ClientStatus, OperationResult, Role
+from src.errors import (
     AccountDisabledError,
     AuthRequiredError,
     ClientNotFoundError,
     DuplicateEmailError,
     WireGuardApplyFailedError,
 )
-from cloudlaunch_api.repository import (
+from src.repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
     CreateUserResult,
@@ -31,7 +31,7 @@ from cloudlaunch_api.repository import (
     require_region,
     utc_now,
 )
-from cloudlaunch_api.wireguard import PeerSyncResult, WireGuardKeypair, WireGuardManager
+from src.wireguard import PeerSyncResult, WireGuardKeypair, WireGuardManager
 
 FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
 FAKE_PUBLIC_KEY="eZEOz7uD1jjbTD70Uv+aJcZ0ASxsxz9bTKZQ9vdOQCo="

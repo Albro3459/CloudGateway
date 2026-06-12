@@ -1,5 +1,5 @@
-from cloudlaunch_api.enums import ErrorCode
-from cloudlaunch_api.errors import HTTP_STATUS_BY_CODE
+from src.enums import ErrorCode
+from src.errors import HTTP_STATUS_BY_CODE
 
 
 def assert_error_shape(payload, code):

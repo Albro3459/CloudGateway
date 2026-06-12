@@ -19,8 +19,10 @@
             "type": "pwa-node",
             "request": "launch",
             "runtimeExecutable": "bash",
-            "runtimeArgs": ["./test.sh"],
-            "console": "integratedTerminal"
+            "args": ["./test.sh"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "noDebug": true
         }
     ]
 }

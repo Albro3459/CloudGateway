@@ -16,7 +16,7 @@ from .routes import router
 from .settings import Settings
 from .wireguard import LocalWireGuardManager, WireGuardManager
 
-logger = logging.getLogger("cloudlaunch_api.app")
+logger = logging.getLogger("src.app")
 
 
 def request_id_of(request: Request) -> str:

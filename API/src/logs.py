@@ -77,7 +77,7 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_logging() -> None:
-    logger = logging.getLogger("cloudlaunch_api")
+    logger = logging.getLogger("src")
     if logger.handlers:
         return
     handler = logging.StreamHandler(sys.stdout)

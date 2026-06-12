@@ -3,8 +3,8 @@ from uuid import UUID
 
 import pytest
 
-from cloudlaunch_api.enums import ClientStatus, Role
-from cloudlaunch_api.errors import (
+from src.enums import ClientStatus, Role
+from src.errors import (
     AdminRequiredError,
     CapacityReachedError,
     ClientNotFoundError,
@@ -12,8 +12,8 @@ from cloudlaunch_api.errors import (
     RegionDisabledError,
     RegionMismatchError,
 )
-from cloudlaunch_api.firebase import FirestoreRepository, _user_write_data
-from cloudlaunch_api.repository import RegionDoc
+from src.firebase import FirestoreRepository, _user_write_data
+from src.repository import RegionDoc
 
 from .fakes import FakeRepository
 

@@ -1,5 +1,5 @@
-from cloudlaunch_api.errors import FirebaseWriteFailedError
-from cloudlaunch_api.repository import UserDoc, utc_now
+from src.errors import FirebaseWriteFailedError
+from src.repository import UserDoc, utc_now
 
 from .test_errors import assert_error_shape
 

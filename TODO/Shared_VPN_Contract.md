@@ -226,7 +226,7 @@ All controlled failures return this shape:
 
 - Host install directory: `/opt/cloudlaunch/api`.
 - Python virtualenv: `/opt/cloudlaunch/api/.venv`.
-- App import path: `cloudlaunch_api.main:app`.
+- App import path: `src.main:app`.
 - Dependency metadata: `API/pyproject.toml`. Infrastructure installs the package into the venv from `/opt/cloudlaunch/api`.
 - systemd service name: `cloudlaunch-api.service`.
 - systemd runs as `root`, working directory `/opt/cloudlaunch/api`, binding only to `127.0.0.1`.

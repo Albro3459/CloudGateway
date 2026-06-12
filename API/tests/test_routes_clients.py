@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from cloudlaunch_api.enums import ClientStatus
-from cloudlaunch_api.errors import FirebaseWriteFailedError
-from cloudlaunch_api.repository import RegionDoc
+from src.enums import ClientStatus
+from src.errors import FirebaseWriteFailedError
+from src.repository import RegionDoc
 
 from .conftest import REGION_ID
 from .test_errors import assert_error_shape
