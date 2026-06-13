@@ -101,7 +101,7 @@ cd APP
 npm start
 ```
 
-The `start` script sets `REACT_APP_API_ORIGIN=http://localhost:8787`, starts React without opening a browser automatically, and runs the Tailwind watcher at the same time.
+The `start` script starts React without opening a browser automatically and runs the Tailwind watcher at the same time. Set `REACT_APP_API_ORIGIN` yourself only when you have a local Caddy-style `/api/*` proxy or another regional API-compatible endpoint running.
 
 ## Tailwind
 

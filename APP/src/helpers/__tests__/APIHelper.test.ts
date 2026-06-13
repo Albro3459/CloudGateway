@@ -10,7 +10,7 @@ describe("APIHelper", () => {
 
     beforeEach(() => {
         jest.resetModules();
-        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test";
         mockFetch.mockReset();
         global.fetch = mockFetch;
     });
@@ -36,7 +36,7 @@ describe("APIHelper", () => {
         const result = await createClient({ regionId: "us-sanjose-1", clientName: "Phone" }, "firebase-token");
         const request = mockFetch.mock.calls[0][1] as RequestInit;
 
-        expect(mockFetch).toHaveBeenCalledWith("http://localhost:8787/api/clients", expect.any(Object));
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/clients", expect.any(Object));
         expect(request.method).toBe("POST");
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({
@@ -62,7 +62,7 @@ describe("APIHelper", () => {
         }, "firebase-token");
         const request = mockFetch.mock.calls[0][1] as RequestInit;
 
-        expect(mockFetch).toHaveBeenCalledWith("http://localhost:8787/api/clients/client%2Fid", expect.any(Object));
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/clients/client%2Fid", expect.any(Object));
         expect(request.method).toBe("DELETE");
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({
@@ -89,7 +89,7 @@ describe("APIHelper", () => {
         ]);
         const request = mockFetch.mock.calls[0][1] as RequestInit;
 
-        expect(mockFetch).toHaveBeenCalledWith("http://localhost:8787/api/users", expect.any(Object));
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/users", expect.any(Object));
         expect(request.method).toBe("POST");
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({
@@ -145,7 +145,7 @@ describe("APIHelper", () => {
         ]);
         const request = mockFetch.mock.calls[0][1] as RequestInit;
 
-        expect(mockFetch).toHaveBeenCalledWith("http://localhost:8787/api/auth/check-access", expect.any(Object));
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/auth/check-access", expect.any(Object));
         expect(request.method).toBe("POST");
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({});

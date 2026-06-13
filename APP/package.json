@@ -32,7 +32,7 @@
     "zustand": "^5.0.4"
   },
   "scripts": {
-    "start": "concurrently \"cross-env BROWSER=none REACT_APP_API_ORIGIN=http://localhost:8787 react-scripts start\" \"npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch\"",
+    "start": "concurrently \"cross-env BROWSER=none react-scripts start\" \"npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch\"",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",

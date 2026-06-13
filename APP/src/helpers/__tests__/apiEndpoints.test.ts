@@ -8,13 +8,13 @@ describe("apiEndpoints", () => {
 
     it("uses REACT_APP_API_ORIGIN for local/dev override", async () => {
         jest.resetModules();
-        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787/";
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test/";
         const { buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "/clients", {
             hostname: "localhost",
             host: "localhost:3000",
-        })).toBe("http://localhost:8787/api/clients");
+        })).toBe("https://api.example.test/api/clients");
     });
 
     it("derives production regional URLs from the current frontend host", async () => {
@@ -41,24 +41,24 @@ describe("apiEndpoints", () => {
 
     it("uses REACT_APP_API_ORIGIN for user creation without requiring regions", async () => {
         jest.resetModules();
-        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test";
         const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
 
         expect(buildCreateUserApiEndpoint([], {
             hostname: "localhost",
             host: "localhost:3000",
-        })).toBe("http://localhost:8787/api/users");
+        })).toBe("https://api.example.test/api/users");
     });
 
     it("uses REACT_APP_API_ORIGIN for access checks without requiring regions", async () => {
         jest.resetModules();
-        process.env.REACT_APP_API_ORIGIN = "http://localhost:8787";
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test";
         const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
 
         expect(buildAccessCheckApiEndpoint([], {
             hostname: "localhost",
             host: "localhost:3000",
-        })).toBe("http://localhost:8787/api/auth/check-access");
+        })).toBe("https://api.example.test/api/auth/check-access");
     });
 
     it("selects first enabled region for global user creation", async () => {
