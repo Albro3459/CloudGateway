@@ -67,7 +67,21 @@ journalctl -u cloudlaunch-sync-peers --since "1 hour ago"
 * Logs structured JSON with added/updated/removed counts. Semantics and drift cases are documented in [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
 * It shares the API's mutation lock, so running it during live create/delete traffic is safe.
 
-## Unbound (VPN DNS), if present
+## AdGuard Home (VPN DNS filter)
+
+```sh
+systemctl status adguardhome
+journalctl -u adguardhome -f
+```
+
+* AdGuard Home serves DNS to VPN clients on the tunnel DNS IPs.
+* The admin UI is local-only at `127.0.0.1:3000`; do not expose it through Caddy.
+* UI auth is disabled by default because the UI is localhost-only. Treat SSH access as the admin boundary.
+* Only the AdGuard DNS filter should be enabled unless an operator intentionally changes it.
+* Query logging and statistics must stay off. DNS query logs are forbidden VPN traffic logs.
+* AdGuard Home forwards upstream queries to Unbound on localhost port `5335`.
+
+## Unbound (recursive DNS backend), if present
 
 ```sh
 systemctl status unbound
@@ -75,12 +89,12 @@ systemctl restart unbound
 journalctl -u unbound -f
 ```
 
-* Unbound serves DNS to VPN clients on the tunnel DNS IPs.
+* Unbound serves recursive DNS only to AdGuard Home on localhost port `5335`.
 * Query logging must stay off (`verbosity` low, no `log-queries`). DNS query logs are forbidden VPN traffic logs.
-* If clients connect (handshake present) but cannot resolve names, check Unbound before suspecting WireGuard.
+* If clients connect (handshake present) but cannot resolve names, check AdGuard Home first, then Unbound, before suspecting WireGuard.
 
 ## Quick Triage Order
 
 1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudlaunch-api.service`, then Cloudflare DNS/proxy.
 2. Client create/delete fails with `WIREGUARD_APPLY_FAILED`: check API journal, then `wg show wg0`, then [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
-3. Tunnel connects but no traffic/DNS: check Unbound, IP forwarding, and the NAT/firewall rules from the server config `PostUp` block.
+3. Tunnel connects but no traffic/DNS: check AdGuard Home, then Unbound, then IP forwarding and the NAT/firewall rules from the server config `PostUp` block.

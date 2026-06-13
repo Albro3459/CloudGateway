@@ -20,7 +20,8 @@ The fetched bootstrap installs and configures:
 
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudlaunch-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
-* Unbound DNS for VPN clients (tunnel DNS IPs).
+* AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
+* Unbound recursive DNS on localhost as the AdGuard Home upstream resolver.
 * Python runtime and the regional FastAPI app per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
   * install directory `/opt/cloudlaunch/api` with venv `/opt/cloudlaunch/api/.venv`, installed from the fetched `API/` source
   * systemd service `cloudlaunch-api.service`, running as root, bound only to `127.0.0.1`
@@ -37,7 +38,11 @@ The fetched bootstrap installs and configures:
 
 Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. There are no deploy-time client peer variables.
 
-The recommended server shape is 2 OCPU and 8-12 GB RAM, with capacity for roughly 15-25 clients per region.
+AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
+
+See [adguard-home.md](adguard-home.md) for the AdGuard Home runtime configuration and operator rules.
+
+The minimum recommended server shape is 2 OCPU and 4-6 GB RAM, with capacity for roughly 15-25 clients per region. CPU matters more than memory as client count grows because WireGuard encrypts and decrypts traffic for every connection.
 
 ## Network Prerequisites
 
@@ -132,6 +137,8 @@ How to use it:
 This user is for recovery only.
 
 ## Local Validation
+
+Use Terraform `1.6` or newer. See [../docs/tool-versions.md](../docs/tool-versions.md) for local tooling and deployed host package expectations.
 
 ```sh
 cd terraform

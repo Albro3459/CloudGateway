@@ -16,12 +16,32 @@ set +a
 export DEBIAN_FRONTEND=noninteractive
 
 SRC_DIR="/opt/cloudlaunch/src"
+ADGUARD_HOME_VERSION="${ADGUARD_HOME_VERSION:-v0.107.77}"
+ADGUARD_HOME_CONFIG="/etc/adguardhome/AdGuardHome.yaml"
+ADGUARD_HOME_WORK_DIR="/var/lib/adguardhome"
+ADGUARD_DNS_FILTER_URL="https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
+UNBOUND_LISTEN_PORT=5335
 
 wait_for_apt() {
   while ps -eo comm= | grep -Eq '^(apt|apt-get|dpkg)$'; do
     echo "Waiting for other apt/dpkg process to finish..."
     sleep 5
   done
+}
+
+adguard_arch() {
+  case "$(uname -m)" in
+    aarch64|arm64)
+      echo "arm64"
+      ;;
+    x86_64|amd64)
+      echo "amd64"
+      ;;
+    *)
+      echo "Unsupported architecture for AdGuard Home: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
 }
 
 PRIMARY_IFACE="$(ip route show default | awk '/default/ { print $5; exit }')"
@@ -31,14 +51,15 @@ if [[ -z "$PRIMARY_IFACE" ]]; then
   exit 1
 fi
 
-echo "==> Step 1/12: Installing required packages"
+echo "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
 apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl golang-go gettext-base
 systemctl stop unbound || true
+systemctl stop adguardhome || true
 
-echo "==> Step 2/12: Preparing configuration directories"
+echo "==> Step 2/13: Preparing configuration directories"
 # Essentially mkdir -p /etc/wireguard && chmod 700 /etc/wireguard
 install -d -m 700 /etc/wireguard
 install -d -m 755 /etc/sysctl.d
@@ -51,8 +72,10 @@ install -d -m 755 /opt/cloudlaunch/api
 install -d -m 755 /etc/caddy
 install -d -m 755 /var/log/caddy
 install -d -m 755 /var/lib/caddy
+install -d -m 755 /etc/adguardhome
+install -d -m 755 "$ADGUARD_HOME_WORK_DIR"
 
-echo "==> Step 3/12: Hardening SSH access"
+echo "==> Step 3/13: Hardening SSH access"
 SSHD_BACKUP="/etc/ssh/sshd_config.bak.$(date +%F_%H-%M-%S)"
 cp /etc/ssh/sshd_config "$SSHD_BACKUP"
 install -d -m 755 /run/sshd
@@ -66,7 +89,7 @@ sshd -t
 systemctl reload-or-restart ssh || systemctl reload-or-restart sshd || systemctl start ssh
 sshd -T | grep -E '^(passwordauthentication|permitrootlogin) ' || true
 
-echo "==> Step 4/12: Configuring fail2ban"
+echo "==> Step 4/13: Configuring fail2ban"
 cat > /etc/fail2ban/jail.d/sshd.local <<'FAIL2BAN'
 [sshd]
 enabled = true
@@ -84,7 +107,7 @@ systemctl --no-pager --full status fail2ban || true
 fail2ban-client status || true
 fail2ban-client status sshd || true
 
-echo "==> Step 5/12: Enabling IP forwarding"
+echo "==> Step 5/13: Enabling IP forwarding"
 # IP forwarding
 cat > /etc/sysctl.d/99-wireguard-forwarding.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
@@ -97,7 +120,7 @@ SYSCTL
 # Apply IP forwarding changes
 sysctl --system
 
-echo "==> Step 6/12: Writing WireGuard configuration"
+echo "==> Step 6/13: Writing WireGuard configuration"
 # Interface-only config. Peers are never written to this or any other file:
 # Firebase is the single source of truth and cloudlaunch-sync-peers rebuilds
 # the live peer set from it on every boot.
@@ -156,7 +179,18 @@ chmod 600 "/etc/wireguard/$WG_INTERFACE.conf"
 awk '/^PrivateKey/ { print $3 }' "/etc/wireguard/$WG_INTERFACE.conf" | wg pubkey > "/etc/wireguard/$WG_INTERFACE.publickey"
 chmod 600 "/etc/wireguard/$WG_INTERFACE.publickey"
 
-echo "==> Step 7/12: Writing unbound configuration"
+echo "==> Step 7/13: Installing AdGuard Home"
+ADGUARD_ARCH="$(adguard_arch)"
+ADGUARD_WORK_DIR="$(mktemp -d /tmp/cloudlaunch-adguardhome-XXXXXX)"
+ADGUARD_TARBALL="$ADGUARD_WORK_DIR/AdGuardHome.tar.gz"
+curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+  "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ADGUARD_HOME_VERSION/AdGuardHome_linux_$ADGUARD_ARCH.tar.gz" \
+  -o "$ADGUARD_TARBALL"
+tar -xzf "$ADGUARD_TARBALL" -C "$ADGUARD_WORK_DIR"
+install -m 755 "$ADGUARD_WORK_DIR/AdGuardHome/AdGuardHome" /usr/local/bin/AdGuardHome
+rm -rf "$ADGUARD_WORK_DIR"
+
+echo "==> Step 8/13: Writing DNS resolver configuration"
 if command -v unbound-anchor >/dev/null 2>&1; then
   if ! unbound-anchor -a /var/lib/unbound/root.key; then
     echo "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
@@ -170,12 +204,11 @@ fi
 
 cat > /etc/unbound/unbound.conf.d/cloudlaunch-wireguard.conf <<UNBOUNDCONF
 server:
-  interface: $WG_DNS_ADDRESS_V4
-  interface: $WG_DNS_ADDRESS_V6
+  interface: 127.0.0.1
+  interface: ::1
+  port: $UNBOUND_LISTEN_PORT
   access-control: 127.0.0.0/8 allow
   access-control: ::1 allow
-  access-control: $WG_NETWORK_V4 allow
-  access-control: $WG_NETWORK_V6 allow
   do-ip4: yes
   do-ip6: yes
   do-udp: yes
@@ -185,12 +218,188 @@ server:
   qname-minimisation: yes
   hide-identity: yes
   hide-version: yes
+  verbosity: 0
+  log-queries: no
 UNBOUNDCONF
 
 unbound-checkconf
 systemctl enable unbound
 
-echo "==> Step 8/12: Installing CloudLaunch API package"
+cat > "$ADGUARD_HOME_CONFIG" <<ADGUARDCONF
+http:
+  address: 127.0.0.1:3000
+  session_ttl: 720h
+users: []
+auth_attempts: 5
+block_auth_min: 15
+http_proxy: ""
+language: ""
+theme: auto
+dns:
+  bind_hosts:
+    - $WG_DNS_ADDRESS_V4
+    - $WG_DNS_ADDRESS_V6
+  port: 53
+  anonymize_client_ip: false
+  ratelimit: 20
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
+  ratelimit_whitelist: []
+  refuse_any: true
+  upstream_dns:
+    - 127.0.0.1:$UNBOUND_LISTEN_PORT
+  upstream_dns_file: ""
+  bootstrap_dns: []
+  fallback_dns: []
+  upstream_mode: load_balance
+  fastest_timeout: 1s
+  use_http3_upstreams: false
+  use_private_ptr_resolvers: false
+  local_ptr_upstreams: []
+  allowed_clients:
+    - 127.0.0.0/8
+    - ::1/128
+    - $WG_NETWORK_V4
+    - $WG_NETWORK_V6
+  disallowed_clients: []
+  blocked_hosts: []
+  trusted_proxies:
+    - 127.0.0.0/8
+    - ::1/128
+  cache_enabled: true
+  cache_size: 4194304
+  cache_ttl_min: 0
+  cache_ttl_max: 0
+  cache_optimistic: false
+  bogus_nxdomain: []
+  enable_dnssec: false
+  aaaa_disabled: false
+  max_goroutines: 300
+  handle_ddr: true
+  ipset: []
+  ipset_file: ""
+  upstream_timeout: 10s
+  serve_plain_dns: true
+  hostsfile_enabled: true
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+  blocking_mode: default
+  blocking_ipv4: ""
+  blocking_ipv6: ""
+  blocked_response_ttl: 10
+  protection_disabled_until: null
+  parental_block_host: ""
+  safebrowsing_block_host: ""
+  parental_enabled: false
+  safe_search:
+    enabled: false
+    bing: false
+    duckduckgo: false
+    google: false
+    pixabay: false
+    yandex: false
+    youtube: false
+  safebrowsing_enabled: false
+  safebrowsing_cache_size: 1048576
+  safesearch_cache_size: 1048576
+  parental_cache_size: 1048576
+  rewrites: []
+  safe_fs_patterns: []
+  cache_time: 30
+  filters_update_interval: 24
+  blocked_services:
+    ids: []
+    schedule: null
+querylog:
+  enabled: false
+  file_enabled: false
+  interval: 2160h
+  size_memory: 1000
+  ignored: []
+  ignored_enabled: false
+  dir_path: ""
+statistics:
+  enabled: false
+  interval: 24h
+  ignored: []
+  ignored_enabled: false
+  dir_path: ""
+filters:
+  - enabled: true
+    url: $ADGUARD_DNS_FILTER_URL
+    name: AdGuard DNS filter
+    id: 1
+whitelist_filters: []
+user_rules: []
+dhcp:
+  enabled: false
+  interface_name: ""
+  local_domain_name: lan
+tls:
+  enabled: false
+  server_name: ""
+  force_https: false
+  port_https: 0
+  port_dns_over_tls: 0
+  port_dns_over_quic: 0
+  port_dnscrypt: 0
+  dnscrypt_config_file: ""
+  allow_unencrypted_doh: false
+  certificate_chain: ""
+  private_key: ""
+  certificate_path: ""
+  private_key_path: ""
+  strict_sni_check: false
+clients:
+  persistent: []
+  runtime_sources:
+    whois: false
+    arp: false
+    rdns: false
+    dhcp: false
+    hosts: false
+log:
+  enabled: true
+  file: ""
+  max_backups: 0
+  max_size: 100
+  max_age: 3
+  compress: false
+  local_time: false
+  verbose: false
+os:
+  group: ""
+  user: ""
+  rlimit_nofile: 0
+schema_version: 34
+ADGUARDCONF
+chmod 600 "$ADGUARD_HOME_CONFIG"
+/usr/local/bin/AdGuardHome --no-check-update --config "$ADGUARD_HOME_CONFIG" --work-dir "$ADGUARD_HOME_WORK_DIR" --check-config
+
+cat > /etc/systemd/system/adguardhome.service <<UNIT
+[Unit]
+Description=AdGuard Home DNS filter for CloudLaunch VPN clients
+After=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
+Wants=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/AdGuardHome --no-check-update --config $ADGUARD_HOME_CONFIG --work-dir $ADGUARD_HOME_WORK_DIR
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable adguardhome
+
+echo "==> Step 9/13: Installing CloudLaunch API package"
 cp -R "$SRC_DIR/API/." /opt/cloudlaunch/api/
 
 python3 -m venv /opt/cloudlaunch/api/.venv
@@ -223,7 +432,7 @@ systemctl --no-pager --full status cloudlaunch-api || true
 INSTALLAPI
 chmod 755 /usr/local/sbin/cloudlaunch-install-api
 
-echo "==> Step 9/12: Writing CloudLaunch API environment"
+echo "==> Step 10/13: Writing CloudLaunch API environment"
 if [[ ! -f "$FIREBASE_CREDENTIALS_FILE" ]]; then
   echo "No Firebase credential file at $FIREBASE_CREDENTIALS_FILE; provision it manually before using the API"
 fi
@@ -252,7 +461,7 @@ CLOUDLAUNCH_CLOUDFLARE_ORIGIN_PULL_CA_PATH=$CLOUDFLARE_ORIGIN_PULL_CA_PATH
 ORIGINENV
 chmod 644 /etc/cloudlaunch/origin.env
 
-echo "==> Step 10/12: Installing Caddy origin proxy"
+echo "==> Step 11/13: Installing Caddy origin proxy"
 if ! id -u caddy >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
 fi
@@ -361,7 +570,7 @@ systemctl daemon-reload
 systemctl enable cloudlaunch-origin-firewall
 systemctl enable caddy
 
-echo "==> Step 11/12: Writing CloudLaunch API and peer sync services"
+echo "==> Step 12/13: Writing CloudLaunch API and peer sync services"
 cat > /etc/systemd/system/cloudlaunch-api.service <<UNIT
 [Unit]
 Description=CloudLaunch regional API
@@ -407,7 +616,7 @@ systemctl daemon-reload
 systemctl enable cloudlaunch-api
 systemctl enable cloudlaunch-sync-peers
 
-echo "==> Step 12/12: Starting WireGuard, unbound, CloudLaunch API, and Caddy"
+echo "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudLaunch API, and Caddy"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -431,6 +640,7 @@ if ! ip -6 addr show dev "$WG_INTERFACE" | grep -Fq "$WG_DNS_ADDRESS_V6/"; then
 fi
 
 systemctl restart unbound
+systemctl restart adguardhome
 systemctl restart cloudlaunch-api
 systemctl restart cloudlaunch-origin-firewall
 systemctl restart caddy
@@ -443,6 +653,7 @@ systemctl start cloudlaunch-sync-peers || true
 # Status check (coalesce because fail would end the script when this is just a status check)
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
+systemctl --no-pager --full status adguardhome || true
 systemctl --no-pager --full status unbound || true
 systemctl --no-pager --full status cloudlaunch-api || true
 systemctl --no-pager --full status cloudlaunch-sync-peers || true

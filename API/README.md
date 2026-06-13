@@ -118,6 +118,8 @@ On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudla
 
 ## Local Development
 
+Use Python `3.12` or newer. See [docs/tool-versions.md](../docs/tool-versions.md) for the repo's expected tooling versions.
+
 Install the package in editable mode with development dependencies:
 
 ```sh

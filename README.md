@@ -37,6 +37,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudlaunch-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: custom build with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
 * <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudlaunch-sync-peers`.
+* <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to Unbound on localhost. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
 * <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
 
 ## Regional API URLs
@@ -70,6 +71,10 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * Caddy (custom build with rate limiting) for the regional API edge
 * OCI Compute and Terraform for regional servers
 * AWS SES for email
+
+## Tool Versions
+
+See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deployed tooling versions, including Python, Node.js, npm, Terraform, Caddy, and AdGuard Home.
 
 ## Usage
 
@@ -112,4 +117,5 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * Frontend: [APP/README.md](APP/README.md)
 * Regional API: [API/README.md](API/README.md)
 * Regional server / Terraform: [OCI/README.md](OCI/README.md)
+* Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
 * Deployment and operations runbooks: [docs/](docs/)

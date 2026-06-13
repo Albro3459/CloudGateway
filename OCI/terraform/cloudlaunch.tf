@@ -142,6 +142,12 @@ variable "wg_server_private_key" {
 	description = "WireGuard server private key used in /etc/wireguard/wg0.conf"
 }
 
+variable "adguard_home_version" {
+	type = string
+	default = "v0.107.77"
+	description = "AdGuard Home version installed by the regional host bootstrap"
+}
+
 variable "source_repo" {
 	type = string
 	default = "Albro3459/CloudGateway"
@@ -295,6 +301,7 @@ locals {
 		wg_server_private_key = var.wg_server_private_key
 		wg_rate_limit = var.wg_rate_limit
 		wg_rate_limit_burst = var.wg_rate_limit_burst
+		adguard_home_version = var.adguard_home_version
 		region_id = var.region_id
 		api_hostname = var.api_hostname
 		dashboard_cors_origin = var.dashboard_cors_origin
