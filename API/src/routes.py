@@ -212,6 +212,7 @@ async def delete_client(
     repository = request.app.state.repository
     wireguard: WireGuardManager = request.app.state.wireguard
     request_id = request.state.request_id
+    firebase_removed = False
 
     log_event(
         logger,
@@ -241,9 +242,16 @@ async def delete_client(
             client_id=client_id,
         )
 
-        # The lock spans peer removal plus the Firebase write so a concurrent
-        # peer sync never re-adds a peer whose doc is about to be removed.
+        # The lock spans the Firebase terminal write plus live peer cleanup so
+        # peer sync cannot interleave with the source-of-truth transition.
         with wireguard.lock():
+            removed_client = repository.delete_client(
+                requester_uid=user.uid,
+                target_uid=body.user_id,
+                region_id=body.region_id,
+                client_id=client_id,
+            )
+            firebase_removed = True
             if client.client_public_key:
                 _run_wireguard_operation(
                     lambda: wireguard.remove_peer(public_key=client.client_public_key),
@@ -252,12 +260,6 @@ async def delete_client(
                     region_id=client.region_id,
                     operation="remove_peer",
                 )
-            removed_client = repository.delete_client(
-                requester_uid=user.uid,
-                target_uid=body.user_id,
-                region_id=body.region_id,
-                client_id=client_id,
-            )
     except ApiError:
         log_event(
             logger,
@@ -268,6 +270,7 @@ async def delete_client(
             target_uid=body.user_id,
             region_id=body.region_id,
             client_id=client_id,
+            firebase_removed=firebase_removed,
         )
         raise
     except Exception as exc:
@@ -281,6 +284,7 @@ async def delete_client(
             region_id=body.region_id,
             client_id=client_id,
             error_code=ErrorCode.FIREBASE_WRITE_FAILED.value,
+            firebase_removed=firebase_removed,
         )
         raise FirebaseWriteFailedError() from exc
 
