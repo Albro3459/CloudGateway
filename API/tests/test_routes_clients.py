@@ -207,6 +207,46 @@ def test_delete_client_retries_one_transient_wireguard_remove_failure(client, re
     assert wireguard.remove_peer_calls == 2
 
 
+def test_delete_client_firebase_failure_leaves_peer_present(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    repository.delete_client_error = FirebaseWriteFailedError("Simulated delete write failure.")
+
+    response = client.request(
+        "DELETE",
+        f"/clients/{active.client_id}",
+        json={"userId": "user-1", "regionId": REGION_ID},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 500
+    assert_error_shape(response.json(), "FIREBASE_WRITE_FAILED")
+    stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
+    assert stored.status == ClientStatus.ACTIVE
+    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert wireguard.remove_peer_calls == 0
+
+
+def test_delete_client_wireguard_failure_keeps_firebase_removed(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    wireguard.fail_remove_count = 1
+
+    response = client.request(
+        "DELETE",
+        f"/clients/{active.client_id}",
+        json={"userId": "user-1", "regionId": REGION_ID},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 500
+    assert_error_shape(response.json(), "WIREGUARD_APPLY_FAILED")
+    stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
+    assert stored.status == ClientStatus.REMOVED
+    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert wireguard.remove_peer_calls == 1
+
+
 def test_delete_client_normal_user_cannot_remove_another_users_client(client, repository, wireguard):
     seed_region(repository)
     active = create_active_client(repository, wireguard, uid="user-2")
