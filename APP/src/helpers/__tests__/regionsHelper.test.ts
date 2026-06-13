@@ -13,6 +13,7 @@ describe("regionsHelper", () => {
             wireguardDnsIpv6: "fd42:42:42::1",
             wireguardPublicKey: "public-key",
             capacityLimit: 10,
+            userClientLimit: 5,
             activeClientCount: 3,
             healthStatus: "ok",
         });
@@ -31,6 +32,7 @@ describe("regionsHelper", () => {
             wireguardDnsIpv6: "fd42:42:42::1",
             wireguardPublicKey: "public-key",
             capacityLimit: 10,
+            userClientLimit: 5,
             activeClientCount: 3,
             displayOrder: 1000,
             healthStatus: "ok",

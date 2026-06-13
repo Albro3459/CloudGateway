@@ -17,6 +17,7 @@ from .errors import (
 )
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
+    DEFAULT_USER_CLIENT_LIMIT,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
@@ -320,7 +321,11 @@ class FirestoreRepository(FirebaseRepository):
             owner_allocated_count = sum(1 for client in allocated_clients if client.owner_uid == owner_uid)
 
             assert_capacity_available(allocated_count=len(allocated_clients), capacity_limit=region.capacity_limit)
-            assert_user_limit_available(requester_role=role, owner_allocated_count=owner_allocated_count)
+            assert_user_limit_available(
+                requester_role=role,
+                owner_allocated_count=owner_allocated_count,
+                user_client_limit=region.user_client_limit,
+            )
 
             used_ipv4 = {client.assigned_tunnel_ipv4 for client in allocated_clients}
             used_ipv6 = {client.assigned_tunnel_ipv6 for client in allocated_clients}
@@ -600,6 +605,7 @@ def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
         wireguard_public_key=data.get("wireguardPublicKey") or "",
         capacity_limit=int(data.get("capacityLimit") or 0),
         active_client_count=int(data.get("activeClientCount") or 0),
+        user_client_limit=int(data.get("userClientLimit") or DEFAULT_USER_CLIENT_LIMIT),
         wireguard_endpoint_hostname=data.get("wireguardEndpointHostname") or "",
         display_order=data.get("displayOrder"),
         health_status=data.get("healthStatus"),

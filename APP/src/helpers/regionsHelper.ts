@@ -1,6 +1,5 @@
-export const oci_regions: Region[] = [
-    { name: "California", displayName: "California", value: "us-sanjose-1", regionId: "us-sanjose-1", enabled: true, displayOrder: 1000 },
-];
+// Fallback per-normal-user client limit when a region doc omits userClientLimit.
+export const DEFAULT_USER_CLIENT_LIMIT = 3;
 
 export type RegionCapacity = {
     limit: number;
@@ -22,6 +21,7 @@ export type Region = {
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
     capacityLimit?: number;
+    userClientLimit?: number;
     activeClientCount?: number;
     displayOrder: number;
     healthStatus?: string | null;
@@ -60,6 +60,7 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),
         capacityLimit,
+        userClientLimit: numberOrDefault(data.userClientLimit, DEFAULT_USER_CLIENT_LIMIT),
         activeClientCount,
         displayOrder: numberOrDefault(data.displayOrder, 1000),
         healthStatus: stringOrNull(data.healthStatus),
@@ -81,9 +82,9 @@ export const sortRegions = (regions: Region[]) => (
     })
 );
 
-export const getRegionName = (region: string | null, regions: Region[] | null = oci_regions): string => {
+export const getRegionName = (region: string | null, regions: Region[] | null): string => {
     if (!region) return '';
-    return (regions || oci_regions).find(r => r.value === region)?.name || region;
+    return regions?.find(r => r.value === region)?.name || region;
 };
 
 export const isRegionAtCapacity = (region: Region | null | undefined): boolean => {

@@ -68,6 +68,7 @@ Create or update `Regions/{regionId}` in Firestore with the contract fields (see
 * `wireguardDnsIpv4` / `wireguardDnsIpv6`: server tunnel DNS IPs
 * `wireguardPublicKey`: server WireGuard public key
 * `capacityLimit`: start with 15-25
+* `userClientLimit`: per-normal-user client cap for this region; defaults to `3` if omitted
 * `activeClientCount`: `0` for a new host
 * `displayOrder`: optional; missing sorts as `1000`
 * `healthStatus`: optional

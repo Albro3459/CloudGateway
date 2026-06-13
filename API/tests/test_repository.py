@@ -158,6 +158,18 @@ def test_normal_user_limit_is_three_per_region(repository: FakeRepository):
         reserve(repository, client_name="Client 4")
 
 
+def test_normal_user_limit_follows_region_doc(repository: FakeRepository):
+    repository.regions[REGION_ID] = replace(
+        enabled_region(capacity_limit=10), user_client_limit=5
+    )
+
+    for index in range(5):
+        reserve(repository, client_name=f"Client {index}")
+
+    with pytest.raises(LimitReachedError):
+        reserve(repository, client_name="Client 6")
+
+
 def test_admin_can_exceed_normal_limit_until_capacity(repository: FakeRepository):
     repository.regions[REGION_ID] = enabled_region(capacity_limit=4)
 

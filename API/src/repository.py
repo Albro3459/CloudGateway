@@ -15,7 +15,8 @@ from .errors import (
 
 
 DEFAULT_CLIENT_NAME = "CloudLaunch Client"
-NORMAL_USER_REGION_CLIENT_LIMIT = 3
+# Fallback per-normal-user client limit when a region doc omits userClientLimit.
+DEFAULT_USER_CLIENT_LIMIT = 3
 ALLOCATED_CLIENT_STATUSES = {ClientStatus.CREATING, ClientStatus.ACTIVE}
 
 
@@ -32,6 +33,7 @@ class RegionDoc:
     wireguard_public_key: str
     capacity_limit: int
     active_client_count: int
+    user_client_limit: int = DEFAULT_USER_CLIENT_LIMIT
     wireguard_endpoint_hostname: str = ""
     display_order: int | None = None
     health_status: str | None = None
@@ -120,8 +122,10 @@ def assert_capacity_available(*, allocated_count: int, capacity_limit: int) -> N
         raise CapacityReachedError()
 
 
-def assert_user_limit_available(*, requester_role: Role | None, owner_allocated_count: int) -> None:
-    if role_or_user(requester_role) != Role.ADMIN and owner_allocated_count >= NORMAL_USER_REGION_CLIENT_LIMIT:
+def assert_user_limit_available(
+    *, requester_role: Role | None, owner_allocated_count: int, user_client_limit: int
+) -> None:
+    if role_or_user(requester_role) != Role.ADMIN and owner_allocated_count >= user_client_limit:
         raise LimitReachedError()
 
 
