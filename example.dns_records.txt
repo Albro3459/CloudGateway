@@ -11,6 +11,10 @@ gocloudlaunch.com.	1	IN	A	185.199.111.153 ; GitHub cf_tags=cf-proxied:true
 gocloudlaunch.com.	1	IN	A	185.199.110.153 ; GitHub cf_tags=cf-proxied:true
 gocloudlaunch.com.	1	IN	A	185.199.109.153 ; GitHub cf_tags=cf-proxied:true
 gocloudlaunch.com.	1	IN	A	185.199.108.153 ; GitHub cf_tags=cf-proxied:true
+us-sanjose-1.gocloudlaunch.com.	1	IN	A	Your-SanJose-Server-IPv4 ; San Jose Server cf_tags=cf-proxied:true
+us-chicago-1.gocloudlaunch.com.	1	IN	A	Your-Chicago-Server-IPv4 ; Chicago Server cf_tags=cf-proxied:true
+wg.us-sanjose-1.gocloudlaunch.com.	1	IN	A	Your-SanJose-Server-IPv4 ; San Jose Server Wireguard cf_tags=cf-proxied:false
+wg.us-chicago-1.gocloudlaunch.com.	1	IN	A	Your-Chicago-Server-IPv4 ; Chicago Server Wireguard cf_tags=cf-proxied:false
 
 ;; CNAME Records
 www.gocloudlaunch.com.	1	IN	CNAME	albro3459.github.io. ; GitHub cf_tags=cf-proxied:true
