@@ -142,24 +142,144 @@ variable "wg_server_private_key" {
 	description = "WireGuard server private key used in /etc/wireguard/wg0.conf"
 }
 
-variable "wg_client_public_key" {
+variable "adguard_home_version" {
 	type = string
-	description = "Client peer public key allowed to connect to wg0"
+	default = "v0.107.77"
+	description = "AdGuard Home version installed by the regional host bootstrap"
 }
 
-variable "wg_peer_allowed_ipv4" {
+variable "source_repo" {
 	type = string
-	description = "Allowed IPv4 CIDR for the client peer"
+	default = "Albro3459/CloudGateway"
+	description = "Public GitHub owner/repo the host fetches bootstrap and API source from"
 }
 
-variable "wg_peer_allowed_ipv6" {
+variable "source_ref" {
 	type = string
-	description = "Allowed IPv6 CIDR for the client peer"
+	description = "Git ref fetched at boot: a pushed tag like deploy-v1.0.0, a full commit SHA, or a branch name. See docs/github-deployment-setup.md"
 }
 
-variable "wg_peer_persistent_keepalive" {
+variable "region_id" {
+	type = string
+	description = "CloudLaunch region ID used by the regional API, for example us-sanjose-1"
+}
+
+variable "api_hostname" {
+	type = string
+	description = "Public regional API hostname served by Caddy, for example us-sanjose-1.gateway.gocloudlaunch.com"
+}
+
+variable "dashboard_cors_origin" {
+	type = string
+	description = "Dashboard origin allowed for browser CORS requests, for example https://gateway.gocloudlaunch.com"
+}
+
+variable "fastapi_port" {
 	type = number
-	description = "PersistentKeepalive value for the client peer"
+	default = 8000
+	description = "Localhost port the FastAPI control plane binds to"
+}
+
+variable "wg_endpoint_hostname" {
+	type = string
+	description = "Non-proxied DNS hostname written into WireGuard client configs, for example wg.us-sanjose-1.gateway.gocloudlaunch.com"
+}
+
+variable "firebase_credentials_file" {
+	type = string
+	default = "/etc/cloudlaunch/firebase-credentials.json"
+	description = "Host path for the Firebase Admin credential file"
+}
+
+variable "firebase_credentials_json" {
+	type = string
+	sensitive = true
+	default = ""
+	description = "Firebase Admin credential JSON written to the credential file; leave empty to provision the file manually"
+}
+
+variable "caddy_acme_email" {
+	type = string
+	default = ""
+	description = "Email used by Caddy ACME for the regional API hostname"
+}
+
+variable "cloudflare_origin_pull_ca_path" {
+	type = string
+	default = "/etc/caddy/cloudflare-origin-pull-ca.pem"
+	description = "Host path for the Cloudflare Authenticated Origin Pull CA"
+}
+
+variable "cloudflare_origin_pull_ca_url" {
+	type = string
+	default = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
+	description = "Download URL for the Cloudflare Authenticated Origin Pull CA"
+}
+
+variable "caddy_version" {
+	type = string
+	default = "v2.8.4"
+	description = "Caddy version built by xcaddy"
+}
+
+variable "xcaddy_version" {
+	type = string
+	default = "latest"
+	description = "xcaddy version installed by go install"
+}
+
+variable "caddy_rate_limit_module" {
+	type = string
+	default = "github.com/mholt/caddy-ratelimit"
+	description = "xcaddy module path for Caddy API rate limiting"
+}
+
+variable "caddy_api_rate_limit_events" {
+	type = number
+	default = 300
+	description = "Maximum API requests allowed per Cloudflare client IP in the Caddy rate-limit window"
+}
+
+variable "caddy_api_rate_limit_window" {
+	type = string
+	default = "1m"
+	description = "Caddy rate-limit window for /api/*"
+}
+
+variable "cloudflare_ipv4_ranges" {
+	type = list(string)
+	default = [
+		"173.245.48.0/20",
+		"103.21.244.0/22",
+		"103.22.200.0/22",
+		"103.31.4.0/22",
+		"141.101.64.0/18",
+		"108.162.192.0/18",
+		"190.93.240.0/20",
+		"188.114.96.0/20",
+		"197.234.240.0/22",
+		"198.41.128.0/17",
+		"162.158.0.0/15",
+		"104.16.0.0/13",
+		"104.24.0.0/14",
+		"172.64.0.0/13",
+		"131.0.72.0/22",
+	]
+	description = "Cloudflare IPv4 CIDR ranges allowed to reach origin HTTP/HTTPS"
+}
+
+variable "cloudflare_ipv6_ranges" {
+	type = list(string)
+	default = [
+		"2400:cb00::/32",
+		"2606:4700::/32",
+		"2803:f800::/32",
+		"2405:b500::/32",
+		"2405:8100::/32",
+		"2a06:98c0::/29",
+		"2c0f:f248::/32",
+	]
+	description = "Cloudflare IPv6 CIDR ranges allowed to reach origin HTTP/HTTPS"
 }
 
 locals {
@@ -167,7 +287,9 @@ locals {
 		hashed_password = var.hashed_password
 	})
 
-	wireguard_user_data = templatefile("${path.module}/wireguard-cloud-init.sh.tftpl", {
+	wireguard_user_data = templatefile("${path.module}/stub-cloud-init.sh.tftpl", {
+		source_repo = var.source_repo
+		source_ref = var.source_ref
 		wg_interface = var.wg_interface
 		wg_listen_port = var.wg_listen_port
 		wg_address_v4 = var.wg_address_v4
@@ -179,12 +301,24 @@ locals {
 		wg_server_private_key = var.wg_server_private_key
 		wg_rate_limit = var.wg_rate_limit
 		wg_rate_limit_burst = var.wg_rate_limit_burst
-		wg_peer = {
-			wg_client_public_key = var.wg_client_public_key
-			wg_peer_allowed_ipv4 = var.wg_peer_allowed_ipv4
-			wg_peer_allowed_ipv6 = var.wg_peer_allowed_ipv6
-			wg_peer_persistent_keepalive = var.wg_peer_persistent_keepalive
-		}
+		adguard_home_version = var.adguard_home_version
+		region_id = var.region_id
+		api_hostname = var.api_hostname
+		dashboard_cors_origin = var.dashboard_cors_origin
+		fastapi_port = var.fastapi_port
+		wg_endpoint_hostname = var.wg_endpoint_hostname
+		firebase_credentials_file = var.firebase_credentials_file
+		firebase_credentials_json = var.firebase_credentials_json
+		caddy_acme_email = var.caddy_acme_email
+		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
+		cloudflare_origin_pull_ca_url = var.cloudflare_origin_pull_ca_url
+		caddy_version = var.caddy_version
+		xcaddy_version = var.xcaddy_version
+		caddy_rate_limit_module = var.caddy_rate_limit_module
+		caddy_api_rate_limit_events = var.caddy_api_rate_limit_events
+		caddy_api_rate_limit_window = var.caddy_api_rate_limit_window
+		cloudflare_ipv4_ranges = var.cloudflare_ipv4_ranges
+		cloudflare_ipv6_ranges = var.cloudflare_ipv6_ranges
 	})
 
 	combined_user_data = <<-EOT

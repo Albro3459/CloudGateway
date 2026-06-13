@@ -1,0 +1,15 @@
+{
+  "include": [
+    "API/src",
+    "API/tests"
+  ],
+  "exclude": [
+    "API/build",
+    "**/__pycache__"
+  ],
+  "extraPaths": [
+    "API"
+  ],
+  "venvPath": "API",
+  "venv": ".venv"
+}

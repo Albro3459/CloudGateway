@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudlaunch-api"
+version = "0.1.0"
+description = "CloudLaunch regional VPN control-plane API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "firebase-admin>=6.5",
+]
+
+[project.scripts]
+cloudlaunch-sync-peers = "src.sync:main"
+
+[project.optional-dependencies]
+dev = [
+    "httpx2>=2.4",
+    "pyright>=1.1",
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

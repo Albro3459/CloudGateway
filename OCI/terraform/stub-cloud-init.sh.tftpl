@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Terraform renders this stub, then cloud-init runs it. The stub only writes
+# deployment config/secrets, fetches the pinned repo ref from GitHub, and runs
+# the versioned bootstrap. See docs/github-deployment-setup.md.
+
+set -euxo pipefail
+
+# Redirect stdout and stderr to log files
+exec > >(tee -a /var/log/wireguard-bootstrap.log | logger -t wireguard-bootstrap -s 2>/dev/console) 2>&1
+
+echo "==> Stub 1/4: Writing deployment configuration"
+install -d -m 700 /etc/cloudlaunch
+install -d -m 755 /opt/cloudlaunch
+install -d -m 755 /opt/cloudlaunch/src
+
+cat > /etc/cloudlaunch/bootstrap.env <<BOOTSTRAPENV
+SOURCE_REPO=${source_repo}
+SOURCE_REF=${source_ref}
+REGION_ID=${region_id}
+API_HOSTNAME=${api_hostname}
+DASHBOARD_CORS_ORIGIN=${dashboard_cors_origin}
+FASTAPI_PORT=${fastapi_port}
+WG_INTERFACE=${wg_interface}
+WG_LISTEN_PORT=${wg_listen_port}
+WG_ADDRESS_V4=${wg_address_v4}
+WG_ADDRESS_V6=${wg_address_v6}
+WG_NETWORK_V4=${wg_network_v4}
+WG_NETWORK_V6=${wg_network_v6}
+WG_DNS_ADDRESS_V4=${wg_dns_address_v4}
+WG_DNS_ADDRESS_V6=${wg_dns_address_v6}
+WG_RATE_LIMIT=${wg_rate_limit}
+WG_RATE_LIMIT_BURST=${wg_rate_limit_burst}
+WG_ENDPOINT_HOSTNAME=${wg_endpoint_hostname}
+ADGUARD_HOME_VERSION=${adguard_home_version}
+FIREBASE_CREDENTIALS_FILE=${firebase_credentials_file}
+CADDY_ACME_EMAIL=${caddy_acme_email}
+CLOUDFLARE_ORIGIN_PULL_CA_PATH=${cloudflare_origin_pull_ca_path}
+CLOUDFLARE_ORIGIN_PULL_CA_URL=${cloudflare_origin_pull_ca_url}
+CADDY_VERSION=${caddy_version}
+XCADDY_VERSION=${xcaddy_version}
+CADDY_RATE_LIMIT_MODULE=${caddy_rate_limit_module}
+CADDY_API_RATE_LIMIT_EVENTS=${caddy_api_rate_limit_events}
+CADDY_API_RATE_LIMIT_WINDOW=${caddy_api_rate_limit_window}
+CLOUDFLARE_IPV4_RANGES="${join(" ", cloudflare_ipv4_ranges)}"
+CLOUDFLARE_IPV6_RANGES="${join(" ", cloudflare_ipv6_ranges)}"
+BOOTSTRAPENV
+chmod 600 /etc/cloudlaunch/bootstrap.env
+
+echo "==> Stub 2/4: Writing secrets"
+set +x
+cat > /etc/cloudlaunch/wireguard-server.key <<'WGKEY'
+${wg_server_private_key}
+WGKEY
+set -x
+chmod 600 /etc/cloudlaunch/wireguard-server.key
+
+%{ if firebase_credentials_json != "" ~}
+install -d -m 700 "$(dirname "${firebase_credentials_file}")"
+set +x
+cat > "${firebase_credentials_file}" <<'FIREBASECREDS'
+${firebase_credentials_json}
+FIREBASECREDS
+set -x
+chmod 600 "${firebase_credentials_file}"
+%{ else ~}
+echo "No Firebase credential payload provided; provision ${firebase_credentials_file} manually"
+%{ endif ~}
+
+echo "==> Stub 3/4: Fetching source ${source_repo}@${source_ref} from GitHub"
+TARBALL="$(mktemp /tmp/cloudlaunch-src-XXXXXX.tar.gz)"
+if ! curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+    "https://codeload.github.com/${source_repo}/tar.gz/${source_ref}" -o "$TARBALL"; then
+  echo "Failed to download ${source_repo}@${source_ref}. The ref must be pushed to GitHub before deploying (docs/github-deployment-setup.md)." >&2
+  exit 1
+fi
+
+tar -xzf "$TARBALL" --strip-components=1 -C /opt/cloudlaunch/src --wildcards '*/API' '*/OCI/host'
+rm -f "$TARBALL"
+
+if [[ ! -f /opt/cloudlaunch/src/OCI/host/bootstrap.sh ]]; then
+  echo "Ref ${source_ref} does not contain OCI/host/bootstrap.sh; the fetched-path contract is violated (docs/github-deployment-setup.md)." >&2
+  exit 1
+fi
+
+echo "==> Stub 4/4: Running bootstrap"
+bash /opt/cloudlaunch/src/OCI/host/bootstrap.sh

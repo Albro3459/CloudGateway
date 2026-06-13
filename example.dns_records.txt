@@ -1,0 +1,30 @@
+# These are example CloudFlare DNS records for your domain.
+# My domain is gocloudlaunch.com, so that is what I will use for this example
+# These records are what I use for the following:
+# * Hosting the frontend React APP on GitHub pages
+# * Routing to the APIs on each server (2 servers: San Jose and Chicago)
+# * Routing to WireGuard on each server (2 servers: San Jose and Chicago)
+# * Emails with both AWS SES (successful client creation and removal) and Firebase (reset password emails)
+
+;; A Records
+gocloudlaunch.com.	1	IN	A	185.199.111.153 ; GitHub cf_tags=cf-proxied:true
+gocloudlaunch.com.	1	IN	A	185.199.110.153 ; GitHub cf_tags=cf-proxied:true
+gocloudlaunch.com.	1	IN	A	185.199.109.153 ; GitHub cf_tags=cf-proxied:true
+gocloudlaunch.com.	1	IN	A	185.199.108.153 ; GitHub cf_tags=cf-proxied:true
+us-sanjose-1.gocloudlaunch.com.	1	IN	A	Your-SanJose-Server-IPv4 ; San Jose Server cf_tags=cf-proxied:true
+us-chicago-1.gocloudlaunch.com.	1	IN	A	Your-Chicago-Server-IPv4 ; Chicago Server cf_tags=cf-proxied:true
+wg.us-sanjose-1.gocloudlaunch.com.	1	IN	A	Your-SanJose-Server-IPv4 ; San Jose Server Wireguard cf_tags=cf-proxied:false
+wg.us-chicago-1.gocloudlaunch.com.	1	IN	A	Your-Chicago-Server-IPv4 ; Chicago Server Wireguard cf_tags=cf-proxied:false
+
+;; CNAME Records
+www.gocloudlaunch.com.	1	IN	CNAME	albro3459.github.io. ; GitHub cf_tags=cf-proxied:true
+firebase1._domainkey.gocloudlaunch.com.	1	IN	CNAME	mail-gocloudlaunch-com.dkim1._domainkey.firebasemail.com. ; Firebase Emails cf_tags=cf-proxied:false
+firebase2._domainkey.gocloudlaunch.com.	1	IN	CNAME	mail-gocloudlaunch-com.dkim2._domainkey.firebasemail.com. ; Firebase Emails cf_tags=cf-proxied:false
+jl4...vgh._domainkey.gocloudlaunch.com.	1	IN	CNAME	jl4...vgh.dkim.amazonses.com. ; AWS SES Emails cf_tags=cf-proxied:false
+wrl...ue5._domainkey.gocloudlaunch.com.	1	IN	CNAME	wrl...ue5.dkim.amazonses.com. ; AWS SES Emails cf_tags=cf-proxied:false
+x2d...qsm._domainkey.gocloudlaunch.com.	1	IN	CNAME	x2d...qsm.dkim.amazonses.com. ; AWS SES Emails cf_tags=cf-proxied:false
+
+;; TXT Records
+_dmarc.gocloudlaunch.com.	1	IN	TXT	"v=DMARC1; p=none;" ; AWS SES Emails
+gocloudlaunch.com.	1	IN	TXT	"v=spf1 include:amazonses.com include:_spf.firebasemail.com ~all" ; AWS SES & Firebase Emails
+gocloudlaunch.com.	1	IN	TXT	"firebase=your-project-id" ; Firebase Emails

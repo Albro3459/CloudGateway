@@ -1,7 +1,5 @@
-# Manual stack testing only.
-# Runtime CloudLaunch deploys do not read terraform.tfvars. The Deploy Lambda
-# sends these values from the selected CloudLaunch.oci.regions.<region> entry in
-# AWS Secrets Manager.
+# Example values for a manual shared regional server deploy.
+# Each region gets one long-lived server created from this stack.
 
 availability_domain     = "xJLJ:US-SANJOSE-1-AD-1"
 region                  = "us-sanjose-1"
@@ -19,10 +17,31 @@ instance_display_name   = "CloudLaunch"
 vnic_display_name       = "CloudLaunch"
 ipv6_subnet_cidr        = "2603:c024:c01a:8b69::/64"
 shape                   = "VM.Standard.A1.Flex"
-shape_memory_in_gbs     = 1
-shape_ocpus             = 1
+# You probably don't need more than 4-6 GB RAM. CPU matters more when you have many clients because WireGuard encrypts and decrypts traffic for every connection.
+shape_memory_in_gbs     = 6
+shape_ocpus             = 2
 boot_volume_size_in_gbs = 50
 boot_volume_vpus_per_gb = 10
+
+# Git ref the host fetches bootstrap + API source from at boot.
+# Must be pushed to GitHub before deploying. Use a tag (deploy-vX.Y.Z),
+# a full commit SHA for strict immutability, or a branch for dev spins.
+# See docs/github-deployment-setup.md.
+source_repo = "Albro3459/CloudGateway"
+source_ref  = "deploy-v1.0.0"
+
+region_id              = "us-sanjose-1"
+api_hostname           = "us-sanjose-1.gateway.gocloudlaunch.com"
+dashboard_cors_origin  = "https://gateway.gocloudlaunch.com"
+fastapi_port           = 8000
+caddy_acme_email       = "admin@example.com"
+cloudflare_origin_pull_ca_path = "/etc/caddy/cloudflare-origin-pull-ca.pem"
+cloudflare_origin_pull_ca_url  = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
+caddy_version                  = "v2.8.4"
+xcaddy_version                 = "latest"
+caddy_rate_limit_module        = "github.com/mholt/caddy-ratelimit"
+caddy_api_rate_limit_events    = 300
+caddy_api_rate_limit_window    = "1m"
 
 wg_interface                    = "wg0"
 wg_listen_port                  = 51820
@@ -35,10 +54,14 @@ wg_dns_address_v6               = "fd42:42:42::1"
 wg_rate_limit                   = "25/second"
 wg_rate_limit_burst             = 100
 wg_server_private_key           = "..._WITH_SERVER_PRIVATE_KEY"
-wg_client_public_key            = "..._WITH_CLIENT_PUBLIC_KEY"
-wg_peer_allowed_ipv4            = "10.0.0.2/32"
-wg_peer_allowed_ipv6            = "fd42:42:42::2/128"
-wg_peer_persistent_keepalive    = 25
+adguard_home_version            = "v0.107.77"
+# Grey-cloud (non-proxied) A record pointing at the server public IPv4.
+wg_endpoint_hostname            = "wg.us-sanjose-1.gateway.gocloudlaunch.com"
+
+# Firebase Admin credential written to the host for the regional API.
+# Leave firebase_credentials_json empty to copy the file manually instead.
+firebase_credentials_file       = "/etc/cloudlaunch/firebase-credentials.json"
+firebase_credentials_json       = ""
 
 # Create your password with 'openssl passwd -6'
 hashed_password = "$6$replace_with_real_salt$replace_with_real_hash_value"
