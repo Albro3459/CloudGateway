@@ -89,6 +89,8 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 ## Running the React Site
 
+Use Node.js `20` LTS or newer with npm `10` or newer. See [../docs/tool-versions.md](../docs/tool-versions.md) for the repo's expected tooling versions.
+
 Update dependencies:
 ```sh
 cd APP

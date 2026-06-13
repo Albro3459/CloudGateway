@@ -114,6 +114,14 @@ This must be rejected. If it returns a healthy response, the origin is reachable
 sudo wg show wg0 latest-handshakes
 ```
 
-4. Confirm traffic and DNS resolve through the tunnel, then remove the test client.
+4. Confirm traffic and DNS resolve through the tunnel.
+5. Confirm AdGuard Home is the client-facing DNS service and Unbound is the recursive backend:
+
+```sh
+systemctl status adguardhome
+systemctl status unbound
+```
+
+6. Confirm a known ad/tracker test domain is blocked by the AdGuard DNS filter, then remove the test client.
 
 The region is live. Leave `enabled: true` on the region doc.

@@ -17,7 +17,8 @@ instance_display_name   = "CloudLaunch"
 vnic_display_name       = "CloudLaunch"
 ipv6_subnet_cidr        = "2603:c024:c01a:8b69::/64"
 shape                   = "VM.Standard.A1.Flex"
-shape_memory_in_gbs     = 8
+# You probably don't need more than 4-6 GB RAM. CPU matters more when you have many clients because WireGuard encrypts and decrypts traffic for every connection.
+shape_memory_in_gbs     = 6
 shape_ocpus             = 2
 boot_volume_size_in_gbs = 50
 boot_volume_vpus_per_gb = 10
@@ -53,6 +54,7 @@ wg_dns_address_v6               = "fd42:42:42::1"
 wg_rate_limit                   = "25/second"
 wg_rate_limit_burst             = 100
 wg_server_private_key           = "..._WITH_SERVER_PRIVATE_KEY"
+adguard_home_version            = "v0.107.77"
 # Grey-cloud (non-proxied) A record pointing at the server public IPv4.
 wg_endpoint_hostname            = "wg.us-sanjose-1.gateway.gocloudlaunch.com"
 
