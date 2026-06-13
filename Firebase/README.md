@@ -37,6 +37,8 @@ Enforced by [firestore.rules](firestore.rules):
 
 ## Limits
 
-* Normal users: 3 active clients per region by default.
+Enforced server-side by the regional FastAPI inside Firestore transactions (not by [firestore.rules](firestore.rules)):
+
+* Normal users: limited to the region doc's `userClientLimit` active clients per region (defaults to 3 when the field is absent).
 * Admins: create clients only for themselves, may exceed the normal limit up to server capacity (`capacityLimit`), and may delete clients for any user.
 * Reservations and `activeClientCount` updates are done in Firestore transactions by the API.

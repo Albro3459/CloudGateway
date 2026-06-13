@@ -21,6 +21,7 @@ export type FirebaseRegionDoc = {
     wireguardDnsIpv6: string;
     wireguardPublicKey: string;
     capacityLimit: number;
+    userClientLimit: number;
     activeClientCount: number;
     displayOrder?: number;
     healthStatus?: string;

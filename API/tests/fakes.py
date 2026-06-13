@@ -218,6 +218,7 @@ class FakeRepository(FirebaseRepository):
             assert_user_limit_available(
                 requester_role=self.roles.get(owner_uid),
                 owner_allocated_count=owner_allocated_count,
+                user_client_limit=region.user_client_limit,
             )
             assigned_ipv4, assigned_ipv6 = assign_tunnel_ips(
                 ipv4_cidr=self.ipv4_cidr,

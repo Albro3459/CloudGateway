@@ -159,7 +159,8 @@ All controlled failures return this shape:
 - `wireguardDnsIpv4`: string.
 - `wireguardDnsIpv6`: string.
 - `wireguardPublicKey`: string.
-- `capacityLimit`: number.
+- `capacityLimit`: number, server-wide max allocated clients for the region.
+- `userClientLimit`: number, max active clients per normal user in the region. Defaults to `3` when absent.
 - `activeClientCount`: number.
 - `displayOrder`: number, optional.
 - `healthStatus`: string, optional.
@@ -210,8 +211,8 @@ All controlled failures return this shape:
 
 ## User Limits
 
-- Normal users default to 3 active clients per region.
-- Admins can create clients only for themselves, but can exceed the normal user limit up to server capacity.
+- Normal users are limited to the region's `userClientLimit` active clients (default `3` when the field is absent).
+- Admins can create clients only for themselves, but can exceed the normal user limit up to server capacity (`capacityLimit`).
 - Admins can delete clients for any user.
 
 ## Frontend API Selection
