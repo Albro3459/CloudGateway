@@ -20,7 +20,7 @@ The host fetches its bootstrap script and API source from GitHub at boot using `
 
 Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
-that var file's `oci_config_profile`. Deploy through `terraform-deploy.sh`, which selects the
+that var file's `oci_config_profile`. Deploy through `terraform.sh`, which selects the
 workspace and var file for the region. A bare `terraform apply` would auto-load
 `terraform.tfvars` and share one state file, so a second region would plan to destroy the first.
 
@@ -30,8 +30,8 @@ workspace and var file for the region. A bare `terraform apply` would auto-load
 # hostname, tunnel DNS IPs, Firebase credentials, Caddy/Cloudflare settings, WG server key).
 cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfvars
 
-./terraform-deploy.sh <regionId> plan
-./terraform-deploy.sh <regionId> apply
+./terraform.sh <regionId> plan
+./terraform.sh <regionId> apply
 ```
 
 The matching OCI profile must exist in `~/.oci/config`, for example:
