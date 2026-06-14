@@ -3,7 +3,7 @@
 # Deploy/manage one shared regional WireGuard server.
 #
 # Usage:
-#   ./terraform-deploy.sh <region> [plan|apply|destroy]
+#   ./terraform.sh <region> [plan|apply|destroy]
 #
 # <region> accepts a short name (chicago, sanjose) which expands to us-<region>-1,
 # or a full region id (us-chicago-1) used as-is.
@@ -11,9 +11,9 @@
 # Default action is apply. apply/destroy always show the plan and require typing "yes".
 #
 # Examples:
-#   ./terraform-deploy.sh chicago            # apply us-chicago-1 (shows plan, asks yes)
-#   ./terraform-deploy.sh sanjose plan       # plan only, no prompt, no changes
-#   ./terraform-deploy.sh chicago destroy    # tear Chicago down (asks yes)
+#   ./terraform.sh chicago            # apply us-chicago-1 (shows plan, asks yes)
+#   ./terraform.sh sanjose plan       # plan only, no prompt, no changes
+#   ./terraform.sh chicago destroy    # tear Chicago down (asks yes)
 #
 # Each region gets:
 #   - its own var file:  OCI/terraform/<region-id>.terraform.tfvars (gitignored)

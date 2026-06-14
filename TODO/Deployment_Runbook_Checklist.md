@@ -49,7 +49,7 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
       `wg_endpoint_hostname`, tunnel DNS IPs, `wg_server_private_key`, Firebase credentials,
       `caddy_acme_email`, `hashed_password`, `source_ref`.
 - [ ] `~/.oci/config` has a `[us-chicago-1]` profile (its tenancy's API key) matching
-      `oci_config_profile`. SJ and Chicago are different tenancies — one profile each.
+      `oci_config_profile`. SJ and Chicago are different tenancies - one profile each.
 - [ ] Firebase Admin credentials available to the host (inline `firebase_credentials_json`
       or copied to `firebase_credentials_file`).
 - [ ] Frontend `APP/src/Secrets/firebaseConfig.ts` present for the prod build.
@@ -57,9 +57,9 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 
 ## Step 3 - Apply Terraform (Chicago)
 
-- [ ] `./terraform-deploy.sh chicago plan` (short name expands to `us-chicago-1`; selects
+- [ ] `./terraform.sh chicago plan` (short name expands to `us-chicago-1`; selects
       that workspace + var file; isolated state so it can't clobber San Jose).
-- [ ] `./terraform-deploy.sh chicago apply`
+- [ ] `./terraform.sh chicago apply`
 - [ ] Record the instance public IPv4.
 - [ ] On the host, confirm: `wg0` up, `wg0.conf` has NO `[Peer]` blocks,
       `cloudlaunch-api.service` active on `127.0.0.1`, `cloudlaunch-sync-peers.service`
