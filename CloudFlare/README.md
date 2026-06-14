@@ -50,18 +50,16 @@ The cert and key are baked into each regional deploy through the gitignored
 of using ACME. Replacing the cert means updating the tfvars and rebuilding (or hand-placing the
 files and reloading Caddy).
 
-## Authenticated Origin Pulls (do not confuse with the Origin cert)
+## Required Cloudflare zone settings
 
-AOP is the **opposite direction** — Cloudflare presenting a client cert to the origin so the
-origin can confirm the request came from Cloudflare.
-
-* Leave AOP on **Global = Enabled** (Cloudflare's shared client cert).
-* The host trusts it via the origin-pull CA the bootstrap downloads to
-  `/etc/caddy/cloudflare-origin-pull-ca.pem`; the Caddyfile `client_auth.trusted_ca_cert_file`
-  points at it.
-* Do **not** switch to zone-level/per-hostname AOP and do **not** upload the Origin cert there.
-  The Origin cert is a server cert, not a client cert, and zone-level AOP would require trusting
-  a different CA.
+1. **SSL/TLS → Overview → encryption mode = `Full (strict)`.**
+2. **SSL/TLS → Origin Server → Origin Certificates → Create Certificate** for
+   `gocloudlaunch.com, *.gocloudlaunch.com` (PEM, 15 years). This is the server cert the host
+   serves (installed via the `origin_cert` / `origin_key` tfvars) — it is **not** an AOP cert.
+3. **SSL/TLS → Origin Server → Authenticated Origin Pulls → turn on both Global and Zone-level.
+   Do NOT upload any certificate to Zone-level.** The host trusts Cloudflare's shared client
+   cert via the origin-pull CA the bootstrap installs at
+   `/etc/caddy/cloudflare-origin-pull-ca.pem`.
 
 ## DNS records
 
