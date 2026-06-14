@@ -40,7 +40,7 @@ git tag -a deploy-v1.0.0 -m "deploy-v1.0.0"
 git push origin deploy-v1.0.0
 ```
 
-3. Set `source_ref = "deploy-v1.0.0"` in `terraform.tfvars` and deploy per [docs/regional-deployment.md](regional-deployment.md).
+3. Set `source_ref = "deploy-v1.0.0"` in each region's `<regionId>.terraform.tfvars` and deploy per [docs/regional-deployment.md](regional-deployment.md).
 
 **The commit/tag must be pushed to GitHub before deploying.** codeload serves only what GitHub has - local-only commits cannot be deployed.
 
@@ -60,7 +60,7 @@ ssh ubuntu@<server-public-ipv4>
 sudo cloudlaunch-install-api deploy-v1.1.0
 ```
 
-With no argument, `cloudlaunch-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in `terraform.tfvars` afterward so any future host build uses the same code.
+With no argument, `cloudlaunch-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
 
 **Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next `terraform apply` plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (update the grey-cloud `wg.<regionId>.<origin>` record and region doc IP; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
 

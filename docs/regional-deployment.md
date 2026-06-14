@@ -18,16 +18,31 @@ Follow the network prerequisites in [OCI/README.md](../OCI/README.md):
 
 The host fetches its bootstrap script and API source from GitHub at boot using `source_repo`/`source_ref`. The ref must be pushed to GitHub before applying - see [docs/github-deployment-setup.md](github-deployment-setup.md) for the tag workflow and the fetched-path contract.
 
+Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
+its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
+that var file's `oci_config_profile`. Deploy through `terraform-deploy.sh`, which selects the
+workspace and var file for the region. A bare `terraform apply` would auto-load
+`terraform.tfvars` and share one state file, so a second region would plan to destroy the first.
+
 ```sh
-cd OCI/terraform
-cp terraform.tfvars.example terraform.tfvars
-# fill in real values for this region (source ref, region ID, API hostname,
-# CORS origin, FastAPI port, WireGuard endpoint hostname, tunnel DNS IPs,
-# Firebase credentials, Caddy/Cloudflare settings)
-terraform init
-terraform validate
-terraform plan
-terraform apply
+# One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
+# oci_config_profile, region ID, API hostname, CORS origin, FastAPI port, WireGuard endpoint
+# hostname, tunnel DNS IPs, Firebase credentials, Caddy/Cloudflare settings, WG server key).
+cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfvars
+
+./terraform-deploy.sh <regionId> plan
+./terraform-deploy.sh <regionId> apply
+```
+
+The matching OCI profile must exist in `~/.oci/config`, for example:
+
+```ini
+[us-chicago-1]
+user=ocid1.user.oc1..<region user OCID>
+fingerprint=<api key fingerprint>
+tenancy=ocid1.tenancy.oc1..<region tenancy OCID>
+region=us-chicago-1
+key_file=~/.oci/us-chicago-1.pem
 ```
 
 Record the instance's public IPv4. After cloud-init finishes, confirm on the host:

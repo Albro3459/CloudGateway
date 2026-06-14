@@ -2,7 +2,7 @@
 
 A lost regional VM or boot volume is recoverable without users recreating clients, because nothing client-critical lives only on the host:
 
-* The server WireGuard private key comes from `terraform.tfvars`, so a rebuilt host has the same public key.
+* The server WireGuard private key comes from the region's `<regionId>.terraform.tfvars`, so a rebuilt host has the same public key.
 * Client configs point at the non-proxied DNS endpoint `wg.<regionId>.<origin>`, not a raw IP.
 * Peers are never stored on the host; Firebase is the single source of truth and `cloudlaunch-sync-peers` rebuilds the live peer set at boot.
 

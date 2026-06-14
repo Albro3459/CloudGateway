@@ -27,6 +27,10 @@
 
 **/.terraform*
 **/.terraform/*
+# Terraform state holds rendered user-data (WG key, Firebase creds, password hash).
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfstate.d/
 **/vm_dump.md
 
 **/output.css
