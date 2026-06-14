@@ -42,6 +42,13 @@
 !**/.gocloudlaunch.com.txt.example
 !**/example.gocloudlaunch.com.txt
 
+**/subnet-security-list.json
+**/*.subnet-security-list.json
+**/.subnet-security-list.json.*
+**/*.subnet-security-list.json.*
+!**/.subnet-security-list.json.example
+!**/example.subnet-security-list.json
+
 .DS_STORE
 
 **/.terraform*
