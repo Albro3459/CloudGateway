@@ -34,6 +34,7 @@ See [OCI/README.md](../OCI/README.md) for Terraform and host bootstrap details, 
 * Apply live `wg0` peer changes with `wg set` under a local lock.
 * Store dashboard-visible client state and WireGuard configs in Firebase.
 * Rebuild the live WireGuard peer set from Firebase through `cloudlaunch-sync-peers`.
+* Self-seed the Firestore region doc at boot through `cloudlaunch-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback), preserving `activeClientCount`. DNS records are managed by Terraform, not the host.
 
 Firebase is the product source of truth for users, regions, roles, limits, stored configs, and the desired WireGuard peer set. The host's `/etc/wireguard/wg0.conf` stays interface-only and never stores client peers.
 
@@ -157,6 +158,7 @@ The host bootstrap installs this API from GitHub and creates:
 * `cloudlaunch-api.service`
 * `cloudlaunch-sync-peers.service`
 * `cloudlaunch-install-api [ref]`
+* `cloudlaunch-register-region` (run once at end of bootstrap to self-seed the region doc)
 
 Related docs:
 

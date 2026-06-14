@@ -41,6 +41,24 @@ class RegionDoc:
 
 
 @dataclass(frozen=True)
+class RegionRegistration:
+    """Infra + config fields a host self-reports when registering its region doc."""
+
+    region_id: str
+    display_name: str
+    display_order: int
+    capacity_limit: int
+    user_client_limit: int
+    wireguard_endpoint_ipv4: str
+    wireguard_endpoint_hostname: str
+    wireguard_port: int
+    wireguard_dns_ipv4: str
+    wireguard_dns_ipv6: str
+    wireguard_public_key: str
+    wireguard_endpoint_ipv6: str | None = None
+
+
+@dataclass(frozen=True)
 class UserDoc:
     uid: str
     email: str
@@ -165,6 +183,14 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def get_region(self, region_id: str) -> RegionDoc | None:
         """Return a region document, or None when it does not exist."""
+
+    @abstractmethod
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+        """Create or update a region doc from host-reported infra fields.
+
+        activeClientCount is preserved when the doc exists (0 on insert) and is never
+        reset. enabled is set to set_enabled. Returns the resulting region document.
+        """
 
     @abstractmethod
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:

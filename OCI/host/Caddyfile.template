@@ -4,7 +4,9 @@
 }
 
 ${API_HOSTNAME} {
-	tls {
+	# Cloudflare Origin CA cert (ACME can't validate a proxied hostname). Edge trusts it
+	# in Full (strict). client_auth enforces Authenticated Origin Pulls (mTLS).
+	tls ${ORIGIN_CERT_PATH} ${ORIGIN_KEY_PATH} {
 		client_auth {
 			mode require_and_verify
 			trusted_ca_cert_file ${CLOUDFLARE_ORIGIN_PULL_CA_PATH}

@@ -8,7 +8,15 @@ terraform {
     oci = {
       source = "oracle/oci"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.40"
+    }
   }
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 variable "availability_domain" {
@@ -205,6 +213,64 @@ variable "firebase_credentials_json" {
 	description = "Firebase Admin credential JSON written to the credential file; leave empty to provision the file manually"
 }
 
+variable "origin_cert_path" {
+	type = string
+	default = "/etc/caddy/origin-cert.pem"
+	description = "Host path for the Cloudflare Origin CA certificate served by Caddy"
+}
+
+variable "origin_key_path" {
+	type = string
+	default = "/etc/caddy/origin-key.pem"
+	description = "Host path for the Cloudflare Origin CA private key served by Caddy"
+}
+
+variable "origin_cert" {
+	type = string
+	sensitive = true
+	description = "Cloudflare Origin CA certificate (PEM) Caddy serves on the origin TLS hop. ACME cannot validate a proxied hostname, so the origin uses this Cloudflare-issued cert."
+}
+
+variable "origin_key" {
+	type = string
+	sensitive = true
+	description = "Cloudflare Origin CA private key (PEM) paired with origin_cert"
+}
+
+variable "region_display_name" {
+	type = string
+	description = "Human-readable region name written to the Firestore region doc by cloudlaunch-register-region"
+}
+
+variable "region_display_order" {
+	type = number
+	default = 1000
+	description = "Dashboard sort order for the region; lower sorts first"
+}
+
+variable "region_capacity_limit" {
+	type = number
+	default = 20
+	description = "Server capacity: maximum allocated clients for the region"
+}
+
+variable "region_user_client_limit" {
+	type = number
+	default = 3
+	description = "Maximum active clients per normal user in the region"
+}
+
+variable "cloudflare_api_token" {
+	type = string
+	sensitive = true
+	description = "Cloudflare API token (Zone: gocloudlaunch.com -> DNS: Edit). Used only on the operator machine to manage the region's DNS records; never written to the host."
+}
+
+variable "cloudflare_zone_id" {
+	type = string
+	description = "Cloudflare zone ID that owns the region DNS records (the gocloudlaunch.com zone)"
+}
+
 variable "caddy_acme_email" {
 	type = string
 	default = ""
@@ -316,6 +382,14 @@ locals {
 		wg_endpoint_hostname = var.wg_endpoint_hostname
 		firebase_credentials_file = var.firebase_credentials_file
 		firebase_credentials_json = var.firebase_credentials_json
+		origin_cert = var.origin_cert
+		origin_key = var.origin_key
+		origin_cert_path = var.origin_cert_path
+		origin_key_path = var.origin_key_path
+		region_display_name = var.region_display_name
+		region_display_order = var.region_display_order
+		region_capacity_limit = var.region_capacity_limit
+		region_user_client_limit = var.region_user_client_limit
 		caddy_acme_email = var.caddy_acme_email
 		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
 		cloudflare_origin_pull_ca_url = var.cloudflare_origin_pull_ca_url
@@ -426,4 +500,26 @@ resource "oci_core_instance" "generated_oci_core_instance" {
 		source_id = var.source_image_id
 		source_type = "image"
 	}
+}
+
+# Regional DNS, managed from the operator machine (token never reaches the host).
+# Both point at this instance's public IPv4 and update automatically on rebuild.
+resource "cloudflare_record" "api" {
+	zone_id = var.cloudflare_zone_id
+	name    = var.api_hostname
+	type    = "A"
+	content = oci_core_instance.generated_oci_core_instance.public_ip
+	proxied = true
+	ttl     = 1
+	comment = "CloudLaunch regional API (Terraform-managed)"
+}
+
+resource "cloudflare_record" "wg" {
+	zone_id = var.cloudflare_zone_id
+	name    = var.wg_endpoint_hostname
+	type    = "A"
+	content = oci_core_instance.generated_oci_core_instance.public_ip
+	proxied = false
+	ttl     = 300
+	comment = "CloudLaunch WireGuard endpoint, grey-cloud (Terraform-managed)"
 }

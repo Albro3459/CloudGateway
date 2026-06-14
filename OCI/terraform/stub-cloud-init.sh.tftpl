@@ -34,6 +34,12 @@ WG_RATE_LIMIT_BURST=${wg_rate_limit_burst}
 WG_ENDPOINT_HOSTNAME=${wg_endpoint_hostname}
 ADGUARD_HOME_VERSION=${adguard_home_version}
 FIREBASE_CREDENTIALS_FILE=${firebase_credentials_file}
+ORIGIN_CERT_PATH=${origin_cert_path}
+ORIGIN_KEY_PATH=${origin_key_path}
+REGION_DISPLAY_NAME=${region_display_name}
+REGION_DISPLAY_ORDER=${region_display_order}
+REGION_CAPACITY_LIMIT=${region_capacity_limit}
+REGION_USER_CLIENT_LIMIT=${region_user_client_limit}
 CADDY_ACME_EMAIL=${caddy_acme_email}
 CLOUDFLARE_ORIGIN_PULL_CA_PATH=${cloudflare_origin_pull_ca_path}
 CLOUDFLARE_ORIGIN_PULL_CA_URL=${cloudflare_origin_pull_ca_url}
@@ -66,6 +72,19 @@ chmod 600 "${firebase_credentials_file}"
 %{ else ~}
 echo "No Firebase credential payload provided; provision ${firebase_credentials_file} manually"
 %{ endif ~}
+
+install -d -m 755 "$(dirname "${origin_cert_path}")"
+install -d -m 755 "$(dirname "${origin_key_path}")"
+set +x
+cat > "${origin_cert_path}" <<'ORIGINCERT'
+${origin_cert}
+ORIGINCERT
+cat > "${origin_key_path}" <<'ORIGINKEY'
+${origin_key}
+ORIGINKEY
+set -x
+chmod 644 "${origin_cert_path}"
+chmod 600 "${origin_key_path}"
 
 echo "==> Stub 3/4: Fetching source ${source_repo}@${source_ref} from GitHub"
 TARBALL="$(mktemp /tmp/cloudlaunch-src-XXXXXX.tar.gz)"

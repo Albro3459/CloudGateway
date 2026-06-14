@@ -89,3 +89,25 @@ FIREBASE_JSON
 
 # Create your password with 'openssl passwd -6'
 hashed_password = "$6$replace_with_salt$replace_with_hash"
+
+# --- Region metadata (Firestore self-registration via cloudlaunch-register-region) ---
+region_display_name      = "Region"
+region_display_order     = 1
+region_capacity_limit    = 20
+region_user_client_limit = 3
+
+# --- Cloudflare DNS (Terraform-managed; token stays on this machine, never on the host) ---
+cloudflare_zone_id   = "replace_me"
+cloudflare_api_token = "REPLACE_WITH_CLOUDFLARE_DNS_EDIT_TOKEN"
+
+# --- Cloudflare Origin CA cert + key Caddy serves on the origin TLS hop ---
+origin_cert = <<ORIGIN_CERT
+-----BEGIN CERTIFICATE-----
+REPLACE_ME
+-----END CERTIFICATE-----
+ORIGIN_CERT
+origin_key = <<ORIGIN_KEY
+-----BEGIN PRIVATE KEY-----
+REPLACE_ME
+-----END PRIVATE KEY-----
+ORIGIN_KEY

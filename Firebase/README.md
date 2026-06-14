@@ -17,6 +17,13 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 * Client documents: `Users/{uid}/Regions/{regionId}/Instances/{clientId}`
 * Role documents: `Roles/{uid}`
 
+Region documents are **self-seeded by each host** at the end of bootstrap
+(`cloudlaunch-register-region`): it upserts `Regions/{regionId}` with the live IP, server
+public key, and endpoint config, sets `enabled: true` only once the full Cloudflare path
+validates (health checked through the edge, not just loopback), and preserves
+`activeClientCount` (0 only on first insert). You normally don't create region
+docs by hand; `Users`/`Roles` are still provisioned manually or via the admin UI.
+
 Client documents never contain the server private key. The stored `wireguardConfig` contains the client private key, which is why client docs are readable only by their owner and admins.
 
 ## Enums

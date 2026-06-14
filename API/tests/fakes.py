@@ -19,6 +19,7 @@ from src.repository import (
     CreateUserResult,
     FirebaseRepository,
     RegionDoc,
+    RegionRegistration,
     UserDoc,
     assert_capacity_available,
     assert_user_limit_available,
@@ -150,6 +151,29 @@ class FakeRepository(FirebaseRepository):
 
     def get_region(self, region_id: str) -> RegionDoc | None:
         return self.regions.get(region_id)
+
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+        existing = self.regions.get(registration.region_id)
+        active_client_count = existing.active_client_count if existing else 0
+        region = RegionDoc(
+            region_id=registration.region_id,
+            display_name=registration.display_name,
+            enabled=set_enabled,
+            wireguard_endpoint_ipv4=registration.wireguard_endpoint_ipv4,
+            wireguard_endpoint_ipv6=registration.wireguard_endpoint_ipv6,
+            wireguard_port=registration.wireguard_port,
+            wireguard_dns_ipv4=registration.wireguard_dns_ipv4,
+            wireguard_dns_ipv6=registration.wireguard_dns_ipv6,
+            wireguard_public_key=registration.wireguard_public_key,
+            capacity_limit=registration.capacity_limit,
+            active_client_count=active_client_count,
+            user_client_limit=registration.user_client_limit,
+            wireguard_endpoint_hostname=registration.wireguard_endpoint_hostname,
+            display_order=registration.display_order,
+            updated_at=utc_now(),
+        )
+        self.regions[registration.region_id] = region
+        return region
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         return self.clients.get((owner_uid, region_id, client_id))

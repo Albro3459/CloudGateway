@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 cloudlaunch-sync-peers = "src.sync:main"
+cloudlaunch-register-region = "src.register:main"
 
 [project.optional-dependencies]
 dev = [

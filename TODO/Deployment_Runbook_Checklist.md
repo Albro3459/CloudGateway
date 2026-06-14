@@ -68,38 +68,34 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 - [ ] If bootstrap failed: `/var/log/wireguard-bootstrap.log` /
       `journalctl -t wireguard-bootstrap`.
 
-## Step 4 - Cloudflare DNS + Origin Pulls
+## Step 4 - Cloudflare (mostly automated now)
 
-- [ ] `A` record `us-chicago-1.gateway.gocloudlaunch.com` -> public IPv4, proxy ON
-      (orange cloud).
-- [ ] `A` record `wg.us-chicago-1.gateway.gocloudlaunch.com` -> public IPv4, proxy
-      OFF (grey cloud), low TTL (300s). Must match `wg_endpoint_hostname`.
-- [ ] Enable Authenticated Origin Pulls (zone or per-host). EASY TO FORGET - health
-      fails without it because Caddy rejects non-Cloudflare TLS.
-- [ ] Zone SSL/TLS mode = Full (strict).
+- [x] One-time per zone: SSL/TLS = Full (strict); Origin CA cert in `origin_cert`/`origin_key`;
+      Authenticated Origin Pulls Global + Zone on (no uploaded cert). See `CloudFlare/README.md`.
+- [ ] DNS is **Terraform-managed** - `apply` creates the orange API + grey wg `A` records from
+      the instance IP. Before the first apply, DELETE any pre-existing manual `us-chicago-1` +
+      `wg.us-chicago-1` records (the Cloudflare provider errors on a name that already exists).
 
 ## Step 5 - Validate `/api/health`
 
-- [ ] `curl -s https://us-chicago-1.gateway.gocloudlaunch.com/api/health`
+- [ ] `curl -s https://us-chicago-1.gocloudlaunch.com/api/health`
       -> `{ "status": "ok", "regionId": "us-chicago-1" }`
 - [ ] Confirm direct origin is REJECTED:
       ```sh
-      curl -sk --resolve us-chicago-1.gateway.gocloudlaunch.com:443:<public-ipv4> \
-        https://us-chicago-1.gateway.gocloudlaunch.com/api/health
+      curl -sk --resolve us-chicago-1.gocloudlaunch.com:443:<public-ipv4> \
+        https://us-chicago-1.gocloudlaunch.com/api/health
       ```
       If this returns healthy, the origin is reachable without Cloudflare - STOP and
       fix the firewall/Caddy before enabling the region.
 
-## Step 6 - Seed Firebase
+## Step 6 - Firebase
 
-- [ ] `Regions/us-chicago-1` doc with contract fields (`docs/regional-deployment.md` §4).
-      Keep `enabled: false` while validating. Set `activeClientCount: 0`,
-      `capacityLimit` 15-25, `userClientLimit` 3 (per-normal-user cap; omit to default
-      to 3). Region-doc WG fields MUST match the host `api.env`
-      (`wireguardEndpointHostname`, `wireguardPort`, DNS IPs, `wireguardPublicKey`).
-- [ ] Admin `Users/{uid}` + `Roles/{uid}` (`role: admin`). The per-user limit lives on
-      the region doc (`userClientLimit`); admins are bounded by `capacityLimit`. No
-      limit field goes in `Roles`.
+- [ ] Region doc is **self-seeded** by the host (`cloudlaunch-register-region` at end of
+      bootstrap): it sets the IP/pubkey/endpoint, `enabled: true` only once the full Cloudflare
+      path validates (health checked through the edge, not just loopback), and preserves
+      `activeClientCount`. Just confirm `Regions/us-chicago-1` appeared and looks right.
+- [ ] Admin `Users/{uid}` + `Roles/{uid}` (`role: admin`) - still manual. The per-user limit
+      lives on the region doc (`userClientLimit`); admins are bounded by `capacityLimit`.
 
 ## Step 7 - Deploy frontend
 

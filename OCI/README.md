@@ -28,8 +28,9 @@ The fetched bootstrap installs and configures:
   * environment file `/etc/cloudlaunch/api.env` (mode `0600`, root-owned) with the `CLOUDLAUNCH_*` variables, including `CLOUDLAUNCH_REGION_ID`
   * Firebase Admin credentials file referenced by `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
   * `cloudlaunch-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
+  * `cloudlaunch-register-region` runs once at the end of bootstrap to self-seed the Firestore region doc (IP, server public key, endpoint), enabling the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). Regional DNS `A` records are managed by Terraform (`cloudflare_record.api`/`.wg`), not by the host.
 * Custom Caddy binary built with `github.com/mholt/caddy-ratelimit`, listening on public `80`/`443`:
-  * automatic HTTPS for the regional API hostname
+  * serves the Cloudflare Origin CA certificate (`origin_cert`/`origin_key`) on the origin TLS hop - ACME cannot validate a Cloudflare-proxied hostname
   * Cloudflare Authenticated Origin Pulls required
   * exact regional Host/SNI allowlist; unknown hostnames are rejected
   * rate limits on `/api/*`, including `/api/health`

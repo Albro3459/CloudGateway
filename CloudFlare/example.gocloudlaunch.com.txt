@@ -6,6 +6,13 @@
 # * Routing to WireGuard on each server (2 servers: San Jose and Chicago)
 # * Emails with both AWS SES (successful client creation and removal) and Firebase (reset password emails)
 
+;; SOA Record
+gocloudlaunch.com	3600	IN	SOA	marek.ns.cloudflare.com. dns.cloudflare.com. 2053314179 10000 2400 604800 3600
+
+;; NS Records
+gocloudlaunch.com.	86400	IN	NS	marek.ns.cloudflare.com.
+gocloudlaunch.com.	86400	IN	NS	maxine.ns.cloudflare.com.
+
 ;; A Records
 gocloudlaunch.com.	1	IN	A	185.199.111.153 ; GitHub cf_tags=cf-proxied:true
 gocloudlaunch.com.	1	IN	A	185.199.110.153 ; GitHub cf_tags=cf-proxied:true

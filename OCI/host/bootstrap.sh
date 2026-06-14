@@ -441,6 +441,7 @@ SERVER_PUBLIC_KEY="$(cat "/etc/wireguard/$WG_INTERFACE.publickey")"
 cat > /etc/cloudlaunch/api.env <<APIENV
 CLOUDLAUNCH_REGION_ID=$REGION_ID
 CLOUDLAUNCH_API_PORT=$FASTAPI_PORT
+CLOUDLAUNCH_API_HOSTNAME=$API_HOSTNAME
 CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE=$FIREBASE_CREDENTIALS_FILE
 CLOUDLAUNCH_WG_INTERFACE=$WG_INTERFACE
 CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
@@ -450,6 +451,10 @@ CLOUDLAUNCH_WG_DNS_IPV4=$WG_DNS_ADDRESS_V4
 CLOUDLAUNCH_WG_DNS_IPV6=$WG_DNS_ADDRESS_V6
 CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR=$WG_NETWORK_V4
 CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR=$WG_NETWORK_V6
+CLOUDLAUNCH_REGION_DISPLAY_NAME=$REGION_DISPLAY_NAME
+CLOUDLAUNCH_REGION_DISPLAY_ORDER=$REGION_DISPLAY_ORDER
+CLOUDLAUNCH_REGION_CAPACITY_LIMIT=$REGION_CAPACITY_LIMIT
+CLOUDLAUNCH_REGION_USER_CLIENT_LIMIT=$REGION_USER_CLIENT_LIMIT
 APIENV
 chmod 600 /etc/cloudlaunch/api.env
 
@@ -467,6 +472,8 @@ if ! id -u caddy >/dev/null 2>&1; then
 fi
 
 chown -R caddy:caddy /var/lib/caddy /var/log/caddy
+# Origin cert/key were written by the stub as root before the caddy user existed.
+chown caddy:caddy "$ORIGIN_CERT_PATH" "$ORIGIN_KEY_PATH"
 install -d -m 755 "$(dirname "$CLOUDFLARE_ORIGIN_PULL_CA_PATH")"
 curl -fsSL "$CLOUDFLARE_ORIGIN_PULL_CA_URL" -o "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 chmod 644 "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
@@ -483,7 +490,7 @@ chmod 755 /usr/local/bin/caddy
 
 # Render the Caddyfile. envsubst gets an explicit variable list so Caddy's own
 # {...} placeholders are left untouched.
-envsubst '$API_HOSTNAME $DASHBOARD_CORS_ORIGIN $FASTAPI_PORT $CADDY_ACME_EMAIL $CLOUDFLARE_ORIGIN_PULL_CA_PATH $CADDY_API_RATE_LIMIT_EVENTS $CADDY_API_RATE_LIMIT_WINDOW' \
+envsubst '$API_HOSTNAME $DASHBOARD_CORS_ORIGIN $FASTAPI_PORT $CADDY_ACME_EMAIL $CLOUDFLARE_ORIGIN_PULL_CA_PATH $ORIGIN_CERT_PATH $ORIGIN_KEY_PATH $CADDY_API_RATE_LIMIT_EVENTS $CADDY_API_RATE_LIMIT_WINDOW' \
   < "$SRC_DIR/OCI/host/Caddyfile.template" > /etc/caddy/Caddyfile.rendered
 if [[ -z "$CADDY_ACME_EMAIL" ]]; then
   grep -Ev '^[[:space:]]*email[[:space:]]*$' /etc/caddy/Caddyfile.rendered > /etc/caddy/Caddyfile
@@ -665,6 +672,25 @@ systemctl --no-pager --full status cloudlaunch-api || true
 systemctl --no-pager --full status cloudlaunch-sync-peers || true
 systemctl --no-pager --full status cloudlaunch-origin-firewall || true
 systemctl --no-pager --full status caddy || true
+
+# Self-register this region in Firestore (IP, public key, endpoint), enabling it only once
+# the full Cloudflare path validates (proxy + AOP + firewall + Caddy). DNS records are managed
+# by Terraform, not here. Idempotent: re-run `cloudlaunch-register-region` if Firebase or the
+# edge was not ready at boot.
+echo "Waiting for the CloudLaunch API to answer locally before registering the region..."
+for _ in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:$FASTAPI_PORT/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+echo "==> Registering region in Firestore"
+if ( set -a; source /etc/cloudlaunch/api.env; set +a; /opt/cloudlaunch/api/.venv/bin/cloudlaunch-register-region ); then
+  echo "Region registered"
+else
+  echo "WARN: region registration failed; re-run 'cloudlaunch-register-region' once Firebase is reachable" >&2
+fi
 
 echo "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"

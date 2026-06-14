@@ -67,6 +67,14 @@ See `example.gocloudlaunch.com.txt` for the full set. Summary:
 
 * `gocloudlaunch.com` (apex) → GitHub Pages IPs, **proxied** — hosts the React frontend.
 * `<regionId>.gocloudlaunch.com` → server public IPv4, **proxied** (orange) — regional API.
+  **Terraform-managed** (`cloudflare_record.api`).
 * `wg.<regionId>.gocloudlaunch.com` → server public IPv4, **DNS-only** (grey) — WireGuard
-  endpoint; never proxied (Cloudflare does not proxy WireGuard UDP).
-* Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase.
+  endpoint; never proxied (Cloudflare does not proxy WireGuard UDP). **Terraform-managed**
+  (`cloudflare_record.wg`).
+* Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase — managed by hand.
+
+The two per-region `A` records are created/updated by `terraform apply` from the instance's
+public IP (they self-heal on rebuild), using a Cloudflare API token with **Zone: gocloudlaunch.com
+-> DNS: Edit**. The token lives only on the operator machine (`cloudflare_api_token` tfvar),
+never on a host. The apex/www/email records stay manual. Before the first apply for a region,
+delete any pre-existing manual `<regionId>` / `wg.<regionId>` record or the create conflicts.

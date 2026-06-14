@@ -22,6 +22,7 @@ from .repository import (
     CreateUserResult,
     FirebaseRepository,
     RegionDoc,
+    RegionRegistration,
     UserDoc,
     assert_capacity_available,
     assert_user_limit_available,
@@ -116,6 +117,49 @@ class FirestoreRepository(FirebaseRepository):
         if not doc.exists:
             return None
         return _region_from_data(doc.to_dict() or {}, region_id)
+
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+        db = self._db()
+        transactional = _transactional()
+        ref = db.collection("Regions").document(registration.region_id)
+
+        @transactional
+        def _apply(transaction) -> None:
+            snapshot = _sync_snapshot(ref.get(transaction=transaction))
+            existing = snapshot.to_dict() if snapshot.exists else None
+            # Preserve the live counter; never reset it. 0 only on first insert.
+            active_client_count = int((existing or {}).get("activeClientCount") or 0)
+            transaction.set(
+                ref,
+                {
+                    "regionId": registration.region_id,
+                    "displayName": registration.display_name,
+                    "enabled": set_enabled,
+                    "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
+                    "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
+                    "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
+                    "wireguardPort": registration.wireguard_port,
+                    "wireguardDnsIpv4": registration.wireguard_dns_ipv4,
+                    "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
+                    "wireguardPublicKey": registration.wireguard_public_key,
+                    "capacityLimit": registration.capacity_limit,
+                    "userClientLimit": registration.user_client_limit,
+                    "activeClientCount": active_client_count,
+                    "displayOrder": registration.display_order,
+                    "updatedAt": _server_timestamp(),
+                },
+                merge=True,
+            )
+
+        try:
+            _apply(db.transaction())
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+        region = self.get_region(registration.region_id)
+        if region is None:
+            raise FirebaseWriteFailedError()
+        return region
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         doc = _sync_snapshot(_client_ref(self._db(), owner_uid, region_id, client_id).get())

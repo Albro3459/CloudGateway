@@ -56,40 +56,28 @@ Record the instance's public IPv4. After cloud-init finishes, confirm on the hos
 
 If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudlaunch-install-api <ref>` - no redeploy needed.
 
-## 3. Configure Cloudflare DNS and Origin Pulls
+## 3. Cloudflare DNS (Terraform-managed) and one-time zone setup
 
-The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gateway.gocloudlaunch.com`.
+The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gocloudlaunch.com`.
 
-1. In the Cloudflare zone for `<origin>`, add an `A` record for `<regionId>.<origin>` pointing at the server public IPv4, with proxy enabled (orange cloud).
-2. Add an `A` record for the WireGuard endpoint `wg.<regionId>.<origin>` pointing at the server public IPv4, with proxy **disabled** (grey cloud) and a low TTL (300s). This must match the `wg_endpoint_hostname` tfvar - it is the endpoint inside every client config, and it must never be proxied (Cloudflare does not proxy WireGuard UDP).
-3. Enable Authenticated Origin Pulls for the zone (or per-hostname) so the origin only accepts TLS from Cloudflare. Caddy on the host requires the Cloudflare client certificate.
-4. Set the zone SSL/TLS mode to Full (strict).
+DNS is **managed by Terraform**, not by hand. `terraform apply` creates/updates two `A` records from the instance's public IPv4 (`cloudflare_record.api`, orange/proxied; `cloudflare_record.wg`, grey/DNS-only) using `cloudflare_api_token` + `cloudflare_zone_id`. They update automatically on rebuild. If a manually-created record already exists for the name, delete it (or `terraform import` it) before the first apply, or the create conflicts.
+
+One-time per zone (see [CloudFlare/README.md](../CloudFlare/README.md)):
+
+1. SSL/TLS mode = **Full (strict)**.
+2. Create a Cloudflare **Origin CA** cert for `gocloudlaunch.com, *.gocloudlaunch.com` and put it in `origin_cert` / `origin_key` (the host serves it; ACME can't validate a proxied hostname).
+3. **Authenticated Origin Pulls**: turn on Global and Zone-level (upload no cert). The host trusts Cloudflare's shared client cert via the bundled origin-pull CA.
 
 WireGuard traffic does not go through Cloudflare. Only the API hostname is proxied; clients resolve `wg.<regionId>.<origin>` directly to the server public IPv4 at tunnel-up.
 
-## 4. Create/Update the Firebase Region Doc
+## 4. Firebase region doc (self-seeded by the host)
 
 One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [Firebase/indexes.md](../Firebase/indexes.md)). The API's create/delete transactions fail without it.
 
-Create or update `Regions/{regionId}` in Firestore with the contract fields (see [Firebase/README.md](../Firebase/README.md)):
+The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudlaunch-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). `activeClientCount` is preserved on update (0 on first insert) and never reset. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`, `region_user_client_limit`) plus the host's own `/etc/cloudlaunch/api.env`.
 
-* `regionId`: same as the document ID
-* `displayName`
-* `enabled`: `true` once validation passes (keep `false` while validating)
-* `wireguardEndpointIpv4`: raw server public IPv4 (operations/display)
-* `wireguardEndpointIpv6`: string or `null`
-* `wireguardEndpointHostname`: the grey-cloud `wg.<regionId>.<origin>` hostname used in client configs
-* `wireguardPort`: `51820` by default
-* `wireguardDnsIpv4` / `wireguardDnsIpv6`: server tunnel DNS IPs
-* `wireguardPublicKey`: server WireGuard public key
-* `capacityLimit`: start with 15-25
-* `userClientLimit`: per-normal-user client cap for this region; defaults to `3` if omitted
-* `activeClientCount`: `0` for a new host
-* `displayOrder`: optional; missing sorts as `1000`
-* `healthStatus`: optional
-* `updatedAt`: Firestore timestamp
-
-These values must match the host's `/etc/cloudlaunch/api.env` (`CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`).
+If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudlaunch-api` then
+`( set -a; source /etc/cloudlaunch/api.env; set +a; /opt/cloudlaunch/api/.venv/bin/cloudlaunch-register-region )`. The upsert is idempotent.
 
 ## 5. Validate `/api/health` Through Cloudflare
 
