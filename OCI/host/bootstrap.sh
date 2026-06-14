@@ -471,6 +471,12 @@ install -d -m 755 "$(dirname "$CLOUDFLARE_ORIGIN_PULL_CA_PATH")"
 curl -fsSL "$CLOUDFLARE_ORIGIN_PULL_CA_URL" -o "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 chmod 644 "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 
+# Go needs HOME/GOPATH set. Under cloud-init these are unset for root, so `go install`
+# and `xcaddy build` abort with "neither GOMODCACHE nor GOPATH is set". Set them explicitly.
+export HOME=/root
+export GOPATH=/root/go
+export GOCACHE=/root/.cache/go-build
+export GOMODCACHE=/root/go/pkg/mod
 GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION"
 /usr/local/bin/xcaddy build "$CADDY_VERSION" --with "$CADDY_RATE_LIMIT_MODULE" --output /usr/local/bin/caddy
 chmod 755 /usr/local/bin/caddy
