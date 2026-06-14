@@ -1,40 +1,49 @@
-# Example values for a manual shared regional server deploy.
-# Each region gets one long-lived server created from this stack.
+# Shared regional WireGuard server tfvars for one region.
+# Copy terraform.tfvars.example to <region-id>.terraform.tfvars and fill in real values.
+# Deploy with ./terraform-deploy.sh <region-id>. Real per-region tfvars are gitignored.
 
-availability_domain     = "xJLJ:US-SANJOSE-1-AD-1"
-region                  = "us-sanjose-1"
-compartment_id          = "ocid1.tenancy.oc1...replace_me"
-subnet_id               = "ocid1.subnet.oc1.us-sanjose-1...replace_me"
-source_image_id         = "ocid1.image.oc1.us-sanjose-1...replace_me"
+# --- OCI placement ---
+availability_domain     = "AAAA:US-REGION-1-AD-1"
+region                  = "us-region-1"
+# OCI API-key profile in ~/.oci/config for this region's tenancy.
+oci_config_profile      = "your-oci-profile"
+compartment_id          = "ocid1.tenancy.oc1..replace_me"
+subnet_id               = "ocid1.subnet.oc1.us-region-1.replace_me"
+source_image_id         = "ocid1.image.oc1.us-region-1.replace_me"
+ipv6_subnet_cidr        = "2603:xxxx:xxxx:xxxx:0000:0000:0000:0000/64"
 
 # OCI requires ssh-rsa!
 ssh_authorized_keys = [
-    "ssh-rsa ... example",
-    "ssh-rsa ... example"
+    "ssh-rsa AAAA...replace_me user@host",
+    "ssh-rsa AAAA...replace_me user@host"
 ]
 
-instance_display_name   = "CloudLaunch"
+# --- Instance shape ---
+instance_display_name   = "CloudLaunch-Region"
 vnic_display_name       = "CloudLaunch"
-ipv6_subnet_cidr        = "2603:c024:c01a:8b69::/64"
 shape                   = "VM.Standard.A1.Flex"
-# You probably don't need more than 4-6 GB RAM. CPU matters more when you have many clients because WireGuard encrypts and decrypts traffic for every connection.
-shape_memory_in_gbs     = 6
+shape_memory_in_gbs     = 12
 shape_ocpus             = 2
 boot_volume_size_in_gbs = 50
 boot_volume_vpus_per_gb = 10
 
-# Git ref the host fetches bootstrap + API source from at boot.
-# Must be pushed to GitHub before deploying. Use a tag (deploy-vX.Y.Z),
-# a full commit SHA for strict immutability, or a branch for dev spins.
-# See docs/github-deployment-setup.md.
+# --- Deploy ref (host fetches bootstrap + API from GitHub at boot) ---
+# REQUIRED: push this tag to GitHub before `terraform apply` (it must exist on the
+# remote). See docs/github-deployment-setup.md.
 source_repo = "Albro3459/CloudGateway"
 source_ref  = "deploy-v1.0.0"
 
-region_id              = "us-sanjose-1"
-api_hostname           = "us-sanjose-1.gateway.gocloudlaunch.com"
+# --- Regional API / dashboard ---
+region_id              = "us-region-1"
+api_hostname           = "us-region-1.gateway.gocloudlaunch.com"
 dashboard_cors_origin  = "https://gateway.gocloudlaunch.com"
 fastapi_port           = 8000
 caddy_acme_email       = "admin@example.com"
+
+# Grey-cloud (non-proxied) A record pointing at the server public IPv4.
+wg_endpoint_hostname   = "wg.us-region-1.gateway.gocloudlaunch.com"
+
+# --- Caddy / Cloudflare ---
 cloudflare_origin_pull_ca_path = "/etc/caddy/cloudflare-origin-pull-ca.pem"
 cloudflare_origin_pull_ca_url  = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
 caddy_version                  = "v2.8.4"
@@ -43,6 +52,7 @@ caddy_rate_limit_module        = "github.com/mholt/caddy-ratelimit"
 caddy_api_rate_limit_events    = 300
 caddy_api_rate_limit_window    = "1m"
 
+# --- WireGuard interface / NAT ---
 wg_interface                    = "wg0"
 wg_listen_port                  = 51820
 wg_address_v4                   = "10.0.0.1/24"
@@ -53,15 +63,29 @@ wg_dns_address_v4               = "10.0.0.1"
 wg_dns_address_v6               = "fd42:42:42::1"
 wg_rate_limit                   = "25/second"
 wg_rate_limit_burst             = 100
-wg_server_private_key           = "..._WITH_SERVER_PRIVATE_KEY"
 adguard_home_version            = "v0.107.77"
-# Grey-cloud (non-proxied) A record pointing at the server public IPv4.
-wg_endpoint_hostname            = "wg.us-sanjose-1.gateway.gocloudlaunch.com"
 
-# Firebase Admin credential written to the host for the regional API.
-# Leave firebase_credentials_json empty to copy the file manually instead.
+# Server WireGuard private key. Derive the public key with `wg pubkey` and put it in
+# the Firestore region doc wireguardPublicKey (see Firebase/Secrets/regions.json).
+wg_server_private_key           = "REPLACE_WITH_WG_SERVER_PRIVATE_KEY"
+
+# --- Firebase Admin credential written to the host for the regional API ---
 firebase_credentials_file       = "/etc/cloudlaunch/firebase-credentials.json"
-firebase_credentials_json       = ""
+firebase_credentials_json       = <<FIREBASE_JSON
+{
+  "type": "service_account",
+  "project_id": "replace_me",
+  "private_key_id": "replace_me",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nREPLACE_ME\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-xxxxx@replace_me.iam.gserviceaccount.com",
+  "client_id": "replace_me",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/replace_me",
+  "universe_domain": "googleapis.com"
+}
+FIREBASE_JSON
 
 # Create your password with 'openssl passwd -6'
-hashed_password = "$6$replace_with_real_salt$replace_with_real_hash_value"
+hashed_password = "$6$replace_with_salt$replace_with_hash"

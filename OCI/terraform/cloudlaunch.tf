@@ -1,5 +1,6 @@
 provider "oci" {
 	region = var.region
+	config_file_profile = var.oci_config_profile
 }
 
 terraform {
@@ -18,6 +19,12 @@ variable "availability_domain" {
 variable "region" {
 	type = string
 	description = "OCI region identifier, for example us-sanjose-1"
+}
+
+variable "oci_config_profile" {
+	type = string
+	default = "DEFAULT"
+	description = "Profile name in ~/.oci/config used for OCI API-key auth. Each region/tenancy gets its own profile so deploys do not cross tenancies."
 }
 
 variable "compartment_id" {
