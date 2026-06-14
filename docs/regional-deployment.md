@@ -48,13 +48,13 @@ key_file=~/.oci/us-chicago-1.pem
 Record the instance's public IPv4. After cloud-init finishes, confirm on the host:
 
 * `wg0` is up: `sudo wg show wg0`
-* `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudlaunch-sync-peers` rebuilds the live peer set at boot)
-* `cloudlaunch-api.service` is active and listening only on `127.0.0.1`
-* `cloudlaunch-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
+* `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudgateway-sync-peers` rebuilds the live peer set at boot)
+* `cloudgateway-api.service` is active and listening only on `127.0.0.1`
+* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
 * Caddy is active on `80`/`443`
-* `/etc/cloudlaunch/api.env` is mode `0600`, root-owned, and `CLOUDLAUNCH_REGION_ID` matches this region
+* `/etc/cloudgateway/api.env` is mode `0600`, root-owned, and `CLOUDGATEWAY_REGION_ID` matches this region
 
-If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudlaunch-install-api <ref>` - no redeploy needed.
+If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudgateway-install-api <ref>` - no redeploy needed.
 
 ## 3. Cloudflare DNS (Terraform-managed) and one-time zone setup
 
@@ -74,10 +74,10 @@ WireGuard traffic does not go through Cloudflare. Only the API hostname is proxi
 
 One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [Firebase/indexes.md](../Firebase/indexes.md)). The API's create/delete transactions fail without it.
 
-The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudlaunch-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). `activeClientCount` is preserved on update (0 on first insert) and never reset. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`, `region_user_client_limit`) plus the host's own `/etc/cloudlaunch/api.env`.
+The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). `activeClientCount` is preserved on update (0 on first insert) and never reset. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`, `region_user_client_limit`) plus the host's own `/etc/cloudgateway/api.env`.
 
-If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudlaunch-api` then
-`( set -a; source /etc/cloudlaunch/api.env; set +a; /opt/cloudlaunch/api/.venv/bin/cloudlaunch-register-region )`. The upsert is idempotent.
+If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudgateway-api` then
+`( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region )`. The upsert is idempotent.
 
 ## 5. Validate `/api/health` Through Cloudflare
 

@@ -1,2 +1,2 @@
-"""CloudLaunch regional API package."""
+"""CloudGateway regional API package."""
 

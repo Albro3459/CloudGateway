@@ -38,7 +38,7 @@ def create_app(
     setup_logging()
     settings = settings or Settings()
 
-    app = FastAPI(title="CloudLaunch Regional API", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="CloudGateway Regional API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
 
     if token_verifier is None or repository is None:

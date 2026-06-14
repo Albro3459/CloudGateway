@@ -19,8 +19,8 @@ ssh_authorized_keys = [
 ]
 
 # --- Instance shape ---
-instance_display_name   = "CloudLaunch-Region"
-vnic_display_name       = "CloudLaunch"
+instance_display_name   = "CloudGateway-Region"
+vnic_display_name       = "CloudGateway"
 shape                   = "VM.Standard.A1.Flex"
 shape_memory_in_gbs     = 12
 shape_ocpus             = 2
@@ -70,7 +70,7 @@ adguard_home_version            = "v0.107.77"
 wg_server_private_key           = "REPLACE_WITH_WG_SERVER_PRIVATE_KEY"
 
 # --- Firebase Admin credential written to the host for the regional API ---
-firebase_credentials_file       = "/etc/cloudlaunch/firebase-credentials.json"
+firebase_credentials_file       = "/etc/cloudgateway/firebase-credentials.json"
 firebase_credentials_json       = <<FIREBASE_JSON
 {
   "type": "service_account",
@@ -90,7 +90,7 @@ FIREBASE_JSON
 # Create your password with 'openssl passwd -6'
 hashed_password = "$6$replace_with_salt$replace_with_hash"
 
-# --- Region metadata (Firestore self-registration via cloudlaunch-register-region) ---
+# --- Region metadata (Firestore self-registration via cloudgateway-register-region) ---
 region_display_name      = "Region"
 region_display_order     = 1
 region_capacity_limit    = 20

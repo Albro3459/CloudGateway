@@ -2,7 +2,7 @@
 
 This folder contains the Oracle Cloud Infrastructure Terraform package used to launch one long-lived shared WireGuard server per OCI region, bootstrapped with cloud-init.
 
-CloudLaunch uses this model:
+CloudGateway uses this model:
 
 ```text
 1 OCI region = 1 long-lived shared WireGuard server
@@ -10,7 +10,7 @@ CloudLaunch uses this model:
 
 Deployment is rare and manual. An operator prepares OCI networking, applies this Terraform stack directly, then finishes the regional setup (Cloudflare DNS, Firebase region doc, validation) following [docs/regional-deployment.md](../docs/regional-deployment.md). There is no Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack deployment.
 
-WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudlaunch-sync-peers` rebuilds the live peer set from Firebase on every boot.
+WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
 ## What the Host Runs
 
@@ -18,17 +18,17 @@ Cloud-init is a small stub: Terraform bakes only the per-region config and secre
 
 The fetched bootstrap installs and configures:
 
-* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudlaunch-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
+* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
 * Unbound recursive DNS on localhost as the AdGuard Home upstream resolver.
 * Python runtime and the regional FastAPI app per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
-  * install directory `/opt/cloudlaunch/api` with venv `/opt/cloudlaunch/api/.venv`, installed from the fetched `API/` source
-  * systemd service `cloudlaunch-api.service`, running as root, bound only to `127.0.0.1`
-  * environment file `/etc/cloudlaunch/api.env` (mode `0600`, root-owned) with the `CLOUDLAUNCH_*` variables, including `CLOUDLAUNCH_REGION_ID`
-  * Firebase Admin credentials file referenced by `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
-  * `cloudlaunch-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
-  * `cloudlaunch-register-region` runs once at the end of bootstrap to self-seed the Firestore region doc (IP, server public key, endpoint), enabling the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). Regional DNS `A` records are managed by Terraform (`cloudflare_record.api`/`.wg`), not by the host.
+  * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
+  * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`
+  * environment file `/etc/cloudgateway/api.env` (mode `0600`, root-owned) with the `CLOUDGATEWAY_*` variables, including `CLOUDGATEWAY_REGION_ID`
+  * Firebase Admin credentials file referenced by `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
+  * `cloudgateway-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
+  * `cloudgateway-register-region` runs once at the end of bootstrap to self-seed the Firestore region doc (IP, server public key, endpoint), enabling the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). Regional DNS `A` records are managed by Terraform (`cloudflare_record.api`/`.wg`), not by the host.
 * Custom Caddy binary built with `github.com/mholt/caddy-ratelimit`, listening on public `80`/`443`:
   * serves the Cloudflare Origin CA certificate (`origin_cert`/`origin_key`) on the origin TLS hop - ACME cannot validate a Cloudflare-proxied hostname
   * Cloudflare Authenticated Origin Pulls required
@@ -64,7 +64,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 
 ## Files
 
-[cloudlaunch.tf](terraform/cloudlaunch.tf)
+[cloudgateway.tf](terraform/cloudgateway.tf)
 
 * Main Terraform file.
 * Declares the input variables.
@@ -74,16 +74,16 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 [stub-cloud-init.sh.tftpl](terraform/stub-cloud-init.sh.tftpl)
 
 * Small shell script template rendered by Terraform and run by cloud-init.
-* Writes `/etc/cloudlaunch/bootstrap.env`, the WireGuard server key, and the optional Firebase credential file from Terraform inputs.
+* Writes `/etc/cloudgateway/bootstrap.env`, the WireGuard server key, and the optional Firebase credential file from Terraform inputs.
 * Fetches the repo tarball from GitHub at `source_repo`/`source_ref` and runs the versioned bootstrap.
 * Starts the step-marker logging to `/var/log/wireguard-bootstrap.log` so bootstrap failures are easier to pinpoint.
 
 [host/bootstrap.sh](host/bootstrap.sh)
 
 * Full host bootstrap, fetched from GitHub by the stub (never rendered by Terraform).
-* Installs and configures the host services described above from `/etc/cloudlaunch/bootstrap.env`.
+* Installs and configures the host services described above from `/etc/cloudgateway/bootstrap.env`.
 * Disables SSH password auth and root SSH login.
-* Installs the API from the fetched source and writes the `cloudlaunch-install-api` update helper.
+* Installs the API from the fetched source and writes the `cloudgateway-install-api` update helper.
 
 [host/Caddyfile.template](host/Caddyfile.template)
 
@@ -174,6 +174,6 @@ sudo sed -n '1,240p' /var/log/wireguard-bootstrap.log
 tail -f /var/log/wireguard-bootstrap.log
 ```
 
-For service-level logs (`cloudlaunch-api.service`, Caddy, `wg-quick@wg0`, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
+For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
 
 If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../docs/vm-loss-recovery.md).

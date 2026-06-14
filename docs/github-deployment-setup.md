@@ -28,7 +28,7 @@ https://codeload.github.com/<source_repo>/tar.gz/<source_ref>
 * `source_repo`: GitHub `owner/repo`, default `Albro3459/CloudGateway`.
 * `source_ref`: required, no default. Accepts a tag name, a full commit SHA, or a branch name.
 
-It extracts only `API/` and `OCI/host/` into `/opt/cloudlaunch/src`, verifies `bootstrap.sh` exists, and runs it. Secrets never come from GitHub - the WireGuard server key, Firebase credentials, and all per-region config are written by the stub from Terraform variables before the fetch.
+It extracts only `API/` and `OCI/host/` into `/opt/cloudgateway/src`, verifies `bootstrap.sh` exists, and runs it. Secrets never come from GitHub - the WireGuard server key, Firebase credentials, and all per-region config are written by the stub from Terraform variables before the fetch.
 
 ## Release Workflow
 
@@ -52,21 +52,21 @@ Ref choice trade-offs:
 
 ## Updating a Live Region's API
 
-The host keeps `SOURCE_REPO` and `SOURCE_REF` in `/etc/cloudlaunch/bootstrap.env`. To roll the API to a new ref without redeploying:
+The host keeps `SOURCE_REPO` and `SOURCE_REF` in `/etc/cloudgateway/bootstrap.env`. To roll the API to a new ref without redeploying:
 
 ```sh
 git tag -a deploy-v1.1.0 -m "deploy-v1.1.0" && git push origin deploy-v1.1.0
 ssh ubuntu@<server-public-ipv4>
-sudo cloudlaunch-install-api deploy-v1.1.0
+sudo cloudgateway-install-api deploy-v1.1.0
 ```
 
-With no argument, `cloudlaunch-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
+With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
 
 **Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next `terraform apply` plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (update the grey-cloud `wg.<regionId>.<origin>` record and region doc IP; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
 
 The operating rule for a live region:
 
-* API change: `sudo cloudlaunch-install-api <ref>`. Running tunnels are unaffected.
+* API change: `sudo cloudgateway-install-api <ref>`. Running tunnels are unaffected.
 * Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `terraform apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
 * Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
 
@@ -79,9 +79,9 @@ Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl
 * If the tarball extracted but the bootstrap failed partway during initial deployment, it is safe to re-run after fixing the cause:
 
 ```sh
-sudo bash /opt/cloudlaunch/src/OCI/host/bootstrap.sh
+sudo bash /opt/cloudgateway/src/OCI/host/bootstrap.sh
 ```
 
-Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudlaunch-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the API/Caddy/Unbound, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudlaunch-sync-peers` after any re-run.
+Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the API/Caddy/Unbound, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
 
-Never paste the contents of `/etc/cloudlaunch/bootstrap.env` secrets, `/etc/cloudlaunch/wireguard-server.key`, or the Firebase credential file into logs or tickets.
+Never paste the contents of `/etc/cloudgateway/bootstrap.env` secrets, `/etc/cloudgateway/wireguard-server.key`, or the Firebase credential file into logs or tickets.

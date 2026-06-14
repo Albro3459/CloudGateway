@@ -21,7 +21,7 @@ ${API_HOSTNAME} {
 	@non_api not path /api /api/*
 
 	log {
-		output file /var/log/caddy/cloudlaunch-api-access.log
+		output file /var/log/caddy/cloudgateway-api-access.log
 		format json
 	}
 	log_skip @non_api

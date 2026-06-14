@@ -29,8 +29,8 @@ Tasks:
 - Define JSON and Firestore naming as camelCase everywhere. Use `clientId`, not `client_id`, in route docs, frontend helpers, responses, and contract examples. Python internals may use snake_case only behind Pydantic aliases.
 - Define external API URLs as regional Cloudflare-proxied origins:
   - Regional API base URL is `https://<regionId>.<origin>/api`.
-  - `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com` or `gateway.gocloudlaunch.com`.
-  - For a frontend loaded from `https://gateway.gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gateway.gocloudlaunch.com/api/*`.
+  - `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com`.
+  - For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gocloudlaunch.com/api/*`.
   - FastAPI internal routes do not include `/api`; Caddy strips `/api/*` before proxying to FastAPI.
   - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API calls to `${REACT_APP_API_ORIGIN}/api/*`. In production, leave it unset and derive the regional API URL from `window.location.origin` plus the selected `regionId`.
   - There is no global API router and no frontend base-domain config.
@@ -116,15 +116,15 @@ Tasks:
   - Missing `displayOrder` sorts as `1000`.
   - `POST /users` uses `REACT_APP_API_ORIGIN` in local/dev when set. In production it uses the first enabled region sorted by `displayOrder` then `regionId`, because the route is logically global and hosted by every regional API. If there is no enabled region, the frontend shows a controlled error and does not call the API.
 - Define API deployment handoff used by infrastructure:
-  - Host install directory: `/opt/cloudlaunch/api`.
-  - Python virtualenv: `/opt/cloudlaunch/api/.venv`.
+  - Host install directory: `/opt/cloudgateway/api`.
+  - Python virtualenv: `/opt/cloudgateway/api/.venv`.
   - App import path: `src.main:app`.
-  - Dependency metadata: `API/pyproject.toml`; infrastructure installs the package into the venv from `/opt/cloudlaunch/api`.
-  - systemd service name: `cloudlaunch-api.service`.
-  - systemd runs as `root`, working directory `/opt/cloudlaunch/api`, binding only to `127.0.0.1`.
-  - Environment file path: `/etc/cloudlaunch/api.env`, mode `0600`, owned by `root`.
-  - Required environment variables: `CLOUDLAUNCH_REGION_ID`, `CLOUDLAUNCH_API_PORT`, `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`, `CLOUDLAUNCH_WG_INTERFACE`, `CLOUDLAUNCH_WG_CONFIG_PATH`, `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`, `CLOUDLAUNCH_WG_ENDPOINT_IPV4`, `CLOUDLAUNCH_WG_PORT`, `CLOUDLAUNCH_WG_DNS_IPV4`, `CLOUDLAUNCH_WG_DNS_IPV6`, `CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR`, and `CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR`.
-  - Default values: `CLOUDLAUNCH_API_PORT=8000`, `CLOUDLAUNCH_WG_INTERFACE=wg0`, `CLOUDLAUNCH_WG_CONFIG_PATH=/etc/wireguard/wg0.conf`, and `CLOUDLAUNCH_WG_PORT=51820`.
+  - Dependency metadata: `API/pyproject.toml`; infrastructure installs the package into the venv from `/opt/cloudgateway/api`.
+  - systemd service name: `cloudgateway-api.service`.
+  - systemd runs as `root`, working directory `/opt/cloudgateway/api`, binding only to `127.0.0.1`.
+  - Environment file path: `/etc/cloudgateway/api.env`, mode `0600`, owned by `root`.
+  - Required environment variables: `CLOUDGATEWAY_REGION_ID`, `CLOUDGATEWAY_API_PORT`, `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`, `CLOUDGATEWAY_WG_INTERFACE`, `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`, `CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME`, `CLOUDGATEWAY_WG_PORT`, `CLOUDGATEWAY_WG_DNS_IPV4`, `CLOUDGATEWAY_WG_DNS_IPV6`, `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`, and `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`.
+  - Default values: `CLOUDGATEWAY_API_PORT=8000`, `CLOUDGATEWAY_WG_INTERFACE=wg0`, and `CLOUDGATEWAY_WG_PORT=51820`.
 - Note that API, frontend, infrastructure, and documentation agents must treat `TODO/Shared_VPN_Contract.md` as source of truth after Commit 1.
 
 Validation:
@@ -195,7 +195,7 @@ Tasks:
 - Generate fresh WireGuard keypairs per client with `subprocess.run([...], shell=False)`.
 - Render client configs from `OCI/wireguard_configs/example.wg0-client.conf` shape.
 - Read and render complete `/etc/wireguard/wg0.conf` candidate configs.
-- Add exclusive local lock such as `/run/cloudlaunch-wireguard.lock`.
+- Add exclusive local lock such as `/run/cloudgateway-wireguard.lock`.
 - Write timestamped `0600` backup before replace.
 - Write candidate and stripped config as `0600` temporary files.
 - Validate candidate using `wg-quick strip <candidate>`.

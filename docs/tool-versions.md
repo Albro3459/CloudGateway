@@ -42,10 +42,10 @@ Pinned or Terraform-controlled host tool versions:
 * xcaddy: `latest` by default, controlled by `xcaddy_version`.
 * Caddy rate limit module: `github.com/mholt/caddy-ratelimit`, controlled by `caddy_rate_limit_module`.
 
-The deployed API runs in a host-created Python virtual environment at `/opt/cloudlaunch/api/.venv`.
+The deployed API runs in a host-created Python virtual environment at `/opt/cloudgateway/api/.venv`.
 
 ## Version Sources
 
 * Python package floor: [API/pyproject.toml](../API/pyproject.toml)
 * Frontend dependencies and lockfile: [APP/package.json](../APP/package.json), [APP/package-lock.json](../APP/package-lock.json)
-* OCI host package and pinned runtime inputs: [OCI/host/bootstrap.sh](../OCI/host/bootstrap.sh), [OCI/terraform/cloudlaunch.tf](../OCI/terraform/cloudlaunch.tf), [OCI/terraform/terraform.tfvars.example](../OCI/terraform/terraform.tfvars.example)
+* OCI host package and pinned runtime inputs: [OCI/host/bootstrap.sh](../OCI/host/bootstrap.sh), [OCI/terraform/cloudgateway.tf](../OCI/terraform/cloudgateway.tf), [OCI/terraform/terraform.tfvars.example](../OCI/terraform/terraform.tfvars.example)

@@ -14,7 +14,7 @@ from .errors import (
 )
 
 
-DEFAULT_CLIENT_NAME = "CloudLaunch Client"
+DEFAULT_CLIENT_NAME = "CloudGateway Client"
 # Fallback per-normal-user client limit when a region doc omits userClientLimit.
 DEFAULT_USER_CLIENT_LIMIT = 3
 ALLOCATED_CLIENT_STATUSES = {ClientStatus.CREATING, ClientStatus.ACTIVE}

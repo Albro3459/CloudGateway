@@ -9,9 +9,9 @@ during a real deploy. The runbooks remain the detailed source of truth.
 Region values used below:
 
 - `regionId` = `us-chicago-1`
-- API hostname = `us-chicago-1.gateway.gocloudlaunch.com` (orange cloud)
-- WG endpoint = `wg.us-chicago-1.gateway.gocloudlaunch.com` (grey cloud)
-- CORS origin = `https://gateway.gocloudlaunch.com`
+- API hostname = `us-chicago-1.gocloudlaunch.com` (orange cloud)
+- WG endpoint = `wg.us-chicago-1.gocloudlaunch.com` (grey cloud)
+- CORS origin = `https://gocloudlaunch.com`
 
 ---
 
@@ -62,9 +62,9 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 - [ ] `./terraform.sh chicago apply`
 - [ ] Record the instance public IPv4.
 - [ ] On the host, confirm: `wg0` up, `wg0.conf` has NO `[Peer]` blocks,
-      `cloudlaunch-api.service` active on `127.0.0.1`, `cloudlaunch-sync-peers.service`
+      `cloudgateway-api.service` active on `127.0.0.1`, `cloudgateway-sync-peers.service`
       succeeded (empty region = successful empty sync), Caddy on `80`/`443`,
-      `/etc/cloudlaunch/api.env` mode `0600` root-owned with matching `CLOUDLAUNCH_REGION_ID`.
+      `/etc/cloudgateway/api.env` mode `0600` root-owned with matching `CLOUDGATEWAY_REGION_ID`.
 - [ ] If bootstrap failed: `/var/log/wireguard-bootstrap.log` /
       `journalctl -t wireguard-bootstrap`.
 
@@ -90,7 +90,7 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 
 ## Step 6 - Firebase
 
-- [ ] Region doc is **self-seeded** by the host (`cloudlaunch-register-region` at end of
+- [ ] Region doc is **self-seeded** by the host (`cloudgateway-register-region` at end of
       bootstrap): it sets the IP/pubkey/endpoint, `enabled: true` only once the full Cloudflare
       path validates (health checked through the edge, not just loopback), and preserves
       `activeClientCount`. Just confirm `Regions/us-chicago-1` appeared and looks right.
@@ -100,15 +100,15 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 ## Step 7 - Deploy frontend
 
 - [ ] `cd APP && npm run deploy` (builds locally, pushes to `gh-pages`). `CNAME` and
-      `package.json` homepage are already `gateway.gocloudlaunch.com`.
+      `package.json` homepage are already `gocloudlaunch.com`.
 - [ ] Load the dashboard, confirm Firebase auth works and the API call path resolves
-      to `https://us-chicago-1.gateway.gocloudlaunch.com/api/*`.
+      to `https://us-chicago-1.gocloudlaunch.com/api/*`.
 
 ## Step 8 - Test client lifecycle
 
 - [ ] Flip region doc `enabled: true`.
 - [ ] Create a client from the dashboard. Confirm `status: active`, assigned tunnel
-      IPv4/IPv6, config `Endpoint = wg.us-chicago-1.gateway.gocloudlaunch.com:51820`.
+      IPv4/IPv6, config `Endpoint = wg.us-chicago-1.gocloudlaunch.com:51820`.
 - [ ] Confirm doc at `Users/{uid}/Regions/us-chicago-1/Instances/{clientId}` and
       `activeClientCount` incremented.
 - [ ] On host: peer present in `sudo wg show wg0` (`wg0.conf` stays peer-free).
@@ -133,16 +133,16 @@ The region is live - leave `enabled: true`.
       and recreates the VM (new IP). Client keeps working ONLY after you update the
       grey-cloud `wg.` A record + region doc `wireguardEndpointIpv4`; user re-toggles
       the tunnel (it re-resolves the hostname). See `docs/vm-loss-recovery.md`.
-      API-only change = `sudo cloudlaunch-install-api <ref>`, no rebuild.
+      API-only change = `sudo cloudgateway-install-api <ref>`, no rebuild.
 - [ ] Tear down old San Jose / Chicago per-user stacks; help friends move to the
       shared regions (clean cutoff - no migration).
-- [ ] Decide CloudLaunch vs CloudGateway naming, then redirect the old site.
+- [ ] Redirect the old site after the CloudGateway rename is fully deployed.
 
 ## Known cleanup / open items (non-blocking)
 
 - [ ] SES: no email send exists anywhere (deploy or remove). Either re-add
       deliberately or strip SES mentions from the READMEs.
-- [ ] Update `README.md` branding (still says CloudLaunch / gocloudlaunch.com).
+- [ ] Confirm `README.md` branding and domain references before public rollout.
 
 ## Nice-to-haves (after end-to-end works)
 

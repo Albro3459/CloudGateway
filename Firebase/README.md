@@ -18,7 +18,7 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 * Role documents: `Roles/{uid}`
 
 Region documents are **self-seeded by each host** at the end of bootstrap
-(`cloudlaunch-register-region`): it upserts `Regions/{regionId}` with the live IP, server
+(`cloudgateway-register-region`): it upserts `Regions/{regionId}` with the live IP, server
 public key, and endpoint config, sets `enabled: true` only once the full Cloudflare path
 validates (health checked through the edge, not just loopback), and preserves
 `activeClientCount` (0 only on first insert). You normally don't create region

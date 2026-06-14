@@ -1,4 +1,4 @@
-# CloudLaunch Regional API
+# CloudGateway Regional API
 
 FastAPI control plane for one shared regional WireGuard host. Each deployed OCI region runs its own copy of this API on the VM that owns the region's `wg0` interface.
 
@@ -18,7 +18,7 @@ Caddy strips `/api/*` before proxying to FastAPI, so the application routes are 
 
 ## Runtime Model
 
-The API is installed by the OCI host bootstrap from a pushed GitHub ref. It runs as `cloudlaunch-api.service`, as root, bound only to `127.0.0.1`. Public HTTPS, Cloudflare Authenticated Origin Pulls, Host/SNI checks, and rate limiting are handled by Caddy and the host firewall.
+The API is installed by the OCI host bootstrap from a pushed GitHub ref. It runs as `cloudgateway-api.service`, as root, bound only to `127.0.0.1`. Public HTTPS, Cloudflare Authenticated Origin Pulls, Host/SNI checks, and rate limiting are handled by Caddy and the host firewall.
 
 The API runs as root because it owns the privileged mutation path for the live WireGuard interface. It still keeps the exposed surface small: no built-in OpenAPI/docs routes are enabled, and external browser traffic reaches it only through the regional Caddy `/api/*` proxy.
 
@@ -33,8 +33,8 @@ See [OCI/README.md](../OCI/README.md) for Terraform and host bootstrap details, 
 * Generate per-client WireGuard keypairs and client config text.
 * Apply live `wg0` peer changes with `wg set` under a local lock.
 * Store dashboard-visible client state and WireGuard configs in Firebase.
-* Rebuild the live WireGuard peer set from Firebase through `cloudlaunch-sync-peers`.
-* Self-seed the Firestore region doc at boot through `cloudlaunch-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback), preserving `activeClientCount`. DNS records are managed by Terraform, not the host.
+* Rebuild the live WireGuard peer set from Firebase through `cloudgateway-sync-peers`.
+* Self-seed the Firestore region doc at boot through `cloudgateway-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback), preserving `activeClientCount`. DNS records are managed by Terraform, not the host.
 
 Firebase is the product source of truth for users, regions, roles, limits, stored configs, and the desired WireGuard peer set. The host's `/etc/wireguard/wg0.conf` stays interface-only and never stores client peers.
 
@@ -75,17 +75,17 @@ Firebase is the product source of truth for users, regions, roles, limits, store
 
 * Local WireGuard adapter.
 * Generates keys, renders client configs, validates inputs, applies/removes peers, reads current peers, and syncs drift.
-* Uses `subprocess.run([...], shell=False)` and an exclusive flock at `/run/cloudlaunch-wireguard.lock`.
+* Uses `subprocess.run([...], shell=False)` and an exclusive flock at `/run/cloudgateway-wireguard.lock`.
 
 [src/sync.py](src/sync.py)
 
-* `cloudlaunch-sync-peers` command.
+* `cloudgateway-sync-peers` command.
 * Reads active clients for the local region from Firebase and makes the live `wg0` peer set match exactly.
 * Sync is one-way: Firebase wins, unknown server peers are removed, and sync never writes to Firebase.
 
 [src/logs.py](src/logs.py), [src/errors.py](src/errors.py), [src/enums.py](src/enums.py), [src/models.py](src/models.py), [src/settings.py](src/settings.py)
 
-* Shared logging, typed errors, enums, Pydantic request/response models, and `CLOUDLAUNCH_*` settings.
+* Shared logging, typed errors, enums, Pydantic request/response models, and `CLOUDGATEWAY_*` settings.
 
 ## Routes
 
@@ -101,21 +101,21 @@ For the route contract and Firestore field shapes, see [TODO/Shared_VPN_Contract
 
 ## Settings
 
-Runtime config is read from environment variables with the `CLOUDLAUNCH_` prefix:
+Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefix:
 
-* `CLOUDLAUNCH_REGION_ID`
-* `CLOUDLAUNCH_API_PORT`
-* `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
-* `CLOUDLAUNCH_WG_INTERFACE`
-* `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`
-* `CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME`
-* `CLOUDLAUNCH_WG_PORT`
-* `CLOUDLAUNCH_WG_DNS_IPV4`
-* `CLOUDLAUNCH_WG_DNS_IPV6`
-* `CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR`
-* `CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR`
+* `CLOUDGATEWAY_REGION_ID`
+* `CLOUDGATEWAY_API_PORT`
+* `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
+* `CLOUDGATEWAY_WG_INTERFACE`
+* `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
+* `CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME`
+* `CLOUDGATEWAY_WG_PORT`
+* `CLOUDGATEWAY_WG_DNS_IPV4`
+* `CLOUDGATEWAY_WG_DNS_IPV6`
+* `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`
+* `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`
 
-On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudlaunch/api.env`, which is root-owned and mode `0600`.
+On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudgateway/api.env`, which is root-owned and mode `0600`.
 
 ## Local Development
 
@@ -133,8 +133,8 @@ Run the API locally:
 
 ```sh
 cd API
-CLOUDLAUNCH_REGION_ID=local-region \
-CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+CLOUDGATEWAY_REGION_ID=local-region \
+CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
 ./.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -146,19 +146,19 @@ cd API
 ./.venv/bin/python -m pytest
 ```
 
-The placeholder `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY` above is only for local startup/health checks. Local WireGuard operations need a real WireGuard interface and real keys. Most route and domain checks should use the test fakes instead of touching host WireGuard.
+The placeholder `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY` above is only for local startup/health checks. Local WireGuard operations need a real WireGuard interface and real keys. Most route and domain checks should use the test fakes instead of touching host WireGuard.
 
 ## Deployment And Operations
 
 The host bootstrap installs this API from GitHub and creates:
 
-* `/opt/cloudlaunch/api`
-* `/opt/cloudlaunch/api/.venv`
-* `/etc/cloudlaunch/api.env`
-* `cloudlaunch-api.service`
-* `cloudlaunch-sync-peers.service`
-* `cloudlaunch-install-api [ref]`
-* `cloudlaunch-register-region` (run once at end of bootstrap to self-seed the region doc)
+* `/opt/cloudgateway/api`
+* `/opt/cloudgateway/api/.venv`
+* `/etc/cloudgateway/api.env`
+* `cloudgateway-api.service`
+* `cloudgateway-sync-peers.service`
+* `cloudgateway-install-api [ref]`
+* `cloudgateway-register-region` (run once at end of bootstrap to self-seed the region doc)
 
 Related docs:
 
@@ -178,5 +178,5 @@ Never log or paste:
 * full WireGuard configs
 * Firebase service account credentials
 * Firebase auth tokens
-* `/etc/cloudlaunch/api.env`
+* `/etc/cloudgateway/api.env`
 * VPN traffic details, DNS queries, destination IPs, packet metadata, or per-user browsing history

@@ -118,7 +118,7 @@ def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: Fa
     assert client.owner_uid == "user-1"
     assert client.owner_email == "user@example.com"
     assert client.owner_display_name == "User One"
-    assert client.client_name == "CloudLaunch Client"
+    assert client.client_name == "CloudGateway Client"
     assert client.assigned_tunnel_ipv4 == "10.0.0.2/32"
     assert client.assigned_tunnel_ipv6 == "fd42:42:42::2/128"
     assert client.server_endpoint_ipv4 == "203.0.113.10"

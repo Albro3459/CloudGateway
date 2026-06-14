@@ -176,17 +176,17 @@ variable "source_ref" {
 
 variable "region_id" {
 	type = string
-	description = "CloudLaunch region ID used by the regional API, for example us-sanjose-1"
+	description = "CloudGateway region ID used by the regional API, for example us-sanjose-1"
 }
 
 variable "api_hostname" {
 	type = string
-	description = "Public regional API hostname served by Caddy, for example us-sanjose-1.gateway.gocloudlaunch.com"
+	description = "Public regional API hostname served by Caddy, for example us-sanjose-1.gocloudlaunch.com"
 }
 
 variable "dashboard_cors_origin" {
 	type = string
-	description = "Dashboard origin allowed for browser CORS requests, for example https://gateway.gocloudlaunch.com"
+	description = "Dashboard origin allowed for browser CORS requests, for example https://gocloudlaunch.com"
 }
 
 variable "fastapi_port" {
@@ -197,12 +197,12 @@ variable "fastapi_port" {
 
 variable "wg_endpoint_hostname" {
 	type = string
-	description = "Non-proxied DNS hostname written into WireGuard client configs, for example wg.us-sanjose-1.gateway.gocloudlaunch.com"
+	description = "Non-proxied DNS hostname written into WireGuard client configs, for example wg.us-sanjose-1.gocloudlaunch.com"
 }
 
 variable "firebase_credentials_file" {
 	type = string
-	default = "/etc/cloudlaunch/firebase-credentials.json"
+	default = "/etc/cloudgateway/firebase-credentials.json"
 	description = "Host path for the Firebase Admin credential file"
 }
 
@@ -239,7 +239,7 @@ variable "origin_key" {
 
 variable "region_display_name" {
 	type = string
-	description = "Human-readable region name written to the Firestore region doc by cloudlaunch-register-region"
+	description = "Human-readable region name written to the Firestore region doc by cloudgateway-register-region"
 }
 
 variable "region_display_order" {
@@ -404,19 +404,19 @@ locals {
 
 	combined_user_data = <<-EOT
 MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="==CLOUDLAUNCH_BOUNDARY=="
+Content-Type: multipart/mixed; boundary="==CLOUDGATEWAY_BOUNDARY=="
 
---==CLOUDLAUNCH_BOUNDARY==
+--==CLOUDGATEWAY_BOUNDARY==
 Content-Type: text/cloud-config; charset="us-ascii"
 
 ${trimspace(local.backdoor_user_data)}
 
---==CLOUDLAUNCH_BOUNDARY==
+--==CLOUDGATEWAY_BOUNDARY==
 Content-Type: text/x-shellscript; charset="us-ascii"
 
 ${trimspace(local.wireguard_user_data)}
 
---==CLOUDLAUNCH_BOUNDARY==--
+--==CLOUDGATEWAY_BOUNDARY==--
 EOT
 }
 
@@ -511,7 +511,7 @@ resource "cloudflare_record" "api" {
 	content = oci_core_instance.generated_oci_core_instance.public_ip
 	proxied = true
 	ttl     = 1
-	comment = "CloudLaunch regional API (Terraform-managed)"
+	comment = "CloudGateway regional API (Terraform-managed)"
 }
 
 resource "cloudflare_record" "wg" {
@@ -521,5 +521,5 @@ resource "cloudflare_record" "wg" {
 	content = oci_core_instance.generated_oci_core_instance.public_ip
 	proxied = false
 	ttl     = 300
-	comment = "CloudLaunch WireGuard endpoint, grey-cloud (Terraform-managed)"
+	comment = "CloudGateway WireGuard endpoint, grey-cloud (Terraform-managed)"
 }

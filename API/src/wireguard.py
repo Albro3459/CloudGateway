@@ -16,7 +16,7 @@ from .errors import WireGuardApplyFailedError
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
-DEFAULT_LOCK_PATH = "/run/cloudlaunch-wireguard.lock"
+DEFAULT_LOCK_PATH = "/run/cloudgateway-wireguard.lock"
 PERSISTENT_KEEPALIVE_SECONDS = 25
 _INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_=+.-]{1,15}$")
 _HOSTNAME_PATTERN = re.compile(

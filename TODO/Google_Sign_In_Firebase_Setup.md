@@ -13,7 +13,7 @@ Use these Firebase console settings when deploying the Google sign-in UI from th
 
 Add every static frontend hostname that will load the React app:
 
-* `gateway.gocloudlaunch.com`
+* `gocloudlaunch.com`
 * Any Firebase-provided hosting domain used for testing.
 * Localhost is normally present by default; keep it for local verification.
 

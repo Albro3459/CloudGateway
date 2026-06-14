@@ -20,27 +20,27 @@ none of the edge protections (DDoS, rate limiting, WAF) are bypassed.
 
 ## Files
 
-* `cloud-launch-gateway.pem` (gitignored) — Cloudflare **Origin CA certificate**. The server
+* `cloud-gateway.pem` (gitignored) - Cloudflare **Origin CA certificate**. The server
   cert each regional Caddy presents to Cloudflare on the origin TLS hop.
-* `cloud-launch-gateway.key` (gitignored) — the Origin CA **private key**. Secret.
-* `gocloudlaunch.com.txt` (gitignored) — export/backup of the Cloudflare DNS zone records
+* `cloud-gateway.key` (gitignored) - the Origin CA **private key**. Secret.
+* `gocloudlaunch.com.txt` (gitignored) - export/backup of the Cloudflare DNS zone records
   (BIND format).
-* `example.cloud-launch-gateway.pem` / `example.cloud-launch-gateway.key` — committed
+* `example.cloud-gateway.pem` / `example.cloud-gateway.key` - committed
   placeholder cert/key.
-* `example.gocloudlaunch.com.txt` — committed example of the full DNS record set (frontend
+* `example.gocloudlaunch.com.txt` - committed example of the full DNS record set (frontend
   GitHub Pages, per-region API + WireGuard records, email DKIM/SPF/DMARC).
 
 ## Generating the Origin CA certificate
 
-Cloudflare dashboard → **SSL/TLS → Origin Server → Create Certificate**:
+Cloudflare dashboard -> **SSL/TLS -> Origin Server -> Create Certificate**:
 
 * Hostnames: `gocloudlaunch.com, *.gocloudlaunch.com` (the wildcard covers every regional API
   host, e.g. `us-chicago-1.gocloudlaunch.com`).
 * Validity: 15 years.
 * Format: PEM.
 
-Save the certificate to `cloud-launch-gateway.pem` and the private key (shown only once) to
-`cloud-launch-gateway.key`. One cert covers all regions.
+Save the certificate to `cloud-gateway.pem` and the private key (shown only once) to
+`cloud-gateway.key`. One cert covers all regions.
 
 ## How it reaches the hosts
 
@@ -52,11 +52,11 @@ files and reloading Caddy).
 
 ## Required Cloudflare zone settings
 
-1. **SSL/TLS → Overview → encryption mode = `Full (strict)`.**
-2. **SSL/TLS → Origin Server → Origin Certificates → Create Certificate** for
+1. **SSL/TLS -> Overview -> encryption mode = `Full (strict)`.**
+2. **SSL/TLS -> Origin Server -> Origin Certificates -> Create Certificate** for
    `gocloudlaunch.com, *.gocloudlaunch.com` (PEM, 15 years). This is the server cert the host
-   serves (installed via the `origin_cert` / `origin_key` tfvars) — it is **not** an AOP cert.
-3. **SSL/TLS → Origin Server → Authenticated Origin Pulls → turn on both Global and Zone-level.
+   serves (installed via the `origin_cert` / `origin_key` tfvars) - it is **not** an AOP cert.
+3. **SSL/TLS -> Origin Server -> Authenticated Origin Pulls -> turn on both Global and Zone-level.
    Do NOT upload any certificate to Zone-level.** The host trusts Cloudflare's shared client
    cert via the origin-pull CA the bootstrap installs at
    `/etc/caddy/cloudflare-origin-pull-ca.pem`.
@@ -65,13 +65,13 @@ files and reloading Caddy).
 
 See `example.gocloudlaunch.com.txt` for the full set. Summary:
 
-* `gocloudlaunch.com` (apex) → GitHub Pages IPs, **proxied** — hosts the React frontend.
-* `<regionId>.gocloudlaunch.com` → server public IPv4, **proxied** (orange) — regional API.
+* `gocloudlaunch.com` (apex) -> GitHub Pages IPs, **proxied** - hosts the React frontend.
+* `<regionId>.gocloudlaunch.com` -> server public IPv4, **proxied** (orange) - regional API.
   **Terraform-managed** (`cloudflare_record.api`).
-* `wg.<regionId>.gocloudlaunch.com` → server public IPv4, **DNS-only** (grey) — WireGuard
+* `wg.<regionId>.gocloudlaunch.com` -> server public IPv4, **DNS-only** (grey) - WireGuard
   endpoint; never proxied (Cloudflare does not proxy WireGuard UDP). **Terraform-managed**
   (`cloudflare_record.wg`).
-* Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase — managed by hand.
+* Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase - managed by hand.
 
 The two per-region `A` records are created/updated by `terraform apply` from the instance's
 public IP (they self-heal on rebuild), using a Cloudflare API token with **Zone: gocloudlaunch.com

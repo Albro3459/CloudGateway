@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cloudlaunch-api"
+name = "cloudgateway-api"
 version = "0.1.0"
-description = "CloudLaunch regional VPN control-plane API"
+description = "CloudGateway regional VPN control-plane API"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-cloudlaunch-sync-peers = "src.sync:main"
-cloudlaunch-register-region = "src.register:main"
+cloudgateway-sync-peers = "src.sync:main"
+cloudgateway-register-region = "src.register:main"
 
 [project.optional-dependencies]
 dev = [

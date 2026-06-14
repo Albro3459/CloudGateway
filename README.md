@@ -1,4 +1,4 @@
-# CloudLaunch
+# CloudGateway
 
 ## About
 
@@ -34,15 +34,15 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 * <b>React dashboard</b> (`APP/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
-* <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudlaunch-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
+* <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: custom build with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
-* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudlaunch-sync-peers`.
+* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudgateway-sync-peers`.
 * <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to Unbound on localhost. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
 * <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
 
 ## Regional API URLs
 
-* Each region serves its API at `https://<regionId>.<origin>/api/*`, where `<origin>` is the frontend origin host, for example `gateway.gocloudlaunch.com`.
+* Each region serves its API at `https://<regionId>.<origin>/api/*`, where `<origin>` is the frontend origin host, for example `gocloudlaunch.com`.
 * In production the frontend derives the URL from the selected region's `regionId` plus the current `window.location.origin`. There is no global API router and no base-domain config.
 * `REACT_APP_API_ORIGIN` is a local/dev override only. When set, API helpers call `${REACT_APP_API_ORIGIN}/api/*`. Production builds leave it unset.
 
@@ -50,7 +50,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 * Firebase is the single source of truth: users, regions, clients, roles, limits, stored configs, and the WireGuard peer set.
 * Peers are never saved to `wg0.conf` or any other host state file. Client create/delete updates Firebase and applies the live `wg0` change in one locked operation.
-* On reboot, `wg-quick` brings up the interface from the static config and `cloudlaunch-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
+* On reboot, `wg-quick` brings up the interface from the static config and `cloudgateway-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
 
 ## Clean Cutoff
 

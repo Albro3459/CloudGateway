@@ -2,7 +2,7 @@
 
 ## Goal
 
-Rewrite CloudLaunch into a shared regional VPN platform.
+Rewrite CloudGateway into a shared regional VPN platform.
 
 The new architecture keeps one long-lived WireGuard server per OCI region. Users no longer deploy or terminate their own OCI servers. The dashboard adds/removes WireGuard clients on existing regional servers and shows stored configs from Firebase.
 
@@ -30,7 +30,7 @@ This is a clean cutoff. No backwards compatibility with old Lambda-created VPN s
 - Firebase is the single source of truth for WireGuard peers. Peers are never saved to `/etc/wireguard/wg0.conf` or any other host state file.
 - `/etc/wireguard/wg0.conf` is written once by bootstrap with interface settings only and never contains `[Peer]` blocks.
 - Add/remove client updates Firebase and applies the live `wg0` change with `wg set`. There is no peer file to update.
-- A startup sync (`cloudlaunch-sync-peers`) pulls the active client list from Firebase on every boot and rebuilds the live peer set. The same command runs on demand for drift repair.
+- A startup sync (`cloudgateway-sync-peers`) pulls the active client list from Firebase on every boot and rebuilds the live peer set. The same command runs on demand for drift repair.
 - Sync is one-directional, Firebase to server: missing peers are added, drifted allowed-ips are fixed, unknown server peers are removed. Sync never writes to Firebase.
 - Users create clients only for themselves. There is no admin-create-client-for-another-user flow.
 - Client IDs must be globally unique UUIDv4 values.
@@ -92,7 +92,7 @@ Caddy must:
 
 FastAPI should expose clean routes such as `/clients`, `/clients/{clientId}`, `/health`, and should not need to know it is mounted under `/api`.
 
-The frontend origin will be something like `https://gocloudlaunch.com` or `https://gateway.gocloudlaunch.com`. This will be referred to as `<origin>`. Regional APIs are `https://<region>.<origin>/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
+The frontend origin will be something like `https://gocloudlaunch.com`. This will be referred to as `<origin>`. Regional APIs are `https://<region>.<origin>/api/*`. The API/Caddy configuration must allow the dashboard origin for browser requests while keeping direct origin access blocked behind Cloudflare Authenticated Origin Pulls, exact regional Host/SNI checks, and Cloudflare-only origin firewall rules. Authenticated Origin Pulls alone are not enough because another Cloudflare zone could otherwise point at the same origin if host and network gates are too broad.
 
 ## FastAPI
 
@@ -168,7 +168,7 @@ Each server must have its own region ID in deployment config created by the Terr
   "assignedTunnelIpv4": "10.0.0.2/32",
   "assignedTunnelIpv6": "fd42:42:42::2/128",
   "serverEndpointIpv4": "1.2.3.4",
-  "serverEndpointHostname": "wg.us-sanjose-1.gateway.gocloudlaunch.com",
+  "serverEndpointHostname": "wg.us-sanjose-1.gocloudlaunch.com",
   "wireguardConfig": "..."
 }
 ```
@@ -385,17 +385,17 @@ The server keeps local host-only config/secrets:
 - `/etc/wireguard/wg0.conf` with interface settings only, written once by bootstrap and never mutated afterward
 - systemd service files
 
-Peers are explicitly NOT saved to `wg0.conf` or any other host state file. Firebase is the single source of truth for the peer set; the live `wg0` interface is a disposable projection of it. `wg-quick` brings up the interface from the static config on boot, and `cloudlaunch-sync-peers` then pulls the active client list from Firebase and rebuilds the live peer set.
+Peers are explicitly NOT saved to `wg0.conf` or any other host state file. Firebase is the single source of truth for the peer set; the live `wg0` interface is a disposable projection of it. `wg-quick` brings up the interface from the static config on boot, and `cloudgateway-sync-peers` then pulls the active client list from Firebase and rebuilds the live peer set.
 
 WireGuard mutation procedure:
 
-1. Acquire an exclusive local lock (`/run/cloudlaunch-wireguard.lock`) before mutating WireGuard state.
+1. Acquire an exclusive local lock (`/run/cloudgateway-wireguard.lock`) before mutating WireGuard state.
 2. Add or update a peer with `wg set wg0 peer <publicKey> allowed-ips <ipv4>,<ipv6> persistent-keepalive 25` using `subprocess.run([...], shell=False)` and strict input validation.
 3. Remove a peer with `wg set wg0 peer <publicKey> remove`. An already-absent peer counts as removed (`noop`).
 4. Complete the matching Firebase write (mark active/removed, counters) while still holding the lock.
 5. Release the lock only after the live interface and Firebase operation status agree or the failure has been recorded.
 
-Peer sync procedure (`cloudlaunch-sync-peers`, run at boot by systemd with on-failure retries and on demand for drift repair):
+Peer sync procedure (`cloudgateway-sync-peers`, run at boot by systemd with on-failure retries and on demand for drift repair):
 
 1. Read the region's `active` client docs (with public keys) from Firebase.
 2. Acquire the same exclusive lock.

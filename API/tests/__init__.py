@@ -1,2 +1,2 @@
-"""Tests for the CloudLaunch regional API."""
+"""Tests for the CloudGateway regional API."""
 

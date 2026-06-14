@@ -19,7 +19,7 @@ TUNNEL_V6 = "fd42:42:42::2/128"
 def make_manager(tmp_path, runner, *, endpoint_host="wg.us-test-1.example.com"):
     return LocalWireGuardManager(
         interface="wg0",
-        lock_path=str(tmp_path / "cloudlaunch-wireguard.lock"),
+        lock_path=str(tmp_path / "cloudgateway-wireguard.lock"),
         server_public_key=FAKE_SERVER_PUBLIC_KEY,
         endpoint_host=endpoint_host,
         listen_port=51820,
@@ -232,4 +232,4 @@ def test_lock_is_exclusive_and_reusable(tmp_path):
     with manager.lock():
         manager.add_peer(public_key=FAKE_PUBLIC_KEY, tunnel_ipv4=TUNNEL_V4, tunnel_ipv6=TUNNEL_V6)
 
-    assert (tmp_path / "cloudlaunch-wireguard.lock").exists()
+    assert (tmp_path / "cloudgateway-wireguard.lock").exists()

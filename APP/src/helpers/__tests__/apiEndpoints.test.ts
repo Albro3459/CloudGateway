@@ -23,9 +23,9 @@ describe("apiEndpoints", () => {
         const { buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "clients", {
-            hostname: "gateway.gocloudlaunch.com",
-            host: "gateway.gocloudlaunch.com:443",
-        })).toBe("https://us-sanjose-1.gateway.gocloudlaunch.com/api/clients");
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com:443",
+        })).toBe("https://us-sanjose-1.gocloudlaunch.com/api/clients");
     });
 
     it("preserves ports for localhost derived URLs", async () => {
@@ -71,9 +71,9 @@ describe("apiEndpoints", () => {
             { value: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
             { value: "us-ashburn-1", enabled: false, displayOrder: 1 },
         ], {
-            hostname: "gateway.gocloudlaunch.com",
-            host: "gateway.gocloudlaunch.com",
-        })).toBe("https://eu-frankfurt-1.gateway.gocloudlaunch.com/api/users");
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com",
+        })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/users");
     });
 
     it("selects first enabled region for access checks", async () => {
@@ -86,9 +86,9 @@ describe("apiEndpoints", () => {
             { value: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
             { value: "us-ashburn-1", enabled: false, displayOrder: 1 },
         ], {
-            hostname: "gateway.gocloudlaunch.com",
-            host: "gateway.gocloudlaunch.com",
-        })).toBe("https://eu-frankfurt-1.gateway.gocloudlaunch.com/api/auth/check-access");
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com",
+        })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/auth/check-access");
     });
 });
 

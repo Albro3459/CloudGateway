@@ -11,8 +11,8 @@ Source-of-truth contract for the shared regional VPN platform. API, frontend, in
 ## External API URLs
 
 - Regional API base URL is `https://<regionId>.<origin>/api`.
-- `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com` or `gateway.gocloudlaunch.com`.
-- For a frontend loaded from `https://gateway.gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gateway.gocloudlaunch.com/api/*`.
+- `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com` or `gocloudlaunch.com`.
+- For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gocloudlaunch.com/api/*`.
 - FastAPI internal routes do not include `/api`. Caddy strips `/api/*` before proxying to FastAPI.
 - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and the regional API URL is derived from `window.location.origin` plus the selected `regionId`.
 - There is no global API router and no frontend base-domain config.
@@ -55,7 +55,7 @@ Source-of-truth contract for the shared regional VPN platform. API, frontend, in
   "assignedTunnelIpv4": "10.0.0.2/32",
   "assignedTunnelIpv6": "fd42:42:42::2/128",
   "serverEndpointIpv4": "1.2.3.4",
-  "serverEndpointHostname": "wg.us-sanjose-1.gateway.gocloudlaunch.com",
+  "serverEndpointHostname": "wg.us-sanjose-1.gocloudlaunch.com",
   "wireguardConfig": "..."
 }
 ```
@@ -225,24 +225,24 @@ All controlled failures return this shape:
 
 ## API Deployment Handoff
 
-- Host install directory: `/opt/cloudlaunch/api`.
-- Python virtualenv: `/opt/cloudlaunch/api/.venv`.
+- Host install directory: `/opt/cloudgateway/api`.
+- Python virtualenv: `/opt/cloudgateway/api/.venv`.
 - App import path: `src.main:app`.
-- Dependency metadata: `API/pyproject.toml`. Infrastructure installs the package into the venv from `/opt/cloudlaunch/api`.
-- systemd service name: `cloudlaunch-api.service`.
-- systemd runs as `root`, working directory `/opt/cloudlaunch/api`, binding only to `127.0.0.1`.
-- Environment file path: `/etc/cloudlaunch/api.env`, mode `0600`, owned by `root`.
+- Dependency metadata: `API/pyproject.toml`. Infrastructure installs the package into the venv from `/opt/cloudgateway/api`.
+- systemd service name: `cloudgateway-api.service`.
+- systemd runs as `root`, working directory `/opt/cloudgateway/api`, binding only to `127.0.0.1`.
+- Environment file path: `/etc/cloudgateway/api.env`, mode `0600`, owned by `root`.
 - Required environment variables:
-  - `CLOUDLAUNCH_REGION_ID`
-  - `CLOUDLAUNCH_API_PORT`
-  - `CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE`
-  - `CLOUDLAUNCH_WG_INTERFACE`
-  - `CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY`
-  - `CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME`
-  - `CLOUDLAUNCH_WG_PORT`
-  - `CLOUDLAUNCH_WG_DNS_IPV4`
-  - `CLOUDLAUNCH_WG_DNS_IPV6`
-  - `CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR`
-  - `CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR`
-- Default values: `CLOUDLAUNCH_API_PORT=8000`, `CLOUDLAUNCH_WG_INTERFACE=wg0`, `CLOUDLAUNCH_WG_PORT=51820`.
-- Peer state: Firebase is the single source of truth for WireGuard peers. Peers are never written to `/etc/wireguard/wg0.conf` or any other host state file; the file is written once by bootstrap with interface settings only. The `cloudlaunch-sync-peers` entry point (systemd `cloudlaunch-sync-peers.service`) rebuilds the live peer set from Firebase on every boot and on demand, one-directionally (Firebase wins; unknown server peers are removed; sync never writes to Firebase). API routes hold the `/run/cloudlaunch-wireguard.lock` flock across each WireGuard mutation plus its matching Firebase write.
+  - `CLOUDGATEWAY_REGION_ID`
+  - `CLOUDGATEWAY_API_PORT`
+  - `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
+  - `CLOUDGATEWAY_WG_INTERFACE`
+  - `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
+  - `CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME`
+  - `CLOUDGATEWAY_WG_PORT`
+  - `CLOUDGATEWAY_WG_DNS_IPV4`
+  - `CLOUDGATEWAY_WG_DNS_IPV6`
+  - `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`
+  - `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`
+- Default values: `CLOUDGATEWAY_API_PORT=8000`, `CLOUDGATEWAY_WG_INTERFACE=wg0`, `CLOUDGATEWAY_WG_PORT=51820`.
+- Peer state: Firebase is the single source of truth for WireGuard peers. Peers are never written to `/etc/wireguard/wg0.conf` or any other host state file; the file is written once by bootstrap with interface settings only. The `cloudgateway-sync-peers` entry point (systemd `cloudgateway-sync-peers.service`) rebuilds the live peer set from Firebase on every boot and on demand, one-directionally (Firebase wins; unknown server peers are removed; sync never writes to Firebase). API routes hold the `/run/cloudgateway-wireguard.lock` flock across each WireGuard mutation plus its matching Firebase write.

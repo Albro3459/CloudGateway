@@ -2,20 +2,20 @@
 
 # Full regional host bootstrap. Fetched from GitHub and run by the cloud-init
 # stub (OCI/terraform/stub-cloud-init.sh.tftpl), which has already written
-# /etc/cloudlaunch/bootstrap.env, /etc/cloudlaunch/wireguard-server.key, the
+# /etc/cloudgateway/bootstrap.env, /etc/cloudgateway/wireguard-server.key, the
 # optional Firebase credential file, and extracted this repo's API/ and
-# OCI/host/ into /opt/cloudlaunch/src. Runs as root with output already
+# OCI/host/ into /opt/cloudgateway/src. Runs as root with output already
 # redirected to /var/log/wireguard-bootstrap.log by the stub.
 
 set -euxo pipefail
 
 set -a
-source /etc/cloudlaunch/bootstrap.env
+source /etc/cloudgateway/bootstrap.env
 set +a
 
 export DEBIAN_FRONTEND=noninteractive
 
-SRC_DIR="/opt/cloudlaunch/src"
+SRC_DIR="/opt/cloudgateway/src"
 ADGUARD_HOME_VERSION="${ADGUARD_HOME_VERSION:-v0.107.77}"
 ADGUARD_HOME_CONFIG="/etc/adguardhome/AdGuardHome.yaml"
 ADGUARD_HOME_WORK_DIR="/var/lib/adguardhome"
@@ -67,8 +67,8 @@ install -d -m 755 /etc/ssh/sshd_config.d
 install -d -m 755 /etc/fail2ban/jail.d
 install -d -m 755 /etc/unbound/unbound.conf.d
 install -d -o unbound -g unbound -m 750 /var/lib/unbound
-install -d -m 700 /etc/cloudlaunch
-install -d -m 755 /opt/cloudlaunch/api
+install -d -m 700 /etc/cloudgateway
+install -d -m 755 /opt/cloudgateway/api
 install -d -m 755 /etc/caddy
 install -d -m 755 /var/log/caddy
 install -d -m 755 /var/lib/caddy
@@ -80,7 +80,7 @@ SSHD_BACKUP="/etc/ssh/sshd_config.bak.$(date +%F_%H-%M-%S)"
 cp /etc/ssh/sshd_config "$SSHD_BACKUP"
 install -d -m 755 /run/sshd
 
-cat > /etc/ssh/sshd_config.d/99-cloudlaunch-hardening.conf <<'SSHCONF'
+cat > /etc/ssh/sshd_config.d/99-cloudgateway-hardening.conf <<'SSHCONF'
 PasswordAuthentication no
 PermitRootLogin no
 SSHCONF
@@ -122,7 +122,7 @@ sysctl --system
 
 echo "==> Step 6/13: Writing WireGuard configuration"
 # Interface-only config. Peers are never written to this or any other file:
-# Firebase is the single source of truth and cloudlaunch-sync-peers rebuilds
+# Firebase is the single source of truth and cloudgateway-sync-peers rebuilds
 # the live peer set from it on every boot.
 # xtrace stays off while the private key is in play.
 set +x
@@ -130,7 +130,7 @@ cat > "/etc/wireguard/$WG_INTERFACE.conf" <<WGCONF
 [Interface]
 Address = $WG_ADDRESS_V4, $WG_ADDRESS_V6
 ListenPort = $WG_LISTEN_PORT
-PrivateKey = $(cat /etc/cloudlaunch/wireguard-server.key)
+PrivateKey = $(cat /etc/cloudgateway/wireguard-server.key)
 
 # PostUp
 # IPv4
@@ -181,7 +181,7 @@ chmod 600 "/etc/wireguard/$WG_INTERFACE.publickey"
 
 echo "==> Step 7/13: Installing AdGuard Home"
 ADGUARD_ARCH="$(adguard_arch)"
-ADGUARD_WORK_DIR="$(mktemp -d /tmp/cloudlaunch-adguardhome-XXXXXX)"
+ADGUARD_WORK_DIR="$(mktemp -d /tmp/cloudgateway-adguardhome-XXXXXX)"
 ADGUARD_TARBALL="$ADGUARD_WORK_DIR/AdGuardHome.tar.gz"
 curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
   "https://github.com/AdguardTeam/AdGuardHome/releases/download/$ADGUARD_HOME_VERSION/AdGuardHome_linux_$ADGUARD_ARCH.tar.gz" \
@@ -202,7 +202,7 @@ if [[ -f /var/lib/unbound/root.key ]]; then
   chmod 640 /var/lib/unbound/root.key
 fi
 
-cat > /etc/unbound/unbound.conf.d/cloudlaunch-wireguard.conf <<UNBOUNDCONF
+cat > /etc/unbound/unbound.conf.d/cloudgateway-wireguard.conf <<UNBOUNDCONF
 server:
   interface: 127.0.0.1
   interface: ::1
@@ -379,7 +379,7 @@ chmod 600 "$ADGUARD_HOME_CONFIG"
 
 cat > /etc/systemd/system/adguardhome.service <<UNIT
 [Unit]
-Description=AdGuard Home DNS filter for CloudLaunch VPN clients
+Description=AdGuard Home DNS filter for CloudGateway VPN clients
 After=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
 Wants=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
 
@@ -399,20 +399,20 @@ UNIT
 systemctl daemon-reload
 systemctl enable adguardhome
 
-echo "==> Step 9/13: Installing CloudLaunch API package"
-cp -R "$SRC_DIR/API/." /opt/cloudlaunch/api/
+echo "==> Step 9/13: Installing CloudGateway API package"
+cp -R "$SRC_DIR/API/." /opt/cloudgateway/api/
 
-python3 -m venv /opt/cloudlaunch/api/.venv
-/opt/cloudlaunch/api/.venv/bin/pip install --upgrade pip
-/opt/cloudlaunch/api/.venv/bin/pip install /opt/cloudlaunch/api
+python3 -m venv /opt/cloudgateway/api/.venv
+/opt/cloudgateway/api/.venv/bin/pip install --upgrade pip
+/opt/cloudgateway/api/.venv/bin/pip install /opt/cloudgateway/api
 
-cat > /usr/local/sbin/cloudlaunch-install-api <<'INSTALLAPI'
+cat > /usr/local/sbin/cloudgateway-install-api <<'INSTALLAPI'
 #!/bin/bash
 set -euo pipefail
 
-source /etc/cloudlaunch/bootstrap.env
+source /etc/cloudgateway/bootstrap.env
 REF="${1:-$SOURCE_REF}"
-WORK_DIR="$(mktemp -d /tmp/cloudlaunch-api-XXXXXX)"
+WORK_DIR="$(mktemp -d /tmp/cloudgateway-api-XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "Fetching API source from $SOURCE_REPO at $REF"
@@ -425,46 +425,46 @@ if [[ ! -f "$WORK_DIR/API/pyproject.toml" ]]; then
   exit 1
 fi
 
-cp -R "$WORK_DIR/API/." /opt/cloudlaunch/api/
-/opt/cloudlaunch/api/.venv/bin/pip install /opt/cloudlaunch/api
-systemctl restart cloudlaunch-api
-systemctl --no-pager --full status cloudlaunch-api || true
+cp -R "$WORK_DIR/API/." /opt/cloudgateway/api/
+/opt/cloudgateway/api/.venv/bin/pip install /opt/cloudgateway/api
+systemctl restart cloudgateway-api
+systemctl --no-pager --full status cloudgateway-api || true
 INSTALLAPI
-chmod 755 /usr/local/sbin/cloudlaunch-install-api
+chmod 755 /usr/local/sbin/cloudgateway-install-api
 
-echo "==> Step 10/13: Writing CloudLaunch API environment"
+echo "==> Step 10/13: Writing CloudGateway API environment"
 if [[ ! -f "$FIREBASE_CREDENTIALS_FILE" ]]; then
   echo "No Firebase credential file at $FIREBASE_CREDENTIALS_FILE; provision it manually before using the API"
 fi
 
 SERVER_PUBLIC_KEY="$(cat "/etc/wireguard/$WG_INTERFACE.publickey")"
-cat > /etc/cloudlaunch/api.env <<APIENV
-CLOUDLAUNCH_REGION_ID=$REGION_ID
-CLOUDLAUNCH_API_PORT=$FASTAPI_PORT
-CLOUDLAUNCH_API_HOSTNAME=$API_HOSTNAME
-CLOUDLAUNCH_FIREBASE_CREDENTIALS_FILE=$FIREBASE_CREDENTIALS_FILE
-CLOUDLAUNCH_WG_INTERFACE=$WG_INTERFACE
-CLOUDLAUNCH_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
-CLOUDLAUNCH_WG_ENDPOINT_HOSTNAME=$WG_ENDPOINT_HOSTNAME
-CLOUDLAUNCH_WG_PORT=$WG_LISTEN_PORT
-CLOUDLAUNCH_WG_DNS_IPV4=$WG_DNS_ADDRESS_V4
-CLOUDLAUNCH_WG_DNS_IPV6=$WG_DNS_ADDRESS_V6
-CLOUDLAUNCH_WG_TUNNEL_IPV4_CIDR=$WG_NETWORK_V4
-CLOUDLAUNCH_WG_TUNNEL_IPV6_CIDR=$WG_NETWORK_V6
-CLOUDLAUNCH_REGION_DISPLAY_NAME=$REGION_DISPLAY_NAME
-CLOUDLAUNCH_REGION_DISPLAY_ORDER=$REGION_DISPLAY_ORDER
-CLOUDLAUNCH_REGION_CAPACITY_LIMIT=$REGION_CAPACITY_LIMIT
-CLOUDLAUNCH_REGION_USER_CLIENT_LIMIT=$REGION_USER_CLIENT_LIMIT
+cat > /etc/cloudgateway/api.env <<APIENV
+CLOUDGATEWAY_REGION_ID=$REGION_ID
+CLOUDGATEWAY_API_PORT=$FASTAPI_PORT
+CLOUDGATEWAY_API_HOSTNAME=$API_HOSTNAME
+CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE=$FIREBASE_CREDENTIALS_FILE
+CLOUDGATEWAY_WG_INTERFACE=$WG_INTERFACE
+CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
+CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME=$WG_ENDPOINT_HOSTNAME
+CLOUDGATEWAY_WG_PORT=$WG_LISTEN_PORT
+CLOUDGATEWAY_WG_DNS_IPV4=$WG_DNS_ADDRESS_V4
+CLOUDGATEWAY_WG_DNS_IPV6=$WG_DNS_ADDRESS_V6
+CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR=$WG_NETWORK_V4
+CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR=$WG_NETWORK_V6
+CLOUDGATEWAY_REGION_DISPLAY_NAME=$REGION_DISPLAY_NAME
+CLOUDGATEWAY_REGION_DISPLAY_ORDER=$REGION_DISPLAY_ORDER
+CLOUDGATEWAY_REGION_CAPACITY_LIMIT=$REGION_CAPACITY_LIMIT
+CLOUDGATEWAY_REGION_USER_CLIENT_LIMIT=$REGION_USER_CLIENT_LIMIT
 APIENV
-chmod 600 /etc/cloudlaunch/api.env
+chmod 600 /etc/cloudgateway/api.env
 
-cat > /etc/cloudlaunch/origin.env <<ORIGINENV
-CLOUDLAUNCH_API_HOSTNAME=$API_HOSTNAME
-CLOUDLAUNCH_DASHBOARD_CORS_ORIGIN=$DASHBOARD_CORS_ORIGIN
-CLOUDLAUNCH_CADDY_ACME_EMAIL=$CADDY_ACME_EMAIL
-CLOUDLAUNCH_CLOUDFLARE_ORIGIN_PULL_CA_PATH=$CLOUDFLARE_ORIGIN_PULL_CA_PATH
+cat > /etc/cloudgateway/origin.env <<ORIGINENV
+CLOUDGATEWAY_API_HOSTNAME=$API_HOSTNAME
+CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN=$DASHBOARD_CORS_ORIGIN
+CLOUDGATEWAY_CADDY_ACME_EMAIL=$CADDY_ACME_EMAIL
+CLOUDGATEWAY_CLOUDFLARE_ORIGIN_PULL_CA_PATH=$CLOUDFLARE_ORIGIN_PULL_CA_PATH
 ORIGINENV
-chmod 644 /etc/cloudlaunch/origin.env
+chmod 644 /etc/cloudgateway/origin.env
 
 echo "==> Step 11/13: Installing Caddy origin proxy"
 if ! id -u caddy >/dev/null 2>&1; then
@@ -500,51 +500,51 @@ else
 fi
 chmod 644 /etc/caddy/Caddyfile
 
-cat > /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
+cat > /usr/local/sbin/cloudgateway-origin-firewall <<'FIREWALL'
 #!/bin/bash
 set -euo pipefail
 
-iptables -N CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null || true
-iptables -F CLOUDLAUNCH_HTTP_ORIGIN
-if ! iptables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null; then
-  iptables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN
+iptables -N CLOUDGATEWAY_HTTP_ORIGIN 2>/dev/null || true
+iptables -F CLOUDGATEWAY_HTTP_ORIGIN
+if ! iptables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDGATEWAY_HTTP_ORIGIN 2>/dev/null; then
+  iptables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDGATEWAY_HTTP_ORIGIN
 fi
 FIREWALL
 
 for cidr in $CLOUDFLARE_IPV4_RANGES; do
-  echo "iptables -A CLOUDLAUNCH_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudlaunch-origin-firewall
+  echo "iptables -A CLOUDGATEWAY_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudgateway-origin-firewall
 done
 
-cat >> /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
-iptables -A CLOUDLAUNCH_HTTP_ORIGIN -j DROP
+cat >> /usr/local/sbin/cloudgateway-origin-firewall <<'FIREWALL'
+iptables -A CLOUDGATEWAY_HTTP_ORIGIN -j DROP
 
-ip6tables -N CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null || true
-ip6tables -F CLOUDLAUNCH_HTTP_ORIGIN
-if ! ip6tables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN 2>/dev/null; then
-  ip6tables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDLAUNCH_HTTP_ORIGIN
+ip6tables -N CLOUDGATEWAY_HTTP_ORIGIN 2>/dev/null || true
+ip6tables -F CLOUDGATEWAY_HTTP_ORIGIN
+if ! ip6tables -C INPUT -p tcp -m multiport --dports 80,443 -j CLOUDGATEWAY_HTTP_ORIGIN 2>/dev/null; then
+  ip6tables -I INPUT 1 -p tcp -m multiport --dports 80,443 -j CLOUDGATEWAY_HTTP_ORIGIN
 fi
 FIREWALL
 
 for cidr in $CLOUDFLARE_IPV6_RANGES; do
-  echo "ip6tables -A CLOUDLAUNCH_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudlaunch-origin-firewall
+  echo "ip6tables -A CLOUDGATEWAY_HTTP_ORIGIN -s $cidr -j ACCEPT" >> /usr/local/sbin/cloudgateway-origin-firewall
 done
 
-cat >> /usr/local/sbin/cloudlaunch-origin-firewall <<'FIREWALL'
-ip6tables -A CLOUDLAUNCH_HTTP_ORIGIN -j DROP
+cat >> /usr/local/sbin/cloudgateway-origin-firewall <<'FIREWALL'
+ip6tables -A CLOUDGATEWAY_HTTP_ORIGIN -j DROP
 FIREWALL
 
-chmod 755 /usr/local/sbin/cloudlaunch-origin-firewall
+chmod 755 /usr/local/sbin/cloudgateway-origin-firewall
 
-cat > /etc/systemd/system/cloudlaunch-origin-firewall.service <<'UNIT'
+cat > /etc/systemd/system/cloudgateway-origin-firewall.service <<'UNIT'
 [Unit]
-Description=CloudLaunch Cloudflare-only HTTP/HTTPS origin firewall
+Description=CloudGateway Cloudflare-only HTTP/HTTPS origin firewall
 Wants=network-online.target
 After=network-online.target
 Before=caddy.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/cloudlaunch-origin-firewall
+ExecStart=/usr/local/sbin/cloudgateway-origin-firewall
 RemainAfterExit=yes
 
 [Install]
@@ -555,8 +555,8 @@ cat > /etc/systemd/system/caddy.service <<'UNIT'
 [Unit]
 Description=Caddy origin proxy
 Documentation=https://caddyserver.com/docs/
-After=network-online.target cloudlaunch-origin-firewall.service cloudlaunch-api.service
-Wants=network-online.target cloudlaunch-origin-firewall.service
+After=network-online.target cloudgateway-origin-firewall.service cloudgateway-api.service
+Wants=network-online.target cloudgateway-origin-firewall.service
 
 [Service]
 User=caddy
@@ -577,25 +577,25 @@ ReadWritePaths=/var/lib/caddy /var/log/caddy
 WantedBy=multi-user.target
 UNIT
 
-/usr/local/sbin/cloudlaunch-origin-firewall
+/usr/local/sbin/cloudgateway-origin-firewall
 /usr/local/bin/caddy validate --config /etc/caddy/Caddyfile
 systemctl daemon-reload
-systemctl enable cloudlaunch-origin-firewall
+systemctl enable cloudgateway-origin-firewall
 systemctl enable caddy
 
-echo "==> Step 12/13: Writing CloudLaunch API and peer sync services"
-cat > /etc/systemd/system/cloudlaunch-api.service <<UNIT
+echo "==> Step 12/13: Writing CloudGateway API and peer sync services"
+cat > /etc/systemd/system/cloudgateway-api.service <<UNIT
 [Unit]
-Description=CloudLaunch regional API
+Description=CloudGateway regional API
 Wants=network-online.target
 After=network-online.target wg-quick@$WG_INTERFACE.service
-ConditionPathExists=/opt/cloudlaunch/api/.venv/bin/uvicorn
+ConditionPathExists=/opt/cloudgateway/api/.venv/bin/uvicorn
 
 [Service]
 User=root
-WorkingDirectory=/opt/cloudlaunch/api
-EnvironmentFile=/etc/cloudlaunch/api.env
-ExecStart=/opt/cloudlaunch/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port \$CLOUDLAUNCH_API_PORT
+WorkingDirectory=/opt/cloudgateway/api
+EnvironmentFile=/etc/cloudgateway/api.env
+ExecStart=/opt/cloudgateway/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port \$CLOUDGATEWAY_API_PORT
 Restart=on-failure
 RestartSec=5
 
@@ -605,18 +605,18 @@ UNIT
 
 # Rebuilds the live wg peer set from Firebase on every boot. Retries via
 # systemd until Firebase is reachable; an empty region syncs successfully.
-cat > /etc/systemd/system/cloudlaunch-sync-peers.service <<UNIT
+cat > /etc/systemd/system/cloudgateway-sync-peers.service <<UNIT
 [Unit]
-Description=CloudLaunch WireGuard peer sync from Firebase
+Description=CloudGateway WireGuard peer sync from Firebase
 Wants=network-online.target
 After=network-online.target wg-quick@$WG_INTERFACE.service
-ConditionPathExists=/opt/cloudlaunch/api/.venv/bin/cloudlaunch-sync-peers
+ConditionPathExists=/opt/cloudgateway/api/.venv/bin/cloudgateway-sync-peers
 
 [Service]
 Type=oneshot
 User=root
-EnvironmentFile=/etc/cloudlaunch/api.env
-ExecStart=/opt/cloudlaunch/api/.venv/bin/cloudlaunch-sync-peers
+EnvironmentFile=/etc/cloudgateway/api.env
+ExecStart=/opt/cloudgateway/api/.venv/bin/cloudgateway-sync-peers
 Restart=on-failure
 RestartSec=30
 StartLimitIntervalSec=0
@@ -626,10 +626,10 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable cloudlaunch-api
-systemctl enable cloudlaunch-sync-peers
+systemctl enable cloudgateway-api
+systemctl enable cloudgateway-sync-peers
 
-echo "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudLaunch API, and Caddy"
+echo "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudGateway API, and Caddy"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -654,30 +654,30 @@ fi
 
 systemctl restart unbound
 systemctl restart adguardhome
-systemctl restart cloudlaunch-api
-systemctl restart cloudlaunch-origin-firewall
+systemctl restart cloudgateway-api
+systemctl restart cloudgateway-origin-firewall
 systemctl restart caddy
 
 # First sync. On a brand-new region (no region doc / no clients) this succeeds
 # with an empty peer set; if Firebase credentials are not provisioned yet it
 # fails here and systemd keeps retrying in the background.
-systemctl start cloudlaunch-sync-peers || true
+systemctl start cloudgateway-sync-peers || true
 
 # Status check (coalesce because fail would end the script when this is just a status check)
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
 systemctl --no-pager --full status adguardhome || true
 systemctl --no-pager --full status unbound || true
-systemctl --no-pager --full status cloudlaunch-api || true
-systemctl --no-pager --full status cloudlaunch-sync-peers || true
-systemctl --no-pager --full status cloudlaunch-origin-firewall || true
+systemctl --no-pager --full status cloudgateway-api || true
+systemctl --no-pager --full status cloudgateway-sync-peers || true
+systemctl --no-pager --full status cloudgateway-origin-firewall || true
 systemctl --no-pager --full status caddy || true
 
 # Self-register this region in Firestore (IP, public key, endpoint), enabling it only once
 # the full Cloudflare path validates (proxy + AOP + firewall + Caddy). DNS records are managed
-# by Terraform, not here. Idempotent: re-run `cloudlaunch-register-region` if Firebase or the
+# by Terraform, not here. Idempotent: re-run `cloudgateway-register-region` if Firebase or the
 # edge was not ready at boot.
-echo "Waiting for the CloudLaunch API to answer locally before registering the region..."
+echo "Waiting for the CloudGateway API to answer locally before registering the region..."
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$FASTAPI_PORT/health" >/dev/null 2>&1; then
     break
@@ -686,10 +686,10 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> Registering region in Firestore"
-if ( set -a; source /etc/cloudlaunch/api.env; set +a; /opt/cloudlaunch/api/.venv/bin/cloudlaunch-register-region ); then
+if ( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region ); then
   echo "Region registered"
 else
-  echo "WARN: region registration failed; re-run 'cloudlaunch-register-region' once Firebase is reachable" >&2
+  echo "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
 fi
 
 echo "WireGuard public key:"

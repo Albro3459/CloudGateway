@@ -1,14 +1,14 @@
 # WireGuard Peer Drift Repair
 
-Firebase is the single source of truth for WireGuard peers. Peers are never saved to `/etc/wireguard/wg0.conf` or any other host state file - the live `wg0` peer set is a disposable projection of the region's `active` client docs, rebuilt by `cloudlaunch-sync-peers` on every boot.
+Firebase is the single source of truth for WireGuard peers. Peers are never saved to `/etc/wireguard/wg0.conf` or any other host state file - the live `wg0` peer set is a disposable projection of the region's `active` client docs, rebuilt by `cloudgateway-sync-peers` on every boot.
 
 Because of that, drift repair is one command on the regional host:
 
 ```sh
-sudo cloudlaunch-sync-peers
+sudo cloudgateway-sync-peers
 ```
 
-It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with added/updated/removed counts) and exits nonzero on failure. The same binary runs at boot via `cloudlaunch-sync-peers.service`, which retries on failure until Firebase is reachable.
+It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with added/updated/removed counts) and exits nonzero on failure. The same binary runs at boot via `cloudgateway-sync-peers.service`, which retries on failure until Firebase is reachable.
 
 ## What the Sync Does
 
@@ -23,14 +23,14 @@ One-directional, Firebase to server. After a pass, the live peer set equals exac
 
 The sync never writes to Firebase and never creates client docs from server state. An unknown server peer is either leftover drift or tampering; both deserve removal.
 
-A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudlaunch-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete.
+A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete.
 
 ## Diagnosing Before/After
 
 ```sh
 sudo wg show wg0                      # live peers (public keys, handshakes)
-sudo systemctl status cloudlaunch-sync-peers
-sudo journalctl -u cloudlaunch-sync-peers --since "1 hour ago"
+sudo systemctl status cloudgateway-sync-peers
+sudo journalctl -u cloudgateway-sync-peers --since "1 hour ago"
 ```
 
 Compare against Firestore: the region's client docs live at `Users/{uid}/Regions/{regionId}/Instances/{clientId}` with `status` and `clientPublicKey` fields (admin/Admin SDK access).
