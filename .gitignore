@@ -23,6 +23,25 @@
 !**/wireguard_configs/example.*
 !**/wireguard_configs/*.example
 
+**/*.key
+**/.key.*
+**/*.key.*
+!**/*.key.example
+!**/example.*.key
+
+**/*.pem
+**/.pem.*
+**/*.pem.*
+!**/*.pem.example
+!**/example.*.pem
+
+**/gocloudlaunch.com.txt
+**/*.gocloudlaunch.com.txt
+**/.gocloudlaunch.com.txt.*
+**/*.gocloudlaunch.com.txt.*
+!**/.gocloudlaunch.com.txt.example
+!**/example.gocloudlaunch.com.txt
+
 .DS_STORE
 
 **/.terraform*
