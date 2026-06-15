@@ -9,7 +9,7 @@ const baseClient = (clientId: string, status: VPNStatus) => ({
 });
 
 describe("vpnVisibility", () => {
-    it("shows only creating and active clients on initial load", () => {
+    it("shows creating, active, and failed clients on initial load but hides removed", () => {
         const clients = [
             baseClient("creating-client", VPN_STATUS.CREATING),
             baseClient("active-client", VPN_STATUS.ACTIVE),
@@ -20,6 +20,7 @@ describe("vpnVisibility", () => {
         expect(filterVisibleVPNClients(clients, new Set()).map(client => client.clientId)).toEqual([
             "creating-client",
             "active-client",
+            "failed-client",
         ]);
     });
 

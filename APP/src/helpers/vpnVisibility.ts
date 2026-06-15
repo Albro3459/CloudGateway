@@ -13,6 +13,7 @@ type VPNClientVisibilityFields = VPNClientKeyFields & {
 const LOAD_VISIBLE_STATUSES: VPNStatus[] = [
     VPN_STATUS.CREATING,
     VPN_STATUS.ACTIVE,
+    VPN_STATUS.FAILED,
 ];
 
 export const getClientKey = (entry: VPNClientKeyFields) => (
