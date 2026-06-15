@@ -9,6 +9,7 @@ import { getUserRole } from "../helpers/usersHelper";
 import { logout } from "../helpers/firebaseDbHelper";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { NoRegionsMessage } from "../components/NoRegionsMessage";
 
 const CreateUser: React.FC = () => {
     const navigate = useNavigate();
@@ -18,7 +19,7 @@ const CreateUser: React.FC = () => {
     const [email, setEmail] = useState("");
 
     const [loading, setLoading] = useState(false);
-    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [errorMessage, setErrorMessage] = useState<React.ReactNode>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
     useEffect(() => {
@@ -77,7 +78,7 @@ const CreateUser: React.FC = () => {
                 }
                 if (!ociRegions?.length) {
                     setLoading(false);
-                    setErrorMessage("No enabled regions are available.");
+                    setErrorMessage(<NoRegionsMessage />);
                     return;
                 }
                 const result = await createAdminUser({ email: trimmedEmail }, jwtToken, ociRegions);

@@ -127,7 +127,9 @@ describe("CreateUser", () => {
         });
         fireEvent.click(screen.getByRole("button", { name: "Grant Access" }));
 
-        expect(await screen.findByText("No enabled regions are available.")).toBeTruthy();
+        expect(await screen.findByText(/No enabled regions are available\./)).toBeTruthy();
+        expect(screen.getByRole("link", { name: "Contact an admin" }).getAttribute("href"))
+            .toBe("mailto:Brodsky.Alex22@gmail.com");
         expect(createAdminUser).not.toHaveBeenCalled();
     });
 });

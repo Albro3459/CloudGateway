@@ -132,7 +132,9 @@ describe("Login", () => {
         await waitFor(() => {
             expect(signOut).toHaveBeenCalled();
             expect(checkAccountAccess).not.toHaveBeenCalled();
-            expect(screen.getByText("No regions are available. Contact an admin for access to CloudGateway.")).toBeTruthy();
+            expect(screen.getByText(/No enabled regions are available\./)).toBeTruthy();
+            expect(screen.getByRole("link", { name: "Contact an admin" }).getAttribute("href"))
+                .toBe("mailto:Brodsky.Alex22@gmail.com");
             expect(mockNavigate).not.toHaveBeenCalledWith("/home", { replace: true });
         });
     });

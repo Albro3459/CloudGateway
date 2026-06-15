@@ -5,6 +5,7 @@ import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPas
 import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { NoRegionsMessage, SUPPORT_EMAIL } from "../components/NoRegionsMessage";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 
 const Login: React.FC = () => {
@@ -12,7 +13,7 @@ const Login: React.FC = () => {
     
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
-    const [error, setError] = useState<string | null>();
+    const [error, setError] = useState<React.ReactNode>();
     const [success, setSuccess] = useState<string | null>();
     const manualSignInRef = useRef(false);
 
@@ -26,9 +27,7 @@ const Login: React.FC = () => {
         "Your account is disabled. Contact an admin for access to CloudGateway."
     );
 
-    const getNoRegionsMessage = () => (
-        "No regions are available. Contact an admin for access to CloudGateway."
-    );
+    const getNoRegionsMessage = () => <NoRegionsMessage />;
 
     const getGoogleSignInError = (err: unknown) => {
         const code = err && typeof err === "object" && "code" in err
@@ -275,7 +274,7 @@ const Login: React.FC = () => {
                     </button>
                     <span> | </span>
                     <a
-                    href="mailto:Brodsky.Alex22@gmail.com"
+                    href={`mailto:${SUPPORT_EMAIL}`}
                     className="text-accent underline hover:text-accent-strong"
                     >
                     Email me for a test account

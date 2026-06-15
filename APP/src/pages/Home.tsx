@@ -11,6 +11,7 @@ import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } fro
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
+import { NoRegionsMessage } from "../components/NoRegionsMessage";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
@@ -561,7 +562,7 @@ const Home: React.FC = () => {
                         <p className="text-sm text-danger-content">{regionsError}</p>
                     )}
                     {!regionsLoading && !enabledRegions.length && (
-                        <p className="text-sm text-danger-content">No enabled regions are available.</p>
+                        <p className="text-sm text-danger-content"><NoRegionsMessage /></p>
                     )}
                     {showRegionTabs ? (
                         <div className="flex flex-wrap gap-2">
