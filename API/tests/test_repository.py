@@ -128,6 +128,10 @@ def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: Fa
     assert client.last_error_code is None
     assert client.last_error_message is None
     assert repository.get_user("user-1") is not None
+    user_region = repository.user_regions[("user-1", REGION_ID)]
+    assert set(user_region) == {"regionId", "updatedAt"}
+    assert user_region["regionId"] == REGION_ID
+    assert user_region["updatedAt"] is not None
     assert require_test_region(repository).active_client_count == 1
 
 

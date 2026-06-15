@@ -354,6 +354,7 @@ class FirestoreRepository(FirebaseRepository):
         def reserve(transaction):
             role_ref = db.collection("Roles").document(owner_uid)
             user_ref = db.collection("Users").document(owner_uid)
+            user_region_ref = user_ref.collection("Regions").document(region_id)
             region_ref = db.collection("Regions").document(region_id)
 
             role = role_or_user(_role_from_snapshot(_sync_snapshot(role_ref.get(transaction=transaction))))
@@ -400,6 +401,12 @@ class FirestoreRepository(FirebaseRepository):
             )
 
             transaction.set(user_ref, user_data, merge=True)
+            transaction.set(
+                user_region_ref,
+                _user_region_write_data(
+                    region_id=region_id,
+                ),
+            )
             transaction.set(client_ref, client_data)
             transaction.update(
                 region_ref,
@@ -702,6 +709,16 @@ def _user_write_data(*, uid: str, email: str | None, display_name: str | None, e
         data["createdAt"] = _server_timestamp()
         data["disabled"] = False
     return data
+
+
+def _user_region_write_data(
+    *,
+    region_id: str,
+) -> dict[str, Any]:
+    return {
+        "regionId": region_id,
+        "updatedAt": _server_timestamp(),
+    }
 
 
 def _client_write_data(

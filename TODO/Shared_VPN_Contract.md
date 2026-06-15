@@ -144,6 +144,7 @@ All controlled failures return this shape:
 
 - Region documents: `Regions/{regionId}`.
 - User documents: `Users/{uid}`.
+- User-region marker documents: `Users/{uid}/Regions/{regionId}`.
 - Client documents: `Users/{uid}/Regions/{regionId}/Instances/{clientId}`.
 - Role documents: `Roles/{uid}`.
 
@@ -173,6 +174,11 @@ All controlled failures return this shape:
 - `displayName`: string or null.
 - `createdAt`: Firestore timestamp.
 - `disabled`: boolean, optional.
+
+## User-Region Document Fields
+
+- `regionId`: string, same as document ID.
+- `updatedAt`: Firestore timestamp.
 
 ## `Roles/{uid}` Fields
 

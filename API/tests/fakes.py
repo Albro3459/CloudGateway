@@ -134,6 +134,7 @@ class FakeRepository(FirebaseRepository):
         self._lock = Lock()
         self.roles: dict[str, Role] = {}
         self.users: dict[str, UserDoc] = {}
+        self.user_regions: dict[tuple[str, str], dict[str, object]] = {}
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
         self.disabled_auth_uids: set[str] = set()
@@ -264,6 +265,10 @@ class FakeRepository(FirebaseRepository):
                     created_at=now,
                 ),
             )
+            self.user_regions[(owner_uid, region_id)] = {
+                "regionId": region_id,
+                "updatedAt": now,
+            }
             client = ClientDoc(
                 client_id=client_id,
                 owner_uid=owner_uid,

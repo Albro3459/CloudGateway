@@ -36,6 +36,11 @@ export type FirebaseUserDoc = {
     disabled?: boolean;
 };
 
+export type FirebaseUserRegionDoc = {
+    regionId: string;
+    updatedAt: FirestoreTimestamp;
+};
+
 export type FirebaseRoleDoc = {
     role: FirebaseRole;
     updatedAt: FirestoreTimestamp;
@@ -75,11 +80,13 @@ export type FirebaseDocumentTree = {
             FirebaseUserDoc & 
             {
                 Regions: {
-                    "{regionId}": {
-                        Instances: {
-                            "{clientId}": FirebaseClientDoc;
+                    "{regionId}": 
+                        FirebaseUserRegionDoc & 
+                        {
+                            Instances: {
+                                "{clientId}": FirebaseClientDoc;
+                            };
                         };
-                    };
                 };
             };
     };
