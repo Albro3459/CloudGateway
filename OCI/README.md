@@ -39,6 +39,15 @@ The fetched bootstrap installs and configures:
 
 Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. There are no deploy-time client peer variables.
 
+### Regional DNS records
+
+The region's `A` records (`cloudflare_record.api`, proxied; `cloudflare_record.wg`, grey-cloud) are Terraform-managed and point at the instance public IP, so they follow a rebuild automatically. Two safeguards exist because the Cloudflare provider does not validate the token up front and its record create is an insert, not an upsert:
+
+* `data.cloudflare_zone.this` makes an authenticated Cloudflare call during `plan`/refresh, so an invalid or IP-blocked token fails before the instance is created or replaced. If a deploy errors here, check that the `cloudflare_api_token` is valid and that the operator machine's public IP is in the token's client-IP allowlist.
+* Both records set `allow_overwrite = true`, so a create overwrites a matching record instead of adding a duplicate. This only reconciles when exactly one matching record exists at the edge; if a prior half-failed apply left duplicate records, delete the stale ones (keep the one matching the current instance IP) before re-running, or the apply cannot disambiguate.
+
+A token that is valid but blocked by source-IP filtering used to surface only after the instance was created (the records depend on the instance), leaving an orphaned instance, unupdated records, and duplicates on the next run. The zone preflight now fails that case at plan time.
+
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 
 See [adguard-home.md](adguard-home.md) for the AdGuard Home runtime configuration and operator rules.
