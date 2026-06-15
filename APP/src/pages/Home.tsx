@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
 import QRCode from "qrcode";
+import packageJson from "../../package.json";
 
 import { createClient, deleteClient } from "../helpers/APIHelper";
 import type { ApiHelperFailure } from "../helpers/APIHelper";
@@ -597,6 +598,9 @@ const Home: React.FC = () => {
                     <div className="h-16 w-16 animate-spin rounded-full border-t-4 border-solid border-white"></div>
                 </div>
             )}
+            <span className="fixed bottom-2 right-3 text-xs text-content-faint">
+                v{packageJson?.version || '0.0.0'}
+            </span>
         </div>
     );
 };
