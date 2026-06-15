@@ -32,6 +32,13 @@ It extracts only `API/` and `OCI/host/` into `/opt/cloudgateway/src`, verifies `
 
 ## Release Workflow
 
+The normal operator path is [`terraform.sh`](../terraform.sh), which bumps
+`API/src/version.py`, creates and pushes one `Deploy vX.Y.Z` commit plus matching
+`deploy-vX.Y.Z` tag, and writes that tag to every listed region's
+`<regionId>.terraform.tfvars` before applying.
+
+For a manual fallback:
+
 1. Merge the deployable state to `main`.
 2. Create an annotated tag, convention `deploy-vX.Y.Z`:
 

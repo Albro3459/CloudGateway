@@ -20,9 +20,9 @@ The host fetches its bootstrap script and API source from GitHub at boot using `
 
 Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
-that var file's `oci_config_profile`. Deploy through `terraform.sh`, which selects the
-workspace and var file for the region. A bare `terraform apply` would auto-load
-`terraform.tfvars` and share one state file, so a second region would plan to destroy the first.
+that var file's `oci_config_profile`. Deploy through `terraform.sh`, which selects each
+workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
+share one state file, so a second region would plan to destroy the first.
 
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
@@ -32,7 +32,18 @@ cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfv
 
 ./terraform.sh <regionId> plan
 ./terraform.sh <regionId> apply
+
+# Multi-region: one deploy tag is created and written to every listed tfvars.
+./terraform.sh <regionId> <anotherRegionId> plan
+./terraform.sh <regionId> <anotherRegionId> apply
 ```
+
+For `apply`, the script validates all requested var files and `source_ref` lines
+before side effects, saves every region's plan against the new deploy tag, creates
+and pushes one `Deploy v<x>` commit plus `deploy-v<x>` tag, writes that tag into
+every listed `source_ref`, then applies the saved plans one at a time. If one
+region fails, the script stops and already applied regions remain deployed; fix
+the failure and rerun.
 
 The matching OCI profile must exist in `~/.oci/config`, for example:
 

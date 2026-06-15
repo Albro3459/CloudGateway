@@ -1,6 +1,7 @@
 # Shared regional WireGuard server tfvars for one region.
 # Copy terraform.tfvars.example to <region-id>.terraform.tfvars and fill in real values.
-# Deploy with ./terraform.sh <region-id>. Real per-region tfvars are gitignored.
+# Deploy with ./terraform.sh <region-id> [<another-region-id> ...].
+# Real per-region tfvars are gitignored.
 
 # --- OCI placement ---
 availability_domain     = "AAAA:US-REGION-1-AD-1"

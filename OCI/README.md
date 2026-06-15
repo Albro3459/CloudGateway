@@ -113,7 +113,8 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 `<regionId>.terraform.tfvars`
 
 * Per-region local-only deployment values, for example `us-chicago-1.terraform.tfvars`.
-* Deployed via [`terraform.sh`](../terraform.sh), which selects a per-region Terraform workspace (isolated state) and the matching var file, so regions never share state.
+* Deployed via [`terraform.sh`](../terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
+* Multi-region apply creates one deploy tag and writes that same `source_ref` into every listed region's tfvars before applying them sequentially.
 * `oci_config_profile` names the `~/.oci/config` profile for that region's tenancy.
 * Contains sensitive values such as the WireGuard private key, Firebase credentials, and password hash. Never commit it; `*.tfvars` is gitignored.
 
