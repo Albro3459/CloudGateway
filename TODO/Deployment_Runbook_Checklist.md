@@ -26,10 +26,10 @@ The host fetches `bootstrap.sh` + `API/` from GitHub at boot. The ref must be on
 GitHub before deploying. Repo is public, so unauthenticated codeload works.
 
 - [ ] Tag the deployable commit and push it:
-      ```sh
-      git tag -a deploy-v1.0.0 <commit-sha> -m "deploy-v1.0.0"
-      git push origin deploy-v1.0.0
-      ```
+```sh
+git tag -a deploy-v1.0.0 <commit-sha> -m "deploy-v1.0.0"
+git push origin deploy-v1.0.0
+```
 - [ ] Set `source_ref = "deploy-v1.0.0"` in each region's `<regionId>.terraform.tfvars`.
 - Notes: a tag pointing at a commit on any branch works (codeload serves any ref).
   Never move a published `deploy-*` tag - cut a new one.
@@ -81,10 +81,10 @@ GitHub before deploying. Repo is public, so unauthenticated codeload works.
 - [ ] `curl -s https://us-chicago-1.gocloudlaunch.com/api/health`
       -> `{ "status": "ok", "regionId": "us-chicago-1" }`
 - [ ] Confirm direct origin is REJECTED:
-      ```sh
-      curl -sk --resolve us-chicago-1.gocloudlaunch.com:443:<public-ipv4> \
-        https://us-chicago-1.gocloudlaunch.com/api/health
-      ```
+```sh
+curl -sk --resolve us-chicago-1.gocloudlaunch.com:443:<public-ipv4> \
+https://us-chicago-1.gocloudlaunch.com/api/health
+```
       If this returns healthy, the origin is reachable without Cloudflare - STOP and
       fix the firewall/Caddy before enabling the region.
 
