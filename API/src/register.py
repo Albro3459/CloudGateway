@@ -13,10 +13,12 @@ logger = logging.getLogger("src.register")
 
 # IPv4-only echo services so we record the server's public IPv4, never a v6 address.
 _IP_ECHO_URLS = ("https://ipv4.icanhazip.com", "https://api.ipify.org")
+_HTTP_USER_AGENT = "CloudGateway-Register/1.0"
 
 
 def _http_get(url: str, timeout: float = 10.0) -> str:
-    with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed https hosts
+    request = urllib.request.Request(url, headers={"User-Agent": _HTTP_USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https hosts
         return response.read().decode("utf-8").strip()
 
 
