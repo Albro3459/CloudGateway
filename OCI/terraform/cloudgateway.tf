@@ -260,6 +260,28 @@ variable "region_user_client_limit" {
 	description = "Maximum active clients per normal user in the region"
 }
 
+variable "ses_region" {
+	type = string
+	description = "AWS region for SES deployment notification emails"
+}
+
+variable "ses_sender" {
+	type = string
+	description = "Verified SES sender identity used for deployment notification emails"
+}
+
+variable "aws_access_key_id" {
+	type = string
+	sensitive = true
+	description = "AWS access key ID for SES deployment notification emails"
+}
+
+variable "aws_secret_access_key" {
+	type = string
+	sensitive = true
+	description = "AWS secret access key for SES deployment notification emails"
+}
+
 variable "cloudflare_api_token" {
 	type = string
 	sensitive = true
@@ -390,6 +412,10 @@ locals {
 		region_display_order = var.region_display_order
 		region_capacity_limit = var.region_capacity_limit
 		region_user_client_limit = var.region_user_client_limit
+		ses_region = var.ses_region
+		ses_sender = var.ses_sender
+		aws_access_key_id = var.aws_access_key_id
+		aws_secret_access_key = var.aws_secret_access_key
 		caddy_acme_email = var.caddy_acme_email
 		cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
 		cloudflare_origin_pull_ca_url = var.cloudflare_origin_pull_ca_url

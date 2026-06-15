@@ -7,11 +7,13 @@
 # OCI/host/ into /opt/cloudgateway/src. Runs as root with output already
 # redirected to /var/log/wireguard-bootstrap.log by the stub.
 
-set -euxo pipefail
+set -euo pipefail
 
+set +x
 set -a
 source /etc/cloudgateway/bootstrap.env
 set +a
+set -x
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -27,6 +29,16 @@ wait_for_apt() {
     echo "Waiting for other apt/dpkg process to finish..."
     sleep 5
   done
+}
+
+# Quote a value for systemd EnvironmentFile parsing (the only parser of
+# api.env): wrap in double quotes and escape backslash and double-quote so
+# spaces and special characters survive intact.
+systemd_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
 }
 
 adguard_arch() {
@@ -439,6 +451,7 @@ if [[ ! -f "$FIREBASE_CREDENTIALS_FILE" ]]; then
 fi
 
 SERVER_PUBLIC_KEY="$(cat "/etc/wireguard/$WG_INTERFACE.publickey")"
+set +x
 cat > /etc/cloudgateway/api.env <<APIENV
 CLOUDGATEWAY_REGION_ID=$REGION_ID
 CLOUDGATEWAY_API_PORT=$FASTAPI_PORT
@@ -452,11 +465,16 @@ CLOUDGATEWAY_WG_DNS_IPV4=$WG_DNS_ADDRESS_V4
 CLOUDGATEWAY_WG_DNS_IPV6=$WG_DNS_ADDRESS_V6
 CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR=$WG_NETWORK_V4
 CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR=$WG_NETWORK_V6
-CLOUDGATEWAY_REGION_DISPLAY_NAME=$REGION_DISPLAY_NAME
+CLOUDGATEWAY_REGION_DISPLAY_NAME=$(systemd_quote "$REGION_DISPLAY_NAME")
 CLOUDGATEWAY_REGION_DISPLAY_ORDER=$REGION_DISPLAY_ORDER
 CLOUDGATEWAY_REGION_CAPACITY_LIMIT=$REGION_CAPACITY_LIMIT
 CLOUDGATEWAY_REGION_USER_CLIENT_LIMIT=$REGION_USER_CLIENT_LIMIT
+CLOUDGATEWAY_SES_REGION=$(systemd_quote "$SES_REGION")
+CLOUDGATEWAY_SES_SENDER=$(systemd_quote "$SES_SENDER")
+CLOUDGATEWAY_AWS_ACCESS_KEY_ID=$(systemd_quote "$AWS_ACCESS_KEY_ID")
+CLOUDGATEWAY_AWS_SECRET_ACCESS_KEY=$(systemd_quote "$AWS_SECRET_ACCESS_KEY")
 APIENV
+set -x
 chmod 600 /etc/cloudgateway/api.env
 
 cat > /etc/cloudgateway/origin.env <<ORIGINENV
@@ -687,7 +705,14 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> Registering region in Firestore"
-if ( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region ); then
+# Run via systemd-run so api.env is parsed by systemd (the same parser the
+# long-running services use), not the shell. This keeps a single env-file format
+# and avoids shell metacharacter pitfalls in quoted values. --wait propagates
+# the register exit code; --collect cleans up the transient unit.
+if systemd-run --quiet --pipe --wait --collect \
+  --property=WorkingDirectory=/opt/cloudgateway/api \
+  --property=EnvironmentFile=/etc/cloudgateway/api.env \
+  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region; then
   echo "Region registered"
 else
   echo "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2

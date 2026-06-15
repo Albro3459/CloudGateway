@@ -58,3 +58,5 @@ class Event(str, Enum):
     REGION_REGISTER_STARTED = "region_register_started"
     REGION_REGISTER_COMPLETED = "region_register_completed"
     REGION_REGISTER_FAILED = "region_register_failed"
+    REGION_DEPLOYMENT_EMAIL_COMPLETED = "region_deployment_email_completed"
+    REGION_DEPLOYMENT_EMAIL_FAILED = "region_deployment_email_failed"

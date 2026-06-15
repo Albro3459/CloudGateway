@@ -3,9 +3,11 @@ import json
 import logging
 import time
 import urllib.request
+from typing import Any, Protocol
 
 from .enums import Event
 from .logs import log_event, setup_logging
+from .notifications import create_ses_client, send_deployment_email
 from .repository import FirebaseRepository, RegionDoc, RegionRegistration
 from .settings import Settings
 
@@ -14,6 +16,27 @@ logger = logging.getLogger("src.register")
 # IPv4-only echo services so we record the server's public IPv4, never a v6 address.
 _IP_ECHO_URLS = ("https://ipv4.icanhazip.com", "https://api.ipify.org")
 _HTTP_USER_AGENT = "CloudGateway-Register/1.0"
+
+
+class SesClientFactory(Protocol):
+    def __call__(self, settings: Settings) -> Any:
+        """Build an SES client from settings (raises if SES is not configured)."""
+        ...
+
+
+class DeploymentEmailSender(Protocol):
+    def __call__(
+        self,
+        ses_client: Any,
+        *,
+        sender: str,
+        recipient: str,
+        region: RegionDoc,
+        settings: Settings,
+        public_ipv4: str,
+    ) -> str:
+        """Send one deployment email and return the provider message ID."""
+        ...
 
 
 def _http_get(url: str, timeout: float = 10.0) -> str:
@@ -88,6 +111,86 @@ def run_register(
     return repository.upsert_region(registration, set_enabled=ready)
 
 
+def notify_region_deployment(
+    *,
+    repository: FirebaseRepository,
+    settings: Settings,
+    region: RegionDoc,
+    public_ipv4: str,
+    create_client: SesClientFactory = create_ses_client,
+    send_email: DeploymentEmailSender = send_deployment_email,
+) -> int:
+    if not region.enabled:
+        return 0
+
+    try:
+        recipients = repository.list_admin_emails()
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.REGION_DEPLOYMENT_EMAIL_FAILED,
+            level=logging.ERROR,
+            region_id=region.region_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return 0
+
+    if not recipients:
+        log_event(
+            logger,
+            Event.REGION_DEPLOYMENT_EMAIL_COMPLETED,
+            region_id=region.region_id,
+            recipient_count=0,
+            sent_count=0,
+        )
+        return 0
+
+    # Build the SES client once and reuse it for every recipient. A build failure
+    # (missing/invalid SES config) is logged once and never blocks registration.
+    try:
+        ses_client = create_client(settings)
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.REGION_DEPLOYMENT_EMAIL_FAILED,
+            level=logging.ERROR,
+            region_id=region.region_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return 0
+
+    sent_count = 0
+    for recipient in recipients:
+        try:
+            send_email(
+                ses_client,
+                sender=settings.ses_sender,
+                recipient=recipient,
+                region=region,
+                settings=settings,
+                public_ipv4=public_ipv4,
+            )
+            sent_count += 1
+        except Exception as exc:
+            log_event(
+                logger,
+                Event.REGION_DEPLOYMENT_EMAIL_FAILED,
+                level=logging.ERROR,
+                region_id=region.region_id,
+                recipient_email=recipient,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    log_event(
+        logger,
+        Event.REGION_DEPLOYMENT_EMAIL_COMPLETED,
+        region_id=region.region_id,
+        recipient_count=len(recipients),
+        sent_count=sent_count,
+    )
+    return sent_count
+
+
 def main() -> int:
     setup_logging()
     settings = Settings()
@@ -140,6 +243,26 @@ def main() -> int:
         enabled=region.enabled,
         public_ipv4=public_ipv4,
     )
+
+    # Best-effort deployment email. Runs after the region is registered and the
+    # success marker is logged so it can never roll back enablement or flip the
+    # exit code, even on an unexpected failure.
+    try:
+        notify_region_deployment(
+            repository=repository,
+            settings=settings,
+            region=region,
+            public_ipv4=public_ipv4,
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.REGION_DEPLOYMENT_EMAIL_FAILED,
+            level=logging.ERROR,
+            region_id=settings.region_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
     return 0
 
 

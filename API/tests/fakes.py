@@ -188,6 +188,25 @@ class FakeRepository(FirebaseRepository):
             and client.client_public_key
         ]
 
+    def list_admin_emails(self) -> list[str]:
+        emails: list[str] = []
+        seen: set[str] = set()
+        for uid, role in self.roles.items():
+            if role != Role.ADMIN:
+                continue
+            user = self.users.get(uid)
+            if user is None:
+                continue
+            email = user.email.strip()
+            if not email:
+                continue
+            normalized = email.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            emails.append(email)
+        return emails
+
     def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
         if self.create_user_error is not None:
             raise self.create_user_error

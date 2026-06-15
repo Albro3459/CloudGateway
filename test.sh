@@ -24,10 +24,10 @@ test_api() (
     python3 -m venv .venv
     ./.venv/bin/python -m pip install --quiet --upgrade pip
   fi
-  if ! ./.venv/bin/python -c "import pytest" >/dev/null 2>&1 || [[ ! -x .venv/bin/pyright ]]; then
-    echo "Installing API dependencies"
-    ./.venv/bin/python -m pip install --quiet -e '.[dev]'
-  fi
+  # Upsert dependencies from pyproject every run (like `npm i`) so new deps are
+  # picked up on an existing venv. pip is a no-op when everything is satisfied.
+  echo "Syncing API dependencies"
+  ./.venv/bin/python -m pip install --quiet -e '.[dev]'
 
   ./.venv/bin/python -m compileall -q src tests
   ./.venv/bin/pyright --project ../pyrightconfig.json

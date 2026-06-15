@@ -201,6 +201,10 @@ class FirebaseRepository(ABC):
         """Return active clients with a public key for one region (peer sync input)."""
 
     @abstractmethod
+    def list_admin_emails(self) -> list[str]:
+        """Return non-empty admin user emails, de-duplicated case-insensitively."""
+
+    @abstractmethod
     def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
         """Create an Auth user and matching Users/Roles documents.
 

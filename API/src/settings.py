@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     wg_tunnel_ipv4_cidr: str = "10.0.0.0/24"
     wg_tunnel_ipv6_cidr: str = "fd42:42:42::/64"
 
+    ses_region: str = ""
+    ses_sender: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+
     # Region-doc metadata used by cloudgateway-register-region to self-seed Firestore.
     region_display_name: str = "local-region"
     region_display_order: int = 1000

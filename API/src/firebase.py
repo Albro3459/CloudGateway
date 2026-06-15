@@ -3,6 +3,7 @@ from dataclasses import replace
 from typing import Any, cast
 
 from google.cloud.firestore_v1.base_document import DocumentSnapshot
+from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.transforms import Sentinel
 
 from .auth import AuthenticatedUser, TokenVerifier
@@ -179,6 +180,30 @@ class FirestoreRepository(FirebaseRepository):
             if client.status == ClientStatus.ACTIVE and client.client_public_key:
                 clients.append(client)
         return clients
+
+    def list_admin_emails(self) -> list[str]:
+        snapshots = (
+            self._db()
+            .collection("Roles")
+            .where(filter=FieldFilter("role", "==", Role.ADMIN.value))
+            .stream()
+        )
+        emails: list[str] = []
+        seen: set[str] = set()
+        for raw_snapshot in snapshots:
+            snapshot = _sync_snapshot(raw_snapshot)
+            user = self.get_user(snapshot.id)
+            if user is None:
+                continue
+            email = user.email.strip()
+            if not email:
+                continue
+            normalized = email.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            emails.append(email)
+        return emails
 
     def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
         from firebase_admin import auth

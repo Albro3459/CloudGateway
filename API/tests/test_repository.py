@@ -13,7 +13,7 @@ from src.errors import (
     RegionMismatchError,
 )
 from src.firebase import FirestoreRepository, _user_write_data
-from src.repository import RegionDoc
+from src.repository import RegionDoc, UserDoc
 
 from .fakes import FakeRepository
 
@@ -101,6 +101,18 @@ def test_user_write_data_omits_missing_display_name():
     data = _user_write_data(uid="user-1", email="user@example.com", display_name=None, exists=True)
 
     assert "displayName" not in data
+
+
+def test_list_admin_emails_filters_missing_blank_non_admin_and_duplicates(repository: FakeRepository):
+    repository.roles["admin-2"] = Role.ADMIN
+    repository.roles["admin-3"] = Role.ADMIN
+    repository.roles["missing-admin"] = Role.ADMIN
+    repository.users["admin-1"] = UserDoc(uid="admin-1", email=" admin@example.com ", display_name=None)
+    repository.users["admin-2"] = UserDoc(uid="admin-2", email="ADMIN@example.com", display_name=None)
+    repository.users["admin-3"] = UserDoc(uid="admin-3", email=" ", display_name=None)
+    repository.users["user-1"] = UserDoc(uid="user-1", email="user@example.com", display_name=None)
+
+    assert repository.list_admin_emails() == ["admin@example.com"]
 
 
 def require_test_region(repository: FakeRepository) -> RegionDoc:

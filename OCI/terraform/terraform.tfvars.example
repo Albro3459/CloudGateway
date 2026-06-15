@@ -96,6 +96,12 @@ region_display_order     = 1
 region_capacity_limit    = 20
 region_user_client_limit = 3
 
+# --- AWS SES deployment notification email ---
+ses_region            = "us-west-1"
+ses_sender            = "CloudGateway <noreply@gocloudlaunch.com>"
+aws_access_key_id     = "REPLACE_WITH_AWS_ACCESS_KEY_ID"
+aws_secret_access_key = "REPLACE_WITH_AWS_SECRET_ACCESS_KEY"
+
 # --- Cloudflare DNS (Terraform-managed; token stays on this machine, never on the host) ---
 cloudflare_zone_id   = "replace_me"
 cloudflare_api_token = "REPLACE_WITH_CLOUDFLARE_DNS_EDIT_TOKEN"
