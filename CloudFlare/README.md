@@ -78,3 +78,11 @@ public IP (they self-heal on rebuild), using a Cloudflare API token with **Zone:
 -> DNS: Edit**. The token lives only on the operator machine (`cloudflare_api_token` tfvar),
 never on a host. The apex/www/email records stay manual. Before the first apply for a region,
 delete any pre-existing manual `<regionId>` / `wg.<regionId>` record or the create conflicts.
+
+If you enable **Client IP Address Filtering** on the token, allowlist **both** the operator
+machine's public **IPv4 and IPv6** addresses. Terraform's provider connects over IPv6 when the
+machine has working IPv6 (often preferred over IPv4), so a v4-only allowlist fails with
+`Authentication error (10000)` even though the token and DNS permissions are correct. Get the
+addresses with `curl -4 https://ifconfig.me` and `curl -6 https://ifconfig.me`; residential IPv6
+is usually a rotating /64, so prefer allowlisting the `/64` prefix, or leave IP filtering off
+(the token is already scoped to DNS: Edit on one zone).

@@ -62,6 +62,8 @@ The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.go
 
 DNS is **managed by Terraform**, not by hand. `terraform apply` creates/updates two `A` records from the instance's public IPv4 (`cloudflare_record.api`, orange/proxied; `cloudflare_record.wg`, grey/DNS-only) using `cloudflare_api_token` + `cloudflare_zone_id`. They update automatically on rebuild. If a manually-created record already exists for the name, delete it (or `terraform import` it) before the first apply, or the create conflicts.
 
+If the `cloudflare_api_token` has **Client IP Address Filtering** enabled, allowlist **both** the operator machine's public **IPv4 and IPv6** (`curl -4 https://ifconfig.me`, `curl -6 https://ifconfig.me`). Terraform's provider prefers IPv6 when available, so a v4-only allowlist fails every record op with `Authentication error (10000)` despite a valid token. Residential IPv6 is a rotating /64 - allowlist the `/64` prefix or leave IP filtering off.
+
 One-time per zone (see [CloudFlare/README.md](../CloudFlare/README.md)):
 
 1. SSL/TLS mode = **Full (strict)**.

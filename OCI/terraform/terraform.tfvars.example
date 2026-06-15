@@ -103,6 +103,9 @@ aws_access_key_id     = "REPLACE_WITH_AWS_ACCESS_KEY_ID"
 aws_secret_access_key = "REPLACE_WITH_AWS_SECRET_ACCESS_KEY"
 
 # --- Cloudflare DNS (Terraform-managed; token stays on this machine, never on the host) ---
+# Token = Zone: gocloudlaunch.com -> DNS: Edit. If you enable Client IP Address Filtering on the
+# token, allowlist BOTH this machine's public IPv4 and IPv6 (curl -4/-6 https://ifconfig.me) -- the
+# provider prefers IPv6, so a v4-only allowlist fails with "Authentication error (10000)".
 cloudflare_zone_id   = "replace_me"
 cloudflare_api_token = "REPLACE_WITH_CLOUDFLARE_DNS_EDIT_TOKEN"
 
