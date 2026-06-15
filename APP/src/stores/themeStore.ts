@@ -11,12 +11,12 @@ interface ThemeStore {
 const themeStorageKey = 'theme';
 
 const getStoredTheme = (): Theme => {
-  if (typeof window === 'undefined') return 'light';
+  if (typeof window === 'undefined') return 'dark';
 
   try {
-    return window.localStorage.getItem(themeStorageKey) === 'dark' ? 'dark' : 'light';
+    return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark';
   } catch {
-    return 'light';
+    return 'dark';
   }
 };
 
@@ -53,7 +53,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (event) => {
     if (event.key !== themeStorageKey) return;
 
-    const theme = event.newValue === 'dark' ? 'dark' : 'light';
+    const theme = event.newValue === 'light' ? 'light' : 'dark';
     applyTheme(theme);
     useThemeStore.setState({ theme });
   });
