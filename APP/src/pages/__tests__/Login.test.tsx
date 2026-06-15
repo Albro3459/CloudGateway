@@ -79,7 +79,7 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: /Continue with Google/ }));
 
         await waitFor(() => {
-            expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token");
+            expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
             expect(checkAccountAccess).toHaveBeenCalledWith(
                 "firebase-token",
                 [{ regionId: "us-sanjose-1", enabled: true }],
