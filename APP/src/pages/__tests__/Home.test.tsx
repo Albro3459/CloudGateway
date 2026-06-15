@@ -93,11 +93,12 @@ describe("Home pull to refresh", () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockUser.getIdToken.mockResolvedValue("firebase-token");
-        const { onAuthStateChanged } = require("../../firebase");
+        const { auth, onAuthStateChanged } = require("../../firebase");
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
         const { getUserRole } = require("../../helpers/usersHelper");
         const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
 
+        auth.currentUser = mockUser;
         onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
             callback(mockUser);
             return () => undefined;
@@ -154,6 +155,32 @@ describe("Home pull to refresh", () => {
         firePointer(dashboard, "pointermove", { clientY: 80, pointerId: 2 });
         firePointer(dashboard, "pointerup", { clientY: 80, pointerId: 2 });
 
+        expect(getUsersVPNs).toHaveBeenCalledTimes(1);
+        expect(fetchOciRegions).toHaveBeenCalledTimes(1);
+    });
+
+    it("clears the pull indicator when a threshold refresh cannot start", async () => {
+        const { auth } = require("../../firebase");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(fetchOciRegions).toHaveBeenCalledTimes(1));
+
+        const dashboard = screen.getByTestId("dashboard-page");
+
+        firePointer(dashboard, "pointerdown", { button: 0, clientY: 0, pointerId: 4 });
+        firePointer(dashboard, "pointermove", { clientY: 140, pointerId: 4 });
+
+        expect(screen.getByText("Release to refresh")).toBeTruthy();
+
+        auth.currentUser = null;
+        firePointer(dashboard, "pointerup", { clientY: 140, pointerId: 4 });
+
+        await waitFor(() => expect(screen.queryByText("Release to refresh")).toBeNull());
         expect(getUsersVPNs).toHaveBeenCalledTimes(1);
         expect(fetchOciRegions).toHaveBeenCalledTimes(1);
     });

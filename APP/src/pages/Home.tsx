@@ -139,7 +139,10 @@ const Home: React.FC = () => {
     }, []);
 
     const refreshDashboard = useCallback(async () => {
-        if (!auth.currentUser || pullRefreshing) return;
+        if (!auth.currentUser || pullRefreshing) {
+            resetPull();
+            return;
+        }
 
         setPullRefreshing(true);
         try {
