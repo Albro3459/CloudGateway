@@ -38,7 +38,7 @@ describe("VPNTable", () => {
         });
     });
 
-    it("renders client states, copies shown IPs, and removes selected clients", async () => {
+    it("renders client states, copies shown endpoints, and removes selected clients", async () => {
         const activeEntry = baseEntry({});
         const removedEntry = baseEntry({
             clientId: "client-removed",
@@ -83,12 +83,9 @@ describe("VPNTable", () => {
         expect(screen.getByText("Removed")).toBeTruthy();
         expect(screen.getByText("Apply failed")).toBeTruthy();
 
-        fireEvent.click(screen.getAllByLabelText(/Copy Laptop tunnel IPv4/)[0]);
-        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("10.0.0.2/32"));
-        await waitFor(() => expect(screen.getByText("Copied")).toBeTruthy());
-
         fireEvent.click(screen.getAllByLabelText(/Copy Laptop server endpoint/)[0]);
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("wg.us-sanjose-1.example.com"));
+        await waitFor(() => expect(screen.getByText("Copied")).toBeTruthy());
 
         const removedCheckbox = screen.getByLabelText("Select Old phone for removal") as HTMLInputElement;
         expect(removedCheckbox.disabled).toBe(true);

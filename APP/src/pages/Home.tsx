@@ -51,7 +51,7 @@ const Home: React.FC = () => {
     const [selectedClientKeys, setSelectedClientKeys] = useState<Set<string>>(new Set());
     const [vpnRegion, setVpnRegion] = useState<string | null>(null);
     const [activeConfigClientName, setActiveConfigClientName] = useState<string | null>(null);
-    const [IP, setIP] = useState<string | null>(null);
+    const [activeConfigEndpoint, setActiveConfigEndpoint] = useState<string | null>(null);
     const [configData, setConfigData] = useState<string | null>(null);
     const [configCopied, setConfigCopied] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -255,12 +255,19 @@ const Home: React.FC = () => {
             return;
         }
 
-        setIP(vpn.assignedTunnelIpv4 || vpn.serverEndpointIpv4 || vpn.ipv4);
+        setActiveConfigEndpoint(vpn.serverEndpointHostname || vpn.serverEndpointIpv4 || vpn.ipv4);
         setVpnRegion(vpn.region);
         setActiveConfigClientName(vpn.clientName || vpn.clientId);
         setConfigData(vpn.wireguardConfig);
         setConfigCopied(false);
     }, []);
+
+    const closeConfigModal = () => {
+        setConfigData(null);
+        setActiveConfigEndpoint(null);
+        setVpnRegion(null);
+        setActiveConfigClientName(null);
+    };
 
     const handleDownloadConfig = (vpn: VPNTableEntry) => {
         if (!vpn.wireguardConfig) {
@@ -536,15 +543,16 @@ const Home: React.FC = () => {
             />
 
             {configData && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div className="relative w-full max-w-md rounded-lg bg-card p-6 text-center shadow-lg">
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={closeConfigModal}
+                >
+                    <div
+                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-center shadow-lg"
+                        onClick={(event) => event.stopPropagation()}
+                    >
                         <button
-                            onClick={() => {
-                                setConfigData(null);
-                                setIP(null);
-                                setVpnRegion(null);
-                                setActiveConfigClientName(null);
-                            }}
+                            onClick={closeConfigModal}
                             className="absolute right-3 top-2 text-lg font-bold text-content-muted hover:text-content"
                             aria-label="Close QR code"
                         >
@@ -561,9 +569,9 @@ const Home: React.FC = () => {
                                 Region: <b>{getRegionName(vpnRegion, ociRegions)}</b>
                             </p>
                         )}
-                        {IP && (
+                        {activeConfigEndpoint && (
                             <p className="flex items-center justify-center gap-1 pt-1 text-content-secondary">
-                                Address: <CopyableValue value={IP} label={`${activeConfigClientName || "client"} address`} />
+                                Endpoint: <CopyableValue value={activeConfigEndpoint} label={`${activeConfigClientName || "client"} endpoint`} />
                             </p>
                         )}
                         <canvas ref={canvasRef} className="mx-auto mt-2" />

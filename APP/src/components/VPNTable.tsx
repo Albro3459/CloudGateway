@@ -150,12 +150,6 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
                 )}
             </td>
             <td className="px-3 py-3 text-center align-middle">
-                <CopyableValue value={entry.assignedTunnelIpv4} label={`${entry.clientName || entry.clientId} tunnel IPv4`} />
-            </td>
-            <td className="px-3 py-3 text-center align-middle">
-                <CopyableValue value={entry.assignedTunnelIpv6} label={`${entry.clientName || entry.clientId} tunnel IPv6`} />
-            </td>
-            <td className="px-3 py-3 text-center align-middle">
                 <CopyableValue
                     value={entry.serverEndpointHostname || entry.serverEndpointIpv4 || entry.ipv4}
                     label={`${entry.clientName || entry.clientId} server endpoint`}
@@ -219,7 +213,7 @@ export const VPNTable: React.FC<VPNTableData> = ({
     const [sortField, setSortField] = useState<string | null>("clientName");
     const [sortAsc, setSortAsc] = useState(true);
     const selectedCount = selectedClientKeys.size;
-    const colSpan = isAdmin ? 9 : 8;
+    const colSpan = isAdmin ? 7 : 6;
 
     const rows = useMemo(() => (
         data ? sortedData(data, sortField, sortAsc, regions) : null
@@ -318,8 +312,6 @@ export const VPNTable: React.FC<VPNTableData> = ({
                             >
                                 Status
                             </th>
-                            <th className="px-3 py-2 text-center">Tunnel IPv4</th>
-                            <th className="px-3 py-2 text-center">Tunnel IPv6</th>
                             <th className="px-3 py-2 text-center">Endpoint</th>
                             <th className="px-3 py-2 text-center">Config</th>
                         </tr>
