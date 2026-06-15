@@ -178,40 +178,45 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
                 />
             </td>
             <td className="px-3 py-3 align-middle">
-                <div className="flex items-center justify-center gap-2">
-                    <button
-                        type="button"
-                        onClick={() => configAvailable && onQRCodeClick(entry)}
-                        disabled={!configAvailable}
-                        className={configAvailable ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
-                        aria-label={`Show QR code for ${entry.clientName || entry.clientId}`}
-                        title={configAvailable ? "Show QR code" : "Config not available"}
-                    >
-                        <QrCode size={18} />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => configAvailable && onDownloadConfig(entry)}
-                        disabled={!configAvailable}
-                        className={configAvailable ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
-                        aria-label={`Download config for ${entry.clientName || entry.clientId}`}
-                        title={configAvailable ? "Download config" : "Config not available"}
-                    >
-                        <Download size={18} />
-                    </button>
-                    <button
-                        type="button"
-                        onClick={copyConfig}
-                        disabled={!entry.wireguardConfig}
-                        className={entry.wireguardConfig ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
-                        aria-label={`Copy config for ${entry.clientName || entry.clientId}`}
-                        title={entry.wireguardConfig ? "Copy config" : "Config not available"}
-                    >
-                        <Copy size={18} />
-                    </button>
-                </div>
-                <div className={`mt-1 text-center text-xs ${entry.wireguardConfig ? "text-content-muted" : "text-content-faint"}`}>
-                    {configCopied ? "Copied" : entry.wireguardConfig ? "Stored" : "No config"}
+                <div className="flex min-h-8 min-w-24 items-center justify-center">
+                    {configCopied ? (
+                        <span className="text-xs font-medium text-content-muted" role="status">
+                            Copied
+                        </span>
+                    ) : (
+                        <div className="flex items-center justify-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => configAvailable && onQRCodeClick(entry)}
+                                disabled={!configAvailable}
+                                className={configAvailable ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
+                                aria-label={`Show QR code for ${entry.clientName || entry.clientId}`}
+                                title={configAvailable ? "Show QR code" : "Config not available"}
+                            >
+                                <QrCode size={18} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => configAvailable && onDownloadConfig(entry)}
+                                disabled={!configAvailable}
+                                className={configAvailable ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
+                                aria-label={`Download config for ${entry.clientName || entry.clientId}`}
+                                title={configAvailable ? "Download config" : "Config not available"}
+                            >
+                                <Download size={18} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={copyConfig}
+                                disabled={!entry.wireguardConfig}
+                                className={entry.wireguardConfig ? "rounded p-1.5 text-accent hover:bg-primary-soft hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-focus" : "cursor-not-allowed rounded p-1.5 text-content-disabled"}
+                                aria-label={`Copy config for ${entry.clientName || entry.clientId}`}
+                                title={entry.wireguardConfig ? "Copy config" : "Config not available"}
+                            >
+                                <Copy size={18} />
+                            </button>
+                        </div>
+                    )}
                 </div>
             </td>
         </tr>
