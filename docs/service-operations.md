@@ -4,7 +4,7 @@ Host-level notes for the services on each regional server. All commands run as r
 
 Logging boundaries apply to operations too:
 
-* API logs are structured JSON and may include request IDs, routes, user emails, and display names. That is expected.
+* API logs are structured JSON and may include request IDs, routes, and user emails. That is expected.
 * No service may keep VPN traffic logs: no DNS queries, no destination IPs or domains, no browsing/app metadata, no per-user connection history. If you find such logging enabled, treat it as an incident and disable it.
 * Never paste private keys, full WireGuard configs, Firebase credentials, auth tokens, or the contents of `/etc/cloudgateway/api.env` into logs or tickets.
 

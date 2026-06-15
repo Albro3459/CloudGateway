@@ -22,7 +22,6 @@ def test_check_access_disables_and_revokes_unprovisioned_user(client, repository
     token_verifier.users["pending-token"] = AuthenticatedUser(
         uid="pending-1",
         email="pending@example.com",
-        display_name="Pending User",
     )
 
     response = client.post("/auth/check-access", headers=auth_header("pending-token"))

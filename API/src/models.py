@@ -63,7 +63,6 @@ class CreateUserRequest(ApiModel):
     )
 
     email: str = Field(min_length=1, max_length=320)
-    display_name: str | None = Field(default=None, max_length=256)
 
     @field_validator("email")
     @classmethod
@@ -72,14 +71,6 @@ class CreateUserRequest(ApiModel):
         if not value or "@" not in value:
             raise ValueError("Invalid email.")
         return value
-
-    @field_validator("display_name")
-    @classmethod
-    def blank_display_name_is_none(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        return value or None
 
 
 class CreateUserResponse(ApiModel):

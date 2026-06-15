@@ -101,13 +101,10 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 
 ```json
 {
-  "email": "user@example.com",
-  "password": "temporary-password",
-  "displayName": "User Name"
+  "email": "user@example.com"
 }
 ```
 
-- `displayName` is optional.
 - Response `200`:
 
 ```json

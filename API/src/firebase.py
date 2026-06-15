@@ -87,7 +87,6 @@ class FirebaseTokenVerifier(TokenVerifier):
         return AuthenticatedUser(
             uid=uid,
             email=decoded.get("email"),
-            display_name=decoded.get("name"),
         )
 
 
@@ -205,17 +204,14 @@ class FirestoreRepository(FirebaseRepository):
             emails.append(email)
         return emails
 
-    def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
+    def create_user(self, *, email: str) -> CreateUserResult:
         from firebase_admin import auth
 
         _firebase_app(self._settings)
         already_existed = False
         reenabled_existing_auth = False
         try:
-            auth_data = {"email": email}
-            if display_name is not None:
-                auth_data["display_name"] = display_name
-            auth_user = auth.create_user(**auth_data)
+            auth_user = auth.create_user(email=email)
         except Exception as exc:
             if _exception_is_named(exc, "EmailAlreadyExistsError"):
                 auth_user = self._get_existing_auth_user(email=email)
@@ -234,14 +230,11 @@ class FirestoreRepository(FirebaseRepository):
                 raise AccountDisabledError("This user already has access, but their Firebase account is disabled.")
             self.enable_auth_user(uid)
             reenabled_existing_auth = True
-        if display_name is None:
-            display_name = auth_user.display_name
         now = utc_now()
         try:
             self._provision_user_documents(
                 uid=uid,
                 email=auth_user.email or email,
-                display_name=display_name,
             )
         except DuplicateEmailError:
             # If a role now exists, another request provisioned this account;
@@ -264,7 +257,7 @@ class FirestoreRepository(FirebaseRepository):
             )
             raise FirebaseWriteFailedError() from exc
 
-        user = UserDoc(uid=uid, email=auth_user.email or email, display_name=display_name, created_at=now)
+        user = UserDoc(uid=uid, email=auth_user.email or email, created_at=now)
         return CreateUserResult(user=user, already_existed=already_existed)
 
     def disable_auth_user(self, uid: str) -> None:
@@ -330,7 +323,7 @@ class FirestoreRepository(FirebaseRepository):
         except Exception:
             pass
 
-    def _provision_user_documents(self, *, uid: str, email: str, display_name: str | None) -> None:
+    def _provision_user_documents(self, *, uid: str, email: str) -> None:
         db = self._db()
 
         @_transactional()
@@ -348,7 +341,6 @@ class FirestoreRepository(FirebaseRepository):
                 _user_write_data(
                     uid=uid,
                     email=email,
-                    display_name=display_name,
                     exists=user_snapshot.exists,
                 ),
                 merge=True,
@@ -368,7 +360,6 @@ class FirestoreRepository(FirebaseRepository):
         *,
         owner_uid: str,
         owner_email: str | None,
-        owner_display_name: str | None,
         region_id: str,
         client_name: str | None,
     ) -> ClientDoc:
@@ -411,14 +402,12 @@ class FirestoreRepository(FirebaseRepository):
             user_data = _user_write_data(
                 uid=owner_uid,
                 email=owner_email,
-                display_name=owner_display_name,
                 exists=user_snapshot.exists,
             )
             client_data = _client_write_data(
                 client_id=client_id,
                 owner_uid=owner_uid,
                 owner_email=owner_email,
-                owner_display_name=owner_display_name,
                 client_name=client_name,
                 region=region,
                 assigned_tunnel_ipv4=assigned_ipv4,
@@ -693,7 +682,6 @@ def _user_from_data(data: dict[str, Any], uid: str) -> UserDoc:
     return UserDoc(
         uid=data.get("uid") or uid,
         email=data.get("email") or "",
-        display_name=data.get("displayName"),
         created_at=data.get("createdAt"),
         disabled=bool(data.get("disabled", False)),
     )
@@ -704,7 +692,6 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
         client_id=data.get("clientId") or client_id,
         owner_uid=data.get("ownerUid") or "",
         owner_email=data.get("ownerEmail") or "",
-        owner_display_name=data.get("ownerDisplayName"),
         client_name=data.get("clientName") or clean_client_name(None),
         region_id=data.get("regionId") or "",
         status=ClientStatus(data.get("status")),
@@ -723,13 +710,11 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
     )
 
 
-def _user_write_data(*, uid: str, email: str | None, display_name: str | None, exists: bool) -> dict[str, Any]:
+def _user_write_data(*, uid: str, email: str | None, exists: bool) -> dict[str, Any]:
     data: dict[str, Any] = {
         "uid": uid,
         "email": email or "",
     }
-    if display_name is not None:
-        data["displayName"] = display_name
     if not exists:
         data["createdAt"] = _server_timestamp()
         data["disabled"] = False
@@ -751,7 +736,6 @@ def _client_write_data(
     client_id: str,
     owner_uid: str,
     owner_email: str | None,
-    owner_display_name: str | None,
     client_name: str | None,
     region: RegionDoc,
     assigned_tunnel_ipv4: str,
@@ -761,7 +745,6 @@ def _client_write_data(
         "clientId": client_id,
         "ownerUid": owner_uid,
         "ownerEmail": owner_email or "",
-        "ownerDisplayName": owner_display_name,
         "clientName": clean_client_name(client_name),
         "regionId": region.region_id,
         "status": ClientStatus.CREATING.value,

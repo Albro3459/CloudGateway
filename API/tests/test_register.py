@@ -92,8 +92,8 @@ def test_notify_region_deployment_sends_to_admin_emails():
     repo = FakeRepository(local_region_id=REGION_ID)
     repo.roles["admin-1"] = Role.ADMIN
     repo.roles["admin-2"] = Role.ADMIN
-    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin1@example.com", display_name=None)
-    repo.users["admin-2"] = UserDoc(uid="admin-2", email="admin2@example.com", display_name=None)
+    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin1@example.com")
+    repo.users["admin-2"] = UserDoc(uid="admin-2", email="admin2@example.com")
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     sender = RecordingDeploymentEmailSender()
 
@@ -115,7 +115,7 @@ def test_notify_region_deployment_sends_to_admin_emails():
 def test_notify_region_deployment_skips_disabled_region():
     repo = FakeRepository(local_region_id=REGION_ID)
     repo.roles["admin-1"] = Role.ADMIN
-    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com", display_name=None)
+    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com")
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=False)
     sender = RecordingDeploymentEmailSender()
 
@@ -135,7 +135,7 @@ def test_notify_region_deployment_skips_disabled_region():
 def test_notify_region_deployment_logs_ses_failure_without_failing(caplog):
     repo = FakeRepository(local_region_id=REGION_ID)
     repo.roles["admin-1"] = Role.ADMIN
-    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com", display_name=None)
+    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com")
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     sender = RecordingDeploymentEmailSender(error=RuntimeError("ses send failed"))
 
@@ -157,7 +157,7 @@ def test_notify_region_deployment_logs_ses_failure_without_failing(caplog):
 def test_notify_region_deployment_logs_client_build_failure_without_sending(caplog):
     repo = FakeRepository(local_region_id=REGION_ID)
     repo.roles["admin-1"] = Role.ADMIN
-    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com", display_name=None)
+    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com")
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     sender = RecordingDeploymentEmailSender()
 

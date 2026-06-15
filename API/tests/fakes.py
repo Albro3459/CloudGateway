@@ -207,7 +207,7 @@ class FakeRepository(FirebaseRepository):
             emails.append(email)
         return emails
 
-    def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
+    def create_user(self, *, email: str) -> CreateUserResult:
         if self.create_user_error is not None:
             raise self.create_user_error
         with self._lock:
@@ -222,9 +222,6 @@ class FakeRepository(FirebaseRepository):
                     raise DuplicateEmailError()
                 if existing.uid in self.disabled_auth_uids:
                     self.enable_auth_user(existing.uid)
-                if display_name is not None:
-                    existing = replace(existing, display_name=display_name)
-                    self.users[existing.uid] = existing
                 self.roles[existing.uid] = Role.USER
                 return CreateUserResult(user=existing, already_existed=True)
             self.created_user_count += 1
@@ -232,7 +229,7 @@ class FakeRepository(FirebaseRepository):
             while uid in self.users or uid in self.roles:
                 self.created_user_count += 1
                 uid = f"created-user-{self.created_user_count}"
-            user = UserDoc(uid=uid, email=email, display_name=display_name, created_at=utc_now())
+            user = UserDoc(uid=uid, email=email, created_at=utc_now())
             self.users[uid] = user
             self.roles[uid] = Role.USER
             return CreateUserResult(user=user)
@@ -249,7 +246,6 @@ class FakeRepository(FirebaseRepository):
         *,
         owner_uid: str,
         owner_email: str | None,
-        owner_display_name: str | None,
         region_id: str,
         client_name: str | None,
     ) -> ClientDoc:
@@ -280,7 +276,6 @@ class FakeRepository(FirebaseRepository):
                 UserDoc(
                     uid=owner_uid,
                     email=owner_email or "",
-                    display_name=owner_display_name,
                     created_at=now,
                 ),
             )
@@ -292,7 +287,6 @@ class FakeRepository(FirebaseRepository):
                 client_id=client_id,
                 owner_uid=owner_uid,
                 owner_email=owner_email or "",
-                owner_display_name=owner_display_name,
                 client_name=clean_client_name(client_name),
                 region_id=region.region_id,
                 status=ClientStatus.CREATING,

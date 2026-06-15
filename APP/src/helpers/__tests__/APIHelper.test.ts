@@ -83,7 +83,6 @@ describe("APIHelper", () => {
 
         const result = await createAdminUser({
             email: "user@example.com",
-            displayName: "Test User",
         }, "firebase-token", [
             { regionId: "us-sanjose-1", enabled: true, displayOrder: 20 },
         ]);
@@ -94,7 +93,6 @@ describe("APIHelper", () => {
         expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
         expect(JSON.parse(request.body as string)).toEqual({
             email: "user@example.com",
-            displayName: "Test User",
         });
         expect(result).toEqual({ success: true, data: responseBody });
     });

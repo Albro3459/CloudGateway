@@ -62,7 +62,6 @@ class RegionRegistration:
 class UserDoc:
     uid: str
     email: str
-    display_name: str | None
     created_at: datetime | None = None
     disabled: bool = False
 
@@ -78,7 +77,6 @@ class ClientDoc:
     client_id: str
     owner_uid: str
     owner_email: str
-    owner_display_name: str | None
     client_name: str
     region_id: str
     status: ClientStatus
@@ -205,7 +203,7 @@ class FirebaseRepository(ABC):
         """Return non-empty admin user emails, de-duplicated case-insensitively."""
 
     @abstractmethod
-    def create_user(self, *, email: str, display_name: str | None) -> CreateUserResult:
+    def create_user(self, *, email: str) -> CreateUserResult:
         """Create an Auth user and matching Users/Roles documents.
 
         When the Auth account already exists but has no provisioning docs,
@@ -226,7 +224,6 @@ class FirebaseRepository(ABC):
         *,
         owner_uid: str,
         owner_email: str | None,
-        owner_display_name: str | None,
         region_id: str,
         client_name: str | None,
     ) -> ClientDoc:

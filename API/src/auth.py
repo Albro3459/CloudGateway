@@ -16,7 +16,6 @@ USER_NOT_PROVISIONED_DISABLED_MESSAGE = (
 class AuthenticatedUser:
     uid: str
     email: str | None = None
-    display_name: str | None = None
 
 
 class TokenVerifier(ABC):

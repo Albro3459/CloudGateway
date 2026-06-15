@@ -31,7 +31,6 @@ export type FirebaseRegionDoc = {
 export type FirebaseUserDoc = {
     uid: string;
     email: string;
-    displayName: string | null;
     createdAt: FirestoreTimestamp;
     disabled?: boolean;
 };
@@ -50,7 +49,6 @@ export type FirebaseClientDoc = {
     clientId: string;
     ownerUid: string;
     ownerEmail: string;
-    ownerDisplayName: string | null;
     clientName: string;
     regionId: string;
     status: FirebaseClientStatus;

@@ -67,7 +67,6 @@ async def create_client(
         request_id=request_id,
         user_id=user.uid,
         user_email=user.email,
-        user_display_name=user.display_name,
         client_name=body.client_name,
         region_id=body.region_id,
     )
@@ -75,7 +74,6 @@ async def create_client(
         reserved_client = repository.reserve_client(
             owner_uid=user.uid,
             owner_email=user.email,
-            owner_display_name=user.display_name,
             region_id=body.region_id,
             client_name=body.client_name,
         )
@@ -220,7 +218,6 @@ async def delete_client(
         request_id=request_id,
         requester_uid=user.uid,
         requester_email=user.email,
-        requester_display_name=user.display_name,
         target_uid=body.user_id,
         region_id=body.region_id,
         client_id=client_id,
@@ -323,10 +320,7 @@ async def create_user(
         email=body.email,
     )
     try:
-        result = repository.create_user(
-            email=body.email,
-            display_name=body.display_name,
-        )
+        result = repository.create_user(email=body.email)
     except ApiError:
         log_event(
             logger,

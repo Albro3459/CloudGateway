@@ -37,7 +37,6 @@ def create_active_client(repository, wireguard, *, uid: str = "user-1"):
     client = repository.reserve_client(
         owner_uid=uid,
         owner_email=f"{uid}@example.com",
-        owner_display_name=None,
         region_id=REGION_ID,
         client_name="Phone",
     )

@@ -44,12 +44,10 @@ def token_verifier() -> FakeTokenVerifier:
     verifier.users["user-token"] = AuthenticatedUser(
         uid="user-1",
         email="user@example.com",
-        display_name="User One",
     )
     verifier.users["admin-token"] = AuthenticatedUser(
         uid="admin-1",
         email="admin@example.com",
-        display_name="Admin One",
     )
     return verifier
 

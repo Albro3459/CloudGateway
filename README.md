@@ -54,7 +54,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 ## Privacy and Logging
 
-* API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails/display names, because those are needed to operate the control plane.
+* API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails, because those are needed to operate the control plane.
 * VPN traffic logs are forbidden. Never log DNS queries, domains or destination IPs requested by VPN users, browsing/app traffic metadata, packet metadata, or per-user connection history.
 * Never log WireGuard private keys, full WireGuard configs, Firebase service account secrets, or auth tokens.
 

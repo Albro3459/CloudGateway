@@ -170,7 +170,7 @@ Related docs:
 
 ## Secrets And Logging
 
-Structured API logs are required for operating the control plane. They may include request IDs, route names, operation status, region IDs, user IDs, emails, and display names.
+Structured API logs are required for operating the control plane. They may include request IDs, route names, operation status, region IDs, user IDs, and emails.
 
 Never log or paste:
 

@@ -12,7 +12,6 @@ def auth_header(token: str = "admin-token") -> dict[str, str]:
 def valid_payload(**overrides):
     payload = {
         "email": "new.user@example.com",
-        "displayName": " New User ",
     }
     payload.update(overrides)
     return payload
@@ -32,19 +31,19 @@ def test_create_user_admin_creates_auth_user_and_role(client, repository):
     assert "user_id" not in payload
     stored = repository.get_user("created-user-1")
     assert stored.email == "new.user@example.com"
-    assert stored.display_name == "New User"
     assert repository.get_role("created-user-1").value == "user"
 
 
-def test_create_user_allows_missing_display_name(client, repository):
+def test_create_user_rejects_display_name(client, repository):
     response = client.post(
         "/users",
-        json=valid_payload(displayName=None),
+        json=valid_payload(displayName="User Name"),
         headers=auth_header(),
     )
 
-    assert response.status_code == 200
-    assert repository.get_user("created-user-1").display_name is None
+    assert response.status_code == 400
+    assert_error_shape(response.json(), "INVALID_REQUEST")
+    assert repository.get_user("created-user-1") is None
 
 
 def test_create_user_trims_email(client, repository):
@@ -88,13 +87,12 @@ def test_create_user_provisions_existing_auth_user_without_role(client, reposito
     repository.users["existing-user"] = UserDoc(
         uid="existing-user",
         email="existing@example.com",
-        display_name="Existing User",
         created_at=utc_now(),
     )
 
     response = client.post(
         "/users",
-        json=valid_payload(email="existing@example.com", displayName=None),
+        json=valid_payload(email="existing@example.com"),
         headers=auth_header(),
     )
 
@@ -106,21 +104,19 @@ def test_create_user_provisions_existing_auth_user_without_role(client, reposito
         "alreadyExisted": True,
     }
     assert repository.get_role("existing-user").value == "user"
-    assert repository.get_user("existing-user").display_name == "Existing User"
 
 
 def test_create_user_enables_and_provisions_disabled_existing_auth_user_without_role(client, repository):
     repository.users["disabled-user"] = UserDoc(
         uid="disabled-user",
         email="disabled@example.com",
-        display_name=None,
         created_at=utc_now(),
     )
     repository.disabled_auth_uids.add("disabled-user")
 
     response = client.post(
         "/users",
-        json=valid_payload(email="disabled@example.com", displayName=None),
+        json=valid_payload(email="disabled@example.com"),
         headers=auth_header(),
     )
 
@@ -139,7 +135,6 @@ def test_create_user_rejects_disabled_existing_auth_user_with_role(client, repos
     repository.users["disabled-user"] = UserDoc(
         uid="disabled-user",
         email="disabled@example.com",
-        display_name=None,
         created_at=utc_now(),
     )
     repository.roles["disabled-user"] = Role.USER

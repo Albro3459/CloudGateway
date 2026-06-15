@@ -57,7 +57,6 @@ export type DeleteClientResponse = {
 
 export type CreateUserRequest = {
     email: string;
-    displayName?: string;
 };
 
 export type CreateUserResponse = {
@@ -224,7 +223,6 @@ export const createAdminUser = (
             "POST",
             {
                 email: request.email,
-                ...(request.displayName ? { displayName: request.displayName } : {}),
             },
         );
     } catch (error) {

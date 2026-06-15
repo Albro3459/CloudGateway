@@ -67,13 +67,11 @@ def reserve(
     *,
     uid: str = "user-1",
     email: str = "user@example.com",
-    display_name: str | None = "User One",
     client_name: str | None = "Phone",
 ):
     return repository.reserve_client(
         owner_uid=uid,
         owner_email=email,
-        owner_display_name=display_name,
         region_id=REGION_ID,
         client_name=client_name,
     )
@@ -97,8 +95,8 @@ def test_rollback_deletes_created_auth_when_role_absent():
     assert auth.deleted_uids == ["user-1"]
 
 
-def test_user_write_data_omits_missing_display_name():
-    data = _user_write_data(uid="user-1", email="user@example.com", display_name=None, exists=True)
+def test_user_write_data_omits_display_name():
+    data = _user_write_data(uid="user-1", email="user@example.com", exists=True)
 
     assert "displayName" not in data
 
@@ -107,10 +105,10 @@ def test_list_admin_emails_filters_missing_blank_non_admin_and_duplicates(reposi
     repository.roles["admin-2"] = Role.ADMIN
     repository.roles["admin-3"] = Role.ADMIN
     repository.roles["missing-admin"] = Role.ADMIN
-    repository.users["admin-1"] = UserDoc(uid="admin-1", email=" admin@example.com ", display_name=None)
-    repository.users["admin-2"] = UserDoc(uid="admin-2", email="ADMIN@example.com", display_name=None)
-    repository.users["admin-3"] = UserDoc(uid="admin-3", email=" ", display_name=None)
-    repository.users["user-1"] = UserDoc(uid="user-1", email="user@example.com", display_name=None)
+    repository.users["admin-1"] = UserDoc(uid="admin-1", email=" admin@example.com ")
+    repository.users["admin-2"] = UserDoc(uid="admin-2", email="ADMIN@example.com")
+    repository.users["admin-3"] = UserDoc(uid="admin-3", email=" ")
+    repository.users["user-1"] = UserDoc(uid="user-1", email="user@example.com")
 
     assert repository.list_admin_emails() == ["admin@example.com"]
 
@@ -129,7 +127,6 @@ def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: Fa
     assert client.status == ClientStatus.CREATING
     assert client.owner_uid == "user-1"
     assert client.owner_email == "user@example.com"
-    assert client.owner_display_name == "User One"
     assert client.client_name == "CloudGateway Client"
     assert client.assigned_tunnel_ipv4 == "10.0.0.2/32"
     assert client.assigned_tunnel_ipv6 == "fd42:42:42::2/128"
@@ -152,7 +149,6 @@ def test_reserve_client_enforces_local_region(repository: FakeRepository):
         repository.reserve_client(
             owner_uid="user-1",
             owner_email="user@example.com",
-            owner_display_name=None,
             region_id="us-other-1",
             client_name=None,
         )
@@ -194,7 +190,6 @@ def test_admin_can_exceed_normal_limit_until_capacity(repository: FakeRepository
             repository,
             uid="admin-1",
             email="admin@example.com",
-            display_name="Admin One",
             client_name=f"Admin Client {index}",
         )
 
@@ -204,7 +199,6 @@ def test_admin_can_exceed_normal_limit_until_capacity(repository: FakeRepository
             repository,
             uid="admin-1",
             email="admin@example.com",
-            display_name="Admin One",
             client_name="Admin Client 5",
         )
 
@@ -217,7 +211,6 @@ def test_capacity_applies_to_all_allocated_clients(repository: FakeRepository):
         repository.reserve_client(
             owner_uid="user-2",
             owner_email="user2@example.com",
-            owner_display_name=None,
             region_id=REGION_ID,
             client_name="Laptop",
         )
@@ -285,7 +278,6 @@ def test_normal_user_cannot_delete_another_users_client(repository: FakeReposito
     client = repository.reserve_client(
         owner_uid="user-2",
         owner_email="user2@example.com",
-        owner_display_name=None,
         region_id=REGION_ID,
         client_name="Laptop",
     )
