@@ -139,6 +139,22 @@ describe("Home pull to refresh", () => {
         expect(fetchOciRegions).toHaveBeenLastCalledWith("firebase-token", true);
     });
 
+    it("shows region loading before the first regions fetch resolves", async () => {
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: null,
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+
+        expect(screen.getByText("Loading regions...")).toBeTruthy();
+        expect(screen.queryByText(/No enabled regions are available\./)).toBeNull();
+    });
+
     it("does not refresh when the pull is below the threshold", async () => {
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
         const { fetchOciRegions } = require("../../stores/ociRegionsStore");

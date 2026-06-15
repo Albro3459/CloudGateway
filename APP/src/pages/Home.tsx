@@ -43,6 +43,7 @@ const Home: React.FC = () => {
 
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
     const enabledRegions = useMemo(() => getEnabledRegions(ociRegions), [ociRegions]);
+    const initialRegionsLoading = ociRegions === null && !regionsError;
 
     const [activeRegionId, setActiveRegionId] = useState("");
     const selectedRegion = enabledRegions.find(r => r.value === activeRegionId) || null;
@@ -558,13 +559,13 @@ const Home: React.FC = () => {
                 </div>
 
                 <div className="mt-5 border-t border-edge-faint pt-4">
-                    {regionsLoading && (
+                    {(regionsLoading || initialRegionsLoading) && (
                         <p className="text-sm text-content-muted">Loading regions...</p>
                     )}
                     {regionsError && (
                         <p className="text-sm text-danger-content">{regionsError}</p>
                     )}
-                    {!regionsLoading && !enabledRegions.length && (
+                    {!regionsLoading && ociRegions !== null && !enabledRegions.length && (
                         <p className="text-sm text-danger-content"><NoRegionsMessage /></p>
                     )}
                     {showRegionTabs ? (
