@@ -310,7 +310,8 @@ filtering:
   filters_update_interval: 24
   blocked_services:
     ids: []
-    schedule: null
+    schedule:
+      time_zone: UTC
 querylog:
   enabled: false
   file_enabled: false
