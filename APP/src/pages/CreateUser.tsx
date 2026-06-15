@@ -9,7 +9,7 @@ import { getUserRole } from "../helpers/usersHelper";
 import { logout } from "../helpers/firebaseDbHelper";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { NoRegionsMessage } from "../components/NoRegionsMessage";
+import { NoRegionsMessage } from "../components/AccessMessages";
 
 const CreateUser: React.FC = () => {
     const navigate = useNavigate();

@@ -156,7 +156,9 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: "Login" }));
 
         await waitFor(() => {
-            expect(screen.getByText("Your account is disabled. Contact an admin for access to CloudGateway.")).toBeTruthy();
+            expect(screen.getByText(/Your account is disabled\./)).toBeTruthy();
+            expect(screen.getByRole("link", { name: "Contact an admin" }).getAttribute("href"))
+                .toBe("mailto:Brodsky.Alex22@gmail.com");
         });
     });
 });

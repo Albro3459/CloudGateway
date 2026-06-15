@@ -11,7 +11,7 @@ import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } fro
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
-import { NoRegionsMessage } from "../components/NoRegionsMessage";
+import { NoRegionsMessage } from "../components/AccessMessages";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";

@@ -5,7 +5,7 @@ import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPas
 import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { NoRegionsMessage, SUPPORT_EMAIL } from "../components/NoRegionsMessage";
+import { DisabledAccountMessage, NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 
 const Login: React.FC = () => {
@@ -23,9 +23,7 @@ const Login: React.FC = () => {
             : null
     );
 
-    const getDisabledAccountMessage = () => (
-        "Your account is disabled. Contact an admin for access to CloudGateway."
-    );
+    const getDisabledAccountMessage = () => <DisabledAccountMessage />;
 
     const getNoRegionsMessage = () => <NoRegionsMessage />;
 
