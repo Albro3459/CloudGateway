@@ -75,6 +75,11 @@ const CreateUser: React.FC = () => {
                     setErrorMessage(regionsError);
                     return;
                 }
+                if (!ociRegions?.length) {
+                    setLoading(false);
+                    setErrorMessage("No enabled regions are available.");
+                    return;
+                }
                 const result = await createAdminUser({ email: trimmedEmail }, jwtToken, ociRegions);
                 setLoading(false);
                 if (result.success) {
