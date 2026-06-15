@@ -17,6 +17,7 @@ import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { VPN_STATUS } from "../helpers/vpnStatus";
+import { filterVisibleVPNClients, getClientKey } from "../helpers/vpnVisibility";
 
 type Banner = {
     type: "error" | "success";
@@ -25,10 +26,6 @@ type Banner = {
 
 const getEnabledRegions = (regions: Region[] | null) => (
     (regions || []).filter(region => region.enabled !== false)
-);
-
-const getClientKey = (entry: VPNTableEntry) => (
-    `${entry.userID}:${entry.region || ""}:${entry.clientId}`
 );
 
 const Home: React.FC = () => {
@@ -56,6 +53,7 @@ const Home: React.FC = () => {
     const [configData, setConfigData] = useState<string | null>(null);
     const [configCopied, setConfigCopied] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const sessionRemovedClientKeys = useRef<Set<string>>(new Set());
 
     const activeRegionName = selectedRegion
         ? getRegionName(selectedRegion.value, ociRegions)
@@ -97,7 +95,7 @@ const Home: React.FC = () => {
             const VPNs: VPNData[] = await getUsersVPNs(user);
             if (gen <= vpnAppliedGen.current) return;
             vpnAppliedGen.current = gen;
-            setVPNTableEntries(VPNs);
+            setVPNTableEntries(filterVisibleVPNClients(VPNs, sessionRemovedClientKeys.current));
         } catch (error) {
             if (gen <= vpnAppliedGen.current) return;
             vpnAppliedGen.current = gen;
@@ -114,7 +112,7 @@ const Home: React.FC = () => {
             const VPNs: VPNData[] = await getUsersVPNs(user);
             if (gen <= vpnAppliedGen.current) return;
             vpnAppliedGen.current = gen;
-            setVPNTableEntries(VPNs);
+            setVPNTableEntries(filterVisibleVPNClients(VPNs, sessionRemovedClientKeys.current));
         } catch (error) {
             console.error("Error refreshing VPN clients:", error);
         }
@@ -219,6 +217,7 @@ const Home: React.FC = () => {
 
         setLoading(true);
         setBanner(null);
+        selectedEntries.forEach(entry => sessionRemovedClientKeys.current.add(getClientKey(entry)));
 
         try {
             const results = await Promise.all(selectedEntries.map(entry => (
