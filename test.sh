@@ -9,63 +9,74 @@
 #
 # One-time setup (API venv, APP node_modules, terraform providers) happens
 # automatically on first run.
+#
+# Every step runs even if an earlier one fails; the script exits 1 if any
+# step (setup, test, typecheck, build, or validation) failed.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/" && pwd)"
 FAILURES=()
 
-test_api() (
-  set -e
-  cd "$ROOT/API"
+# Run a named command, recording it in FAILURES on failure. Never aborts, so
+# later steps still run. Returns the command's exit code.
+run_check() {
+  local name="$1"
+  shift
+  echo "--- $name ---"
+  if "$@"; then
+    echo "OK: $name"
+    return 0
+  fi
+  echo "FAILED: $name" >&2
+  FAILURES+=("$name")
+  return 1
+}
+
+test_api() {
+  cd "$ROOT/API" || return 1
 
   if [[ ! -x .venv/bin/python ]]; then
     echo "Creating API/.venv"
-    python3 -m venv .venv
-    ./.venv/bin/python -m pip install --quiet --upgrade pip
+    run_check "API venv create" python3 -m venv .venv || return 1
+    run_check "API pip upgrade" ./.venv/bin/python -m pip install --quiet --upgrade pip || return 1
   fi
   # Upsert dependencies from pyproject every run (like `npm i`) so new deps are
   # picked up on an existing venv. pip is a no-op when everything is satisfied.
   echo "Syncing API dependencies"
-  ./.venv/bin/python -m pip install --quiet -e '.[dev]'
+  run_check "API dependency sync" ./.venv/bin/python -m pip install --quiet -e '.[dev]' || return 1
 
-  ./.venv/bin/python -m compileall -q src tests
-  ./.venv/bin/pyright --project ../pyrightconfig.json
-  ./.venv/bin/python -m pytest
-)
+  run_check "API compile" ./.venv/bin/python -m compileall -q src tests
+  run_check "API pyright" ./.venv/bin/pyright --project ../pyrightconfig.json
+  run_check "API pytest" ./.venv/bin/python -m pytest
+}
 
-test_app() (
-  set -e
-  cd "$ROOT/APP"
+test_app() {
+  cd "$ROOT/APP" || return 1
 
   if [[ ! -d node_modules ]]; then
     echo "Installing APP dependencies"
-    npm install
+    run_check "APP dependency install" npm install || return 1
   fi
 
-  echo "Running APP Jest"
-  CI=true npm run test -- --watchAll=false --runInBand
-  echo "Running APP TypeScript"
-  npx tsc --noEmit
-  echo "Running APP production build"
-  npm run build
-)
+  run_check "APP Jest" env CI=true npm run test -- --watchAll=false --runInBand
+  run_check "APP TypeScript" npx tsc --noEmit
+  run_check "APP production build" npm run build
+}
 
-test_infra() (
-  set -e
-  cd "$ROOT"
+test_infra() {
+  cd "$ROOT" || return 1
 
   if [[ ! -d OCI/terraform/.terraform || ! -f OCI/terraform/.terraform.lock.hcl ]]; then
     echo "Initializing Terraform providers"
-    terraform -chdir=OCI/terraform init -backend=false -input=false
+    run_check "Terraform init" terraform -chdir=OCI/terraform init -backend=false -input=false || return 1
   fi
-  terraform -chdir=OCI/terraform validate
+  run_check "Terraform validate" terraform -chdir=OCI/terraform validate
 
   for script in OCI/host/*.sh "$0"; do
-    bash -n "$script"
-    echo "parse ok: $script"
+    run_check "parse $script" bash -n "$script"
   done
-)
+}
 
 run_step() {
   local name="$1"
@@ -74,11 +85,15 @@ run_step() {
   echo "============================================================"
   echo "==> $name"
   echo "============================================================"
-  if "$@"; then
-    echo "OK: $name"
-  else
+  # Run directly (not in a subshell) so the step's run_check failures land in
+  # FAILURES. Each target cd's to its own dir first, so a leaked cwd is fine.
+  # Judge the target by whether it added any failures.
+  local before=${#FAILURES[@]}
+  "$@"
+  if [[ ${#FAILURES[@]} -gt $before ]]; then
     echo "FAILED: $name" >&2
-    FAILURES+=("$name")
+  else
+    echo "OK: $name"
   fi
 }
 
