@@ -24,6 +24,9 @@ type Banner = {
     message: string;
 };
 
+const PULL_REFRESH_THRESHOLD = 72;
+const PULL_REFRESH_MAX_DISTANCE = 96;
+
 const getEnabledRegions = (regions: Region[] | null) => (
     (regions || []).filter(region => region.enabled !== false)
 );
@@ -52,8 +55,13 @@ const Home: React.FC = () => {
     const [activeConfigEndpoint, setActiveConfigEndpoint] = useState<string | null>(null);
     const [configData, setConfigData] = useState<string | null>(null);
     const [configCopied, setConfigCopied] = useState(false);
+    const [pullDistance, setPullDistance] = useState(0);
+    const [pullRefreshing, setPullRefreshing] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const sessionRemovedClientKeys = useRef<Set<string>>(new Set());
+    const pullStartY = useRef<number | null>(null);
+    const activePullPointerId = useRef<number | null>(null);
+    const pullDistanceRef = useRef(0);
 
     const activeRegionName = selectedRegion
         ? getRegionName(selectedRegion.value, ociRegions)
@@ -81,6 +89,17 @@ const Home: React.FC = () => {
         clearSelectedClients();
         setBanner(null);
     };
+
+    const updatePullDistance = (distance: number) => {
+        pullDistanceRef.current = distance;
+        setPullDistance(distance);
+    };
+
+    const resetPull = useCallback(() => {
+        pullStartY.current = null;
+        activePullPointerId.current = null;
+        updatePullDistance(0);
+    }, []);
 
     // A fetch only applies if nothing newer has already applied, so a slow poll
     // can't overwrite newer data and an awaited refresh can't be invalidated by
@@ -117,6 +136,64 @@ const Home: React.FC = () => {
             console.error("Error refreshing VPN clients:", error);
         }
     }, []);
+
+    const refreshDashboard = useCallback(async () => {
+        if (!auth.currentUser || pullRefreshing) return;
+
+        setPullRefreshing(true);
+        try {
+            await Promise.all([
+                refreshVPNs(auth.currentUser),
+                jwtToken ? fetchOciRegions(jwtToken, true) : Promise.resolve(),
+            ]);
+        } finally {
+            setPullRefreshing(false);
+            resetPull();
+        }
+    }, [jwtToken, pullRefreshing, refreshVPNs, resetPull]);
+
+    const handlePullStart = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (
+            event.button > 0 ||
+            loading ||
+            pullRefreshing ||
+            configData ||
+            window.scrollY > 0
+        ) {
+            return;
+        }
+
+        pullStartY.current = event.clientY;
+        activePullPointerId.current = event.pointerId;
+    };
+
+    const handlePullMove = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (pullStartY.current === null || activePullPointerId.current !== event.pointerId) return;
+        if (window.scrollY > 0) {
+            resetPull();
+            return;
+        }
+
+        const delta = event.clientY - pullStartY.current;
+        if (delta <= 0) {
+            updatePullDistance(0);
+            return;
+        }
+
+        event.preventDefault();
+        updatePullDistance(Math.min(delta * 0.55, PULL_REFRESH_MAX_DISTANCE));
+    };
+
+    const handlePullEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (pullStartY.current === null || activePullPointerId.current !== event.pointerId) return;
+
+        if (pullDistanceRef.current >= PULL_REFRESH_THRESHOLD) {
+            void refreshDashboard();
+            return;
+        }
+
+        resetPull();
+    };
 
     const handleCreateNewAccount = () => {
         if (role === "admin") {
@@ -374,7 +451,14 @@ const Home: React.FC = () => {
     const createDisabled = !activeRegionId || !selectedRegion || selectedRegionFull || regionsLoading || VPNTableEntries === null || loading;
 
     return (
-        <div className="flex min-h-screen flex-col items-center bg-page px-4 pb-20 pt-24">
+        <div
+            data-testid="dashboard-page"
+            className="flex min-h-screen touch-pan-y flex-col items-center overscroll-y-contain bg-page px-4 pb-20 pt-24"
+            onPointerDown={handlePullStart}
+            onPointerMove={handlePullMove}
+            onPointerUp={handlePullEnd}
+            onPointerCancel={resetPull}
+        >
             <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-nav p-4 px-6 text-white shadow-md">
                 <button
                     onClick={() => navigate("/about")}
@@ -393,6 +477,17 @@ const Home: React.FC = () => {
                     </button>
                 </div>
             </nav>
+
+            {(pullDistance > 0 || pullRefreshing) && (
+                <div
+                    className="fixed top-20 z-50 rounded-full bg-card px-4 py-2 text-sm font-medium text-content shadow-md"
+                    style={{ transform: `translateY(${pullRefreshing ? 0 : Math.min(pullDistance, PULL_REFRESH_THRESHOLD)}px)` }}
+                    role="status"
+                    aria-live="polite"
+                >
+                    {pullRefreshing ? "Refreshing..." : pullDistance >= PULL_REFRESH_THRESHOLD ? "Release to refresh" : "Pull to refresh"}
+                </div>
+            )}
 
             {banner && (
                 <div className="fixed top-20 z-50 flex w-full justify-center px-4">
