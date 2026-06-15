@@ -26,6 +26,10 @@ const Login: React.FC = () => {
         "Your account is disabled. Contact an admin for access to CloudGateway."
     );
 
+    const getNoRegionsMessage = () => (
+        "No regions are available. Contact an admin for access to CloudGateway."
+    );
+
     const getGoogleSignInError = (err: unknown) => {
         const code = err && typeof err === "object" && "code" in err
             ? (err as { code?: string }).code
@@ -50,11 +54,19 @@ const Login: React.FC = () => {
     const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
         try {
             const token = await user.getIdToken();
-            await fetchOciRegions(token);
+            await fetchOciRegions(token, true);
             const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
 
-            if (regionsError || !ociRegions?.length) {
-                throw new Error(regionsError || "Regions are unavailable");
+            if (regionsError) {
+                throw new Error(regionsError);
+            }
+
+            if (!ociRegions?.length) {
+                await signOut(auth);
+                if (showAccessError) {
+                    setError(getNoRegionsMessage());
+                }
+                return;
             }
 
             const access = await checkAccountAccess(token, ociRegions);

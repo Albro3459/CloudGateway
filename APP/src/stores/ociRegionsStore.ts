@@ -51,11 +51,6 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
         }, [])
       );
 
-      if (!regions.length) {
-        set({ error: 'Invalid regions response', loading: false });
-        return;
-      }
-
       set({ ociRegions: regions, loading: false });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Regions fetch failed', loading: false });

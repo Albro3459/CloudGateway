@@ -113,6 +113,30 @@ describe("Login", () => {
         });
     });
 
+    it("signs out and shows a region message when no regions are available", async () => {
+        const { signInWithGoogle, signOut } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Login } = require("../Login");
+
+        signInWithGoogle.mockResolvedValue({ user });
+        useOciRegionsStore.getState.mockReturnValue({
+            ociRegions: [],
+            error: null,
+        });
+
+        render(<Login />);
+
+        fireEvent.click(screen.getByRole("button", { name: /Continue with Google/ }));
+
+        await waitFor(() => {
+            expect(signOut).toHaveBeenCalled();
+            expect(checkAccountAccess).not.toHaveBeenCalled();
+            expect(screen.getByText("No regions are available. Contact an admin for access to CloudGateway.")).toBeTruthy();
+            expect(mockNavigate).not.toHaveBeenCalledWith("/home", { replace: true });
+        });
+    });
+
     it("shows a disabled-account message for Firebase disabled-user sign-in errors", async () => {
         const { signInWithEmailAndPassword } = require("../../firebase");
         const { default: Login } = require("../Login");

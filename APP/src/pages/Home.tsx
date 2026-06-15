@@ -425,7 +425,7 @@ const Home: React.FC = () => {
             <div className="w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                     <div>
-                        <h2 className="text-xl font-semibold text-content">Shared VPN Dashboard</h2>
+                        <h2 className="text-xl font-semibold text-content">VPN Dashboard</h2>
                         <p className="mt-1 text-sm text-content-muted">
                             {role === "admin"
                                 ? "View and remove clients across users. New clients are created only for your account."
