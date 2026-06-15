@@ -59,8 +59,8 @@ describe("VPNTable", () => {
                 ]}
                 isAdmin={true}
                 regions={[{
-                    name: "California",
-                    displayName: "California",
+                    name: "San Jose",
+                    displayName: "San Jose",
                     value: "us-sanjose-1",
                     regionId: "us-sanjose-1",
                     enabled: true,
@@ -73,7 +73,7 @@ describe("VPNTable", () => {
                 onQRCodeClick={jest.fn()}
                 onDownloadConfig={jest.fn()}
                 removing={false}
-                activeRegionName="California"
+                activeRegionName="San Jose"
             />
         );
 
@@ -85,7 +85,7 @@ describe("VPNTable", () => {
 
         fireEvent.click(screen.getAllByLabelText(/Copy Laptop server endpoint/)[0]);
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("wg.us-sanjose-1.example.com"));
-        await waitFor(() => expect(screen.getByText("Copied")).toBeTruthy());
+        expect(await screen.findByText("Copied")).toBeTruthy();
 
         const removedCheckbox = screen.getByLabelText("Select Old phone for removal") as HTMLInputElement;
         expect(removedCheckbox.disabled).toBe(true);

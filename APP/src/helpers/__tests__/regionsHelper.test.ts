@@ -3,7 +3,7 @@ import { parseRegionDocument, sortRegions, Region } from "../regionsHelper";
 describe("regionsHelper", () => {
     it("parses shared VPN region documents", () => {
         const region = parseRegionDocument("us-sanjose-1", {
-            displayName: "California",
+            displayName: "San Jose",
             enabled: true,
             wireguardEndpointIpv4: "1.2.3.4",
             wireguardEndpointIpv6: "2001:db8::1",
@@ -21,8 +21,8 @@ describe("regionsHelper", () => {
         expect(region).toMatchObject({
             value: "us-sanjose-1",
             regionId: "us-sanjose-1",
-            name: "California",
-            displayName: "California",
+            name: "San Jose",
+            displayName: "San Jose",
             enabled: true,
             wireguardEndpointIpv4: "1.2.3.4",
             wireguardEndpointIpv6: "2001:db8::1",
@@ -46,8 +46,8 @@ describe("regionsHelper", () => {
 
     it("sorts regions by display order then region id", () => {
         const regions = [
-            parseRegionDocument("us-sanjose-1", { displayName: "California", enabled: true, displayOrder: 2 }),
-            parseRegionDocument("us-ashburn-1", { displayName: "Virginia", enabled: true, displayOrder: 1 }),
+            parseRegionDocument("us-sanjose-1", { displayName: "San Jose", enabled: true, displayOrder: 2 }),
+            parseRegionDocument("us-ashburn-1", { displayName: "Ashburn", enabled: true, displayOrder: 1 }),
             parseRegionDocument("eu-frankfurt-1", { displayName: "Frankfurt", enabled: true, displayOrder: 1 }),
         ].filter((region): region is Region => region !== null);
 

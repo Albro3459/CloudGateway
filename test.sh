@@ -55,7 +55,8 @@ test_infra() (
   set -e
   cd "$ROOT"
 
-  if [[ ! -d OCI/terraform/.terraform ]]; then
+  if [[ ! -d OCI/terraform/.terraform || ! -f OCI/terraform/.terraform.lock.hcl ]]; then
+    echo "Initializing Terraform providers"
     terraform -chdir=OCI/terraform init -backend=false -input=false
   fi
   terraform -chdir=OCI/terraform validate
