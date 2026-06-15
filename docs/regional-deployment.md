@@ -1,6 +1,6 @@
 # Regional Deployment Runbook
 
-Manual steps to bring up one shared regional WireGuard server and its API. Deployment is rare and manual; do not automate this without updating `TODO/Shared_VPN_Contract.md` first.
+Manual fallback steps to bring up one shared regional WireGuard server and its API by hand. The normal path is automated; see [quick-deployment.md](quick-deployment.md).
 
 Secrets hygiene: never paste WireGuard private keys, full WireGuard configs, Firebase service account credentials, or auth tokens into logs, tickets, chat, or shell history files. Reference peers by client ID or public key only.
 

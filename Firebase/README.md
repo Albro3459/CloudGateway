@@ -1,6 +1,6 @@
 # Firebase Reference
 
-Operational reference for the Firestore layout used by the shared regional VPN platform. `TODO/Shared_VPN_Contract.md` is the source of truth; if this file and the contract disagree, the contract wins.
+Operational reference for the Firestore layout used by the shared regional VPN platform. The code, [firestore.rules](firestore.rules), and [schema.ts](schema.ts) are the source of truth; if this file disagrees with them, they win.
 
 All JSON and Firestore field naming is camelCase. The client identifier field is `clientId`, never `client_id`.
 

@@ -52,11 +52,6 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * Peers are never saved to `wg0.conf` or any other host state file. Client create/delete updates Firebase and applies the live `wg0` change in one locked operation.
 * On reboot, `wg-quick` brings up the interface from the static config and `cloudgateway-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
 
-## Clean Cutoff
-
-* No migration from the old per-user VPN stacks. Old Lambda-created servers and old client configs are not supported and cannot be recovered.
-* Users on the old model must create new clients in the shared regions.
-
 ## Privacy and Logging
 
 * API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails/display names, because those are needed to operate the control plane.
@@ -77,8 +72,6 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deployed tooling versions, including Python, Node.js, npm, Terraform, Caddy, and AdGuard Home.
 
 ## Usage
-
-* Only the admin account is active for the time being.
 
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
@@ -114,8 +107,13 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 ## More Docs
 
+* Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
 * Frontend: [APP/README.md](APP/README.md)
 * Regional API: [API/README.md](API/README.md)
+* Regional API contract: [docs/api-contract.md](docs/api-contract.md)
+* API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
 * Regional server / Terraform: [OCI/README.md](OCI/README.md)
+* Firebase / Firestore: [Firebase/README.md](Firebase/README.md)
+* Cloudflare: [CloudFlare/README.md](CloudFlare/README.md)
 * Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
-* Deployment and operations runbooks: [docs/](docs/)
+* Operations runbooks: [docs/](docs/)

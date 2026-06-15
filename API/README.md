@@ -97,7 +97,7 @@ All request/response JSON uses camelCase.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
 * `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `Roles/{uid}` state.
 
-For the route contract and Firestore field shapes, see [TODO/Shared_VPN_Contract.md](../TODO/Shared_VPN_Contract.md). For Firestore paths, security rules, and indexes, see [Firebase/README.md](../Firebase/README.md).
+For the full route, URL, and error contract, see [docs/api-contract.md](../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Firebase/README.md](../Firebase/README.md).
 
 ## Settings
 

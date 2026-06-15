@@ -22,7 +22,7 @@ The fetched bootstrap installs and configures:
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
 * Unbound recursive DNS on localhost as the AdGuard Home upstream resolver.
-* Python runtime and the regional FastAPI app per the deployment handoff in `TODO/Shared_VPN_Contract.md`:
+* Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../docs/deployment-handoff.md):
   * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
   * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`
   * environment file `/etc/cloudgateway/api.env` (mode `0600`, root-owned) with the `CLOUDGATEWAY_*` variables, including `CLOUDGATEWAY_REGION_ID`

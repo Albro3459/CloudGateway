@@ -4,7 +4,7 @@ Run from the API/ directory with the project venv, e.g.:
 
   .venv/bin/python scripts/send_test_email.py \
       --to you@example.com \
-      --ses-region us-east-1 \
+      --ses-region us-west-1 \
       --sender 'CloudGateway <noreply@gocloudlaunch.com>'
 
 AWS credentials are read from CLOUDGATEWAY_AWS_ACCESS_KEY_ID /
