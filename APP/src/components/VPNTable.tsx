@@ -2,7 +2,6 @@ import React, { useMemo, useState } from "react";
 import { Download, QrCode, Trash2, Copy } from "lucide-react";
 
 import { CopyableValue } from "./CopyableValue";
-import { getRegionName, Region } from "../helpers/regionsHelper";
 import { formatVPNStatus, VPN_STATUS, VPNStatus } from "../helpers/vpnStatus";
 
 export type VPNTableEntry = {
@@ -23,6 +22,7 @@ export type VPNTableEntry = {
     serverEndpointHostname: string | null;
     serverPublicKey: string | null;
     clientPublicKey: string | null;
+    createdAt: Date | null;
     lastErrorCode: string | null;
     lastErrorMessage: string | null;
 };
@@ -30,7 +30,6 @@ export type VPNTableEntry = {
 type VPNTableData = {
     data: VPNTableEntry[] | null;
     isAdmin: boolean;
-    regions: Region[] | null;
     selectedClientKeys: Set<string>;
     getClientKey: (entry: VPNTableEntry) => string;
     onSelectionChange: (entry: VPNTableEntry, selected: boolean) => void;
@@ -62,20 +61,45 @@ const canShowConfig = (entry: VPNTableEntry) => (
 
 const canRemove = (entry: VPNTableEntry) => entry.status !== VPN_STATUS.REMOVED;
 
-const sortedData = (data: VPNTableEntry[], sortField: string | null, sortAsc: boolean, regions: Region[] | null) => {
+const formatCreatedAt = (createdAt: Date | null) => {
+    if (!createdAt) return "Unknown";
+
+    return new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(createdAt);
+};
+
+const getCreatedAtTime = (entry: VPNTableEntry) => entry.createdAt?.getTime() || 0;
+
+const sortByCreatedAt = (a: VPNTableEntry, b: VPNTableEntry, sortAsc: boolean) => {
+    const result = getCreatedAtTime(a) - getCreatedAtTime(b);
+    return sortAsc ? result : -result;
+};
+
+const sortedData = (data: VPNTableEntry[], sortField: string | null, sortAsc: boolean, isAdmin: boolean) => {
     return [...data].sort((a, b) => {
         if (!sortField) return 0;
+
+        if (sortField === "default") {
+            if (!isAdmin) return sortByCreatedAt(a, b, false);
+
+            const userResult = String(a.ownerEmail || a.email || "").localeCompare(String(b.ownerEmail || b.email || ""));
+            return userResult || sortByCreatedAt(a, b, false);
+        }
+
+        if (sortField === "createdAt") {
+            return sortByCreatedAt(a, b, sortAsc);
+        }
 
         let aVal = a[sortField as keyof VPNTableEntry];
         let bVal = b[sortField as keyof VPNTableEntry];
 
-        if (sortField === "region") {
-            aVal = getRegionName(a.region, regions);
-            bVal = getRegionName(b.region, regions);
-        } else {
-            aVal = aVal || "";
-            bVal = bVal || "";
-        }
+        aVal = aVal || "";
+        bVal = bVal || "";
 
         return sortAsc
             ? String(aVal).localeCompare(String(bVal))
@@ -86,7 +110,6 @@ const sortedData = (data: VPNTableEntry[], sortField: string | null, sortAsc: bo
 type VPNTableRowData = {
     entry: VPNTableEntry;
     isAdmin: boolean;
-    regions: Region[] | null;
     selected: boolean;
     onSelectionChange: (entry: VPNTableEntry, selected: boolean) => void;
     onQRCodeClick: (entry: VPNTableEntry) => void;
@@ -96,7 +119,6 @@ type VPNTableRowData = {
 const VPNTableRow: React.FC<VPNTableRowData> = ({
     entry,
     isAdmin,
-    regions,
     selected,
     onSelectionChange,
     onQRCodeClick,
@@ -140,7 +162,7 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
                     <div className="mt-1 font-mono text-xs text-content-muted">{entry.ownerUid || entry.userID}</div>
                 </td>
             )}
-            <td className="px-3 py-3 text-center align-middle">{getRegionName(entry.region, regions) || "Unknown"}</td>
+            <td className="px-3 py-3 text-center align-middle">{formatCreatedAt(entry.createdAt)}</td>
             <td className="px-3 py-3 text-center align-middle">
                 <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${getStatusBadgeClasses(entry.status)}`}>
                     {formatVPNStatus(entry.status)}
@@ -199,7 +221,6 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
 export const VPNTable: React.FC<VPNTableData> = ({
     data,
     isAdmin,
-    regions,
     selectedClientKeys,
     getClientKey,
     onSelectionChange,
@@ -210,14 +231,14 @@ export const VPNTable: React.FC<VPNTableData> = ({
     activeRegionName,
 }) => {
     const [showConfirm, setShowConfirm] = useState(false);
-    const [sortField, setSortField] = useState<string | null>("clientName");
-    const [sortAsc, setSortAsc] = useState(true);
+    const [sortField, setSortField] = useState<string | null>("default");
+    const [sortAsc, setSortAsc] = useState(false);
     const selectedCount = selectedClientKeys.size;
     const colSpan = isAdmin ? 7 : 6;
 
     const rows = useMemo(() => (
-        data ? sortedData(data, sortField, sortAsc, regions) : null
-    ), [data, sortField, sortAsc, regions]);
+        data ? sortedData(data, sortField, sortAsc, isAdmin) : null
+    ), [data, sortField, sortAsc, isAdmin]);
 
     const handleSort = (field: string) => {
         if (sortField === field) {
@@ -302,9 +323,9 @@ export const VPNTable: React.FC<VPNTableData> = ({
                             )}
                             <th
                                 className="cursor-pointer px-3 py-2 text-center"
-                                onClick={() => handleSort("region")}
+                                onClick={() => handleSort("createdAt")}
                             >
-                                Region
+                                Created
                             </th>
                             <th
                                 className="cursor-pointer px-3 py-2 text-center"
@@ -338,7 +359,6 @@ export const VPNTable: React.FC<VPNTableData> = ({
                                 key={getClientKey(entry)}
                                 entry={entry}
                                 isAdmin={isAdmin}
-                                regions={regions}
                                 selected={selectedClientKeys.has(getClientKey(entry))}
                                 onSelectionChange={onSelectionChange}
                                 onQRCodeClick={onQRCodeClick}

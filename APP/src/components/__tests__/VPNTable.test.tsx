@@ -1,10 +1,20 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { VPNTable, VPNTableEntry } from "../VPNTable";
 import { VPN_STATUS } from "../../helpers/vpnStatus";
 
 const getClientKey = (entry: VPNTableEntry) => `${entry.userID}:${entry.region || ""}:${entry.clientId}`;
+const newerCreatedAt = new Date("2025-06-15T14:30:00Z");
+const olderCreatedAt = new Date("2025-06-14T08:15:00Z");
+
+const formatCreatedAt = (createdAt: Date) => new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+}).format(createdAt);
 
 const baseEntry = (overrides: Partial<VPNTableEntry>): VPNTableEntry => ({
     userID: "user-1",
@@ -24,10 +34,36 @@ const baseEntry = (overrides: Partial<VPNTableEntry>): VPNTableEntry => ({
     serverEndpointHostname: "wg.us-sanjose-1.example.com",
     serverPublicKey: "server-key",
     clientPublicKey: "client-key",
+    createdAt: olderCreatedAt,
     lastErrorCode: null,
     lastErrorMessage: null,
     ...overrides,
 });
+
+const renderVPNTable = (props: {
+    data: VPNTableEntry[];
+    isAdmin: boolean;
+    selectedClientKeys?: Set<string>;
+    onSelectionChange?: jest.Mock;
+    onRemoveSelected?: jest.Mock;
+}) => (
+    render(
+        <VPNTable
+            data={props.data}
+            isAdmin={props.isAdmin}
+            selectedClientKeys={props.selectedClientKeys || new Set()}
+            getClientKey={getClientKey}
+            onSelectionChange={props.onSelectionChange || jest.fn()}
+            onRemoveSelected={props.onRemoveSelected || jest.fn()}
+            onQRCodeClick={jest.fn()}
+            onDownloadConfig={jest.fn()}
+            removing={false}
+            activeRegionName="San Jose"
+        />
+    )
+);
+
+const getBodyRows = () => screen.getAllByRole("row").slice(1);
 
 describe("VPNTable", () => {
     beforeEach(() => {
@@ -49,39 +85,27 @@ describe("VPNTable", () => {
         const onSelectionChange = jest.fn();
         const onRemoveSelected = jest.fn();
 
-        render(
-            <VPNTable
-                data={[
-                    activeEntry,
-                    baseEntry({ clientId: "client-creating", clientName: "Tablet", status: VPN_STATUS.CREATING }),
-                    baseEntry({ clientId: "client-failed", clientName: "Router", status: VPN_STATUS.FAILED, lastErrorMessage: "Apply failed" }),
-                    removedEntry,
-                ]}
-                isAdmin={true}
-                regions={[{
-                    name: "San Jose",
-                    displayName: "San Jose",
-                    value: "us-sanjose-1",
-                    regionId: "us-sanjose-1",
-                    enabled: true,
-                    displayOrder: 1,
-                }]}
-                selectedClientKeys={new Set([getClientKey(activeEntry)])}
-                getClientKey={getClientKey}
-                onSelectionChange={onSelectionChange}
-                onRemoveSelected={onRemoveSelected}
-                onQRCodeClick={jest.fn()}
-                onDownloadConfig={jest.fn()}
-                removing={false}
-                activeRegionName="San Jose"
-            />
-        );
+        renderVPNTable({
+            data: [
+                activeEntry,
+                baseEntry({ clientId: "client-creating", clientName: "Tablet", status: VPN_STATUS.CREATING }),
+                baseEntry({ clientId: "client-failed", clientName: "Router", status: VPN_STATUS.FAILED, lastErrorMessage: "Apply failed" }),
+                removedEntry,
+            ],
+            isAdmin: true,
+            selectedClientKeys: new Set([getClientKey(activeEntry)]),
+            onSelectionChange,
+            onRemoveSelected,
+        });
 
         expect(screen.getByText("Active")).toBeTruthy();
         expect(screen.getByText("Creating")).toBeTruthy();
         expect(screen.getByText("Failed")).toBeTruthy();
         expect(screen.getByText("Removed")).toBeTruthy();
         expect(screen.getByText("Apply failed")).toBeTruthy();
+        expect(screen.queryByText("Region")).toBeNull();
+        expect(screen.getByText("Created")).toBeTruthy();
+        expect(screen.getAllByText(formatCreatedAt(olderCreatedAt)).length).toBeGreaterThan(0);
 
         fireEvent.click(screen.getAllByLabelText(/Copy Laptop server endpoint/)[0]);
         await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("wg.us-sanjose-1.example.com"));
@@ -93,5 +117,40 @@ describe("VPNTable", () => {
         fireEvent.click(screen.getByText("Remove Selected (1)"));
         fireEvent.click(screen.getByText("Remove"));
         expect(onRemoveSelected).toHaveBeenCalledTimes(1);
+    });
+
+    it("sorts admins by user, then newest created date first", () => {
+        renderVPNTable({
+            data: [
+                baseEntry({ clientId: "client-c", clientName: "Charlie", ownerEmail: "b@example.com", email: "b@example.com", createdAt: new Date("2026-01-01T10:00:00Z") }),
+                baseEntry({ clientId: "client-a-old", clientName: "Alpha old", ownerEmail: "a@example.com", email: "a@example.com", createdAt: olderCreatedAt }),
+                baseEntry({ clientId: "client-a-new", clientName: "Alpha new", ownerEmail: "a@example.com", email: "a@example.com", createdAt: newerCreatedAt }),
+            ],
+            isAdmin: true,
+        });
+
+        const rows = getBodyRows();
+        expect(rows[0].textContent).toContain("Alpha new");
+        expect(rows[1].textContent).toContain("Alpha old");
+        expect(rows[2].textContent).toContain("Charlie");
+    });
+
+    it("sorts non-admins by newest created date first without a user column", () => {
+        renderVPNTable({
+            data: [
+                baseEntry({ clientId: "client-old", clientName: "Old client", createdAt: olderCreatedAt }),
+                baseEntry({ clientId: "client-new", clientName: "New client", createdAt: newerCreatedAt }),
+            ],
+            isAdmin: false,
+        });
+
+        expect(screen.queryByText("User")).toBeNull();
+        expect(screen.queryByText("Region")).toBeNull();
+        expect(screen.queryByText("user@example.com")).toBeNull();
+
+        const rows = getBodyRows();
+        expect(within(rows[0]).getByText("New client")).toBeTruthy();
+        expect(within(rows[1]).getByText("Old client")).toBeTruthy();
+        expect(screen.getByText(formatCreatedAt(newerCreatedAt))).toBeTruthy();
     });
 });

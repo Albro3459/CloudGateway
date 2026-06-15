@@ -531,7 +531,6 @@ const Home: React.FC = () => {
             <VPNTable
                 data={activeRegionEntries}
                 isAdmin={role === "admin"}
-                regions={ociRegions}
                 selectedClientKeys={selectedClientKeys}
                 getClientKey={getClientKey}
                 onSelectionChange={handleSelectionChange}

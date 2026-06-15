@@ -31,6 +31,7 @@ export type VPNClientData = {
     serverEndpointHostname: string | null;
     serverPublicKey: string | null;
     clientPublicKey: string | null;
+    createdAt: Date | null;
     lastErrorCode: string | null;
     lastErrorMessage: string | null;
 }
@@ -40,6 +41,20 @@ export type VPNData = VPNClientData;
 const stringOrNull = (value: unknown) => typeof value === "string" && value.trim()
     ? value
     : null;
+
+const dateOrNull = (value: unknown): Date | null => {
+    if (value instanceof Date) return value;
+    if (typeof value === "string" || typeof value === "number") {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
+        const date = value.toDate();
+        return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+    }
+
+    return null;
+};
 
 export const getUsersVPNs = async (user: User): Promise<VPNClientData[]> => {
 
@@ -80,6 +95,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
                     serverPublicKey,
                     clientPublicKey,
                     clientName,
+                    createdAt,
                     lastErrorCode,
                     lastErrorMessage,
                 } = data;
@@ -107,6 +123,7 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
                         serverEndpointHostname: stringOrNull(serverEndpointHostname),
                         serverPublicKey: stringOrNull(serverPublicKey),
                         clientPublicKey: stringOrNull(clientPublicKey),
+                        createdAt: dateOrNull(createdAt),
                         lastErrorCode: stringOrNull(lastErrorCode),
                         lastErrorMessage: stringOrNull(lastErrorMessage),
                     });
