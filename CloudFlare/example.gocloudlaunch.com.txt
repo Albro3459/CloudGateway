@@ -24,6 +24,7 @@ wg.us-sanjose-1.gocloudlaunch.com.	1	IN	A	Your-SanJose-Server-IPv4 ; San Jose Se
 wg.us-chicago-1.gocloudlaunch.com.	1	IN	A	Your-Chicago-Server-IPv4 ; Chicago Server Wireguard cf_tags=cf-proxied:false
 
 ;; CNAME Records
+auth.gocloudlaunch.com.	1	IN	CNAME	cloud-launch-gateway.web.app. ; Firebase Auth Redirect Subdomain cf_tags=cf-proxied:false
 www.gocloudlaunch.com.	1	IN	CNAME	albro3459.github.io. ; GitHub cf_tags=cf-proxied:true
 firebase1._domainkey.gocloudlaunch.com.	1	IN	CNAME	mail-gocloudlaunch-com.dkim1._domainkey.firebasemail.com. ; Firebase Emails cf_tags=cf-proxied:false
 firebase2._domainkey.gocloudlaunch.com.	1	IN	CNAME	mail-gocloudlaunch-com.dkim2._domainkey.firebasemail.com. ; Firebase Emails cf_tags=cf-proxied:false
@@ -34,4 +35,4 @@ x2d...qsm._domainkey.gocloudlaunch.com.	1	IN	CNAME	x2d...qsm.dkim.amazonses.com.
 ;; TXT Records
 _dmarc.gocloudlaunch.com.	1	IN	TXT	"v=DMARC1; p=none;" ; AWS SES Emails
 gocloudlaunch.com.	1	IN	TXT	"v=spf1 include:amazonses.com include:_spf.firebasemail.com ~all" ; AWS SES & Firebase Emails
-gocloudlaunch.com.	1	IN	TXT	"firebase=your-project-id" ; Firebase Emails
+gocloudlaunch.com.	1	IN	TXT	"firebase=cloud-launch-gateway" ; Firebase Emails
