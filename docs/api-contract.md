@@ -115,6 +115,40 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 }
 ```
 
+### `POST /admin/sync`
+
+- Requires Firebase bearer auth with admin role.
+- Regional: reconciles this host's live WireGuard peer set against the region's `active` client
+  docs in Firebase (the same reconcile run at boot and by `cloudgateway-sync-peers`). Idempotent.
+- `regionId` must equal this host's region or the request is rejected with `REGION_MISMATCH`; the
+  dashboard fans out one call per region so each regional API only syncs itself.
+- Request:
+
+```json
+{
+  "regionId": "us-ashburn-1"
+}
+```
+
+- Response `200`:
+
+```json
+{
+  "regionId": "us-ashburn-1",
+  "syncedAt": "2026-06-17T18:30:00+00:00",
+  "added": 1,
+  "updated": 0,
+  "removed": 1,
+  "noChanges": false,
+  "log": "CloudGateway peer sync audit log\nregion: ...\n"
+}
+```
+
+- `log` is a plaintext audit report (no ANSI/color) listing each added/updated/removed peer:
+  added/updated peers include the owning `clientId`/`email`, removed peers (host peers with no
+  matching active client) are listed by public key only. It never contains private keys, full
+  configs, or tokens.
+
 ## Error Responses
 
 All controlled failures return this shape:

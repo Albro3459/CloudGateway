@@ -2,7 +2,7 @@ import pytest
 
 from src.enums import OperationResult
 from src.errors import WireGuardApplyFailedError
-from src.wireguard import LocalWireGuardManager, PeerSyncResult
+from src.wireguard import LocalWireGuardManager
 
 from .fakes import (
     FAKE_PRIVATE_KEY,
@@ -159,7 +159,7 @@ def test_sync_adds_updates_and_removes_to_match_desired(tmp_path):
         }
     )
 
-    assert result == PeerSyncResult(added=1, updated=1, removed=1)
+    assert (result.added, result.updated, result.removed) == (1, 1, 1)
     assert runner.peers == {
         FAKE_PUBLIC_KEY: f"{TUNNEL_V4},{TUNNEL_V6}",
         FAKE_PUBLIC_KEY_2: "10.0.0.4/32,fd42:42:42::4/128",
@@ -173,7 +173,7 @@ def test_sync_with_matching_state_is_a_noop(tmp_path):
 
     result = manager.sync_peers({FAKE_PUBLIC_KEY: (TUNNEL_V4, TUNNEL_V6)})
 
-    assert result == PeerSyncResult(added=0, updated=0, removed=0)
+    assert (result.added, result.updated, result.removed) == (0, 0, 0)
     assert [call.args[:2] for call in runner.calls] == [("wg", "show")]
 
 
@@ -184,7 +184,7 @@ def test_sync_empty_desired_removes_all_peers(tmp_path):
 
     result = manager.sync_peers({})
 
-    assert result == PeerSyncResult(added=0, updated=0, removed=1)
+    assert (result.added, result.updated, result.removed) == (0, 0, 1)
     assert runner.peers == {}
 
 

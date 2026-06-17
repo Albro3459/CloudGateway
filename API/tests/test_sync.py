@@ -2,7 +2,6 @@ from dataclasses import replace
 
 from src.enums import ClientStatus
 from src.sync import desired_peers, run_sync
-from src.wireguard import PeerSyncResult
 
 from .fakes import FakeRepository, FakeWireGuardManager
 from .test_repository import REGION_ID, enabled_region, reserve
@@ -48,7 +47,7 @@ def test_run_sync_restores_missing_peer_and_removes_unknown_peer():
 
     result = run_sync(repository=repository, wireguard=wireguard, region_id=REGION_ID)
 
-    assert result == PeerSyncResult(added=1, updated=0, removed=1)
+    assert (result.added, result.updated, result.removed) == (1, 0, 1)
     assert wireguard.peers == {
         "active-public-key": (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6),
     }
@@ -63,7 +62,7 @@ def test_run_sync_fixes_drifted_allowed_ips():
 
     result = run_sync(repository=repository, wireguard=wireguard, region_id=REGION_ID)
 
-    assert result == PeerSyncResult(added=0, updated=1, removed=0)
+    assert (result.added, result.updated, result.removed) == (0, 1, 0)
     assert wireguard.peers["active-public-key"] == (
         active.assigned_tunnel_ipv4,
         active.assigned_tunnel_ipv6,
@@ -77,7 +76,7 @@ def test_run_sync_with_no_clients_clears_all_peers():
 
     result = run_sync(repository=repository, wireguard=wireguard, region_id=REGION_ID)
 
-    assert result == PeerSyncResult(added=0, updated=0, removed=1)
+    assert (result.added, result.updated, result.removed) == (0, 0, 1)
     assert wireguard.peers == {}
 
 
@@ -87,5 +86,5 @@ def test_run_sync_with_missing_region_doc_is_an_empty_success():
 
     result = run_sync(repository=repository, wireguard=wireguard, region_id=REGION_ID)
 
-    assert result == PeerSyncResult(added=0, updated=0, removed=0)
+    assert (result.added, result.updated, result.removed) == (0, 0, 0)
     assert wireguard.sync_calls == 1

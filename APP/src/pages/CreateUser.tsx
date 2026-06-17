@@ -29,6 +29,7 @@ const CreateUser: React.FC = () => {
                     const role  = await getUserRole(user);
                     if (role !== "admin") {
                         navigate("/", { replace: true });
+                        return;
                     }
                     try {
                         const token = await getIdToken(user);

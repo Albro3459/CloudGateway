@@ -16,6 +16,8 @@ from .errors import (
 from .logs import log_event
 from .models import (
     AccessCheckResponse,
+    AdminSyncRequest,
+    AdminSyncResponse,
     CreateClientRequest,
     CreateClientResponse,
     CreateUserRequest,
@@ -24,7 +26,8 @@ from .models import (
     DeleteClientResponse,
     HealthResponse,
 )
-from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region
+from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, utc_now
+from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
 
 logger = logging.getLogger("src.routes")
@@ -354,6 +357,90 @@ async def create_user(
         email=result.user.email,
         role=Role.USER,
         already_existed=result.already_existed,
+    )
+
+
+@router.post("/admin/sync", response_model=AdminSyncResponse)
+async def admin_sync(
+    request: Request,
+    body: AdminSyncRequest,
+    admin_user: AuthenticatedUser = Depends(require_admin_user),
+) -> AdminSyncResponse:
+    repository = request.app.state.repository
+    wireguard: WireGuardManager = request.app.state.wireguard
+    settings = request.app.state.settings
+    request_id = request.state.request_id
+
+    # Defensive guard: the host only syncs its own region, so reject a request
+    # routed to the wrong regional endpoint instead of silently syncing here.
+    ensure_local_region(body.region_id, settings.region_id)
+
+    log_event(
+        logger,
+        Event.PEER_SYNC_STARTED,
+        request_id=request_id,
+        admin_uid=admin_user.uid,
+        region_id=settings.region_id,
+    )
+    try:
+        result = run_sync(repository=repository, wireguard=wireguard, region_id=settings.region_id)
+    except ApiError:
+        log_event(
+            logger,
+            Event.PEER_SYNC_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            region_id=settings.region_id,
+        )
+        raise
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.PEER_SYNC_FAILED,
+            level=logging.ERROR,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            region_id=settings.region_id,
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+        raise InternalError() from exc
+
+    synced_at = utc_now()
+    # Best-effort enrichment only: the reconcile above is consistent under the
+    # lock, but this re-list runs unlocked, so a concurrent create/delete could
+    # leave an added/removed peer without its join details in the audit log.
+    clients_by_key = {
+        client.client_public_key: client
+        for client in repository.list_active_clients(settings.region_id)
+        if client.client_public_key
+    }
+    audit_log = build_sync_audit_log(
+        region_id=settings.region_id,
+        synced_at=synced_at,
+        result=result,
+        clients_by_key=clients_by_key,
+    )
+
+    log_event(
+        logger,
+        Event.PEER_SYNC_COMPLETED,
+        request_id=request_id,
+        admin_uid=admin_user.uid,
+        region_id=settings.region_id,
+        added=result.added,
+        updated=result.updated,
+        removed=result.removed,
+    )
+
+    return AdminSyncResponse(
+        region_id=settings.region_id,
+        synced_at=synced_at,
+        added=result.added,
+        updated=result.updated,
+        removed=result.removed,
+        no_changes=not result.changes,
+        log=audit_log,
     )
 
 

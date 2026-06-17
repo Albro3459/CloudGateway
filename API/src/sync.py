@@ -1,10 +1,11 @@
 import logging
+from datetime import datetime
 
 from .enums import Event
 from .logs import log_event, setup_logging
-from .repository import FirebaseRepository
+from .repository import ClientDoc, FirebaseRepository
 from .settings import Settings
-from .wireguard import PeerSyncResult, WireGuardManager
+from .wireguard import PEER_ADDED, PEER_REMOVED, PEER_UPDATED, PeerSyncResult, WireGuardManager
 
 logger = logging.getLogger("src.sync")
 
@@ -24,6 +25,55 @@ def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, reg
     with wireguard.lock():
         desired = desired_peers(repository, region_id)
         return wireguard.sync_peers(desired)
+
+
+def build_sync_audit_log(
+    *,
+    region_id: str,
+    synced_at: datetime,
+    result: PeerSyncResult,
+    clients_by_key: dict[str, ClientDoc],
+) -> str:
+    # Plain text only (no ANSI/color) so the file reads back cleanly. Lists the
+    # peers each pass added/updated/removed; added/updated join to the owning
+    # client doc, removed peers have no active doc and are shown by key alone.
+    lines = [
+        "CloudGateway peer sync audit log",
+        f"region: {region_id}",
+        f"syncedAt: {synced_at.isoformat()}",
+        f"summary: added={result.added} updated={result.updated} removed={result.removed}",
+    ]
+    if not result.changes:
+        lines.append("")
+        lines.append("No peer changes were required; the live peer set already matched Firebase.")
+        return "\n".join(lines) + "\n"
+
+    for action, header in (
+        (PEER_ADDED, "added"),
+        (PEER_UPDATED, "updated"),
+        (PEER_REMOVED, "removed (host peers with no matching active client)"),
+    ):
+        entries = [change for change in result.changes if change.action == action]
+        if not entries:
+            continue
+        lines.append("")
+        lines.append(f"{header}:")
+        for change in entries:
+            parts = [f"publicKey={change.public_key}"]
+            client = clients_by_key.get(change.public_key)
+            if client is not None:
+                parts.append(f"clientId={client.client_id}")
+                if client.owner_email:
+                    parts.append(f"email={client.owner_email}")
+                if client.client_name:
+                    parts.append(f"clientName={client.client_name}")
+            if change.tunnel_ipv4:
+                parts.append(f"tunnelIpv4={change.tunnel_ipv4}")
+            if change.tunnel_ipv6:
+                parts.append(f"tunnelIpv6={change.tunnel_ipv6}")
+            lines.append("  " + " ".join(parts))
+
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
@@ -84,6 +86,20 @@ class AccessCheckResponse(ApiModel):
     user_id: str
     email: str | None = None
     role: Role
+
+
+class AdminSyncRequest(ApiModel):
+    region_id: str = Field(min_length=1)
+
+
+class AdminSyncResponse(ApiModel):
+    region_id: str
+    synced_at: datetime
+    added: int
+    updated: int
+    removed: int
+    no_changes: bool
+    log: str
 
 
 class ErrorDetail(ApiModel):

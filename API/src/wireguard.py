@@ -31,11 +31,34 @@ class WireGuardKeypair:
     public_key: str
 
 
+PEER_ADDED = "added"
+PEER_UPDATED = "updated"
+PEER_REMOVED = "removed"
+
+
+@dataclass(frozen=True)
+class PeerChange:
+    public_key: str
+    action: str
+    tunnel_ipv4: str | None = None
+    tunnel_ipv6: str | None = None
+
+
 @dataclass(frozen=True)
 class PeerSyncResult:
-    added: int
-    updated: int
-    removed: int
+    changes: tuple[PeerChange, ...] = ()
+
+    @property
+    def added(self) -> int:
+        return sum(1 for change in self.changes if change.action == PEER_ADDED)
+
+    @property
+    def updated(self) -> int:
+        return sum(1 for change in self.changes if change.action == PEER_UPDATED)
+
+    @property
+    def removed(self) -> int:
+        return sum(1 for change in self.changes if change.action == PEER_REMOVED)
 
 
 class WireGuardManager(ABC):
@@ -191,19 +214,19 @@ class LocalWireGuardManager(WireGuardManager):
             )
 
         current = self.current_peers()
-        added = updated = removed = 0
+        changes: list[PeerChange] = []
         for public_key, (tunnel_ipv4, tunnel_ipv6) in validated.items():
             if public_key not in current:
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
-                added += 1
+                changes.append(PeerChange(public_key, PEER_ADDED, tunnel_ipv4, tunnel_ipv6))
             elif current[public_key] != frozenset({tunnel_ipv4, tunnel_ipv6}):
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
-                updated += 1
+                changes.append(PeerChange(public_key, PEER_UPDATED, tunnel_ipv4, tunnel_ipv6))
         for public_key in current:
             if public_key not in validated:
                 self._remove_peer_command(_validate_key(public_key, "client public key"))
-                removed += 1
-        return PeerSyncResult(added=added, updated=updated, removed=removed)
+                changes.append(PeerChange(public_key, PEER_REMOVED))
+        return PeerSyncResult(changes=tuple(changes))
 
     def _remove_peer_command(self, public_key: str) -> None:
         self._run(

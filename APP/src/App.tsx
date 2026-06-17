@@ -6,6 +6,7 @@ import About from "./pages/About";
 import CreateUser from "./pages/CreateUser";
 import CreateUserSuccess from "./pages/CreateUserSuccess";
 import PasswordReset from "./pages/PasswordReset";
+import SyncRegions from "./pages/SyncRegions";
 
 const App: React.FC = () => {
   return (
@@ -18,6 +19,7 @@ const App: React.FC = () => {
         <Route path="/about" element={<About />} />
         <Route path="/create-user" element={<CreateUser />} />
         <Route path="/create-user-success" element={<CreateUserSuccess />} />
+        <Route path="/sync-regions" element={<SyncRegions />} />
       </Routes>
     </Router>
   );

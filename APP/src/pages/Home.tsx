@@ -206,6 +206,12 @@ const Home: React.FC = () => {
         }
     };
 
+    const handleSyncRegions = () => {
+        if (role === "admin") {
+            navigate("/sync-regions");
+        }
+    };
+
     const handleCreateClient = async (e: React.FormEvent) => {
         e.preventDefault();
 
@@ -512,12 +518,18 @@ const Home: React.FC = () => {
             )}
 
             {role === "admin" && (
-                <div className="mb-4 w-full max-w-md">
+                <div className="mb-4 flex w-full max-w-md flex-col gap-2 sm:flex-row">
                     <button
                         onClick={handleCreateNewAccount}
                         className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
                     >
                         Create Test Account
+                    </button>
+                    <button
+                        onClick={handleSyncRegions}
+                        className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
+                    >
+                        Sync Region Clients
                     </button>
                 </div>
             )}

@@ -32,7 +32,15 @@ from src.repository import (
     require_region,
     utc_now,
 )
-from src.wireguard import PeerSyncResult, WireGuardKeypair, WireGuardManager
+from src.wireguard import (
+    PEER_ADDED,
+    PEER_REMOVED,
+    PEER_UPDATED,
+    PeerChange,
+    PeerSyncResult,
+    WireGuardKeypair,
+    WireGuardManager,
+)
 
 FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
 FAKE_PUBLIC_KEY="eZEOz7uD1jjbTD70Uv+aJcZ0ASxsxz9bTKZQ9vdOQCo="
@@ -548,16 +556,16 @@ class FakeWireGuardManager(WireGuardManager):
     def sync_peers(self, desired: dict[str, tuple[str, str]]) -> PeerSyncResult:
         self._require_lock()
         self.sync_calls += 1
-        added = updated = removed = 0
+        changes: list[PeerChange] = []
         for public_key, ips in desired.items():
             if public_key not in self.peers:
                 self.peers[public_key] = ips
-                added += 1
+                changes.append(PeerChange(public_key, PEER_ADDED, ips[0], ips[1]))
             elif self.peers[public_key] != ips:
                 self.peers[public_key] = ips
-                updated += 1
+                changes.append(PeerChange(public_key, PEER_UPDATED, ips[0], ips[1]))
         for public_key in list(self.peers):
             if public_key not in desired:
                 del self.peers[public_key]
-                removed += 1
-        return PeerSyncResult(added=added, updated=updated, removed=removed)
+                changes.append(PeerChange(public_key, PEER_REMOVED))
+        return PeerSyncResult(changes=tuple(changes))

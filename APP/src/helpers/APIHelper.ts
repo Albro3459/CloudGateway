@@ -72,6 +72,21 @@ export type AccessCheckResponse = {
     role: string;
 };
 
+export type RegionSyncResponse = {
+    regionId: string;
+    syncedAt: string;
+    added: number;
+    updated: number;
+    removed: number;
+    noChanges: boolean;
+    log: string;
+};
+
+export type RegionSyncResult = {
+    regionId: string;
+    result: ApiHelperResult<RegionSyncResponse>;
+};
+
 const parseApiResponse = async (response: Response) => {
     const responseText = await response.text();
     if (!responseText) {
@@ -231,6 +246,51 @@ export const createAdminUser = (
             error: error instanceof Error ? error.message : "Unknown API Error",
         });
     }
+};
+
+export const runRegionSync = (
+    regionId: string,
+    token: string,
+): Promise<ApiHelperResult<RegionSyncResponse>> => {
+    try {
+        return sendJsonRequest<RegionSyncResponse>(
+            buildRegionalApiEndpoint(regionId, "admin/sync"),
+            token,
+            "POST",
+            { regionId },
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
+    }
+};
+
+// Fans out one independent sync request per region. Each regional API syncs
+// only its own region; one region failing does not abort the others.
+export const runRegionsSync = async (
+    regionIds: string[],
+    token: string,
+): Promise<RegionSyncResult[]> => {
+    const settled = await Promise.allSettled(
+        regionIds.map((regionId) => runRegionSync(regionId, token)),
+    );
+
+    return regionIds.map((regionId, index) => {
+        const outcome = settled[index];
+        if (outcome.status === "fulfilled") {
+            return { regionId, result: outcome.value };
+        }
+
+        return {
+            regionId,
+            result: {
+                success: false,
+                error: outcome.reason instanceof Error ? outcome.reason.message : "Unknown API Error",
+            },
+        };
+    });
 };
 
 export const checkAccountAccess = (
