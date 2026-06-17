@@ -39,7 +39,9 @@ export type VPNClientData = {
 
 export type VPNData = VPNClientData;
 
-// Builds a table row from a raw Instance doc. Owner identity and region fall
+// Builds a table row from a raw Instance doc. The caller supplies the
+// authoritative owner email (auth user, or the Users doc for admins); the
+// denormalized ownerEmail is only a fallback. Owner identity and region fall
 // back to the document path when the denormalized fields are missing.
 const toVPNClientData = (
     data: Record<string, any>,
@@ -56,7 +58,7 @@ const toVPNClientData = (
     const clientId = stringOrNull(data.clientId) || instanceId;
     const regionId = stringOrNull(data.regionId) || regionFallback;
     const ownerUid = stringOrNull(data.ownerUid) || userID;
-    const ownerEmail = stringOrNull(data.ownerEmail) || email;
+    const ownerEmail = email || stringOrNull(data.ownerEmail);
 
     return {
         userID: ownerUid,
@@ -125,23 +127,33 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
     }
 };
 
-// Admins read every client in one indexed collection-group query rather than
-// fanning out a per-user/per-region read across the whole user base.
+// Admins read every client in one collection-group query rather than fanning
+// out a per-user/per-region read. Owner emails come from the authoritative
+// Users docs (one parallel list query), not the denormalized ownerEmail field.
 const getAdminVPNs = async (): Promise<VPNClientData[]> => {
     try {
         const db = getFirestore();
-        const instanceSnapshots = await getDocs(collectionGroup(db, "Instances"));
+        const [usersSnapshot, instanceSnapshots] = await Promise.all([
+            getDocs(collection(db, "Users")),
+            getDocs(collectionGroup(db, "Instances")),
+        ]);
+
+        const emailByUid = new Map<string, string | null>();
+        usersSnapshot.forEach((userDoc) => {
+            emailByUid.set(userDoc.id, stringOrNull(userDoc.data().email));
+        });
 
         const vpnData: VPNClientData[] = [];
         instanceSnapshots.forEach((instanceDoc) => {
             const regionDocRef = instanceDoc.ref.parent.parent;
             const userDocRef = regionDocRef?.parent?.parent;
             const data = instanceDoc.data();
+            const ownerUid = stringOrNull(data.ownerUid) || userDocRef?.id || "";
             const entry = toVPNClientData(
                 data,
                 instanceDoc.id,
-                stringOrNull(data.ownerUid) || userDocRef?.id || "",
-                stringOrNull(data.ownerEmail),
+                ownerUid,
+                emailByUid.get(ownerUid) ?? null,
                 regionDocRef?.id ?? null,
             );
             if (entry) {

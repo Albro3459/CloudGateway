@@ -248,8 +248,7 @@ async def delete_client(
         # still ACTIVE) is repaired by the next peer sync (at boot, or a manual
         # `cloudgateway-sync-peers`), which re-adds the peer from the ACTIVE doc;
         # there is no periodic sync. The lock spans both so peer sync cannot
-        # interleave with the
-        # source-of-truth transition.
+        # interleave with the source-of-truth transition.
         with wireguard.lock():
             if client.client_public_key:
                 _run_wireguard_operation(

@@ -25,4 +25,4 @@ Do not create a structured/composite index for this query. If the structured ind
 
 Without this index, `POST /clients` and `DELETE /clients/{clientId}` fail with a Firestore `FAILED_PRECONDITION` error that includes an index creation link; following that link creates the same index.
 
-The admin dashboard's cross-user reads use direct document/collection reads and need no extra index.
+The admin dashboard reads every client with an unfiltered `collectionGroup("Instances")` query. Because it applies no `where` or `orderBy`, it orders by document name and uses Firestore's automatically maintained collection-group index, so it needs no exemption or composite index beyond the `regionId` exemption above.
