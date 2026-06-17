@@ -16,7 +16,6 @@ def test_status_mapping_matches_contract():
     assert HTTP_STATUS_BY_CODE[ErrorCode.INVALID_REQUEST] == 400
     assert HTTP_STATUS_BY_CODE[ErrorCode.REGION_DISABLED] == 400
     assert HTTP_STATUS_BY_CODE[ErrorCode.REGION_MISMATCH] == 400
-    assert HTTP_STATUS_BY_CODE[ErrorCode.INVALID_PASSWORD] == 400
     assert HTTP_STATUS_BY_CODE[ErrorCode.CLIENT_NOT_FOUND] == 404
     assert HTTP_STATUS_BY_CODE[ErrorCode.DUPLICATE_EMAIL] == 409
     assert HTTP_STATUS_BY_CODE[ErrorCode.ACCOUNT_DISABLED] == 409

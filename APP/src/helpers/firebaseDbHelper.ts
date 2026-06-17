@@ -1,10 +1,11 @@
 import { User } from "firebase/auth";
 import { auth, signOut } from "../firebase";
-import { getFirestore, collection, getDocs } from "firebase/firestore";
+import { collection, collectionGroup, getDocs, getFirestore } from "firebase/firestore";
 import { NavigateFunction } from "react-router-dom";
 
 import { getUserRole } from "./usersHelper";
 import { normalizeVPNStatus, VPNStatus } from "./vpnStatus";
+import { dateOrNull, stringOrNull } from "./coerce";
 import { useOciRegionsStore } from "../stores/ociRegionsStore";
 
 export const logout = async (navigate: NavigateFunction) => {
@@ -38,28 +39,53 @@ export type VPNClientData = {
 
 export type VPNData = VPNClientData;
 
-const stringOrNull = (value: unknown) => typeof value === "string" && value.trim()
-    ? value
-    : null;
-
-const dateOrNull = (value: unknown): Date | null => {
-    if (value instanceof Date) return value;
-    if (typeof value === "string" || typeof value === "number") {
-        const date = new Date(value);
-        return Number.isNaN(date.getTime()) ? null : date;
+// Builds a table row from a raw Instance doc. Owner identity and region fall
+// back to the document path when the denormalized fields are missing.
+const toVPNClientData = (
+    data: Record<string, any>,
+    instanceId: string,
+    userID: string,
+    email: string | null,
+    regionFallback: string | null = null,
+): VPNClientData | null => {
+    const status = normalizeVPNStatus(data.status);
+    if (!status) {
+        return null;
     }
-    if (value && typeof value === "object" && "toDate" in value && typeof value.toDate === "function") {
-        const date = value.toDate();
-        return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
-    }
 
-    return null;
+    const clientId = stringOrNull(data.clientId) || instanceId;
+    const regionId = stringOrNull(data.regionId) || regionFallback;
+    const ownerUid = stringOrNull(data.ownerUid) || userID;
+    const ownerEmail = stringOrNull(data.ownerEmail) || email;
+
+    return {
+        userID: ownerUid,
+        email: ownerEmail,
+        region: regionId,
+        ipv4: stringOrNull(data.serverEndpointIpv4) || stringOrNull(data.ipv4) || null,
+        status,
+        wireguardConfig: stringOrNull(data.wireguardConfig),
+        ownerUid,
+        ownerEmail,
+        clientId,
+        clientName: stringOrNull(data.clientName),
+        regionId,
+        assignedTunnelIpv4: stringOrNull(data.assignedTunnelIpv4),
+        assignedTunnelIpv6: stringOrNull(data.assignedTunnelIpv6),
+        serverEndpointIpv4: stringOrNull(data.serverEndpointIpv4),
+        serverEndpointHostname: stringOrNull(data.serverEndpointHostname),
+        serverPublicKey: stringOrNull(data.serverPublicKey),
+        clientPublicKey: stringOrNull(data.clientPublicKey),
+        createdAt: dateOrNull(data.createdAt),
+        lastErrorCode: stringOrNull(data.lastErrorCode),
+        lastErrorMessage: stringOrNull(data.lastErrorMessage),
+    };
 };
 
 export const getUsersVPNs = async (user: User): Promise<VPNClientData[]> => {
 
     if (await getUserRole(user) === "admin") {
-        return await getAdminVPNs(user);
+        return await getAdminVPNs();
     }
 
     return await getVPNs(user.uid, user.email);
@@ -84,49 +110,9 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
             const instanceSnapshots = await getDocs(instancesRef);
 
             instanceSnapshots.forEach((instanceDoc) => {
-                const data = instanceDoc.data();
-                const {
-                    status: rawStatus,
-                    wireguardConfig,
-                    assignedTunnelIpv4,
-                    assignedTunnelIpv6,
-                    serverEndpointIpv4,
-                    serverEndpointHostname,
-                    serverPublicKey,
-                    clientPublicKey,
-                    clientName,
-                    createdAt,
-                    lastErrorCode,
-                    lastErrorMessage,
-                } = data;
-                const status = normalizeVPNStatus(rawStatus);
-                if (status) {
-                    const clientId = stringOrNull(data.clientId) || instanceDoc.id;
-                    const regionId = stringOrNull(data.regionId) || regionID;
-                    const ownerEmail = stringOrNull(data.ownerEmail) || email;
-
-                    vpnData.push({
-                        userID: userID,
-                        email: ownerEmail,
-                        region: regionId,
-                        ipv4: stringOrNull(serverEndpointIpv4) || stringOrNull(data.ipv4) || null,
-                        status: status,
-                        wireguardConfig: stringOrNull(wireguardConfig),
-                        ownerUid: stringOrNull(data.ownerUid) || userID,
-                        ownerEmail,
-                        clientId,
-                        clientName: stringOrNull(clientName),
-                        regionId,
-                        assignedTunnelIpv4: stringOrNull(assignedTunnelIpv4),
-                        assignedTunnelIpv6: stringOrNull(assignedTunnelIpv6),
-                        serverEndpointIpv4: stringOrNull(serverEndpointIpv4),
-                        serverEndpointHostname: stringOrNull(serverEndpointHostname),
-                        serverPublicKey: stringOrNull(serverPublicKey),
-                        clientPublicKey: stringOrNull(clientPublicKey),
-                        createdAt: dateOrNull(createdAt),
-                        lastErrorCode: stringOrNull(lastErrorCode),
-                        lastErrorMessage: stringOrNull(lastErrorMessage),
-                    });
+                const entry = toVPNClientData(instanceDoc.data(), instanceDoc.id, userID, email, regionID);
+                if (entry) {
+                    vpnData.push(entry);
                 }
             });
         }
@@ -139,26 +125,29 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
     }
 };
 
-const getAdminVPNs = async (user: User): Promise<VPNClientData[]> => {
-    try {        
-        if (await getUserRole(user) !== "admin") {
-            console.warn("Not an admin. Cannot fetch VPNs for admin.");
-            return [];
-        }
-
+// Admins read every client in one indexed collection-group query rather than
+// fanning out a per-user/per-region read across the whole user base.
+const getAdminVPNs = async (): Promise<VPNClientData[]> => {
+    try {
         const db = getFirestore();
-        const usersSnapshot = await getDocs(collection(db, "Users"));
+        const instanceSnapshots = await getDocs(collectionGroup(db, "Instances"));
 
-        let vpnData: VPNClientData[] = [];
-
-        // for (const userDoc of usersSnapshot.docs) {
-        //     vpnData.push(...await getVPNs(userDoc.id, userDoc.data().email))
-        // }
-
-        // Same thing but this parallelizes to increase efficiency
-        vpnData = (await Promise.all(
-            usersSnapshot.docs.map(userDoc => getVPNs(userDoc.id, userDoc.data().email))
-        )).flat();
+        const vpnData: VPNClientData[] = [];
+        instanceSnapshots.forEach((instanceDoc) => {
+            const regionDocRef = instanceDoc.ref.parent.parent;
+            const userDocRef = regionDocRef?.parent?.parent;
+            const data = instanceDoc.data();
+            const entry = toVPNClientData(
+                data,
+                instanceDoc.id,
+                stringOrNull(data.ownerUid) || userDocRef?.id || "",
+                stringOrNull(data.ownerEmail),
+                regionDocRef?.id ?? null,
+            );
+            if (entry) {
+                vpnData.push(entry);
+            }
+        });
 
         return vpnData;
 

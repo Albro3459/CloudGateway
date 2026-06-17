@@ -206,7 +206,11 @@ def test_delete_client_retries_one_transient_wireguard_remove_failure(client, re
     assert wireguard.remove_peer_calls == 2
 
 
-def test_delete_client_firebase_failure_leaves_peer_present(client, repository, wireguard):
+def test_delete_client_firebase_failure_after_peer_removed_keeps_doc_active(client, repository, wireguard):
+    # Peer removal runs before the Firebase write, so a failed write leaves the
+    # doc ACTIVE (retryable) with the peer already gone. The next peer sync (at
+    # boot, or a manual cloudgateway-sync-peers) re-adds the peer from the
+    # still-ACTIVE doc; the doc never reaches REMOVED.
     seed_region(repository)
     active = create_active_client(repository, wireguard)
     repository.delete_client_error = FirebaseWriteFailedError("Simulated delete write failure.")
@@ -222,11 +226,13 @@ def test_delete_client_firebase_failure_leaves_peer_present(client, repository, 
     assert_error_shape(response.json(), "FIREBASE_WRITE_FAILED")
     stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
     assert stored.status == ClientStatus.ACTIVE
-    assert set(wireguard.peers) == {"fake-public-existing"}
-    assert wireguard.remove_peer_calls == 0
+    assert wireguard.peers == {}
+    assert wireguard.remove_peer_calls == 1
 
 
-def test_delete_client_wireguard_failure_keeps_firebase_removed(client, repository, wireguard):
+def test_delete_client_wireguard_failure_keeps_firebase_active(client, repository, wireguard):
+    # A failed peer removal aborts before the Firebase write, so the doc stays
+    # ACTIVE and the live peer is never orphaned by a REMOVED doc.
     seed_region(repository)
     active = create_active_client(repository, wireguard)
     wireguard.fail_remove_count = 1
@@ -241,7 +247,7 @@ def test_delete_client_wireguard_failure_keeps_firebase_removed(client, reposito
     assert response.status_code == 500
     assert_error_shape(response.json(), "WIREGUARD_APPLY_FAILED")
     stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
-    assert stored.status == ClientStatus.REMOVED
+    assert stored.status == ClientStatus.ACTIVE
     assert set(wireguard.peers) == {"fake-public-existing"}
     assert wireguard.remove_peer_calls == 1
 

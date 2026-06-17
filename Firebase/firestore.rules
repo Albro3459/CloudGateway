@@ -8,12 +8,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isUser() {
+      return isAuth() && exists(/databases/$(database)/documents/Roles/$(request.auth.uid));
+    }
+
     function isAdmin() {
-      return isAuth() && get(/databases/$(database)/documents/Roles/$(request.auth.uid)).data.role == "admin";
+      return isUser() && get(/databases/$(database)/documents/Roles/$(request.auth.uid)).data.role == "admin";
     }
 
     function isUserOwner(userId) {
-      return isAuth() && request.auth.uid == userId;
+      return isUser() && request.auth.uid == userId;
     }
 
     function isOwnerOrAdmin(userId) {
@@ -26,13 +30,13 @@ service cloud.firestore {
     }
 
     match /Regions/{regionId} {
-      allow get, list: if isAuth() && (resource.data.enabled == true || isAdmin());
+      allow get, list: if isUser() && (resource.data.enabled == true || isAdmin());
       allow create, update, delete: if isAdmin();
     }
 
     match /Users/{userId} {
       allow get: if isOwnerOrAdmin(userId);
-      allow list: if isAuth() && isAdmin();
+      allow list: if isAdmin();
       allow create, update, delete: if isAdmin();
 
       match /Regions/{regionId} {

@@ -8,7 +8,6 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_REQUEST: 400,
     ErrorCode.REGION_DISABLED: 400,
     ErrorCode.REGION_MISMATCH: 400,
-    ErrorCode.INVALID_PASSWORD: 400,
     ErrorCode.CLIENT_NOT_FOUND: 404,
     ErrorCode.DUPLICATE_EMAIL: 409,
     ErrorCode.ACCOUNT_DISABLED: 409,
@@ -86,11 +85,6 @@ class DuplicateEmailError(ApiError):
 class AccountDisabledError(ApiError):
     code = ErrorCode.ACCOUNT_DISABLED
     default_message = "Account is disabled and cannot be granted access."
-
-
-class InvalidPasswordError(ApiError):
-    code = ErrorCode.INVALID_PASSWORD
-    default_message = "Password does not meet requirements."
 
 
 class WireGuardApplyFailedError(ApiError):

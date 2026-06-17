@@ -1,3 +1,5 @@
+import { numberOrDefault, stringOrNull } from "./coerce";
+
 // Fallback per-normal-user client limit when a region doc omits userClientLimit.
 export const DEFAULT_USER_CLIENT_LIMIT = 3;
 
@@ -27,15 +29,6 @@ export type Region = {
     healthStatus?: string | null;
     capacity?: RegionCapacity;
 }
-
-const numberOrDefault = (value: unknown, fallback: number) => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const stringOrNull = (value: unknown) => typeof value === "string" && value.trim()
-    ? value
-    : null;
 
 export const parseRegionDocument = (regionId: string, data: Record<string, unknown>): Region | null => {
     const displayName = stringOrNull(data.displayName);

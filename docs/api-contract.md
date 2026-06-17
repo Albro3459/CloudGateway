@@ -130,17 +130,18 @@ All controlled failures return this shape:
 ```
 
 - Error codes are uppercase snake case.
-- Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `INVALID_REQUEST`, `REGION_DISABLED`,
-  `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`, `DUPLICATE_EMAIL`,
-  `INVALID_PASSWORD`, `WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, `INTERNAL_ERROR`.
+- Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
+  `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
+  `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
+  `INTERNAL_ERROR`.
 - HTTP status mapping:
   - `401`: auth failures (`AUTH_REQUIRED`).
-  - `403`: permission failures (`ADMIN_REQUIRED`).
-  - `400`: invalid request, region mismatch, invalid password (`INVALID_REQUEST`,
-    `REGION_DISABLED`, `REGION_MISMATCH`, `INVALID_PASSWORD`).
+  - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`).
+  - `400`: invalid request and region errors (`INVALID_REQUEST`, `REGION_DISABLED`,
+    `REGION_MISMATCH`).
   - `404`: missing clients (`CLIENT_NOT_FOUND`).
-  - `409`: duplicate email and capacity/limit failures (`DUPLICATE_EMAIL`, `LIMIT_REACHED`,
-    `CAPACITY_REACHED`).
+  - `409`: duplicate email, disabled account, and capacity/limit failures (`DUPLICATE_EMAIL`,
+    `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`).
   - `500`: host mutation failures and unexpected failures (`WIREGUARD_APPLY_FAILED`,
     `FIREBASE_WRITE_FAILED`, `INTERNAL_ERROR`).
 

@@ -17,8 +17,12 @@ def desired_peers(repository: FirebaseRepository, region_id: str) -> dict[str, t
 
 
 def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, region_id: str) -> PeerSyncResult:
-    desired = desired_peers(repository, region_id)
+    # Read the desired peer set under the lock so a concurrent create/delete
+    # cannot commit between the Firebase read and the live peer apply, which
+    # would otherwise let sync remove a just-created peer (or re-add a removed
+    # one) from a stale snapshot.
     with wireguard.lock():
+        desired = desired_peers(repository, region_id)
         return wireguard.sync_peers(desired)
 
 

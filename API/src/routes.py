@@ -239,16 +239,15 @@ async def delete_client(
             client_id=client_id,
         )
 
-        # The lock spans the Firebase terminal write plus live peer cleanup so
-        # peer sync cannot interleave with the source-of-truth transition.
+        # Remove the live peer before the Firebase terminal write so a failed
+        # peer removal leaves the client ACTIVE in Firebase (retryable) instead
+        # of removed with a still-live peer. The reverse window (peer gone, doc
+        # still ACTIVE) is repaired by the next peer sync (at boot, or a manual
+        # `cloudgateway-sync-peers`), which re-adds the peer from the ACTIVE doc;
+        # there is no periodic sync. The lock spans both so peer sync cannot
+        # interleave with the
+        # source-of-truth transition.
         with wireguard.lock():
-            removed_client = repository.delete_client(
-                requester_uid=user.uid,
-                target_uid=body.user_id,
-                region_id=body.region_id,
-                client_id=client_id,
-            )
-            firebase_removed = True
             if client.client_public_key:
                 _run_wireguard_operation(
                     lambda: wireguard.remove_peer(public_key=client.client_public_key),
@@ -257,6 +256,13 @@ async def delete_client(
                     region_id=client.region_id,
                     operation="remove_peer",
                 )
+            removed_client = repository.delete_client(
+                requester_uid=user.uid,
+                target_uid=body.user_id,
+                region_id=body.region_id,
+                client_id=client_id,
+            )
+            firebase_removed = True
     except ApiError:
         log_event(
             logger,

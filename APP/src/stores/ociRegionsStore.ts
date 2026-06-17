@@ -37,8 +37,9 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
 
     try {
       const db = getFirestore();
-      // Security rules only allow non-admins to read enabled regions, so the
-      // query must match or it is rejected outright.
+      // Security rules only allow provisioned users to read enabled regions, so
+      // the query must match or it is rejected outright (an unprovisioned user's
+      // read is denied, which surfaces as a generic access error at sign-in).
       const regionsSnapshot = await getDocs(query(collection(db, "Regions"), where("enabled", "==", true)));
       const regions = sortRegions(
         regionsSnapshot.docs.reduce<Region[]>((result, regionDoc) => {
