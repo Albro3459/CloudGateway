@@ -33,16 +33,12 @@ sudo systemctl status cloudgateway-sync-peers
 sudo journalctl -u cloudgateway-sync-peers --since "1 hour ago"
 ```
 
-Compare against Firestore: the region's client docs live at `Users/{uid}/Regions/{regionId}/Instances/{clientId}` with `status` and `clientPublicKey` fields (admin/Admin SDK access).
+Compare against Firestore: the region's client docs live at `Regions/{regionId}/Instances/{clientId}` with `status`, `ownerUid`, and `clientPublicKey` fields (admin/Admin SDK access).
 
 If a user's tunnel is down but their doc is `active` and the peer is present after a sync, the problem is not peer drift - check the endpoint DNS record, handshakes (`wg show wg0 latest-handshakes`), and Unbound per [docs/service-operations.md](service-operations.md).
 
-## Counter Drift
-
-`Regions/{regionId}.activeClientCount` is maintained by API transactions and is display/capacity metadata, not peer state. If it drifts (for example after manual doc edits), recount the region's `active` client docs and update the field directly in the console. The peer sync does not touch it.
-
 ## Stale Reservations
 
-A `creating` client doc holds a tunnel IP and a capacity slot (it counts toward `activeClientCount` and the per-user limit) until the create request promotes it to `active` or rolls it back. If the API process dies mid-create (crash, OOM, redeploy in the request window), the doc can be left `creating` indefinitely - the peer sync ignores `creating` docs, so nothing reclaims it. Symptom: a region reports less available capacity than its `active` client count explains. Repair by listing client docs with `status == creating` that are older than a few minutes and deleting them (or marking them `removed`) in the console, then recounting `activeClientCount` as above. There is no automatic reaper.
+A `creating` client doc holds a tunnel IP and a capacity slot until the create request promotes it to `active` or rolls it back. If the API process dies mid-create (crash, OOM, redeploy in the request window), the doc can be left `creating` indefinitely - the peer sync ignores `creating` docs, so nothing reclaims it. Symptom: a region reports less available capacity than its `active` client docs explain. Repair by listing client docs with `status == creating` that are older than a few minutes and deleting them or marking them `removed`. There is no automatic reaper.
 
 Never paste WireGuard private keys, full configs, Firebase credentials, or auth tokens into logs or tickets. Reference peers by client ID or public key.

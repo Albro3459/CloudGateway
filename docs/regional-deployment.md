@@ -92,9 +92,9 @@ WireGuard traffic does not go through Cloudflare. Only the API hostname is proxi
 
 ## 4. Firebase region doc (self-seeded by the host)
 
-One-time project setup: confirm the `Instances` collection group index for `regionId` exists (see [Firebase/indexes.md](../Firebase/indexes.md)). The API's create/delete transactions fail without it.
+One-time project setup: confirm any required Firestore indexes for the current schema exist (see [Firebase/indexes.md](../Firebase/indexes.md)).
 
-The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). `activeClientCount` is preserved on update (0 on first insert) and never reset. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`, `region_user_client_limit`) plus the host's own `/etc/cloudgateway/api.env`.
+The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
 
 If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudgateway-api` then
 `( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region )`. The upsert is idempotent.
@@ -124,9 +124,9 @@ This must be rejected. If it returns a healthy response, the origin is reachable
 1. Set `enabled: true` on the region doc so the dashboard shows the region.
 2. Log in to the dashboard, select the new region tab, and create a client with an optional display name.
 3. Confirm the response shows status `active`, assigned tunnel IPv4/IPv6, and a config whose `Endpoint` is `wg.<regionId>.<origin>:51820`.
-4. Confirm the client doc exists at `Users/{uid}/Regions/{regionId}/Instances/{clientId}` and `activeClientCount` incremented.
+4. Confirm the client doc exists at `Regions/{regionId}/Instances/{clientId}` with the expected `ownerUid` and `status`.
 5. On the host, confirm the peer appears in `sudo wg show wg0` (`/etc/wireguard/wg0.conf` stays peer-free by design).
-6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0`, the doc status is `removed`, and the counter decremented.
+6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0` and the doc status is `removed`.
 
 ## 7. Verify WireGuard Connects
 

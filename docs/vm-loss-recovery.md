@@ -23,7 +23,7 @@ before Terraform can safely manage the region again.
 6. Validate `/api/health` through Cloudflare, then re-enable the region if it was disabled.
 7. Tell affected users to toggle their WireGuard tunnel off and on (clients resolve the endpoint DNS at tunnel-up). No config changes are needed.
 
-`activeClientCount` stays correct - it tracks Firebase state, which did not change.
+Capacity stays correct because it is derived from Firebase client docs, which did not change.
 
 ## Key-Loss Recovery (server key rotated or compromised)
 
@@ -31,6 +31,6 @@ Only if the server private key must change (compromise, or the tfvars secret is 
 
 1. Disable the region (`enabled: false`).
 2. Generate a new server keypair, update `wg_server_private_key` in tfvars, and rebuild.
-3. Update the region doc: `wireguardPublicKey` to the new public key, endpoint IP as above, `activeClientCount` to `0`.
-4. Mark each previously `active` client doc `removed` with `removedAt` (admin/Admin SDK, not the frontend).
+3. Update the region doc: `wireguardPublicKey` to the new public key and endpoint IP as above.
+4. Mark each previously `active` client doc under `Regions/{regionId}/Instances` as `removed` with `removedAt` (admin/Admin SDK, not the frontend).
 5. Re-enable the region after validation and notify users to delete old tunnels and create new clients.

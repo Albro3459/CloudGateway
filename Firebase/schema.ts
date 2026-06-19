@@ -21,10 +21,21 @@ export type FirebaseRegionDoc = {
     wireguardDnsIpv6: string;
     wireguardPublicKey: string;
     capacityLimit: number;
-    userClientLimit: number;
-    activeClientCount: number;
     displayOrder?: number;
     healthStatus?: string;
+    updatedAt: FirestoreTimestamp;
+};
+
+export type FirebaseRoleDoc = {
+    roleId: FirebaseRole;
+    defaultPerRegionClientLimit: number | null;
+    updatedAt: FirestoreTimestamp;
+};
+
+export type FirebaseUserRoleDoc = {
+    uid: string;
+    roleId: FirebaseRole;
+    perRegionClientLimit?: number | null;
     updatedAt: FirestoreTimestamp;
 };
 
@@ -32,17 +43,8 @@ export type FirebaseUserDoc = {
     uid: string;
     email: string;
     createdAt: FirestoreTimestamp;
+    updatedAt: FirestoreTimestamp;
     disabled?: boolean;
-};
-
-export type FirebaseUserRegionDoc = {
-    regionId: string;
-    updatedAt: FirestoreTimestamp;
-};
-
-export type FirebaseRoleDoc = {
-    role: FirebaseRole;
-    updatedAt: FirestoreTimestamp;
 };
 
 export type FirebaseClientDoc = {
@@ -68,24 +70,19 @@ export type FirebaseClientDoc = {
 
 export type FirebaseDocumentTree = {
     Regions: {
-        "{regionId}": FirebaseRegionDoc;
+        "{regionId}": FirebaseRegionDoc & {
+            Instances: {
+                "{clientId}": FirebaseClientDoc;
+            };
+        };
     };
     Roles: {
-        "{uid}": FirebaseRoleDoc;
+        "{roleId}": FirebaseRoleDoc;
+    };
+    UserRoles: {
+        "{uid}": FirebaseUserRoleDoc;
     };
     Users: {
-        "{uid}": 
-            FirebaseUserDoc & 
-            {
-                Regions: {
-                    "{regionId}": 
-                        FirebaseUserRegionDoc & 
-                        {
-                            Instances: {
-                                "{clientId}": FirebaseClientDoc;
-                            };
-                        };
-                };
-            };
+        "{uid}": FirebaseUserDoc;
     };
 };

@@ -7,24 +7,45 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 ## Files
 
 * [schema.ts](schema.ts) documents the Firestore collection paths and document shapes as TypeScript types for quick visualization.
-* [firestore.rules](firestore.rules) contains the frontend Firestore security rules.
+* [firestore.rules](firestore.rules) contains the frontend Firestore security rules. During the schema migration, the rules must be updated alongside the API and app code before deployment.
 * [indexes.md](indexes.md) documents the required Firestore indexes.
 
 ## Paths
 
 * Region documents: `Regions/{regionId}`
+* Client documents: `Regions/{regionId}/Instances/{clientId}`
 * User documents: `Users/{uid}`
-* Client documents: `Users/{uid}/Regions/{regionId}/Instances/{clientId}`
-* Role documents: `Roles/{uid}`
+* Role default documents: `Roles/{roleId}` (`Roles/user`, `Roles/admin`)
+* User role assignment documents: `UserRoles/{uid}`
 
 Region documents are **self-seeded by each host** at the end of bootstrap
 (`cloudgateway-register-region`): it upserts `Regions/{regionId}` with the live IP, server
 public key, and endpoint config, sets `enabled: true` only once the full Cloudflare path
-validates (health checked through the edge, not just loopback), and preserves
-`activeClientCount` (0 only on first insert). You normally don't create region
-docs by hand; `Users`/`Roles` are still provisioned manually or via the admin UI.
+validates (health checked through the edge, not just loopback), and updates only the
+region metadata document. It must not delete or overwrite `Regions/{regionId}/Instances`.
+You normally don't create region docs by hand; `Users`, `UserRoles`, and role defaults
+are still provisioned manually or via the admin UI.
 
-Client documents never contain the server private key. The stored `wireguardConfig` contains the client private key, which is why client docs are readable only by their owner and admins.
+Client documents live under the region they belong to and include `ownerUid`/`ownerEmail`
+links back to the owning user. They never contain the server private key. The stored
+`wireguardConfig` contains the client private key, which is why client docs are readable
+only by their owner and admins.
+
+User documents own each user's profile data, such as email and disabled status.
+
+Role documents are defaults keyed by role name:
+
+* `Roles/user.defaultPerRegionClientLimit`: default per-region client limit for normal users.
+* `Roles/admin.defaultPerRegionClientLimit`: default per-region client limit for admins. A
+  `null` value means no per-user limit; regional `capacityLimit` still applies.
+
+User role assignment documents are the Firestore rules authorization anchor. Each
+`UserRoles/{uid}` document has `roleId: "user" | "admin"` and optional
+`perRegionClientLimit`. The override uses the same semantics as role defaults: `null`
+and missing mean "use the role default," while `0` is a real override that allows zero
+clients per region. `UserRoles` is writable only by admins or the API. Keeping assignment
+and entitlement overrides separate from `Users/{uid}` avoids making normal user profile
+data part of the rules bootstrap path.
 
 ## Enums
 
@@ -36,16 +57,20 @@ Client documents never contain the server private key. The stored `wireguardConf
 
 Enforced by [firestore.rules](firestore.rules):
 
-* Authenticated users can read enabled region docs.
+* Provisioned users can read enabled region docs.
 * Normal users can read their own user document and their own client documents.
-* Admins can read all user, role, and client documents.
+* Provisioned users can read role defaults. Users can read their own role assignment.
+* Admins can read all user, role default, role assignment, and client documents.
 * Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
-* Admins can write `Regions`, `Users`, and `Roles` documents from the frontend where existing admin UI needs it, but not client documents.
+* Admins can write `Regions`, `Users`, `UserRoles`, and `Roles` documents from the frontend where existing admin UI needs it, but not client documents.
 
 ## Limits
 
 Enforced server-side by the regional FastAPI inside Firestore transactions (not by [firestore.rules](firestore.rules)):
 
-* Normal users: limited to the region doc's `userClientLimit` active clients per region (defaults to 3 when the field is absent).
-* Admins: create clients only for themselves, may exceed the normal limit up to server capacity (`capacityLimit`), and may delete clients for any user.
-* Reservations and `activeClientCount` updates are done in Firestore transactions by the API.
+* Region capacity: `Regions/{regionId}.capacityLimit` caps the total allocated clients in the region.
+* Allocated clients are `creating` plus `active` client docs under `Regions/{regionId}/Instances`.
+* Per-user limits resolve from `UserRoles/{uid}.perRegionClientLimit` when it is a number. If it is `null` or missing, the API falls back to `Roles/{roleId}.defaultPerRegionClientLimit` using `UserRoles/{uid}.roleId`.
+* `0` is a valid per-user override and does not fall back to the role default.
+* Admins may use a `null` role default to mean no per-user limit, while still being capped by regional `capacityLimit`.
+* Reservations and client status transitions are done in Firestore transactions by the API.

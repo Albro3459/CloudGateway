@@ -79,7 +79,7 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 ```
 
 - Normal users can only pass their own UID. Admins can pass any target UID.
-- The API verifies the client document at `Users/{userId}/Regions/{regionId}/Instances/{clientId}`
+- The API verifies the client document at `Regions/{regionId}/Instances/{clientId}`
   exists and matches the requested IDs before mutating WireGuard.
 - Response `200`:
 

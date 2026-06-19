@@ -9,11 +9,11 @@ service cloud.firestore {
     }
 
     function isUser() {
-      return isAuth() && exists(/databases/$(database)/documents/Roles/$(request.auth.uid));
+      return isAuth() && exists(/databases/$(database)/documents/UserRoles/$(request.auth.uid));
     }
 
     function isAdmin() {
-      return isUser() && get(/databases/$(database)/documents/Roles/$(request.auth.uid)).data.role == "admin";
+      return isUser() && get(/databases/$(database)/documents/UserRoles/$(request.auth.uid)).data.roleId == "admin";
     }
 
     function isUserOwner(userId) {
@@ -24,8 +24,14 @@ service cloud.firestore {
       return isUserOwner(userId) || isAdmin();
     }
 
-    match /Roles/{userId} {
-      allow get, list: if isAdmin();
+    match /Roles/{roleId} {
+      allow get, list: if isUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /UserRoles/{userId} {
+      allow get: if isOwnerOrAdmin(userId);
+      allow list: if isAdmin();
       allow create, update, delete: if isAdmin();
     }
 
@@ -38,20 +44,10 @@ service cloud.firestore {
       allow get: if isOwnerOrAdmin(userId);
       allow list: if isAdmin();
       allow create, update, delete: if isAdmin();
-
-      match /Regions/{regionId} {
-        allow get, list: if isOwnerOrAdmin(userId);
-        allow create, update, delete: if false;
-
-        match /Instances/{instanceId} {
-          allow get, list: if isOwnerOrAdmin(userId);
-          allow create, update, delete: if false;
-        }
-      }
     }
 
     match /{path=**}/Instances/{instanceId} {
-      allow get, list: if isAdmin();
+      allow get, list: if isAdmin() || (isUser() && resource.data.ownerUid == request.auth.uid);
       allow create, update, delete: if false;
     }
   }

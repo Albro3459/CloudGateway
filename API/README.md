@@ -34,7 +34,7 @@ See [OCI/README.md](../OCI/README.md) for Terraform and host bootstrap details, 
 * Apply live `wg0` peer changes with `wg set` under a local lock.
 * Store dashboard-visible client state and WireGuard configs in Firebase.
 * Rebuild the live WireGuard peer set from Firebase through `cloudgateway-sync-peers`.
-* Self-seed the Firestore region doc at boot through `cloudgateway-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback), preserving `activeClientCount`. DNS records are managed by Terraform, not the host.
+* Self-seed the Firestore region doc at boot through `cloudgateway-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). DNS records are managed by Terraform, not the host.
 
 Firebase is the product source of truth for users, regions, roles, limits, stored configs, and the desired WireGuard peer set. The host's `/etc/wireguard/wg0.conf` stays interface-only and never stores client peers.
 
@@ -95,7 +95,7 @@ All request/response JSON uses camelCase.
 * `POST /auth/check-access`: verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
-* `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `Roles/{uid}` state, then sends a best-effort SES access email to the user.
+* `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
 
 For the full route, URL, and error contract, see [docs/api-contract.md](../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Firebase/README.md](../Firebase/README.md).
 
