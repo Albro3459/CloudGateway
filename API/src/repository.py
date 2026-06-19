@@ -145,24 +145,25 @@ def assert_user_limit_available(
         raise LimitReachedError()
 
 
-def assign_tunnel_ips(*, ipv4_cidr: str, ipv6_cidr: str, used_ipv4: set[str], used_ipv6: set[str]) -> tuple[str, str]:
-    ipv4_network = ip_network(ipv4_cidr, strict=False)
-    ipv6_network = ip_network(ipv6_cidr, strict=False)
-
-    ipv4_hosts = ipv4_network.hosts()
-    ipv6_hosts = ipv6_network.hosts()
+def _first_unused_tunnel_ip(*, cidr: str, used: set[str], prefix_length: int) -> str:
+    hosts = ip_network(cidr, strict=False).hosts()
     try:
-        next(ipv4_hosts)
-        next(ipv6_hosts)
+        next(hosts)
     except StopIteration as exc:
-        raise CapacityReachedError()
+        raise CapacityReachedError() from exc
 
-    for ipv4, ipv6 in zip(ipv4_hosts, ipv6_hosts, strict=False):
-        assigned_ipv4 = f"{ipv4}/32"
-        assigned_ipv6 = f"{ipv6}/128"
-        if assigned_ipv4 not in used_ipv4 and assigned_ipv6 not in used_ipv6:
-            return assigned_ipv4, assigned_ipv6
+    for host in hosts:
+        assigned_ip = f"{host}/{prefix_length}"
+        if assigned_ip not in used:
+            return assigned_ip
     raise CapacityReachedError()
+
+
+def assign_tunnel_ips(*, ipv4_cidr: str, ipv6_cidr: str, used_ipv4: set[str], used_ipv6: set[str]) -> tuple[str, str]:
+    return (
+        _first_unused_tunnel_ip(cidr=ipv4_cidr, used=used_ipv4, prefix_length=32),
+        _first_unused_tunnel_ip(cidr=ipv6_cidr, used=used_ipv6, prefix_length=128),
+    )
 
 
 def new_client_id() -> str:

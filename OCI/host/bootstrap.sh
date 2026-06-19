@@ -146,8 +146,10 @@ PrivateKey = $(cat /etc/cloudgateway/wireguard-server.key)
 
 # PostUp
 # IPv4
-PostUp = iptables -I FORWARD 1 -i $WG_INTERFACE -j ACCEPT
-PostUp = iptables -I FORWARD 2 -o $WG_INTERFACE -j ACCEPT
+# Do not let VPN clients reach OCI instance metadata. user_data should not be accessible secrets
+PostUp = iptables -I FORWARD 1 -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
+PostUp = iptables -I FORWARD 2 -i $WG_INTERFACE -j ACCEPT
+PostUp = iptables -I FORWARD 3 -o $WG_INTERFACE -j ACCEPT
 PostUp = iptables -t nat -A POSTROUTING -s $WG_NETWORK_V4 -o $PRIMARY_IFACE -j MASQUERADE
 PostUp = iptables -I INPUT 1 -p udp --dport $WG_LISTEN_PORT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 PostUp = iptables -I INPUT 2 -p udp --dport $WG_LISTEN_PORT -m conntrack --ctstate NEW -m limit --limit $WG_RATE_LIMIT --limit-burst $WG_RATE_LIMIT_BURST -j ACCEPT
@@ -166,6 +168,7 @@ PostUp = ip6tables -I INPUT 5 -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p tcp --dp
 
 # PostDown
 # IPv4
+PostDown = iptables -D FORWARD -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
 PostDown = iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT
 PostDown = iptables -D FORWARD -o $WG_INTERFACE -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -s $WG_NETWORK_V4 -o $PRIMARY_IFACE -j MASQUERADE

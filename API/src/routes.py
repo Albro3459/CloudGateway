@@ -36,12 +36,12 @@ T = TypeVar("T")
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health(request: Request) -> HealthResponse:
+def health(request: Request) -> HealthResponse:
     return HealthResponse(region_id=request.app.state.settings.region_id)
 
 
 @router.post("/auth/check-access", response_model=AccessCheckResponse)
-async def check_access(
+def check_access(
     request: Request,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AccessCheckResponse:
@@ -54,7 +54,7 @@ async def check_access(
 
 
 @router.post("/clients", response_model=CreateClientResponse)
-async def create_client(
+def create_client(
     request: Request,
     body: CreateClientRequest,
     user: AuthenticatedUser = Depends(require_provisioned_user),
@@ -204,7 +204,7 @@ async def create_client(
 
 
 @router.delete("/clients/{clientId}", response_model=DeleteClientResponse)
-async def delete_client(
+def delete_client(
     client_id: Annotated[str, Path(alias="clientId")],
     request: Request,
     body: DeleteClientRequest,
@@ -312,7 +312,7 @@ async def delete_client(
 
 
 @router.post("/users", response_model=CreateUserResponse)
-async def create_user(
+def create_user(
     request: Request,
     body: CreateUserRequest,
     admin_user: AuthenticatedUser = Depends(require_admin_user),
@@ -360,7 +360,7 @@ async def create_user(
 
 
 @router.post("/admin/sync", response_model=AdminSyncResponse)
-async def admin_sync(
+def admin_sync(
     request: Request,
     body: AdminSyncRequest,
     admin_user: AuthenticatedUser = Depends(require_admin_user),

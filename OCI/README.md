@@ -123,6 +123,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 [wireguard_configs/example.wg0-server.conf](wireguard_configs/example.wg0-server.conf)
 
 * Shared-server interface shape: address, listen port, firewall/NAT `PostUp`/`PostDown`, UDP rate limits.
+* The host firewall blocks VPN client traffic to OCI instance metadata at `169.254.169.254` so `user_data` stays protected.
 * No static `[Peer]` blocks. Peers are managed at runtime by the regional API.
 
 [wireguard_configs/example.wg0-client.conf](wireguard_configs/example.wg0-client.conf)

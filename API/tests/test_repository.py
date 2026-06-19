@@ -13,7 +13,7 @@ from src.errors import (
     RegionMismatchError,
 )
 from src.firebase import FirestoreRepository, _user_write_data
-from src.repository import RegionDoc, UserDoc
+from src.repository import RegionDoc, UserDoc, assign_tunnel_ips
 
 from .fakes import FakeRepository
 
@@ -117,6 +117,44 @@ def require_test_region(repository: FakeRepository) -> RegionDoc:
     region = repository.get_region(REGION_ID)
     assert region is not None
     return region
+
+
+def test_assign_tunnel_ips_skips_server_address():
+    assert assign_tunnel_ips(
+        ipv4_cidr="10.0.0.0/29",
+        ipv6_cidr="fd42:42:42::/126",
+        used_ipv4=set(),
+        used_ipv6=set(),
+    ) == ("10.0.0.2/32", "fd42:42:42::2/128")
+
+
+def test_assign_tunnel_ips_allocates_address_families_independently():
+    assert assign_tunnel_ips(
+        ipv4_cidr="10.0.0.0/29",
+        ipv6_cidr="fd42:42:42::/126",
+        used_ipv4={"10.0.0.2/32"},
+        used_ipv6={"fd42:42:42::3/128"},
+    ) == ("10.0.0.3/32", "fd42:42:42::2/128")
+
+
+@pytest.mark.parametrize(
+    ("used_ipv4", "used_ipv6"),
+    [
+        ({"10.0.0.2/32"}, set()),
+        (set(), {"fd42:42:42::1/128"}),
+    ],
+)
+def test_assign_tunnel_ips_raises_when_either_pool_is_exhausted(
+    used_ipv4: set[str],
+    used_ipv6: set[str],
+):
+    with pytest.raises(CapacityReachedError):
+        assign_tunnel_ips(
+            ipv4_cidr="10.0.0.0/30",
+            ipv6_cidr="fd42:42:42::/127",
+            used_ipv4=used_ipv4,
+            used_ipv6=used_ipv6,
+        )
 
 
 def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: FakeRepository):
