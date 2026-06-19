@@ -523,7 +523,7 @@ const Home: React.FC = () => {
                         onClick={handleCreateNewAccount}
                         className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
                     >
-                        Create Test Account
+                        Grant User Access
                     </button>
                     <button
                         onClick={handleSyncRegions}
