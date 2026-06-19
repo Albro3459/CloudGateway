@@ -26,6 +26,7 @@ from .models import (
     DeleteClientResponse,
     HealthResponse,
 )
+from .notifications import create_ses_client, send_access_grant_email
 from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, utc_now
 from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
@@ -351,6 +352,13 @@ def create_user(
         )
         raise InternalError() from exc
 
+    _notify_user_access_granted(
+        request,
+        email=result.user.email,
+        request_id=request_id,
+        user_id=result.user.uid,
+    )
+
     return CreateUserResponse(
         user_id=result.user.uid,
         email=result.user.email,
@@ -460,6 +468,44 @@ def _create_client_response(client: ClientDoc) -> CreateClientResponse:
 def _ensure_client_matches_request(*, client: ClientDoc, owner_uid: str, region_id: str, client_id: str) -> None:
     if client.owner_uid != owner_uid or client.region_id != region_id or client.client_id != client_id:
         raise ClientNotFoundError()
+
+
+def _notify_user_access_granted(
+    request: Request,
+    *,
+    email: str,
+    request_id: str,
+    user_id: str,
+) -> None:
+    settings = request.app.state.settings
+    try:
+        ses_client = create_ses_client(settings)
+        send_access_grant_email(
+            ses_client,
+            sender=settings.ses_sender,
+            recipient=email,
+            dashboard_origin=settings.dashboard_cors_origin,
+        )
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.USER_ACCESS_EMAIL_FAILED,
+            level=logging.ERROR,
+            request_id=request_id,
+            user_id=user_id,
+            email=email,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return
+
+    log_event(
+        logger,
+        Event.USER_ACCESS_EMAIL_COMPLETED,
+        request_id=request_id,
+        user_id=user_id,
+        email=email,
+    )
+
 
 def _run_wireguard_operation(
     operation_call: Callable[[], T],

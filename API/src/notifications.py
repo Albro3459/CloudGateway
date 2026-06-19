@@ -45,6 +45,28 @@ def build_deployment_email(
     return msg
 
 
+def build_access_grant_email(
+    *,
+    sender: str,
+    recipient: str,
+    dashboard_origin: str,
+) -> MIMEMultipart:
+    subject = "You now have access to CloudGateway"
+    body_text = (
+        "You now have access to CloudGateway.\n\n"
+        f"Email: {recipient}\n\n"
+        f"Website: {dashboard_origin}\n\n"
+        "You can sign in with Google, or open the website and choose Reset password for this email."
+    )
+
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.attach(MIMEText(body_text, "plain"))
+    return msg
+
+
 def create_ses_client(settings: Settings) -> Any:
     missing = [
         name
@@ -83,6 +105,26 @@ def send_deployment_email(
         region=region,
         settings=settings,
         public_ipv4=public_ipv4,
+    )
+    response = ses_client.send_email(
+        FromEmailAddress=sender,
+        Destination={"ToAddresses": [recipient]},
+        Content={"Raw": {"Data": msg.as_bytes()}},
+    )
+    return str(response.get("MessageId") or "")
+
+
+def send_access_grant_email(
+    ses_client: Any,
+    *,
+    sender: str,
+    recipient: str,
+    dashboard_origin: str,
+) -> str:
+    msg = build_access_grant_email(
+        sender=sender,
+        recipient=recipient,
+        dashboard_origin=dashboard_origin,
     )
     response = ses_client.send_email(
         FromEmailAddress=sender,

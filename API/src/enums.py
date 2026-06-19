@@ -42,6 +42,8 @@ class Event(str, Enum):
     REQUEST_FAILED = "request_failed"
     USER_CREATE_STARTED = "user_create_started"
     USER_CREATE_FAILED = "user_create_failed"
+    USER_ACCESS_EMAIL_COMPLETED = "user_access_email_completed"
+    USER_ACCESS_EMAIL_FAILED = "user_access_email_failed"
     CLIENT_CREATE_STARTED = "client_create_started"
     CLIENT_CREATE_COMPLETED = "client_create_completed"
     CLIENT_CREATE_FAILED = "client_create_failed"

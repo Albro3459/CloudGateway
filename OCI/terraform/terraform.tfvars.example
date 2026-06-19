@@ -37,6 +37,7 @@ source_ref  = "deploy-v1.0.0"
 # --- Regional API / dashboard ---
 region_id              = "us-region-1"
 api_hostname           = "us-region-1.gocloudlaunch.com"
+# Also used as the user access email login link.
 dashboard_cors_origin  = "https://gocloudlaunch.com"
 fastapi_port           = 8000
 caddy_acme_email       = "admin@example.com"

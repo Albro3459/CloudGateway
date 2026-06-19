@@ -97,6 +97,8 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 - Requires Firebase bearer auth with admin role.
 - Logically global and hosted by every regional API. It does not accept `regionId` and does not
   mutate regional state.
+- After access is granted, the API sends a best-effort SES email telling the user they can sign in.
+  Email failures are logged but do not change the `200` response or roll back access.
 - Request:
 
 ```json
@@ -111,7 +113,8 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 {
   "userId": "firebase-uid",
   "email": "user@example.com",
-  "role": "user"
+  "role": "user",
+  "alreadyExisted": false
 }
 ```
 

@@ -3,7 +3,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from typing import Any, cast
 
-from src.notifications import send_deployment_email
+from src.notifications import send_access_grant_email, send_deployment_email
 from src.repository import RegionDoc
 from src.settings import Settings
 
@@ -67,3 +67,33 @@ def test_send_deployment_email_uses_sesv2_raw_mime_shape():
     assert "API Hostname: us-test-1.example.com" in body
     assert "WireGuard Endpoint: wg.us-test-1.example.com:51820" in body
     assert "Timestamp:" in body
+
+
+def test_send_access_grant_email_uses_sesv2_raw_mime_shape():
+    ses_client = FakeSesClient()
+
+    message_id = send_access_grant_email(
+        ses_client,
+        sender="CloudGateway <noreply@example.com>",
+        recipient="new.user@example.com",
+        dashboard_origin="https://gocloudlaunch.com",
+    )
+
+    assert message_id == "message-1"
+    assert len(ses_client.calls) == 1
+    call = ses_client.calls[0]
+    assert call["FromEmailAddress"] == "CloudGateway <noreply@example.com>"
+    assert call["Destination"] == {"ToAddresses": ["new.user@example.com"]}
+    raw = call["Content"]["Raw"]["Data"]
+    assert isinstance(raw, bytes)
+    parsed = cast(EmailMessage, BytesParser(policy=policy.default).parsebytes(raw))
+    body_part = parsed.get_body(preferencelist=("plain"))
+    assert body_part is not None
+    body = body_part.get_content()
+    assert parsed["Subject"] == "You now have access to CloudGateway"
+    assert parsed["From"] == "CloudGateway <noreply@example.com>"
+    assert parsed["To"] == "new.user@example.com"
+    assert "You now have access to CloudGateway." in body
+    assert "Email: new.user@example.com" in body
+    assert "Website: https://gocloudlaunch.com" in body
+    assert "choose Reset password for this email" in body

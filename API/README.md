@@ -95,7 +95,7 @@ All request/response JSON uses camelCase.
 * `POST /auth/check-access`: verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
-* `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `Roles/{uid}` state.
+* `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `Roles/{uid}` state, then sends a best-effort SES access email to the user.
 
 For the full route, URL, and error contract, see [docs/api-contract.md](../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Firebase/README.md](../Firebase/README.md).
 
@@ -105,6 +105,7 @@ Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefi
 
 * `CLOUDGATEWAY_REGION_ID`
 * `CLOUDGATEWAY_API_PORT`
+* `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN`
 * `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
 * `CLOUDGATEWAY_WG_INTERFACE`
 * `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
@@ -114,6 +115,10 @@ Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefi
 * `CLOUDGATEWAY_WG_DNS_IPV6`
 * `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`
 * `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`
+* `CLOUDGATEWAY_SES_REGION`
+* `CLOUDGATEWAY_SES_SENDER`
+* `CLOUDGATEWAY_AWS_ACCESS_KEY_ID`
+* `CLOUDGATEWAY_AWS_SECRET_ACCESS_KEY`
 
 On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudgateway/api.env`, which is root-owned and mode `0600`.
 
