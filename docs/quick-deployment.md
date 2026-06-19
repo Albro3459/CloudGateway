@@ -5,7 +5,7 @@
 Run the full suite; everything must pass before deploying:
 
 ```sh
-./test.sh
+./scripts/test.sh
 ```
 
 ## Deploy the frontend
@@ -20,7 +20,7 @@ cd APP && npm run deploy && cd -
 2. Deploy one or more regions:
 
    ```sh
-   ./terraform.sh <region> [<region> ...]
+   ./scripts/terraform.sh <region> [<region> ...]
    ```
 
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
@@ -36,10 +36,10 @@ existing VPN server in each listed region.**
 Useful forms:
 
 ```sh
-./terraform.sh chicago plan
-./terraform.sh chicago sanjose plan
-./terraform.sh chicago sanjose
-./terraform.sh chicago destroy
+./scripts/terraform.sh chicago plan
+./scripts/terraform.sh chicago sanjose plan
+./scripts/terraform.sh chicago sanjose
+./scripts/terraform.sh chicago destroy
 ```
 
 If a multi-region apply fails partway through, the script stops. Regions already

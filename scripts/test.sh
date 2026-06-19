@@ -3,9 +3,9 @@
 # Runs every local test/validation suite for the repo.
 #
 # Usage:
-#   ./test.sh            # run everything
-#   ./test.sh api        # API only
-#   ./test.sh app infra  # any combination of: api app infra
+#   ./scripts/test.sh            # run everything
+#   ./scripts/test.sh api        # API only
+#   ./scripts/test.sh app infra  # any combination of: api app infra
 #
 # One-time setup (API venv, APP node_modules, terraform providers) happens
 # automatically on first run.
@@ -15,7 +15,7 @@
 
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
@@ -73,9 +73,12 @@ test_infra() {
   fi
   run_check "Terraform validate" terraform -chdir=OCI/terraform validate
 
-  for script in OCI/host/*.sh "$0"; do
+  for script in OCI/host/*.sh scripts/*.sh; do
     run_check "parse $script" bash -n "$script"
   done
+
+  run_check "preflight compile" python3 -m py_compile scripts/terraform-preflight.py
+  run_check "preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
 }
 
 run_step() {

@@ -20,9 +20,16 @@ The host fetches its bootstrap script and API source from GitHub at boot using `
 
 Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
-that var file's `oci_config_profile`. Deploy through `terraform.sh`, which selects each
+that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, which selects each
 workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
 share one state file, so a second region would plan to destroy the first.
+
+`./scripts/terraform.sh` also runs a regional preflight before every plan, apply, and
+destroy. It stops the entire deploy if Cloudflare has existing regional API/WireGuard records or OCI
+has a `CloudGatewayManaged=true` VM that is not already in the selected Terraform
+workspace state. It also stops on duplicates. The script reports the region and
+resource IDs; manually reconcile or import the canonical resources before
+rerunning.
 
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
@@ -30,12 +37,12 @@ share one state file, so a second region would plan to destroy the first.
 # hostname, tunnel DNS IPs, Firebase credentials, Caddy/Cloudflare settings, WG server key).
 cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfvars
 
-./terraform.sh <regionId> plan
-./terraform.sh <regionId> apply
+./scripts/terraform.sh <regionId> plan
+./scripts/terraform.sh <regionId> apply
 
 # Multi-region: one deploy tag is created and written to every listed tfvars.
-./terraform.sh <regionId> <anotherRegionId> plan
-./terraform.sh <regionId> <anotherRegionId> apply
+./scripts/terraform.sh <regionId> <anotherRegionId> plan
+./scripts/terraform.sh <regionId> <anotherRegionId> apply
 ```
 
 For `apply`, the script validates all requested var files and `source_ref` lines
@@ -71,7 +78,7 @@ If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Fetch failures (r
 
 The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gocloudlaunch.com`.
 
-DNS is **managed by Terraform**, not by hand. `terraform apply` creates/updates two `A` records from the instance's public IPv4 (`cloudflare_record.api`, orange/proxied; `cloudflare_record.wg`, grey/DNS-only) using `cloudflare_api_token` + `cloudflare_zone_id`. They update automatically on rebuild. If a manually-created record already exists for the name, delete it (or `terraform import` it) before the first apply, or the create conflicts.
+DNS is **managed by Terraform**, not by hand. `./scripts/terraform.sh <region> apply` creates/updates two `A` records from the instance's public IPv4 (`cloudflare_record.api`, orange/proxied; `cloudflare_record.wg`, grey/DNS-only) using `cloudflare_api_token` + `cloudflare_zone_id`. They update automatically on rebuild. If a manually-created record already exists for the name, delete it or import it before the first apply; the wrapper preflight stops on unmanaged or duplicate regional records.
 
 If the `cloudflare_api_token` has **Client IP Address Filtering** enabled, allowlist **both** the operator machine's public **IPv4 and IPv6** (`curl -4 https://ifconfig.me`, `curl -6 https://ifconfig.me`). Terraform's provider prefers IPv6 when available, so a v4-only allowlist fails every record op with `Authentication error (10000)` despite a valid token. Residential IPv6 is a rotating /64 - allowlist the `/64` prefix or leave IP filtering off.
 

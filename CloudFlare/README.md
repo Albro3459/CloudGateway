@@ -73,11 +73,13 @@ See `example.gocloudlaunch.com.txt` for the full set. Summary:
   (`cloudflare_record.wg`).
 * Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase - managed by hand.
 
-The two per-region `A` records are created/updated by `terraform apply` from the instance's
-public IP (they self-heal on rebuild), using a Cloudflare API token with **Zone: gocloudlaunch.com
--> DNS: Edit**. The token lives only on the operator machine (`cloudflare_api_token` tfvar),
-never on a host. The apex/www/email records stay manual. Before the first apply for a region,
-delete any pre-existing manual `<regionId>` / `wg.<regionId>` record or the create conflicts.
+The two per-region `A` records are created/updated by `./scripts/terraform.sh <region> apply`
+from the instance's public IP (they self-heal on rebuild), using a Cloudflare API token
+with **Zone: gocloudlaunch.com -> DNS: Edit**. The token lives only on the operator
+machine (`cloudflare_api_token` tfvar), never on a host. The apex/www/email records stay
+manual. Before the first apply for a region, delete any pre-existing manual `<regionId>` /
+`wg.<regionId>` record or import the canonical record; the wrapper preflight stops on
+unmanaged or duplicate regional records before Terraform can create more DNS state.
 
 If you enable **Client IP Address Filtering** on the token, allowlist **both** the operator
 machine's public **IPv4 and IPv6** addresses. Terraform's provider connects over IPv6 when the

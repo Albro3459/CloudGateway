@@ -20,7 +20,7 @@
             "request": "launch",
             "runtimeExecutable": "bash",
             "args": ["./test.sh"],
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/scripts",
             "console": "integratedTerminal",
             "noDebug": true
         }

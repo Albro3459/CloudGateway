@@ -513,6 +513,9 @@ resource "oci_core_instance" "generated_oci_core_instance" {
     subnet_id = var.subnet_id
   }
   display_name = var.instance_display_name
+  freeform_tags = {
+    CloudGatewayManaged = "true"
+  }
   instance_options {
     are_legacy_imds_endpoints_disabled = "false"
   }

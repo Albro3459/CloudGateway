@@ -8,7 +8,13 @@ CloudGateway uses this model:
 1 OCI region = 1 long-lived shared WireGuard server
 ```
 
-Deployment is rare and manual. An operator prepares OCI networking, applies this Terraform stack directly, then finishes the regional setup (Cloudflare DNS, Firebase region doc, validation) following [docs/regional-deployment.md](../docs/regional-deployment.md). There is no Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack deployment.
+Deployment is rare and manual. An operator prepares OCI networking, then deploys
+or rebuilds a region through `./scripts/terraform.sh <region> apply` following
+[docs/regional-deployment.md](../docs/regional-deployment.md). The wrapper
+manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
+DNS/VM resources must be reconciled or imported before rerunning. There is no
+Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack
+deployment.
 
 WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
@@ -44,9 +50,22 @@ Terraform inputs cover the shared-server deployment config: source repo/ref, reg
 The region's `A` records (`cloudflare_record.api`, proxied; `cloudflare_record.wg`, grey-cloud) are Terraform-managed and point at the instance public IP, so they follow a rebuild automatically. Two safeguards exist because the Cloudflare provider does not validate the token up front and its record create is an insert, not an upsert:
 
 * `data.cloudflare_zone.this` makes an authenticated Cloudflare call during `plan`/refresh, so an invalid or IP-blocked token fails before the instance is created or replaced. If a deploy errors here, check that the `cloudflare_api_token` is valid and that the operator machine's public IP is in the token's client-IP allowlist.
-* Both records set `allow_overwrite = true`, so a create overwrites a matching record instead of adding a duplicate. This only reconciles when exactly one matching record exists at the edge; if a prior half-failed apply left duplicate records, delete the stale ones (keep the one matching the current instance IP) before re-running, or the apply cannot disambiguate.
+* The deploy wrapper blocks unmanaged matching records before Terraform can create
+  more DNS state. If a matching record already exists but is not in Terraform
+  state, import the canonical record or delete/recreate intentionally before
+  rerunning. If a prior half-failed apply left duplicate records, manually
+  reconcile them before rerunning because Terraform cannot safely disambiguate.
 
 A token that is valid but blocked by source-IP filtering used to surface only after the instance was created (the records depend on the instance), leaving an orphaned instance, unupdated records, and duplicates on the next run. The zone preflight now fails that case at plan time.
+
+The deploy wrapper also checks regional resource ownership before every plan,
+apply, and destroy. It queries Cloudflare for the exact API and WireGuard `A` records, and OCI
+for active instances tagged `CloudGatewayManaged=true` in that region's configured
+compartment/profile/region. Zero matching resources is safe for a first deploy.
+Exactly one matching resource is safe only when it is already in the selected
+Terraform workspace state. More than one matching DNS record or VM is unsafe.
+Any unsafe region stops the whole deploy so the operator can manually reconcile
+resources or import the canonical resources into state before rerunning.
 
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 
@@ -113,7 +132,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 `<regionId>.terraform.tfvars`
 
 * Per-region local-only deployment values, for example `us-chicago-1.terraform.tfvars`.
-* Deployed via [`terraform.sh`](../terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
+* Deployed via [./scripts/terraform.sh](../scripts/terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
 * Multi-region apply creates one deploy tag and writes that same `source_ref` into every listed region's tfvars before applying them sequentially.
 * `oci_config_profile` names the `~/.oci/config` profile for that region's tenancy.
 * Contains sensitive values such as the WireGuard private key, Firebase credentials, and password hash. Never commit it; `*.tfvars` is gitignored.

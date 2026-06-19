@@ -3,7 +3,7 @@
 # Deploy/manage shared regional WireGuard servers.
 #
 # Usage:
-#   ./terraform.sh <region> [<region> ...] [plan|apply|destroy]
+#   ./scripts/terraform.sh <region> [<region> ...] [plan|apply|destroy]
 #
 # <region> accepts a short name (chicago, sanjose) which expands to us-<region>-1,
 # or a full region id (us-chicago-1) used as-is.
@@ -14,10 +14,10 @@
 # saved plan in sequence. destroy uses Terraform's native per-region confirmation.
 #
 # Examples:
-#   ./terraform.sh chicago                    # apply us-chicago-1 (shows plan, asks yes)
-#   ./terraform.sh chicago sanjose            # apply both regions with one deploy tag
-#   ./terraform.sh chicago sanjose plan       # plan both regions only, no prompt
-#   ./terraform.sh chicago destroy            # tear Chicago down (asks yes)
+#   ./scripts/terraform.sh chicago                    # apply us-chicago-1 (shows plan, asks yes)
+#   ./scripts/terraform.sh chicago sanjose            # apply both regions with one deploy tag
+#   ./scripts/terraform.sh chicago sanjose plan       # plan both regions only, no prompt
+#   ./scripts/terraform.sh chicago destroy            # tear Chicago down (asks yes)
 #
 # Each region gets:
 #   - its own var file:  OCI/terraform/<region-id>.terraform.tfvars (gitignored)
@@ -29,10 +29,11 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TFDIR="$ROOT/OCI/terraform"
 API_VERSION_FILE="$ROOT/API/src/version.py"
-RAW_ACTION=""      # empty when no action is given (bare `./terraform.sh <region>`)
+PREFLIGHT="$ROOT/scripts/terraform-preflight.py"
+RAW_ACTION=""      # empty when no action is given (bare `./scripts/terraform.sh <region>`)
 ACTION="apply"
 REGIONS=("$@")
 REGION_IDS=()
@@ -41,6 +42,7 @@ DEPLOY_VERSION=""
 DEPLOY_TAG=""
 DEPLOY_PREVIOUS_TAG=""
 APPLY_PLANFILES=()
+TEMPFILES=()
 
 usage() {
   echo "usage: $0 <region> [<region> ...] [plan|apply|destroy]   (region: chicago | sanjose | us-<x>-1)" >&2
@@ -92,10 +94,10 @@ done
 [[ "$varfile_error" -eq 0 ]] || exit 1
 
 cleanup_apply_planfiles() {
-  local planfile
+  local tempfile
 
-  for planfile in "${APPLY_PLANFILES[@]}"; do
-    [[ -n "$planfile" ]] && rm -f "$planfile"
+  for tempfile in "${TEMPFILES[@]}"; do
+    [[ -n "$tempfile" ]] && rm -f "$tempfile"
   done
 }
 
@@ -190,18 +192,35 @@ select_region_workspace() {
   echo "==> workspace: $(terraform workspace show)  var-file: $(basename "$varfile")"
 }
 
-plan_region() {
+preflight_region() {
   local region_id="$1" varfile="$2"
 
   select_region_workspace "$region_id" "$varfile"
-  terraform plan -input=false -var-file="$varfile"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile"
+}
+
+plan_region() {
+  local region_id="$1" varfile="$2" planfile planjson
+
+  select_region_workspace "$region_id" "$varfile"
+  planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan.XXXXXX")"
+  planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
+  TEMPFILES+=("$planfile" "$planjson")
+  terraform plan -input=false -var-file="$varfile" -out="$planfile" >/dev/null
+  terraform show -json "$planfile" > "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
+  terraform show -no-color "$planfile"
 }
 
 save_apply_plan() {
-  local region_id="$1" varfile="$2" tag="$3" planfile="$4"
+  local region_id="$1" varfile="$2" tag="$3" planfile="$4" planjson
 
   select_region_workspace "$region_id" "$varfile"
   terraform plan -input=false -var-file="$varfile" -var="source_ref=${tag}" -out="$planfile"
+  planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
+  TEMPFILES+=("$planjson")
+  terraform show -json "$planfile" > "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
 }
 
 cd "$TFDIR"
@@ -209,6 +228,7 @@ terraform init -input=false >/dev/null
 
 case "$ACTION" in
   plan)
+    trap cleanup_apply_planfiles EXIT
     for i in "${!REGION_IDS[@]}"; do
       plan_region "${REGION_IDS[$i]}" "${VARFILES[$i]}"
     done
@@ -223,10 +243,11 @@ case "$ACTION" in
     for i in "${!REGION_IDS[@]}"; do
       planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan.XXXXXX")"
       APPLY_PLANFILES+=("$planfile")
+      TEMPFILES+=("$planfile")
       save_apply_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$DEPLOY_TAG" "$planfile"
     done
 
-    # Bare `./terraform.sh <region> [<region> ...]` shows final plans and confirms
+    # Bare `./scripts/terraform.sh <region> [<region> ...]` shows final plans and confirms
     # intent before touching tags. Explicit `... apply` still uses create_deploy_tag's
     # readiness prompt, matching the old explicit-apply gate.
     if [[ -z "$RAW_ACTION" ]]; then
@@ -247,6 +268,10 @@ case "$ACTION" in
     done
     ;;
   destroy)
+    for i in "${!REGION_IDS[@]}"; do
+      preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}"
+    done
+
     for i in "${!REGION_IDS[@]}"; do
       select_region_workspace "${REGION_IDS[$i]}" "${VARFILES[$i]}"
       terraform destroy -var-file="${VARFILES[$i]}"

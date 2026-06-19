@@ -32,7 +32,7 @@ It extracts only `API/` and `OCI/host/` into `/opt/cloudgateway/src`, verifies `
 
 ## Release Workflow
 
-The normal operator path is [`terraform.sh`](../terraform.sh), which bumps
+The normal operator path is [`./scripts/terraform.sh`](../scripts/terraform.sh), which bumps
 `API/src/version.py`, creates and pushes one `Deploy vX.Y.Z` commit plus matching
 `deploy-vX.Y.Z` tag, and writes that tag to every listed region's
 `<regionId>.terraform.tfvars` before applying.
@@ -69,12 +69,12 @@ sudo cloudgateway-install-api deploy-v1.1.0
 
 With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
 
-**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next `terraform apply` plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (update the grey-cloud `wg.<regionId>.<origin>` record and region doc IP; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
+**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next wrapper deploy plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (Terraform updates the API/WireGuard `A` records, operators update the Firebase region doc IP, and DNS is touched manually only when preflight reports unmanaged state to reconcile/import before rerunning; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
 
 The operating rule for a live region:
 
 * API change: `sudo cloudgateway-install-api <ref>`. Running tunnels are unaffected.
-* Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `terraform apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
+* Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `./scripts/terraform.sh <region> apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
 * Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
 
 ## Troubleshooting Fetch Failures
