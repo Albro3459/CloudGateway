@@ -9,7 +9,15 @@ set -euxo pipefail
 # Redirect stdout and stderr to log files
 exec > >(tee -a /var/log/wireguard-bootstrap.log | logger -t wireguard-bootstrap -s 2>/dev/console) 2>&1
 
-echo "==> Stub 1/4: Writing deployment configuration"
+BOOTSTRAP_STARTED_AT="$(date +%s)"
+
+log() {
+  local now
+  now="$(date +%s)"
+  printf '[%s +%ss] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now - BOOTSTRAP_STARTED_AT))" "$*"
+}
+
+log "==> Stub 1/4: Writing deployment configuration"
 install -d -m 700 /etc/cloudgateway
 install -d -m 755 /opt/cloudgateway
 install -d -m 755 /opt/cloudgateway/src
@@ -57,7 +65,7 @@ CLOUDFLARE_IPV6_RANGES="${join(" ", cloudflare_ipv6_ranges)}"
 BOOTSTRAPENV
 chmod 600 /etc/cloudgateway/bootstrap.env
 
-echo "==> Stub 2/4: Writing secrets"
+log "==> Stub 2/4: Writing secrets"
 set +x
 cat > /etc/cloudgateway/wireguard-server.key <<'WGKEY'
 ${wg_server_private_key}
@@ -74,7 +82,7 @@ FIREBASECREDS
 set -x
 chmod 600 "${firebase_credentials_file}"
 %{ else ~}
-echo "No Firebase credential payload provided; provision ${firebase_credentials_file} manually"
+log "No Firebase credential payload provided; provision ${firebase_credentials_file} manually"
 %{ endif ~}
 
 install -d -m 755 "$(dirname "${origin_cert_path}")"
@@ -90,7 +98,7 @@ set -x
 chmod 644 "${origin_cert_path}"
 chmod 600 "${origin_key_path}"
 
-echo "==> Stub 3/4: Fetching source ${source_repo}@${source_ref} from GitHub"
+log "==> Stub 3/4: Fetching source ${source_repo}@${source_ref} from GitHub"
 TARBALL="$(mktemp /tmp/cloudgateway-src-XXXXXX.tar.gz)"
 if ! curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
     "https://codeload.github.com/${source_repo}/tar.gz/${source_ref}" -o "$TARBALL"; then
@@ -106,5 +114,6 @@ if [[ ! -f /opt/cloudgateway/src/OCI/host/bootstrap.sh ]]; then
   exit 1
 fi
 
-echo "==> Stub 4/4: Running bootstrap"
+log "==> Stub 4/4: Running bootstrap"
 bash /opt/cloudgateway/src/OCI/host/bootstrap.sh
+log "==> Stub complete"

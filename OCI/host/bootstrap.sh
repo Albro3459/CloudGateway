@@ -9,6 +9,14 @@
 
 set -euo pipefail
 
+BOOTSTRAP_STARTED_AT="$(date +%s)"
+
+log() {
+  local now
+  now="$(date +%s)"
+  printf '[%s +%ss] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$((now - BOOTSTRAP_STARTED_AT))" "$*"
+}
+
 set +x
 set -a
 source /etc/cloudgateway/bootstrap.env
@@ -26,7 +34,7 @@ UNBOUND_LISTEN_PORT=5335
 
 wait_for_apt() {
   while ps -eo comm= | grep -Eq '^(apt|apt-get|dpkg)$'; do
-    echo "Waiting for other apt/dpkg process to finish..."
+    log "Waiting for other apt/dpkg process to finish..."
     sleep 5
   done
 }
@@ -63,7 +71,7 @@ if [[ -z "$PRIMARY_IFACE" ]]; then
   exit 1
 fi
 
-echo "==> Step 1/13: Installing required packages"
+log "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
@@ -71,7 +79,7 @@ apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-ven
 systemctl stop unbound || true
 systemctl stop adguardhome || true
 
-echo "==> Step 2/13: Preparing configuration directories"
+log "==> Step 2/13: Preparing configuration directories"
 # Essentially mkdir -p /etc/wireguard && chmod 700 /etc/wireguard
 install -d -m 700 /etc/wireguard
 install -d -m 755 /etc/sysctl.d
@@ -87,7 +95,7 @@ install -d -m 755 /var/lib/caddy
 install -d -m 755 /etc/adguardhome
 install -d -m 755 "$ADGUARD_HOME_WORK_DIR"
 
-echo "==> Step 3/13: Hardening SSH access"
+log "==> Step 3/13: Hardening SSH access"
 SSHD_BACKUP="/etc/ssh/sshd_config.bak.$(date +%F_%H-%M-%S)"
 cp /etc/ssh/sshd_config "$SSHD_BACKUP"
 install -d -m 755 /run/sshd
@@ -101,7 +109,7 @@ sshd -t
 systemctl reload-or-restart ssh || systemctl reload-or-restart sshd || systemctl start ssh
 sshd -T | grep -E '^(passwordauthentication|permitrootlogin) ' || true
 
-echo "==> Step 4/13: Configuring fail2ban"
+log "==> Step 4/13: Configuring fail2ban"
 cat > /etc/fail2ban/jail.d/sshd.local <<'FAIL2BAN'
 [sshd]
 enabled = true
@@ -119,7 +127,7 @@ systemctl --no-pager --full status fail2ban || true
 fail2ban-client status || true
 fail2ban-client status sshd || true
 
-echo "==> Step 5/13: Enabling IP forwarding"
+log "==> Step 5/13: Enabling IP forwarding"
 # IP forwarding
 cat > /etc/sysctl.d/99-wireguard-forwarding.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
@@ -132,7 +140,7 @@ SYSCTL
 # Apply IP forwarding changes
 sysctl --system
 
-echo "==> Step 6/13: Writing WireGuard configuration"
+log "==> Step 6/13: Writing WireGuard configuration"
 # Interface-only config. Peers are never written to this or any other file:
 # Firebase is the single source of truth and cloudgateway-sync-peers rebuilds
 # the live peer set from it on every boot.
@@ -194,7 +202,7 @@ chmod 600 "/etc/wireguard/$WG_INTERFACE.conf"
 awk '/^PrivateKey/ { print $3 }' "/etc/wireguard/$WG_INTERFACE.conf" | wg pubkey > "/etc/wireguard/$WG_INTERFACE.publickey"
 chmod 600 "/etc/wireguard/$WG_INTERFACE.publickey"
 
-echo "==> Step 7/13: Installing AdGuard Home"
+log "==> Step 7/13: Installing AdGuard Home"
 ADGUARD_ARCH="$(adguard_arch)"
 ADGUARD_WORK_DIR="$(mktemp -d /tmp/cloudgateway-adguardhome-XXXXXX)"
 ADGUARD_TARBALL="$ADGUARD_WORK_DIR/AdGuardHome.tar.gz"
@@ -205,10 +213,10 @@ tar -xzf "$ADGUARD_TARBALL" -C "$ADGUARD_WORK_DIR"
 install -m 755 "$ADGUARD_WORK_DIR/AdGuardHome/AdGuardHome" /usr/local/bin/AdGuardHome
 rm -rf "$ADGUARD_WORK_DIR"
 
-echo "==> Step 8/13: Writing DNS resolver configuration"
+log "==> Step 8/13: Writing DNS resolver configuration"
 if command -v unbound-anchor >/dev/null 2>&1; then
   if ! unbound-anchor -a /var/lib/unbound/root.key; then
-    echo "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
+    log "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
   fi
 fi
 
@@ -415,7 +423,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable adguardhome
 
-echo "==> Step 9/13: Installing CloudGateway API package"
+log "==> Step 9/13: Installing CloudGateway API package"
 cp -R "$SRC_DIR/API/." /opt/cloudgateway/api/
 
 python3 -m venv /opt/cloudgateway/api/.venv
@@ -448,9 +456,9 @@ systemctl --no-pager --full status cloudgateway-api || true
 INSTALLAPI
 chmod 755 /usr/local/sbin/cloudgateway-install-api
 
-echo "==> Step 10/13: Writing CloudGateway API environment"
+log "==> Step 10/13: Writing CloudGateway API environment"
 if [[ ! -f "$FIREBASE_CREDENTIALS_FILE" ]]; then
-  echo "No Firebase credential file at $FIREBASE_CREDENTIALS_FILE; provision it manually before using the API"
+  log "No Firebase credential file at $FIREBASE_CREDENTIALS_FILE; provision it manually before using the API"
 fi
 
 SERVER_PUBLIC_KEY="$(cat "/etc/wireguard/$WG_INTERFACE.publickey")"
@@ -488,7 +496,7 @@ CLOUDGATEWAY_CLOUDFLARE_ORIGIN_PULL_CA_PATH=$CLOUDFLARE_ORIGIN_PULL_CA_PATH
 ORIGINENV
 chmod 644 /etc/cloudgateway/origin.env
 
-echo "==> Step 11/13: Installing Caddy origin proxy"
+log "==> Step 11/13: Installing Caddy origin proxy"
 if ! id -u caddy >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
 fi
@@ -496,6 +504,8 @@ fi
 chown -R caddy:caddy /var/lib/caddy /var/log/caddy
 # Origin cert/key were written by the stub as root before the caddy user existed.
 chown caddy:caddy "$ORIGIN_CERT_PATH" "$ORIGIN_KEY_PATH"
+
+log "Downloading Cloudflare Origin Pull CA"
 install -d -m 755 "$(dirname "$CLOUDFLARE_ORIGIN_PULL_CA_PATH")"
 curl -fsSL "$CLOUDFLARE_ORIGIN_PULL_CA_URL" -o "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 chmod 644 "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
@@ -506,10 +516,14 @@ export HOME=/root
 export GOPATH=/root/go
 export GOCACHE=/root/.cache/go-build
 export GOMODCACHE=/root/go/pkg/mod
+log "Installing xcaddy"
 GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION"
+
+log "Building Caddy with rate limit module"
 /usr/local/bin/xcaddy build "$CADDY_VERSION" --with "$CADDY_RATE_LIMIT_MODULE" --output /usr/local/bin/caddy
 chmod 755 /usr/local/bin/caddy
 
+log "Rendering and validating Caddyfile"
 # Render the Caddyfile. envsubst gets an explicit variable list so Caddy's own
 # {...} placeholders are left untouched.
 envsubst '$API_HOSTNAME $DASHBOARD_CORS_ORIGIN $FASTAPI_PORT $CADDY_ACME_EMAIL $CLOUDFLARE_ORIGIN_PULL_CA_PATH $ORIGIN_CERT_PATH $ORIGIN_KEY_PATH $CADDY_API_RATE_LIMIT_EVENTS $CADDY_API_RATE_LIMIT_WINDOW' \
@@ -521,6 +535,7 @@ else
   mv /etc/caddy/Caddyfile.rendered /etc/caddy/Caddyfile
 fi
 chmod 644 /etc/caddy/Caddyfile
+/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile
 
 cat > /usr/local/sbin/cloudgateway-origin-firewall <<'FIREWALL'
 #!/bin/bash
@@ -600,12 +615,11 @@ WantedBy=multi-user.target
 UNIT
 
 /usr/local/sbin/cloudgateway-origin-firewall
-/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile
 systemctl daemon-reload
 systemctl enable cloudgateway-origin-firewall
 systemctl enable caddy
 
-echo "==> Step 12/13: Writing CloudGateway API and peer sync services"
+log "==> Step 12/13: Writing CloudGateway API and peer sync services"
 cat > /etc/systemd/system/cloudgateway-api.service <<UNIT
 [Unit]
 Description=CloudGateway regional API
@@ -651,7 +665,7 @@ systemctl daemon-reload
 systemctl enable cloudgateway-api
 systemctl enable cloudgateway-sync-peers
 
-echo "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudGateway API, and Caddy"
+log "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudGateway API, and Caddy"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -660,7 +674,7 @@ for _ in $(seq 1 30); do
     break
   fi
 
-  echo "Waiting for $WG_INTERFACE to receive $WG_DNS_ADDRESS_V4 and $WG_DNS_ADDRESS_V6..."
+  log "Waiting for $WG_INTERFACE to receive $WG_DNS_ADDRESS_V4 and $WG_DNS_ADDRESS_V6..."
   sleep 1
 done
 
@@ -699,7 +713,7 @@ systemctl --no-pager --full status caddy || true
 # the full Cloudflare path validates (proxy + AOP + firewall + Caddy). DNS records are managed
 # by Terraform, not here. Idempotent: re-run `cloudgateway-register-region` if Firebase or the
 # edge was not ready at boot.
-echo "Waiting for the CloudGateway API to answer locally before registering the region..."
+log "Waiting for the CloudGateway API to answer locally before registering the region..."
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$FASTAPI_PORT/health" >/dev/null 2>&1; then
     break
@@ -707,7 +721,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-echo "==> Registering region in Firestore"
+log "==> Registering region in Firestore"
 # Run via systemd-run so api.env is parsed by systemd (the same parser the
 # long-running services use), not the shell. This keeps a single env-file format
 # and avoids shell metacharacter pitfalls in quoted values. --wait propagates
@@ -716,11 +730,11 @@ if systemd-run --quiet --pipe --wait --collect \
   --property=WorkingDirectory=/opt/cloudgateway/api \
   --property=EnvironmentFile=/etc/cloudgateway/api.env \
   /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region; then
-  echo "Region registered"
+  log "Region registered"
 else
-  echo "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
+  log "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
 fi
 
-echo "WireGuard public key:"
+log "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"
-echo "==> Bootstrap complete"
+log "==> Bootstrap complete"

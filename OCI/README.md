@@ -204,6 +204,9 @@ sudo sed -n '1,240p' /var/log/wireguard-bootstrap.log
 tail -f /var/log/wireguard-bootstrap.log
 ```
 
+Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started. Terraform apply wall time also includes OCI instance provisioning before cloud-init starts, so these timestamps measure the host setup work only.
+
+
 For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
 
 If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../docs/vm-loss-recovery.md).
