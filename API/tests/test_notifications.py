@@ -29,7 +29,6 @@ def region_doc() -> RegionDoc:
         wireguard_dns_ipv6="fd42:42:42::1",
         wireguard_public_key="server-public-key",
         capacity_limit=20,
-        active_client_count=0,
         wireguard_endpoint_hostname="wg.us-test-1.example.com",
     )
 

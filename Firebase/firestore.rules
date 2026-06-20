@@ -24,8 +24,13 @@ service cloud.firestore {
       return isUserOwner(userId) || isAdmin();
     }
 
+    function isDefaultRole(roleId) {
+      return roleId in ["user", "admin"];
+    }
+
     match /Roles/{roleId} {
-      allow get, list: if isUser();
+      allow get: if isUser() && (isDefaultRole(roleId) || isAdmin());
+      allow list: if isAdmin();
       allow create, update, delete: if isAdmin();
     }
 

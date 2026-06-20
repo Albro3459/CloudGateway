@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/test.sh            # run everything
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh app infra  # any combination of: api app infra
+#   ./scripts/test.sh app infra  # any combination of: api app infra firebase
 #
 # One-time setup (API venv, APP node_modules, terraform providers) happens
 # automatically on first run.
@@ -81,6 +81,13 @@ test_infra() {
   run_check "preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
 }
 
+test_firebase() {
+  cd "$ROOT" || return 1
+
+  run_check "Firebase script compile" python3 -m py_compile Firebase/scripts/backup_firestore.py Firebase/scripts/migrate_firestore_schema.py Firebase/tests/test_firestore_migration.py
+  run_check "Firebase migration tests" python3 -m unittest Firebase.tests.test_firestore_migration
+}
+
 run_step() {
   local name="$1"
   shift
@@ -102,7 +109,7 @@ run_step() {
 
 targets=("$@")
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(api app infra)
+  targets=(api app infra firebase)
 fi
 
 for target in "${targets[@]}"; do
@@ -110,8 +117,9 @@ for target in "${targets[@]}"; do
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
     app) run_step "APP tests + typecheck + build (jest + tsc + CRA)" test_app ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
+    firebase) run_step "Firebase scripts (compile + migration unittest)" test_firebase ;;
     *)
-      echo "Unknown target: $target (expected: api, app, infra)" >&2
+      echo "Unknown target: $target (expected: api, app, infra, firebase)" >&2
       exit 2
       ;;
   esac

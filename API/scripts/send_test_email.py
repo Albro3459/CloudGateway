@@ -34,7 +34,6 @@ def _sample_region(settings: Settings) -> RegionDoc:
         wireguard_dns_ipv6=settings.wg_dns_ipv6,
         wireguard_public_key=settings.wg_server_public_key,
         capacity_limit=settings.region_capacity_limit,
-        active_client_count=0,
         wireguard_endpoint_hostname=settings.wg_endpoint_hostname,
     )
 

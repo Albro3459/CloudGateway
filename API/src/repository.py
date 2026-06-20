@@ -15,8 +15,6 @@ from .errors import (
 
 
 DEFAULT_CLIENT_NAME = "CloudGateway Client"
-# Fallback per-normal-user client limit when a region doc omits userClientLimit.
-DEFAULT_USER_CLIENT_LIMIT = 3
 ALLOCATED_CLIENT_STATUSES = {ClientStatus.CREATING, ClientStatus.ACTIVE}
 
 
@@ -32,8 +30,6 @@ class RegionDoc:
     wireguard_dns_ipv6: str
     wireguard_public_key: str
     capacity_limit: int
-    active_client_count: int
-    user_client_limit: int = DEFAULT_USER_CLIENT_LIMIT
     wireguard_endpoint_hostname: str = ""
     display_order: int | None = None
     health_status: str | None = None
@@ -48,7 +44,6 @@ class RegionRegistration:
     display_name: str
     display_order: int
     capacity_limit: int
-    user_client_limit: int
     wireguard_endpoint_ipv4: str
     wireguard_endpoint_hostname: str
     wireguard_port: int
@@ -64,6 +59,21 @@ class UserDoc:
     email: str
     created_at: datetime | None = None
     disabled: bool = False
+
+
+@dataclass(frozen=True)
+class UserRoleDoc:
+    uid: str
+    role: Role
+    per_region_client_limit: int | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class RoleDefaultDoc:
+    role: Role
+    default_per_region_client_limit: int | None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -138,10 +148,8 @@ def assert_capacity_available(*, allocated_count: int, capacity_limit: int) -> N
         raise CapacityReachedError()
 
 
-def assert_user_limit_available(
-    *, requester_role: Role | None, owner_allocated_count: int, user_client_limit: int
-) -> None:
-    if role_or_user(requester_role) != Role.ADMIN and owner_allocated_count >= user_client_limit:
+def assert_user_limit_available(*, owner_allocated_count: int, per_region_client_limit: int | None) -> None:
+    if per_region_client_limit is not None and owner_allocated_count >= per_region_client_limit:
         raise LimitReachedError()
 
 
@@ -173,7 +181,7 @@ def new_client_id() -> str:
 class FirebaseRepository(ABC):
     @abstractmethod
     def get_role(self, uid: str) -> Role | None:
-        """Return the role for a UID, or None when no role doc exists."""
+        """Return the assigned role for a UID, or None when no user-role doc exists."""
 
     @abstractmethod
     def get_user(self, uid: str) -> UserDoc | None:
@@ -185,11 +193,7 @@ class FirebaseRepository(ABC):
 
     @abstractmethod
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
-        """Create or update a region doc from host-reported infra fields.
-
-        activeClientCount is preserved when the doc exists (0 on insert) and is never
-        reset. enabled is set to set_enabled. Returns the resulting region document.
-        """
+        """Create or update a region metadata doc from host-reported infra fields."""
 
     @abstractmethod
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
@@ -200,12 +204,16 @@ class FirebaseRepository(ABC):
         """Return active clients with a public key for one region (peer sync input)."""
 
     @abstractmethod
+    def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
+        """Return clients in one region whose public key is in public_keys."""
+
+    @abstractmethod
     def list_admin_emails(self) -> list[str]:
         """Return non-empty admin user emails, de-duplicated case-insensitively."""
 
     @abstractmethod
     def create_user(self, *, email: str) -> CreateUserResult:
-        """Create an Auth user and matching Users/Roles documents.
+        """Create an Auth user and matching Users/UserRoles documents.
 
         When the Auth account already exists but has no provisioning docs,
         provision it instead and report already_existed.

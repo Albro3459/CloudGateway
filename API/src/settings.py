@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     region_display_name: str = "local-region"
     region_display_order: int = 1000
     region_capacity_limit: int = 20
-    region_user_client_limit: int = 3
 
 
 @lru_cache

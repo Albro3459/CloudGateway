@@ -5,15 +5,15 @@ export const getUserRole = async (user: User): Promise<string | null> => {
     try {
       const uid = user.uid;
       const db = getFirestore();
-      const docRef = doc(db, "Roles", uid);
+      const docRef = doc(db, "UserRoles", uid);
       const docSnap = await getDoc(docRef);
   
       if (docSnap.exists()) {
         const data = docSnap.data();
-        return data.role || null;
+        return data.roleId || null;
       }
   
-      console.warn(`Role document does not exist for user: ${uid}`);
+      console.warn(`User role document does not exist for user: ${uid}`);
       return null;
   
     } catch (error: any) {

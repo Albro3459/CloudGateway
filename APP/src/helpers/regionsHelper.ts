@@ -1,8 +1,5 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
 
-// Fallback per-normal-user client limit when a region doc omits userClientLimit.
-export const DEFAULT_USER_CLIENT_LIMIT = 3;
-
 export type RegionCapacity = {
     limit: number;
     active: number;
@@ -23,8 +20,6 @@ export type Region = {
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
     capacityLimit?: number;
-    userClientLimit?: number;
-    activeClientCount?: number;
     displayOrder: number;
     healthStatus?: string | null;
     capacity?: RegionCapacity;
@@ -37,7 +32,6 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
     }
 
     const capacityLimit = Math.max(0, numberOrDefault(data.capacityLimit, 0));
-    const activeClientCount = Math.max(0, numberOrDefault(data.activeClientCount, 0));
 
     return {
         name: displayName,
@@ -53,15 +47,8 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),
         capacityLimit,
-        userClientLimit: numberOrDefault(data.userClientLimit, DEFAULT_USER_CLIENT_LIMIT),
-        activeClientCount,
         displayOrder: numberOrDefault(data.displayOrder, 1000),
         healthStatus: stringOrNull(data.healthStatus),
-        capacity: {
-            limit: capacityLimit,
-            active: activeClientCount,
-            available: Math.max(0, capacityLimit - activeClientCount),
-        },
     };
 };
 

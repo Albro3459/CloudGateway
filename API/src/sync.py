@@ -35,8 +35,8 @@ def build_sync_audit_log(
     clients_by_key: dict[str, ClientDoc],
 ) -> str:
     # Plain text only (no ANSI/color) so the file reads back cleanly. Lists the
-    # peers each pass added/updated/removed; added/updated join to the owning
-    # client doc, removed peers have no active doc and are shown by key alone.
+    # peers each pass added/updated/removed; removed peers include Firebase
+    # client details when a non-active doc with the same public key still exists.
     lines = [
         "CloudGateway peer sync audit log",
         f"region: {region_id}",
@@ -63,6 +63,7 @@ def build_sync_audit_log(
             client = clients_by_key.get(change.public_key)
             if client is not None:
                 parts.append(f"clientId={client.client_id}")
+                parts.append(f"status={client.status.value}")
                 if client.owner_email:
                     parts.append(f"email={client.owner_email}")
                 if client.client_name:

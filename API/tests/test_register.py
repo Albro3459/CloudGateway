@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import src.register as register
 from src.enums import Role
 from src.register import build_registration, notify_region_deployment, run_register
@@ -18,7 +16,6 @@ def _settings() -> Settings:
         region_display_name="Test Region",
         region_display_order=5,
         region_capacity_limit=22,
-        region_user_client_limit=4,
         wg_endpoint_hostname="wg.us-test-1.example.com",
         wg_port=51820,
         wg_dns_ipv4="10.0.0.1",
@@ -63,27 +60,23 @@ def test_build_registration_maps_settings():
     assert reg.display_name == "Test Region"
     assert reg.display_order == 5
     assert reg.capacity_limit == 22
-    assert reg.user_client_limit == 4
     assert reg.wireguard_endpoint_ipv4 == "203.0.113.5"
     assert reg.wireguard_public_key == "server-pub-key"
     assert reg.wireguard_endpoint_hostname == "wg.us-test-1.example.com"
 
 
-def test_upsert_inserts_enabled_with_zero_count():
+def test_upsert_inserts_enabled_region_metadata():
     repo = FakeRepository(local_region_id=REGION_ID)
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     assert region.enabled is True
-    assert region.active_client_count == 0
     assert region.wireguard_endpoint_ipv4 == "203.0.113.5"
 
 
-def test_upsert_preserves_active_client_count_and_follows_ready():
+def test_upsert_updates_region_metadata_and_follows_ready():
     repo = FakeRepository(local_region_id=REGION_ID)
     run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
-    repo.regions[REGION_ID] = replace(repo.regions[REGION_ID], active_client_count=7)
 
     region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
-    assert region.active_client_count == 7
     assert region.enabled is False
     assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
 

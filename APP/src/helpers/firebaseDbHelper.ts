@@ -1,6 +1,6 @@
 import { User } from "firebase/auth";
 import { auth, signOut } from "../firebase";
-import { collection, collectionGroup, getDocs, getFirestore } from "firebase/firestore";
+import { collection, collectionGroup, getDocs, getFirestore, query, where } from "firebase/firestore";
 import { NavigateFunction } from "react-router-dom";
 
 import { getUserRole } from "./usersHelper";
@@ -101,23 +101,17 @@ const getVPNs = async (userID: string, email: string | null): Promise<VPNClientD
         }
 
         const db = getFirestore();
-        const userRef = collection(db, "Users", userID, "Regions");
-        const regionSnapshots = await getDocs(userRef);
-
         const vpnData: VPNClientData[] = [];
-
-        for (const regionDoc of regionSnapshots.docs) {
-            const regionID = regionDoc.id;
-            const instancesRef = collection(db, "Users", userID, "Regions", regionID, "Instances");
-            const instanceSnapshots = await getDocs(instancesRef);
-
-            instanceSnapshots.forEach((instanceDoc) => {
-                const entry = toVPNClientData(instanceDoc.data(), instanceDoc.id, userID, email, regionID);
-                if (entry) {
-                    vpnData.push(entry);
-                }
-            });
-        }
+        const instanceSnapshots = await getDocs(
+            query(collectionGroup(db, "Instances"), where("ownerUid", "==", userID)),
+        );
+        instanceSnapshots.forEach((instanceDoc) => {
+            const regionDocRef = instanceDoc.ref.parent.parent;
+            const entry = toVPNClientData(instanceDoc.data(), instanceDoc.id, userID, email, regionDocRef?.id ?? null);
+            if (entry) {
+                vpnData.push(entry);
+            }
+        });
 
         return vpnData;
 
@@ -146,9 +140,8 @@ const getAdminVPNs = async (): Promise<VPNClientData[]> => {
         const vpnData: VPNClientData[] = [];
         instanceSnapshots.forEach((instanceDoc) => {
             const regionDocRef = instanceDoc.ref.parent.parent;
-            const userDocRef = regionDocRef?.parent?.parent;
             const data = instanceDoc.data();
-            const ownerUid = stringOrNull(data.ownerUid) || userDocRef?.id || "";
+            const ownerUid = stringOrNull(data.ownerUid) || "";
             const entry = toVPNClientData(
                 data,
                 instanceDoc.id,

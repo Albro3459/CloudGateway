@@ -89,7 +89,6 @@ def build_registration(settings: Settings, public_ipv4: str) -> RegionRegistrati
         display_name=settings.region_display_name,
         display_order=settings.region_display_order,
         capacity_limit=settings.region_capacity_limit,
-        user_client_limit=settings.region_user_client_limit,
         wireguard_endpoint_ipv4=public_ipv4,
         # wireguardEndpointIpv6 is the server's public IPv6 used as a *connection endpoint*.
         # Clients connect over the grey-cloud IPv4 hostname, so it is unused and host-owned

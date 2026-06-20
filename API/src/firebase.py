@@ -18,13 +18,14 @@ from .errors import (
 )
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
-    DEFAULT_USER_CLIENT_LIMIT,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
     RegionDoc,
     RegionRegistration,
+    RoleDefaultDoc,
     UserDoc,
+    UserRoleDoc,
     assert_capacity_available,
     assert_user_limit_available,
     assign_tunnel_ips,
@@ -34,7 +35,6 @@ from .repository import (
     ensure_region_enabled,
     new_client_id,
     require_region,
-    role_or_user,
     utc_now,
 )
 from .settings import Settings
@@ -101,10 +101,11 @@ class FirestoreRepository(FirebaseRepository):
         return firestore.client()
 
     def get_role(self, uid: str) -> Role | None:
-        doc = _sync_snapshot(self._db().collection("Roles").document(uid).get())
+        doc = _sync_snapshot(self._db().collection("UserRoles").document(uid).get())
         if not doc.exists:
             return None
-        return _role_from_data(doc.to_dict() or {})
+        user_role = _user_role_from_data(doc.to_dict() or {}, uid)
+        return user_role.role if user_role else None
 
     def get_user(self, uid: str) -> UserDoc | None:
         doc = _sync_snapshot(self._db().collection("Users").document(uid).get())
@@ -125,10 +126,6 @@ class FirestoreRepository(FirebaseRepository):
 
         @transactional
         def _apply(transaction) -> None:
-            snapshot = _sync_snapshot(ref.get(transaction=transaction))
-            existing = snapshot.to_dict() if snapshot.exists else None
-            # Preserve the live counter; never reset it. 0 only on first insert.
-            active_client_count = int((existing or {}).get("activeClientCount") or 0)
             transaction.set(
                 ref,
                 {
@@ -143,8 +140,6 @@ class FirestoreRepository(FirebaseRepository):
                     "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
                     "wireguardPublicKey": registration.wireguard_public_key,
                     "capacityLimit": registration.capacity_limit,
-                    "userClientLimit": registration.user_client_limit,
-                    "activeClientCount": active_client_count,
                     "displayOrder": registration.display_order,
                     "updatedAt": _server_timestamp(),
                 },
@@ -162,13 +157,16 @@ class FirestoreRepository(FirebaseRepository):
         return region
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
-        doc = _sync_snapshot(_client_ref(self._db(), owner_uid, region_id, client_id).get())
+        doc = _sync_snapshot(_client_ref(self._db(), region_id, client_id).get())
         if not doc.exists:
             return None
-        return _client_from_data(doc.to_dict() or {}, client_id)
+        client = _client_from_data(doc.to_dict() or {}, client_id)
+        if client.owner_uid != owner_uid or client.region_id != region_id:
+            return None
+        return client
 
     def list_active_clients(self, region_id: str) -> list[ClientDoc]:
-        snapshots = self._db().collection_group("Instances").where("regionId", "==", region_id).stream()
+        snapshots = _region_instances_ref(self._db(), region_id).stream()
         clients = []
         for raw_snapshot in snapshots:
             snapshot = _sync_snapshot(raw_snapshot)
@@ -180,11 +178,25 @@ class FirestoreRepository(FirebaseRepository):
                 clients.append(client)
         return clients
 
+    def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
+        if not public_keys:
+            return []
+        clients = []
+        for raw_snapshot in _region_instances_ref(self._db(), region_id).stream():
+            snapshot = _sync_snapshot(raw_snapshot)
+            try:
+                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
+            except ValueError:
+                continue
+            if client.client_public_key in public_keys:
+                clients.append(client)
+        return clients
+
     def list_admin_emails(self) -> list[str]:
         snapshots = (
             self._db()
-            .collection("Roles")
-            .where(filter=FieldFilter("role", "==", Role.ADMIN.value))
+            .collection("UserRoles")
+            .where(filter=FieldFilter("roleId", "==", Role.ADMIN.value))
             .stream()
         )
         emails: list[str] = []
@@ -329,11 +341,11 @@ class FirestoreRepository(FirebaseRepository):
         @_transactional()
         def provision(transaction):
             user_ref = db.collection("Users").document(uid)
-            role_ref = db.collection("Roles").document(uid)
+            user_role_ref = db.collection("UserRoles").document(uid)
 
-            role_snapshot = _sync_snapshot(role_ref.get(transaction=transaction))
+            user_role_snapshot = _sync_snapshot(user_role_ref.get(transaction=transaction))
             user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
-            if role_snapshot.exists:
+            if user_role_snapshot.exists:
                 raise DuplicateEmailError()
 
             transaction.set(
@@ -346,9 +358,11 @@ class FirestoreRepository(FirebaseRepository):
                 merge=True,
             )
             transaction.create(
-                role_ref,
+                user_role_ref,
                 {
-                    "role": Role.USER.value,
+                    "uid": uid,
+                    "roleId": Role.USER.value,
+                    "perRegionClientLimit": None,
                     "updatedAt": _server_timestamp(),
                 },
             )
@@ -368,24 +382,27 @@ class FirestoreRepository(FirebaseRepository):
 
         @_transactional()
         def reserve(transaction):
-            role_ref = db.collection("Roles").document(owner_uid)
+            user_role_ref = db.collection("UserRoles").document(owner_uid)
             user_ref = db.collection("Users").document(owner_uid)
-            user_region_ref = user_ref.collection("Regions").document(region_id)
             region_ref = db.collection("Regions").document(region_id)
 
-            role = role_or_user(_role_from_snapshot(_sync_snapshot(role_ref.get(transaction=transaction))))
+            user_role = _require_user_role(_sync_snapshot(user_role_ref.get(transaction=transaction)), owner_uid)
+            role_default = _require_role_default(
+                _sync_snapshot(db.collection("Roles").document(user_role.role.value).get(transaction=transaction)),
+                user_role.role,
+            )
             user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
             region = ensure_region_enabled(
                 _region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id)
             )
             allocated_clients = _allocated_region_clients(db, transaction, region_id)
             owner_allocated_count = sum(1 for client in allocated_clients if client.owner_uid == owner_uid)
+            per_region_client_limit = _effective_per_region_client_limit(user_role, role_default)
 
             assert_capacity_available(allocated_count=len(allocated_clients), capacity_limit=region.capacity_limit)
             assert_user_limit_available(
-                requester_role=role,
                 owner_allocated_count=owner_allocated_count,
-                user_client_limit=region.user_client_limit,
+                per_region_client_limit=per_region_client_limit,
             )
 
             used_ipv4 = {client.assigned_tunnel_ipv4 for client in allocated_clients}
@@ -397,7 +414,7 @@ class FirestoreRepository(FirebaseRepository):
                 used_ipv6=used_ipv6,
             )
 
-            client_id, client_ref = _new_client_ref(db, transaction, owner_uid, region_id)
+            client_id, client_ref = _new_client_ref(db, transaction, region_id)
             now = utc_now()
             user_data = _user_write_data(
                 uid=owner_uid,
@@ -415,20 +432,7 @@ class FirestoreRepository(FirebaseRepository):
             )
 
             transaction.set(user_ref, user_data, merge=True)
-            transaction.set(
-                user_region_ref,
-                _user_region_write_data(
-                    region_id=region_id,
-                ),
-            )
             transaction.set(client_ref, client_data)
-            transaction.update(
-                region_ref,
-                {
-                    "activeClientCount": len(allocated_clients) + 1,
-                    "updatedAt": _server_timestamp(),
-                },
-            )
             return _client_from_data(client_data, client_id, now=now)
 
         return reserve(db.transaction())
@@ -447,7 +451,7 @@ class FirestoreRepository(FirebaseRepository):
 
         @_transactional()
         def activate(transaction):
-            client_ref = _client_ref(db, owner_uid, region_id, client_id)
+            client_ref = _client_ref(db, region_id, client_id)
             snapshot = _sync_snapshot(client_ref.get(transaction=transaction))
             client = _require_client(snapshot, client_id, owner_uid=owner_uid, region_id=region_id)
             if client.status not in {ClientStatus.CREATING, ClientStatus.ACTIVE}:
@@ -526,11 +530,11 @@ class FirestoreRepository(FirebaseRepository):
 
         @_transactional()
         def delete(transaction):
-            role_ref = db.collection("Roles").document(requester_uid)
+            user_role_ref = db.collection("UserRoles").document(requester_uid)
             region_ref = db.collection("Regions").document(region_id)
-            client_ref = _client_ref(db, target_uid, region_id, client_id)
+            client_ref = _client_ref(db, region_id, client_id)
 
-            role = _role_from_snapshot(_sync_snapshot(role_ref.get(transaction=transaction)))
+            role = _role_from_snapshot(_sync_snapshot(user_role_ref.get(transaction=transaction)))
             ensure_delete_allowed(requester_uid=requester_uid, requester_role=role, target_uid=target_uid)
             require_region(_region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id))
             client = _require_client(
@@ -539,13 +543,10 @@ class FirestoreRepository(FirebaseRepository):
                 owner_uid=target_uid,
                 region_id=region_id,
             )
-            allocated_clients = _allocated_region_clients(db, transaction, region_id)
             return self._write_terminal_client(
                 transaction=transaction,
-                region_ref=region_ref,
                 client_ref=client_ref,
                 client=client,
-                allocated_count=len(allocated_clients),
                 status=ClientStatus.REMOVED,
                 error_code=None,
                 error_message=None,
@@ -569,7 +570,7 @@ class FirestoreRepository(FirebaseRepository):
         @_transactional()
         def mark_terminal(transaction):
             region_ref = db.collection("Regions").document(region_id)
-            client_ref = _client_ref(db, owner_uid, region_id, client_id)
+            client_ref = _client_ref(db, region_id, client_id)
             require_region(_region_from_snapshot(_sync_snapshot(region_ref.get(transaction=transaction)), region_id))
             client = _require_client(
                 _sync_snapshot(client_ref.get(transaction=transaction)),
@@ -577,13 +578,10 @@ class FirestoreRepository(FirebaseRepository):
                 owner_uid=owner_uid,
                 region_id=region_id,
             )
-            allocated_clients = _allocated_region_clients(db, transaction, region_id)
             return self._write_terminal_client(
                 transaction=transaction,
-                region_ref=region_ref,
                 client_ref=client_ref,
                 client=client,
-                allocated_count=len(allocated_clients),
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
@@ -595,17 +593,13 @@ class FirestoreRepository(FirebaseRepository):
         self,
         *,
         transaction,
-        region_ref,
         client_ref,
         client: ClientDoc,
-        allocated_count: int,
         status: ClientStatus,
         error_code: str | None,
         error_message: str | None,
     ) -> ClientDoc:
         now = utc_now()
-        was_allocated = client.status in ALLOCATED_CLIENT_STATUSES
-        next_count = max(0, allocated_count - 1) if was_allocated else allocated_count
         removed_at = now if status == ClientStatus.REMOVED else None
         updates = {
             "status": status.value,
@@ -616,13 +610,6 @@ class FirestoreRepository(FirebaseRepository):
             "lastErrorMessage": error_message,
         }
         transaction.update(client_ref, updates)
-        transaction.update(
-            region_ref,
-            {
-                "activeClientCount": next_count,
-                "updatedAt": _server_timestamp(),
-            },
-        )
         return replace(
             client,
             status=status,
@@ -646,9 +633,61 @@ def _exception_is_named(exc: Exception, *class_names: str) -> bool:
 
 def _role_from_data(data: dict[str, Any]) -> Role | None:
     try:
-        return Role(data.get("role"))
+        return Role(data.get("roleId") or data.get("role"))
     except (TypeError, ValueError):
         return None
+
+
+def _user_role_from_data(data: dict[str, Any], uid: str) -> UserRoleDoc | None:
+    role = _role_from_data(data)
+    if role is None:
+        return None
+    raw_limit = data.get("perRegionClientLimit")
+    per_region_client_limit = int(raw_limit) if raw_limit is not None else None
+    return UserRoleDoc(
+        uid=data.get("uid") or uid,
+        role=role,
+        per_region_client_limit=per_region_client_limit,
+        updated_at=data.get("updatedAt"),
+    )
+
+
+def _role_default_from_data(data: dict[str, Any], role: Role) -> RoleDefaultDoc | None:
+    role_id = _role_from_data(data)
+    if role_id is None:
+        role_id = role
+    if role_id != role:
+        return None
+    raw_limit = data.get("defaultPerRegionClientLimit")
+    return RoleDefaultDoc(
+        role=role,
+        default_per_region_client_limit=int(raw_limit) if raw_limit is not None else None,
+        updated_at=data.get("updatedAt"),
+    )
+
+
+def _require_user_role(snapshot: DocumentSnapshot, uid: str) -> UserRoleDoc:
+    if not snapshot.exists:
+        raise FirebaseWriteFailedError()
+    user_role = _user_role_from_data(snapshot.to_dict() or {}, uid)
+    if user_role is None:
+        raise FirebaseWriteFailedError()
+    return user_role
+
+
+def _require_role_default(snapshot: DocumentSnapshot, role: Role) -> RoleDefaultDoc:
+    if not snapshot.exists:
+        raise FirebaseWriteFailedError()
+    role_default = _role_default_from_data(snapshot.to_dict() or {}, role)
+    if role_default is None:
+        raise FirebaseWriteFailedError()
+    return role_default
+
+
+def _effective_per_region_client_limit(user_role: UserRoleDoc, role_default: RoleDefaultDoc) -> int | None:
+    if user_role.per_region_client_limit is not None:
+        return user_role.per_region_client_limit
+    return role_default.default_per_region_client_limit
 
 
 def _region_from_snapshot(snapshot: DocumentSnapshot, region_id: str) -> RegionDoc | None:
@@ -669,8 +708,6 @@ def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
         wireguard_dns_ipv6=data.get("wireguardDnsIpv6") or "",
         wireguard_public_key=data.get("wireguardPublicKey") or "",
         capacity_limit=int(data.get("capacityLimit") or 0),
-        active_client_count=int(data.get("activeClientCount") or 0),
-        user_client_limit=int(data.get("userClientLimit") or DEFAULT_USER_CLIENT_LIMIT),
         wireguard_endpoint_hostname=data.get("wireguardEndpointHostname") or "",
         display_order=data.get("displayOrder"),
         health_status=data.get("healthStatus"),
@@ -721,16 +758,6 @@ def _user_write_data(*, uid: str, email: str | None, exists: bool) -> dict[str, 
     return data
 
 
-def _user_region_write_data(
-    *,
-    region_id: str,
-) -> dict[str, Any]:
-    return {
-        "regionId": region_id,
-        "updatedAt": _server_timestamp(),
-    }
-
-
 def _client_write_data(
     *,
     client_id: str,
@@ -763,28 +790,25 @@ def _client_write_data(
     }
 
 
-def _client_ref(db, owner_uid: str, region_id: str, client_id: str):
-    return (
-        db.collection("Users")
-        .document(owner_uid)
-        .collection("Regions")
-        .document(region_id)
-        .collection("Instances")
-        .document(client_id)
-    )
+def _region_instances_ref(db, region_id: str):
+    return db.collection("Regions").document(region_id).collection("Instances")
 
 
-def _new_client_ref(db, transaction, owner_uid: str, region_id: str):
+def _client_ref(db, region_id: str, client_id: str):
+    return _region_instances_ref(db, region_id).document(client_id)
+
+
+def _new_client_ref(db, transaction, region_id: str):
     for _ in range(5):
         client_id = new_client_id()
-        client_ref = _client_ref(db, owner_uid, region_id, client_id)
+        client_ref = _client_ref(db, region_id, client_id)
         if not _sync_snapshot(client_ref.get(transaction=transaction)).exists:
             return client_id, client_ref
     raise FirebaseWriteFailedError("Unable to reserve a unique client id.")
 
 
 def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc]:
-    snapshots = db.collection_group("Instances").where("regionId", "==", region_id).stream(transaction=transaction)
+    snapshots = _region_instances_ref(db, region_id).stream(transaction=transaction)
     clients = []
     for raw_snapshot in snapshots:
         snapshot = _sync_snapshot(raw_snapshot)

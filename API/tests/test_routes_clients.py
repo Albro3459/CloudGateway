@@ -20,7 +20,6 @@ def enabled_region(*, capacity_limit: int = 10) -> RegionDoc:
         wireguard_dns_ipv6="fd42:42:42::1",
         wireguard_public_key="server-public-key",
         capacity_limit=capacity_limit,
-        active_client_count=0,
         wireguard_endpoint_hostname="wg.us-test-1.example.com",
     )
 
@@ -143,7 +142,7 @@ def test_create_client_wireguard_failure_marks_reservation_failed(client, reposi
     stored = next(iter(repository.clients.values()))
     assert stored.status == ClientStatus.FAILED
     assert stored.last_error_code == "WIREGUARD_APPLY_FAILED"
-    assert repository.get_region(REGION_ID).active_client_count == 0
+    assert all(client.status != ClientStatus.CREATING for client in repository.clients.values())
     assert wireguard.peers == {}
 
 
@@ -162,7 +161,7 @@ def test_create_client_final_firebase_failure_removes_peer_and_reservation(clien
     stored = next(iter(repository.clients.values()))
     assert stored.status == ClientStatus.REMOVED
     assert stored.last_error_code == "FIREBASE_WRITE_FAILED"
-    assert repository.get_region(REGION_ID).active_client_count == 0
+    assert all(client.status != ClientStatus.CREATING for client in repository.clients.values())
     assert wireguard.peers == {}
 
 

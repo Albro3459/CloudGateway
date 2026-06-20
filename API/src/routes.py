@@ -416,10 +416,11 @@ def admin_sync(
     synced_at = utc_now()
     # Best-effort enrichment only: the reconcile above is consistent under the
     # lock, but this re-list runs unlocked, so a concurrent create/delete could
-    # leave an added/removed peer without its join details in the audit log.
+    # leave a peer without its join details in the audit log.
+    changed_public_keys = {change.public_key for change in result.changes}
     clients_by_key = {
         client.client_public_key: client
-        for client in repository.list_active_clients(settings.region_id)
+        for client in repository.list_clients_by_public_key(settings.region_id, changed_public_keys)
         if client.client_public_key
     }
     audit_log = build_sync_audit_log(

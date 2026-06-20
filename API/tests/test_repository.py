@@ -21,7 +21,7 @@ from .fakes import FakeRepository
 REGION_ID = "us-test-1"
 
 
-def enabled_region(*, capacity_limit: int = 10, active_client_count: int = 0) -> RegionDoc:
+def enabled_region(*, capacity_limit: int = 10) -> RegionDoc:
     return RegionDoc(
         region_id=REGION_ID,
         display_name="Test Region",
@@ -33,7 +33,6 @@ def enabled_region(*, capacity_limit: int = 10, active_client_count: int = 0) ->
         wireguard_dns_ipv6="fd42:42:42::1",
         wireguard_public_key="server-public-key",
         capacity_limit=capacity_limit,
-        active_client_count=active_client_count,
     )
 
 
@@ -157,7 +156,7 @@ def test_assign_tunnel_ips_raises_when_either_pool_is_exhausted(
         )
 
 
-def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: FakeRepository):
+def test_reserve_client_creates_creating_doc_and_user_doc(repository: FakeRepository):
     client = reserve(repository, client_name="  ")
 
     parsed_id = UUID(client.client_id)
@@ -175,11 +174,7 @@ def test_reserve_client_creates_creating_doc_user_doc_and_counter(repository: Fa
     assert client.last_error_code is None
     assert client.last_error_message is None
     assert repository.get_user("user-1") is not None
-    user_region = repository.user_regions[("user-1", REGION_ID)]
-    assert set(user_region) == {"regionId", "updatedAt"}
-    assert user_region["regionId"] == REGION_ID
-    assert user_region["updatedAt"] is not None
-    assert require_test_region(repository).active_client_count == 1
+    assert len(repository._allocated_region_clients(REGION_ID)) == 1
 
 
 def test_reserve_client_enforces_local_region(repository: FakeRepository):
@@ -208,16 +203,28 @@ def test_normal_user_limit_is_three_per_region(repository: FakeRepository):
         reserve(repository, client_name="Client 4")
 
 
-def test_normal_user_limit_follows_region_doc(repository: FakeRepository):
-    repository.regions[REGION_ID] = replace(
-        enabled_region(capacity_limit=10), user_client_limit=5
-    )
+def test_normal_user_limit_follows_user_role_override(repository: FakeRepository):
+    repository.per_region_client_limits["user-1"] = 5
 
     for index in range(5):
         reserve(repository, client_name=f"Client {index}")
 
     with pytest.raises(LimitReachedError):
         reserve(repository, client_name="Client 6")
+
+
+def test_zero_user_limit_override_blocks_first_client(repository: FakeRepository):
+    repository.per_region_client_limits["user-1"] = 0
+
+    with pytest.raises(LimitReachedError):
+        reserve(repository)
+
+
+def test_null_role_default_means_no_user_limit(repository: FakeRepository):
+    repository.role_defaults[Role.USER] = None
+
+    for index in range(10):
+        reserve(repository, client_name=f"Client {index}")
 
 
 def test_admin_can_exceed_normal_limit_until_capacity(repository: FakeRepository):
@@ -231,7 +238,7 @@ def test_admin_can_exceed_normal_limit_until_capacity(repository: FakeRepository
             client_name=f"Admin Client {index}",
         )
 
-    assert require_test_region(repository).active_client_count == 4
+    assert len(repository._allocated_region_clients(REGION_ID)) == 4
     with pytest.raises(CapacityReachedError):
         reserve(
             repository,
@@ -268,10 +275,10 @@ def test_mark_client_active_stores_public_key_and_config(repository: FakeReposit
     assert updated.status == ClientStatus.ACTIVE
     assert updated.client_public_key == "client-public-key"
     assert updated.wireguard_config == "[Interface]\nPrivateKey = hidden"
-    assert require_test_region(repository).active_client_count == 1
+    assert len(repository._allocated_region_clients(REGION_ID)) == 1
 
 
-def test_mark_client_failed_repairs_counter_and_records_error(repository: FakeRepository):
+def test_mark_client_failed_records_error(repository: FakeRepository):
     client = reserve(repository)
 
     failed = repository.mark_client_failed(
@@ -285,10 +292,10 @@ def test_mark_client_failed_repairs_counter_and_records_error(repository: FakeRe
     assert failed.status == ClientStatus.FAILED
     assert failed.last_error_code == "WIREGUARD_APPLY_FAILED"
     assert failed.last_error_message == "Apply failed."
-    assert require_test_region(repository).active_client_count == 0
+    assert len(repository._allocated_region_clients(REGION_ID)) == 0
 
 
-def test_remove_client_reservation_repairs_counter_once(repository: FakeRepository):
+def test_remove_client_reservation_is_idempotent(repository: FakeRepository):
     client = reserve(repository)
 
     removed = repository.remove_client_reservation(
@@ -309,7 +316,7 @@ def test_remove_client_reservation_repairs_counter_once(repository: FakeReposito
     assert removed.status == ClientStatus.REMOVED
     assert removed.removed_at is not None
     assert removed_again.status == ClientStatus.REMOVED
-    assert require_test_region(repository).active_client_count == 0
+    assert len(repository._allocated_region_clients(REGION_ID)) == 0
 
 
 def test_normal_user_cannot_delete_another_users_client(repository: FakeRepository):
@@ -341,7 +348,7 @@ def test_admin_can_delete_any_users_client(repository: FakeRepository):
 
     assert removed.status == ClientStatus.REMOVED
     assert removed.removed_at is not None
-    assert require_test_region(repository).active_client_count == 0
+    assert len(repository._allocated_region_clients(REGION_ID)) == 0
 
 
 def test_delete_works_in_disabled_region(repository: FakeRepository):
@@ -356,7 +363,7 @@ def test_delete_works_in_disabled_region(repository: FakeRepository):
     )
 
     assert removed.status == ClientStatus.REMOVED
-    assert require_test_region(repository).active_client_count == 0
+    assert len(repository._allocated_region_clients(REGION_ID)) == 0
 
 
 def test_delete_missing_client_raises_not_found(repository: FakeRepository):

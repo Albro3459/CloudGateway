@@ -141,8 +141,9 @@ class FakeRepository(FirebaseRepository):
         self.ipv6_cidr = ipv6_cidr
         self._lock = Lock()
         self.roles: dict[str, Role] = {}
+        self.role_defaults: dict[Role, int | None] = {Role.USER: 3, Role.ADMIN: 10}
+        self.per_region_client_limits: dict[str, int | None] = {}
         self.users: dict[str, UserDoc] = {}
-        self.user_regions: dict[tuple[str, str], dict[str, object]] = {}
         self.regions: dict[str, RegionDoc] = {}
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
         self.disabled_auth_uids: set[str] = set()
@@ -162,8 +163,6 @@ class FakeRepository(FirebaseRepository):
         return self.regions.get(region_id)
 
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
-        existing = self.regions.get(registration.region_id)
-        active_client_count = existing.active_client_count if existing else 0
         region = RegionDoc(
             region_id=registration.region_id,
             display_name=registration.display_name,
@@ -175,8 +174,6 @@ class FakeRepository(FirebaseRepository):
             wireguard_dns_ipv6=registration.wireguard_dns_ipv6,
             wireguard_public_key=registration.wireguard_public_key,
             capacity_limit=registration.capacity_limit,
-            active_client_count=active_client_count,
-            user_client_limit=registration.user_client_limit,
             wireguard_endpoint_hostname=registration.wireguard_endpoint_hostname,
             display_order=registration.display_order,
             updated_at=utc_now(),
@@ -194,6 +191,13 @@ class FakeRepository(FirebaseRepository):
             if client.region_id == region_id
             and client.status == ClientStatus.ACTIVE
             and client.client_public_key
+        ]
+
+    def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
+        return [
+            client
+            for client in self.clients.values()
+            if client.region_id == region_id and client.client_public_key in public_keys
         ]
 
     def list_admin_emails(self) -> list[str]:
@@ -264,9 +268,8 @@ class FakeRepository(FirebaseRepository):
             owner_allocated_count = sum(1 for client in allocated_clients if client.owner_uid == owner_uid)
             assert_capacity_available(allocated_count=len(allocated_clients), capacity_limit=region.capacity_limit)
             assert_user_limit_available(
-                requester_role=self.roles.get(owner_uid),
                 owner_allocated_count=owner_allocated_count,
-                user_client_limit=region.user_client_limit,
+                per_region_client_limit=self._effective_per_region_client_limit(owner_uid),
             )
             assigned_ipv4, assigned_ipv6 = assign_tunnel_ips(
                 ipv4_cidr=self.ipv4_cidr,
@@ -287,10 +290,6 @@ class FakeRepository(FirebaseRepository):
                     created_at=now,
                 ),
             )
-            self.user_regions[(owner_uid, region_id)] = {
-                "regionId": region_id,
-                "updatedAt": now,
-            }
             client = ClientDoc(
                 client_id=client_id,
                 owner_uid=owner_uid,
@@ -312,7 +311,6 @@ class FakeRepository(FirebaseRepository):
                 last_error_message=None,
             )
             self.clients[(owner_uid, region_id, client_id)] = client
-            self.regions[region_id] = replace(region, active_client_count=len(allocated_clients) + 1, updated_at=now)
             return client
 
     def mark_client_active(
@@ -440,9 +438,6 @@ class FakeRepository(FirebaseRepository):
         error_message: str | None,
     ) -> ClientDoc:
         client = self._require_client(owner_uid=owner_uid, region_id=region_id, client_id=client_id)
-        region = self.regions[region_id]
-        allocated_count = len(self._allocated_region_clients(region_id))
-        next_count = max(0, allocated_count - 1) if client.status in ALLOCATED_CLIENT_STATUSES else allocated_count
         now = utc_now()
         updated = replace(
             client,
@@ -454,7 +449,6 @@ class FakeRepository(FirebaseRepository):
             last_error_message=error_message,
         )
         self.clients[(owner_uid, region_id, client_id)] = updated
-        self.regions[region_id] = replace(region, active_client_count=next_count, updated_at=now)
         return updated
 
     def _allocated_region_clients(self, region_id: str) -> list[ClientDoc]:
@@ -463,6 +457,13 @@ class FakeRepository(FirebaseRepository):
             for client in self.clients.values()
             if client.region_id == region_id and client.status in ALLOCATED_CLIENT_STATUSES
         ]
+
+    def _effective_per_region_client_limit(self, uid: str) -> int | None:
+        override = self.per_region_client_limits.get(uid)
+        if override is not None:
+            return override
+        role = self.roles.get(uid) or Role.USER
+        return self.role_defaults.get(role)
 
     def _require_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc:
         client = self.clients.get((owner_uid, region_id, client_id))
