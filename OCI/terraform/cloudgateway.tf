@@ -192,7 +192,7 @@ variable "api_hostname" {
 
 variable "dashboard_cors_origin" {
   type        = string
-  description = "Dashboard origin allowed for browser CORS requests and used as the access email login link, for example https://gocloudlaunch.com"
+  description = "Exact dashboard URL allowed for browser CORS requests and used as the access email login link. Must be one URL with no globs, wildcards, patterns, or comma-separated origins, for example https://gocloudlaunch.com"
 }
 
 variable "fastapi_port" {

@@ -43,7 +43,7 @@ The fetched bootstrap installs and configures:
   * strips `/api/*` and proxies only to `127.0.0.1:<fastapi_port>`
   * logs API HTTP requests only, never VPN traffic
 
-Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin (also used as the access email login link), FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. There are no deploy-time client peer variables.
+Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. `dashboard_cors_origin` is also rendered into user access emails as the login link, so it must be one exact dashboard URL with no globs, wildcards, patterns, or comma-separated origins. There are no deploy-time client peer variables.
 
 ### Regional DNS records
 

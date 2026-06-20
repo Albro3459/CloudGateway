@@ -69,7 +69,6 @@ def get_capacity(
         region_id=region.region_id,
         capacity_limit=region.capacity_limit,
         allocated_client_count=allocated_client_count,
-        available_client_count=max(0, region.capacity_limit - allocated_client_count),
     )
 
 

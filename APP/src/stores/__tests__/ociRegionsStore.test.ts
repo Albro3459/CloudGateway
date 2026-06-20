@@ -42,7 +42,6 @@ describe("ociRegionsStore", () => {
                 regionId: "us-sanjose-1",
                 capacityLimit: 20,
                 allocatedClientCount: 8,
-                availableClientCount: 12,
             },
         });
         const { fetchOciRegions, useOciRegionsStore } = require("../ociRegionsStore");
@@ -53,9 +52,9 @@ describe("ociRegionsStore", () => {
             {
                 regionId: "us-sanjose-1",
                 capacity: {
+                    status: "known",
                     limit: 20,
                     allocated: 8,
-                    available: 12,
                 },
             },
         ]);
@@ -70,7 +69,6 @@ describe("ociRegionsStore", () => {
                 regionId: "us-ashburn-1",
                 capacityLimit: 20,
                 allocatedClientCount: 20,
-                availableClientCount: 0,
             },
         });
         const { fetchOciRegions, useOciRegionsStore } = require("../ociRegionsStore");
@@ -78,6 +76,6 @@ describe("ociRegionsStore", () => {
         await fetchOciRegions("firebase-token", true);
 
         expect(useOciRegionsStore.getState().ociRegions?.[0].regionId).toBe("us-sanjose-1");
-        expect(useOciRegionsStore.getState().ociRegions?.[0].capacity).toBeUndefined();
+        expect(useOciRegionsStore.getState().ociRegions?.[0].capacity).toEqual({ status: "unknown" });
     });
 });

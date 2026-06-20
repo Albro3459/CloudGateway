@@ -163,9 +163,9 @@ describe("Home pull to refresh", () => {
             ociRegions: [{
                 ...regionStoreState.ociRegions[0],
                 capacity: {
+                    status: "known",
                     limit: 20,
                     allocated: 8,
-                    available: 12,
                 },
             }],
             loading: false,
@@ -185,9 +185,9 @@ describe("Home pull to refresh", () => {
             ociRegions: [{
                 ...regionStoreState.ociRegions[0],
                 capacity: {
+                    status: "known",
                     limit: 20,
                     allocated: 20,
-                    available: 0,
                 },
             }],
             loading: false,
@@ -202,14 +202,15 @@ describe("Home pull to refresh", () => {
         });
     });
 
-    it("does not block create when capacity is unavailable", async () => {
+    it("blocks create when capacity is unavailable", async () => {
         const { default: Home } = require("../Home");
 
         render(<Home />);
 
         await waitFor(() => {
-            expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(false);
+            expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(true);
         });
+        expect(await screen.findByText("Capacity for San Jose is unavailable. Try again in a moment.")).toBeTruthy();
         expect(screen.queryByText(/currently full/)).toBeNull();
     });
 

@@ -55,16 +55,21 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
         regions.map(async (region) => {
           const result = await getRegionCapacity(region.regionId, token);
           if (!result.success || result.data.regionId !== region.regionId) {
-            return region;
+            return {
+              ...region,
+              capacity: {
+                status: "unknown" as const,
+              },
+            };
           }
 
           return {
             ...region,
             capacityLimit: result.data.capacityLimit,
             capacity: {
+              status: "known" as const,
               limit: result.data.capacityLimit,
               allocated: result.data.allocatedClientCount,
-              available: result.data.availableClientCount,
             },
           };
         }),

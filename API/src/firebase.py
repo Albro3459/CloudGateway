@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, cast
 
@@ -166,43 +167,27 @@ class FirestoreRepository(FirebaseRepository):
         return client
 
     def list_active_clients(self, region_id: str) -> list[ClientDoc]:
-        snapshots = _region_instances_ref(self._db(), region_id).stream()
-        clients = []
-        for raw_snapshot in snapshots:
-            snapshot = _sync_snapshot(raw_snapshot)
-            try:
-                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
-            except ValueError:
-                continue
-            if client.status == ClientStatus.ACTIVE and client.client_public_key:
-                clients.append(client)
-        return clients
+        return _region_clients(
+            self._db(),
+            region_id,
+            predicate=lambda client: client.status == ClientStatus.ACTIVE and bool(client.client_public_key),
+        )
 
     def list_allocated_clients(self, region_id: str) -> list[ClientDoc]:
-        clients = []
-        for raw_snapshot in _region_instances_ref(self._db(), region_id).stream():
-            snapshot = _sync_snapshot(raw_snapshot)
-            try:
-                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
-            except ValueError:
-                continue
-            if client.status in ALLOCATED_CLIENT_STATUSES:
-                clients.append(client)
-        return clients
+        return _region_clients(
+            self._db(),
+            region_id,
+            predicate=lambda client: client.status in ALLOCATED_CLIENT_STATUSES,
+        )
 
     def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
         if not public_keys:
             return []
-        clients = []
-        for raw_snapshot in _region_instances_ref(self._db(), region_id).stream():
-            snapshot = _sync_snapshot(raw_snapshot)
-            try:
-                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
-            except ValueError:
-                continue
-            if client.client_public_key in public_keys:
-                clients.append(client)
-        return clients
+        return _region_clients(
+            self._db(),
+            region_id,
+            predicate=lambda client: client.client_public_key in public_keys,
+        )
 
     def list_admin_emails(self) -> list[str]:
         snapshots = (
@@ -819,8 +804,19 @@ def _new_client_ref(db, transaction, region_id: str):
     raise FirebaseWriteFailedError("Unable to reserve a unique client id.")
 
 
-def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc]:
-    snapshots = _region_instances_ref(db, region_id).stream(transaction=transaction)
+def _region_clients(
+    db,
+    region_id: str,
+    *,
+    predicate: Callable[[ClientDoc], bool],
+    transaction=None,
+) -> list[ClientDoc]:
+    region_instances = _region_instances_ref(db, region_id)
+    snapshots = (
+        region_instances.stream(transaction=transaction)
+        if transaction is not None
+        else region_instances.stream()
+    )
     clients = []
     for raw_snapshot in snapshots:
         snapshot = _sync_snapshot(raw_snapshot)
@@ -828,9 +824,18 @@ def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc
             client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
         except ValueError:
             continue
-        if client.status in ALLOCATED_CLIENT_STATUSES:
+        if predicate(client):
             clients.append(client)
     return clients
+
+
+def _allocated_region_clients(db, transaction, region_id: str) -> list[ClientDoc]:
+    return _region_clients(
+        db,
+        region_id,
+        predicate=lambda client: client.status in ALLOCATED_CLIENT_STATUSES,
+        transaction=transaction,
+    )
 
 
 def _require_client(snapshot: DocumentSnapshot, client_id: str, *, owner_uid: str, region_id: str) -> ClientDoc:

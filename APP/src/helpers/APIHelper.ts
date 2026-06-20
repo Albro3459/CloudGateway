@@ -76,7 +76,6 @@ export type RegionCapacityResponse = {
     regionId: string;
     capacityLimit: number;
     allocatedClientCount: number;
-    availableClientCount: number;
 };
 
 export type RegionSyncResponse = {

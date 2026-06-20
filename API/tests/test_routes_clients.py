@@ -129,7 +129,6 @@ def test_capacity_counts_allocated_local_region_clients(client, repository):
         "regionId": REGION_ID,
         "capacityLimit": 3,
         "allocatedClientCount": 2,
-        "availableClientCount": 1,
     }
 
 

@@ -1,4 +1,4 @@
-import { getRegionCapacityLabel, isRegionAtCapacity, parseRegionDocument, sortRegions, Region } from "../regionsHelper";
+import { getRegionCapacityLabel, isRegionAtCapacity, isRegionCapacityKnown, parseRegionDocument, sortRegions, Region } from "../regionsHelper";
 
 describe("regionsHelper", () => {
     it("parses shared VPN region documents", () => {
@@ -56,19 +56,21 @@ describe("regionsHelper", () => {
             capacityLimit: 20,
         });
 
-        expect(getRegionCapacityLabel(region)).toBe("");
+        expect(getRegionCapacityLabel(region)).toBe("Capacity unavailable");
         expect(isRegionAtCapacity(region)).toBe(false);
+        expect(isRegionCapacityKnown(region)).toBe(false);
 
         const withCapacity = {
             ...region!,
             capacity: {
+                status: "known" as const,
                 limit: 20,
                 allocated: 20,
-                available: 0,
             },
         };
 
         expect(getRegionCapacityLabel(withCapacity)).toBe("20 / 20 used");
         expect(isRegionAtCapacity(withCapacity)).toBe(true);
+        expect(isRegionCapacityKnown(withCapacity)).toBe(true);
     });
 });

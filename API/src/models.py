@@ -92,7 +92,6 @@ class CapacityResponse(ApiModel):
     region_id: str
     capacity_limit: int
     allocated_client_count: int
-    available_client_count: int
 
 
 class AdminSyncRequest(ApiModel):

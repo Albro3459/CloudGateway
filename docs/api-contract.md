@@ -77,8 +77,7 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 {
   "regionId": "us-sanjose-1",
   "capacityLimit": 20,
-  "allocatedClientCount": 8,
-  "availableClientCount": 12
+  "allocatedClientCount": 8
 }
 ```
 

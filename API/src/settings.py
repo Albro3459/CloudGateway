@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     region_id: str = "local-region"
     api_port: int = 8000
     api_hostname: str = ""
+    # Exact dashboard URL; also rendered in user access emails.
     dashboard_cors_origin: str = ""
     firebase_credentials_file: str = "/tmp/cloudgateway-firebase-credentials.json"
     wg_interface: str = "wg0"

@@ -7,7 +7,7 @@ import packageJson from "../../package.json";
 import { createClient, deleteClient } from "../helpers/APIHelper";
 import type { ApiHelperFailure } from "../helpers/APIHelper";
 import { auth, onAuthStateChanged } from "../firebase";
-import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, Region } from "../helpers/regionsHelper";
+import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
@@ -47,7 +47,9 @@ const Home: React.FC = () => {
 
     const [activeRegionId, setActiveRegionId] = useState("");
     const selectedRegion = enabledRegions.find(r => r.value === activeRegionId) || null;
+    const selectedRegionCapacityKnown = isRegionCapacityKnown(selectedRegion);
     const selectedRegionFull = isRegionAtCapacity(selectedRegion);
+    const selectedRegionCreationBlocked = !selectedRegionCapacityKnown || selectedRegionFull;
 
     const [clientName, setClientName] = useState("");
     const [VPNTableEntries, setVPNTableEntries] = useState<VPNTableEntry[] | null>(null);
@@ -225,6 +227,10 @@ const Home: React.FC = () => {
         }
         if (!activeRegionId || !selectedRegion) {
             showBanner("error", "Select a region");
+            return;
+        }
+        if (!selectedRegionCapacityKnown) {
+            showBanner("error", `Capacity for ${activeRegionName} is unavailable. Try again in a moment.`);
             return;
         }
         if (selectedRegionFull) {
@@ -459,7 +465,7 @@ const Home: React.FC = () => {
         });
     }, [activeRegionEntries]);
 
-    const createDisabled = !activeRegionId || !selectedRegion || selectedRegionFull || regionsLoading || VPNTableEntries === null || loading;
+    const createDisabled = !activeRegionId || !selectedRegion || selectedRegionCreationBlocked || regionsLoading || VPNTableEntries === null || loading;
 
     return (
         <div
@@ -586,6 +592,7 @@ const Home: React.FC = () => {
                                 const isActive = region.value === activeRegionId;
                                 const capacityLabel = getRegionCapacityLabel(region);
                                 const regionFull = isRegionAtCapacity(region);
+                                const regionCapacityKnown = isRegionCapacityKnown(region);
 
                                 return (
                                     <button
@@ -601,7 +608,7 @@ const Home: React.FC = () => {
                                     >
                                         <span className="block font-medium">{region.name}</span>
                                         {capacityLabel && (
-                                            <span className={regionFull ? "block text-xs text-danger-content" : "block text-xs text-content-muted"}>
+                                            <span className={regionFull || !regionCapacityKnown ? "block text-xs text-danger-content" : "block text-xs text-content-muted"}>
                                                 {capacityLabel}
                                             </span>
                                         )}
@@ -612,7 +619,7 @@ const Home: React.FC = () => {
                     ) : selectedRegion ? (
                         <div className="flex flex-wrap items-center gap-3 text-sm text-content-secondary">
                             <span className="font-medium">{selectedRegion.name}</span>
-                            {selectedRegion.capacity && (
+                            {selectedRegionCapacityKnown && (
                                 <span className={selectedRegionFull ? "text-danger-content" : "text-content-muted"}>
                                     {selectedRegionFull
                                         ? `${selectedRegion.name} is currently full`
@@ -622,6 +629,11 @@ const Home: React.FC = () => {
                         </div>
                     ) : null}
 
+                    {selectedRegion && !selectedRegionCapacityKnown && (
+                        <p className="mt-3 text-sm text-danger-content">
+                            Capacity for {activeRegionName} is unavailable. Try again in a moment.
+                        </p>
+                    )}
                     {selectedRegionFull && (
                         <p className="mt-3 text-sm text-danger-content">
                             {activeRegionName} is currently full. Choose another region before creating a client.

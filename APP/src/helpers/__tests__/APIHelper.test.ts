@@ -155,7 +155,6 @@ describe("APIHelper", () => {
             regionId: "us-sanjose-1",
             capacityLimit: 20,
             allocatedClientCount: 8,
-            availableClientCount: 12,
         };
         mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
         const { getRegionCapacity } = require("../APIHelper");

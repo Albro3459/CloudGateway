@@ -1,10 +1,12 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
 
 export type RegionCapacity = {
+    status: "known";
     limit: number;
     allocated: number;
-    available: number;
-}
+} | {
+    status: "unknown";
+};
 
 export type Region = {
     name: string;
@@ -68,11 +70,15 @@ export const getRegionName = (region: string | null, regions: Region[] | null): 
 };
 
 export const isRegionAtCapacity = (region: Region | null | undefined): boolean => {
-    if (!region?.capacity) return false;
+    if (!region?.capacity || region.capacity.status !== "known") return false;
     return region.capacity.allocated >= region.capacity.limit;
 };
 
+export const isRegionCapacityKnown = (region: Region | null | undefined): boolean => (
+    region?.capacity?.status === "known"
+);
+
 export const getRegionCapacityLabel = (region: Region | null | undefined): string => {
-    if (!region?.capacity) return "";
+    if (!region?.capacity || region.capacity.status !== "known") return "Capacity unavailable";
     return `${region.capacity.allocated} / ${region.capacity.limit} used`;
 };
