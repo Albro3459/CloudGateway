@@ -193,6 +193,9 @@ class FakeRepository(FirebaseRepository):
             and client.client_public_key
         ]
 
+    def list_allocated_clients(self, region_id: str) -> list[ClientDoc]:
+        return self._allocated_region_clients(region_id)
+
     def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
         return [
             client

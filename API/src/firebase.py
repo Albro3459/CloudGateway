@@ -178,6 +178,18 @@ class FirestoreRepository(FirebaseRepository):
                 clients.append(client)
         return clients
 
+    def list_allocated_clients(self, region_id: str) -> list[ClientDoc]:
+        clients = []
+        for raw_snapshot in _region_instances_ref(self._db(), region_id).stream():
+            snapshot = _sync_snapshot(raw_snapshot)
+            try:
+                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
+            except ValueError:
+                continue
+            if client.status in ALLOCATED_CLIENT_STATUSES:
+                clients.append(client)
+        return clients
+
     def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
         if not public_keys:
             return []

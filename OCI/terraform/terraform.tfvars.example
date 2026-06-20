@@ -96,7 +96,6 @@ hashed_password = "$6$replace_with_salt$replace_with_hash"
 region_display_name      = "Region"
 region_display_order     = 1
 region_capacity_limit    = 20
-region_user_client_limit = 3
 
 # --- AWS SES deployment notification email ---
 ses_region            = "us-west-1"

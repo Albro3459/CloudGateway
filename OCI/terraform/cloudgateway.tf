@@ -260,12 +260,6 @@ variable "region_capacity_limit" {
   description = "Server capacity: maximum allocated clients for the region"
 }
 
-variable "region_user_client_limit" {
-  type        = number
-  default     = 3
-  description = "Maximum active clients per normal user in the region"
-}
-
 variable "ses_region" {
   type        = string
   description = "AWS region for SES deployment notification emails"
@@ -417,7 +411,6 @@ locals {
     region_display_name            = var.region_display_name
     region_display_order           = var.region_display_order
     region_capacity_limit          = var.region_capacity_limit
-    region_user_client_limit       = var.region_user_client_limit
     ses_region                     = var.ses_region
     ses_sender                     = var.ses_sender
     aws_access_key_id              = var.aws_access_key_id

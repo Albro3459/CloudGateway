@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { collection, getDocs, getFirestore, query, where } from 'firebase/firestore';
+import { getRegionCapacity } from '../helpers/APIHelper';
 import { parseRegionDocument, Region, sortRegions } from '../helpers/regionsHelper';
 
 interface OciRegionsStore {
@@ -33,7 +34,6 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
 
   fetchOciRegions: async (token: string) => {
     set({ loading: true, error: null });
-    void token;
 
     try {
       const db = getFirestore();
@@ -51,8 +51,26 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
           return result;
         }, [])
       );
+      const regionsWithCapacity = await Promise.all(
+        regions.map(async (region) => {
+          const result = await getRegionCapacity(region.regionId, token);
+          if (!result.success || result.data.regionId !== region.regionId) {
+            return region;
+          }
 
-      set({ ociRegions: regions, loading: false });
+          return {
+            ...region,
+            capacityLimit: result.data.capacityLimit,
+            capacity: {
+              limit: result.data.capacityLimit,
+              allocated: result.data.allocatedClientCount,
+              available: result.data.availableClientCount,
+            },
+          };
+        }),
+      );
+
+      set({ ociRegions: regionsWithCapacity, loading: false });
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Regions fetch failed', loading: false });
     }

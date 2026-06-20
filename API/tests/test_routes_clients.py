@@ -59,6 +59,80 @@ def test_create_client_requires_auth(client, repository):
     assert_error_shape(response.json(), "AUTH_REQUIRED")
 
 
+def test_capacity_requires_auth(client, repository):
+    seed_region(repository)
+
+    response = client.get("/capacity")
+
+    assert response.status_code == 401
+    assert_error_shape(response.json(), "AUTH_REQUIRED")
+
+
+def test_capacity_counts_allocated_local_region_clients(client, repository):
+    repository.regions[REGION_ID] = enabled_region(capacity_limit=3)
+    repository.regions["us-other-1"] = replace(enabled_region(capacity_limit=99), region_id="us-other-1")
+
+    creating = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Creating",
+    )
+    active = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Active",
+    )
+    repository.mark_client_active(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=active.client_id,
+        client_public_key="fake-public-active",
+        wireguard_config="[Interface]\nPrivateKey = hidden",
+    )
+    failed = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Failed",
+    )
+    repository.mark_client_failed(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=failed.client_id,
+        error_code="TEST",
+        error_message="failed",
+    )
+    removed = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Removed",
+    )
+    repository.remove_client_reservation(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=removed.client_id,
+    )
+    repository.clients[("user-2", "us-other-1", "other-client")] = replace(
+        creating,
+        owner_uid="user-2",
+        region_id="us-other-1",
+        client_id="other-client",
+    )
+
+    response = client.get("/capacity", headers=auth_header())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "regionId": REGION_ID,
+        "capacityLimit": 3,
+        "allocatedClientCount": 2,
+        "availableClientCount": 1,
+    }
+
+
 def test_create_client_reserves_applies_and_activates(client, repository, wireguard):
     seed_region(repository)
 

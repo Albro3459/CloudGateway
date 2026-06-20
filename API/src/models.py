@@ -88,6 +88,13 @@ class AccessCheckResponse(ApiModel):
     role: Role
 
 
+class CapacityResponse(ApiModel):
+    region_id: str
+    capacity_limit: int
+    allocated_client_count: int
+    available_client_count: int
+
+
 class AdminSyncRequest(ApiModel):
     region_id: str = Field(min_length=1)
 

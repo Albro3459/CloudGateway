@@ -76,6 +76,7 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 * Firestore provides dashboard reads for enabled regions, users, roles, client documents, and stored WireGuard configs.
 * The regional FastAPI owns protected mutations:
   * `POST /api/auth/check-access`
+  * `GET /api/capacity`
   * `POST /api/clients`
   * `DELETE /api/clients/{clientId}`
   * `POST /api/users`

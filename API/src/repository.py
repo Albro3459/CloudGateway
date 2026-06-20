@@ -204,6 +204,10 @@ class FirebaseRepository(ABC):
         """Return active clients with a public key for one region (peer sync input)."""
 
     @abstractmethod
+    def list_allocated_clients(self, region_id: str) -> list[ClientDoc]:
+        """Return clients that hold regional capacity for one region."""
+
+    @abstractmethod
     def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
         """Return clients in one region whose public key is in public_keys."""
 

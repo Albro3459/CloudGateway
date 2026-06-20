@@ -72,6 +72,13 @@ export type AccessCheckResponse = {
     role: string;
 };
 
+export type RegionCapacityResponse = {
+    regionId: string;
+    capacityLimit: number;
+    allocatedClientCount: number;
+    availableClientCount: number;
+};
+
 export type RegionSyncResponse = {
     regionId: string;
     syncedAt: string;
@@ -153,14 +160,14 @@ const authHeaders = (token: string) => {
 const sendJsonRequest = async <TResponse>(
     endpoint: string,
     token: string,
-    method: "POST" | "DELETE",
-    body: unknown,
+    method: "GET" | "POST" | "DELETE",
+    body?: unknown,
 ): Promise<ApiHelperResult<TResponse>> => {
     try {
         const response = await fetch(endpoint, {
             method,
             headers: authHeaders(token),
-            body: JSON.stringify(body),
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             redirect: "follow",
         });
         const result = await parseApiResponse(response);
@@ -178,6 +185,24 @@ const sendJsonRequest = async <TResponse>(
             success: false,
             error: error instanceof Error ? error.message : "Unknown API Error",
         };
+    }
+};
+
+export const getRegionCapacity = (
+    regionId: string,
+    token: string,
+): Promise<ApiHelperResult<RegionCapacityResponse>> => {
+    try {
+        return sendJsonRequest<RegionCapacityResponse>(
+            buildRegionalApiEndpoint(regionId, "capacity"),
+            token,
+            "GET",
+        );
+    } catch (error) {
+        return Promise.resolve({
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        });
     }
 };
 

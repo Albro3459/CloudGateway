@@ -15,11 +15,9 @@ except ImportError:
     from backup_firestore import create_backup, get_firestore_client
 
 
-DEFAULT_ROLE_LIMITS = {
-    "user": 3,
-    "admin": 10,
-}
-VALID_ROLE_IDS = set(DEFAULT_ROLE_LIMITS)
+DEFAULT_USER_ROLE_LIMIT = 3
+DEFAULT_ADMIN_ROLE_LIMIT = 10
+VALID_ROLE_IDS = {"user", "admin"}
 BATCH_LIMIT = 450
 DELETE_FIELD_FALLBACK = object()
 
@@ -40,7 +38,6 @@ class PlannedClientMigration:
 @dataclass(frozen=True)
 class PlannedUserRole:
     uid: str
-    source_ref: Any
     target_path: str
     target_ref: Any
     data: dict[str, Any]
@@ -65,7 +62,7 @@ def _copy_data(data: dict[str, Any]) -> dict[str, Any]:
     return dict(data)
 
 
-def _is_same_role_default(existing: dict[str, Any], role_id: str, limit: int) -> bool:
+def _is_same_role_default(existing: dict[str, Any], role_id: str, limit: int | None) -> bool:
     return (
         existing.get("roleId") == role_id
         and existing.get("defaultPerRegionClientLimit") == limit
@@ -82,27 +79,76 @@ def _format_conflicts(conflicts: list[str]) -> str:
     return "Firestore migration target conflicts:\n" + "\n".join(f"- {conflict}" for conflict in conflicts)
 
 
+def collect_role_defaults(db: Any) -> dict[str, int | None]:
+    region_limits: dict[str, int] = {}
+    existing_user_default = db.collection("Roles").document("user").get()
+
+    for snapshot in db.collection("Regions").stream():
+        data = snapshot.to_dict() or {}
+        if "userClientLimit" not in data or data.get("userClientLimit") is None:
+            continue
+        try:
+            region_limits[snapshot.id] = int(data["userClientLimit"])
+        except (TypeError, ValueError) as exc:
+            raise MigrationConflict(
+                f"Regions/{snapshot.id}.userClientLimit has unsupported value {data.get('userClientLimit')!r}"
+            ) from exc
+
+    unique_limits = set(region_limits.values())
+    if len(unique_limits) > 1:
+        details = ", ".join(
+            f"Regions/{region_id}.userClientLimit={limit}"
+            for region_id, limit in sorted(region_limits.items())
+        )
+        raise MigrationConflict(f"Conflicting legacy userClientLimit values: {details}")
+
+    if not unique_limits and existing_user_default.exists:
+        data = existing_user_default.to_dict() or {}
+        if _is_same_role_default(data, "user", data.get("defaultPerRegionClientLimit")):
+            return {
+                "user": data.get("defaultPerRegionClientLimit"),
+                "admin": DEFAULT_ADMIN_ROLE_LIMIT,
+            }
+
+    return {
+        "user": next(iter(unique_limits), DEFAULT_USER_ROLE_LIMIT),
+        "admin": DEFAULT_ADMIN_ROLE_LIMIT,
+    }
+
+
+def collect_legacy_role_refs(db: Any) -> list[Any]:
+    refs_by_path: dict[str, Any] = {}
+    for snapshot in db.collection("Roles").stream():
+        data = snapshot.to_dict() or {}
+        if "role" in data:
+            refs_by_path[snapshot.reference.path] = snapshot.reference
+    return [refs_by_path[path] for path in sorted(refs_by_path)]
+
+
 def collect_user_role_migrations(db: Any, updated_at: Any) -> list[PlannedUserRole]:
     migrations: list[PlannedUserRole] = []
+    legacy_roles: dict[str, str] = {}
 
     for snapshot in db.collection("Roles").stream():
         data = snapshot.to_dict() or {}
-        if "role" not in data:
+        role_id = data.get("role")
+        if role_id is None:
             continue
-
-        role_id = data["role"]
         if role_id not in VALID_ROLE_IDS:
             raise MigrationConflict(f"Roles/{snapshot.id}.role has unsupported role {role_id!r}")
+        if role_id in VALID_ROLE_IDS:
+            legacy_roles[snapshot.id] = role_id
 
-        target_ref = db.collection("UserRoles").document(snapshot.id)
+    for uid, role_id in sorted(legacy_roles.items()):
+
+        target_ref = db.collection("UserRoles").document(uid)
         migrations.append(
             PlannedUserRole(
-                uid=snapshot.id,
-                source_ref=snapshot.reference,
+                uid=uid,
                 target_path=target_ref.path,
                 target_ref=target_ref,
                 data={
-                    "uid": snapshot.id,
+                    "uid": uid,
                     "roleId": role_id,
                     "updatedAt": updated_at,
                 },
@@ -189,12 +235,13 @@ def collect_legacy_user_region_refs(db: Any) -> list[Any]:
 
 def find_target_conflicts(
     db: Any,
+    role_defaults: dict[str, int | None],
     user_role_migrations: list[PlannedUserRole],
     client_migrations: list[PlannedClientMigration],
 ) -> list[str]:
     conflicts: list[str] = []
 
-    for role_id, limit in DEFAULT_ROLE_LIMITS.items():
+    for role_id, limit in role_defaults.items():
         snapshot = db.collection("Roles").document(role_id).get()
         if snapshot.exists and not _is_same_role_default(snapshot.to_dict() or {}, role_id, limit):
             conflicts.append(f"Roles/{role_id} already exists with different defaults")
@@ -245,16 +292,18 @@ def run_migration(
 
     backup_path = backup_func(db=client)
 
+    role_defaults = collect_role_defaults(client)
+    legacy_role_refs = collect_legacy_role_refs(client)
     user_role_migrations = collect_user_role_migrations(client, migration_time)
     client_migrations = collect_client_migrations(client)
     legacy_user_region_refs = collect_legacy_user_region_refs(client)
     region_field_cleanup_migrations = collect_region_field_cleanup_migrations(client, field_delete)
-    conflicts = find_target_conflicts(client, user_role_migrations, client_migrations)
+    conflicts = find_target_conflicts(client, role_defaults, user_role_migrations, client_migrations)
     if conflicts:
         raise MigrationConflict(_format_conflicts(conflicts))
 
     write_operations: list[tuple[str, Any, dict[str, Any] | None]] = []
-    for role_id, limit in DEFAULT_ROLE_LIMITS.items():
+    for role_id, limit in role_defaults.items():
         write_operations.append(
             (
                 "set_merge",
@@ -278,18 +327,18 @@ def run_migration(
     delete_operations: list[tuple[str, Any, dict[str, Any] | None]] = []
     delete_operations.extend(("delete", migration.source_ref, None) for migration in client_migrations)
     delete_operations.extend(("delete", ref, None) for ref in legacy_user_region_refs)
-    delete_operations.extend(("delete", migration.source_ref, None) for migration in user_role_migrations)
+    delete_operations.extend(("delete", ref, None) for ref in legacy_role_refs)
     _commit_batches(client, delete_operations)
 
     return {
         "backupPath": str(backup_path),
-        "roleDefaultsWritten": len(DEFAULT_ROLE_LIMITS),
+        "roleDefaultsWritten": len(role_defaults),
         "userRolesWritten": len(user_role_migrations),
         "clientsCopied": len(client_migrations),
         "regionDocsCleaned": len(region_field_cleanup_migrations),
         "oldClientDocsDeleted": len(client_migrations),
         "oldUserRegionDocsDeleted": len(legacy_user_region_refs),
-        "oldRoleDocsDeleted": len(user_role_migrations),
+        "oldRoleDocsDeleted": len(legacy_role_refs),
     }
 
 

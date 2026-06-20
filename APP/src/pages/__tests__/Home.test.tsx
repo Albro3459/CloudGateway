@@ -155,6 +155,64 @@ describe("Home pull to refresh", () => {
         expect(screen.queryByText(/No enabled regions are available\./)).toBeNull();
     });
 
+    it("shows known region capacity", async () => {
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{
+                ...regionStoreState.ociRegions[0],
+                capacity: {
+                    limit: 20,
+                    allocated: 8,
+                    available: 12,
+                },
+            }],
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+
+        expect(await screen.findByText("8 / 20 used")).toBeTruthy();
+    });
+
+    it("blocks create when known region capacity is full", async () => {
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{
+                ...regionStoreState.ociRegions[0],
+                capacity: {
+                    limit: 20,
+                    allocated: 20,
+                    available: 0,
+                },
+            }],
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+
+        expect(await screen.findByText("San Jose is currently full")).toBeTruthy();
+        await waitFor(() => {
+            expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(true);
+        });
+    });
+
+    it("does not block create when capacity is unavailable", async () => {
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+
+        await waitFor(() => {
+            expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        expect(screen.queryByText(/currently full/)).toBeNull();
+    });
+
     it("does not refresh when the pull is below the threshold", async () => {
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
         const { fetchOciRegions } = require("../../stores/ociRegionsStore");

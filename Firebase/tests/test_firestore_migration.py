@@ -213,7 +213,7 @@ class FirestoreMigrationTests(unittest.TestCase):
         self.assertEqual(result["oldClientDocsDeleted"], 1)
         self.assertEqual(result["oldUserRegionDocsDeleted"], 2)
         self.assertEqual(result["oldRoleDocsDeleted"], 1)
-        self.assertEqual(db.docs["Roles/user"]["defaultPerRegionClientLimit"], 3)
+        self.assertEqual(db.docs["Roles/user"]["defaultPerRegionClientLimit"], 2)
         self.assertEqual(db.docs["Roles/admin"]["defaultPerRegionClientLimit"], 10)
         self.assertNotIn("Roles/u1", db.docs)
         self.assertEqual(
@@ -293,6 +293,91 @@ class FirestoreMigrationTests(unittest.TestCase):
         self.assertEqual(db.events, ["backup"])
         self.assertIn("Users/u1/Regions/us-test-1/Instances/client-a", db.docs)
         self.assertIn("Users/u2/Regions/us-test-1/Instances/client-a", db.docs)
+
+    def test_migration_does_not_provision_users_missing_legacy_role(self) -> None:
+        db = FakeDb(
+            {
+                "Regions/us-test-1": {"regionId": "us-test-1"},
+                "Users/u1": {"email": "user@example.com"},
+            }
+        )
+
+        def backup_func(db: FakeDb) -> Path:
+            db.events.append("backup")
+            return Path("Firebase/backups/backup-test.json")
+
+        result = run_migration(db=db, backup_func=backup_func, updated_at="now")
+
+        self.assertEqual(result["userRolesWritten"], 0)
+        self.assertEqual(db.docs["Roles/user"]["defaultPerRegionClientLimit"], 3)
+        self.assertEqual(db.docs["Roles/admin"]["defaultPerRegionClientLimit"], 10)
+        self.assertNotIn("UserRoles/u1", db.docs)
+
+    def test_migration_retry_preserves_existing_user_default_when_legacy_fields_are_gone(self) -> None:
+        db = FakeDb(
+            {
+                "Roles/user": {
+                    "roleId": "user",
+                    "defaultPerRegionClientLimit": 2,
+                    "updatedAt": "previous",
+                },
+                "Roles/admin": {
+                    "roleId": "admin",
+                    "defaultPerRegionClientLimit": 10,
+                    "updatedAt": "previous",
+                },
+                "Regions/us-test-1": {"regionId": "us-test-1"},
+            }
+        )
+
+        def backup_func(db: FakeDb) -> Path:
+            db.events.append("backup")
+            return Path("Firebase/backups/backup-test.json")
+
+        result = run_migration(db=db, backup_func=backup_func, updated_at="now")
+
+        self.assertEqual(result["roleDefaultsWritten"], 2)
+        self.assertEqual(db.docs["Roles/user"]["defaultPerRegionClientLimit"], 2)
+        self.assertEqual(db.docs["Roles/admin"]["defaultPerRegionClientLimit"], 10)
+
+    def test_migration_fails_when_legacy_region_user_limits_conflict(self) -> None:
+        db = FakeDb(
+            {
+                "Regions/us-one-1": {"regionId": "us-one-1", "userClientLimit": 2},
+                "Regions/us-two-1": {"regionId": "us-two-1", "userClientLimit": 3},
+                "Users/u1": {"email": "user@example.com"},
+            }
+        )
+
+        def backup_func(db: FakeDb) -> Path:
+            db.events.append("backup")
+            return Path("Firebase/backups/backup-test.json")
+
+        with self.assertRaisesRegex(MigrationConflict, "Conflicting legacy userClientLimit values"):
+            run_migration(db=db, backup_func=backup_func, updated_at="now")
+
+        self.assertEqual(db.events, ["backup"])
+        self.assertNotIn("Roles/user", db.docs)
+        self.assertNotIn("UserRoles/u1", db.docs)
+
+    def test_migration_fails_when_legacy_role_is_invalid(self) -> None:
+        db = FakeDb(
+            {
+                "Roles/u1": {"role": "owner"},
+                "Users/u1": {"email": "user@example.com"},
+            }
+        )
+
+        def backup_func(db: FakeDb) -> Path:
+            db.events.append("backup")
+            return Path("Firebase/backups/backup-test.json")
+
+        with self.assertRaisesRegex(MigrationConflict, "unsupported role"):
+            run_migration(db=db, backup_func=backup_func, updated_at="now")
+
+        self.assertEqual(db.events, ["backup"])
+        self.assertNotIn("Roles/user", db.docs)
+        self.assertNotIn("UserRoles/u1", db.docs)
 
 
 if __name__ == "__main__":

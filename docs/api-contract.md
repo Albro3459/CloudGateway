@@ -66,6 +66,22 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 }
 ```
 
+### `GET /capacity`
+
+- Requires Firebase bearer auth for a provisioned user.
+- Regional: returns capacity for this API server's local region only.
+- `allocatedClientCount` counts client docs with status `creating` or `active`.
+- Response `200`:
+
+```json
+{
+  "regionId": "us-sanjose-1",
+  "capacityLimit": 20,
+  "allocatedClientCount": 8,
+  "availableClientCount": 12
+}
+```
+
 ### `DELETE /clients/{clientId}`
 
 - Requires Firebase bearer auth.

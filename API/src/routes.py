@@ -18,6 +18,7 @@ from .models import (
     AccessCheckResponse,
     AdminSyncRequest,
     AdminSyncResponse,
+    CapacityResponse,
     CreateClientRequest,
     CreateClientResponse,
     CreateUserRequest,
@@ -27,7 +28,7 @@ from .models import (
     HealthResponse,
 )
 from .notifications import create_ses_client, send_access_grant_email
-from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, utc_now
+from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, require_region, utc_now
 from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
 
@@ -51,6 +52,24 @@ def check_access(
         user_id=user.uid,
         email=user.email,
         role=role,
+    )
+
+
+@router.get("/capacity", response_model=CapacityResponse)
+def get_capacity(
+    request: Request,
+    user: AuthenticatedUser = Depends(require_provisioned_user),
+) -> CapacityResponse:
+    del user
+    repository = request.app.state.repository
+    region_id = request.app.state.settings.region_id
+    region = require_region(repository.get_region(region_id))
+    allocated_client_count = len(repository.list_allocated_clients(region_id))
+    return CapacityResponse(
+        region_id=region.region_id,
+        capacity_limit=region.capacity_limit,
+        allocated_client_count=allocated_client_count,
+        available_client_count=max(0, region.capacity_limit - allocated_client_count),
     )
 
 

@@ -1,4 +1,4 @@
-import { parseRegionDocument, sortRegions, Region } from "../regionsHelper";
+import { getRegionCapacityLabel, isRegionAtCapacity, parseRegionDocument, sortRegions, Region } from "../regionsHelper";
 
 describe("regionsHelper", () => {
     it("parses shared VPN region documents", () => {
@@ -47,5 +47,28 @@ describe("regionsHelper", () => {
             "us-ashburn-1",
             "us-sanjose-1",
         ]);
+    });
+
+    it("formats allocated regional capacity", () => {
+        const region = parseRegionDocument("us-sanjose-1", {
+            displayName: "San Jose",
+            enabled: true,
+            capacityLimit: 20,
+        });
+
+        expect(getRegionCapacityLabel(region)).toBe("");
+        expect(isRegionAtCapacity(region)).toBe(false);
+
+        const withCapacity = {
+            ...region!,
+            capacity: {
+                limit: 20,
+                allocated: 20,
+                available: 0,
+            },
+        };
+
+        expect(getRegionCapacityLabel(withCapacity)).toBe("20 / 20 used");
+        expect(isRegionAtCapacity(withCapacity)).toBe(true);
     });
 });

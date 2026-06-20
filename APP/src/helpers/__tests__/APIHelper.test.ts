@@ -150,6 +150,26 @@ describe("APIHelper", () => {
         expect(result).toEqual({ success: true, data: responseBody });
     });
 
+    it("fetches regional capacity through the regional capacity endpoint", async () => {
+        const responseBody = {
+            regionId: "us-sanjose-1",
+            capacityLimit: 20,
+            allocatedClientCount: 8,
+            availableClientCount: 12,
+        };
+        mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
+        const { getRegionCapacity } = require("../APIHelper");
+
+        const result = await getRegionCapacity("us-sanjose-1", "firebase-token");
+        const request = mockFetch.mock.calls[0][1] as RequestInit;
+
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/capacity", expect.any(Object));
+        expect(request.method).toBe("GET");
+        expect((request.headers as Headers).get("Authorization")).toBe("Bearer firebase-token");
+        expect(request.body).toBeUndefined();
+        expect(result).toEqual({ success: true, data: responseBody });
+    });
+
     it("does not call users API when no enabled region exists", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";

@@ -94,10 +94,13 @@ private keys. `Firebase/backups/` is intentionally ignored by git.
 
 The migration script calls the backup script first. It then:
 
-* Creates `Roles/user` with `defaultPerRegionClientLimit: 3`.
+* Creates `Roles/user` with `defaultPerRegionClientLimit` derived from matching legacy
+  region `userClientLimit` values, or `3` when no legacy value exists. The script fails
+  before writes if legacy region values disagree.
 * Creates `Roles/admin` with `defaultPerRegionClientLimit: 10`.
-* Creates `UserRoles/{uid}` from old `Roles/{uid}.role` documents and omits
-  `perRegionClientLimit`.
+* Creates `UserRoles/{uid}` from valid old `Roles/{uid}.role` documents and omits
+  `perRegionClientLimit`. Users without an old role assignment remain unprovisioned.
+  The script fails before writes if an old role value is unsupported.
 * Copies old `Users/{uid}/Regions/{regionId}/Instances/{clientId}` client documents to
   `Regions/{regionId}/Instances/{clientId}`, preserving fields while forcing
   `ownerUid`, `regionId`, and `clientId` from the old path.
