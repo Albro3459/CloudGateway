@@ -61,7 +61,7 @@ Enforced by [firestore.rules](firestore.rules):
 
 * Provisioned users can read enabled region docs.
 * Normal users can read their own user document and their own client documents.
-* Provisioned users can read role defaults. Users can read their own role assignment.
+* Users can read their own role assignment. Role defaults are admin-only.
 * Admins can read all user, role default, role assignment, and client documents.
 * Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
 * Admins can write `Regions`, `Users`, `UserRoles`, and `Roles` documents from the frontend where existing admin UI needs it, but not client documents.
