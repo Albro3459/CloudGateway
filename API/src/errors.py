@@ -15,6 +15,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.CAPACITY_REACHED: 409,
     ErrorCode.WIREGUARD_APPLY_FAILED: 500,
     ErrorCode.FIREBASE_WRITE_FAILED: 500,
+    ErrorCode.ROLE_DEFAULT_MISSING: 500,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 
@@ -99,6 +100,11 @@ class WireGuardApplyFailedError(ApiError):
 class FirebaseWriteFailedError(ApiError):
     code = ErrorCode.FIREBASE_WRITE_FAILED
     default_message = "Failed to write to Firebase."
+
+
+class RoleDefaultMissingError(ApiError):
+    code = ErrorCode.ROLE_DEFAULT_MISSING
+    default_message = "Role default document is missing. Seed Roles/{roleId} in Firestore."
 
 
 class InternalError(ApiError):

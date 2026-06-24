@@ -9,8 +9,6 @@ export type RegionCapacity = {
 };
 
 export type Region = {
-    name: string;
-    value: string;
     regionId: string;
     displayName: string;
     enabled?: boolean;
@@ -21,7 +19,6 @@ export type Region = {
     wireguardDnsIpv4?: string | null;
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
-    capacityLimit?: number;
     displayOrder: number;
     healthStatus?: string | null;
     capacity?: RegionCapacity;
@@ -33,13 +30,9 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         return null;
     }
 
-    const capacityLimit = Math.max(0, numberOrDefault(data.capacityLimit, 0));
-
     return {
-        name: displayName,
-        value: regionId,
-        regionId,
-        displayName,
+        regionId: regionId,
+        displayName: displayName,
         enabled: data.enabled === true,
         wireguardEndpointIpv4: stringOrNull(data.wireguardEndpointIpv4),
         wireguardEndpointIpv6: stringOrNull(data.wireguardEndpointIpv6),
@@ -48,7 +41,6 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardDnsIpv4: stringOrNull(data.wireguardDnsIpv4),
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),
-        capacityLimit,
         displayOrder: numberOrDefault(data.displayOrder, 1000),
         healthStatus: stringOrNull(data.healthStatus),
     };
@@ -66,7 +58,7 @@ export const sortRegions = (regions: Region[]) => (
 
 export const getRegionName = (region: string | null, regions: Region[] | null): string => {
     if (!region) return '';
-    return regions?.find(r => r.value === region)?.name || region;
+    return regions?.find(r => r.regionId === region)?.displayName || region;
 };
 
 export const isRegionAtCapacity = (region: Region | null | undefined): boolean => {

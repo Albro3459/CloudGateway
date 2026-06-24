@@ -46,7 +46,6 @@ export const buildRegionalApiEndpoint = (
 };
 
 export type ApiRegionOption = {
-    value?: string;
     regionId?: string;
     enabled?: boolean;
     displayOrder?: number;
@@ -54,7 +53,7 @@ export type ApiRegionOption = {
 
 export const getFirstEnabledRegionId = (regions: ApiRegionOption[] | null | undefined) => {
     const sortedRegions = [...(regions || [])]
-        .filter(region => region.enabled !== false && (region.regionId || region.value))
+        .filter(region => region.enabled !== false && region.regionId)
         .sort((a, b) => {
             const displayOrderA = typeof a.displayOrder === "number" ? a.displayOrder : 1000;
             const displayOrderB = typeof b.displayOrder === "number" ? b.displayOrder : 1000;
@@ -63,10 +62,10 @@ export const getFirstEnabledRegionId = (regions: ApiRegionOption[] | null | unde
                 return displayOrderA - displayOrderB;
             }
 
-            return (a.regionId || a.value || "").localeCompare(b.regionId || b.value || "");
+            return (a.regionId || "").localeCompare(b.regionId || "");
         });
 
-    return sortedRegions[0]?.regionId || sortedRegions[0]?.value || null;
+    return sortedRegions[0]?.regionId || null;
 };
 
 export const buildCreateUserApiEndpoint = (

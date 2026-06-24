@@ -36,9 +36,7 @@ jest.mock("../../helpers/usersHelper", () => ({
 
 jest.mock("../../stores/ociRegionsStore", () => {
     const region = {
-        name: "San Jose",
         displayName: "San Jose",
-        value: "us-sanjose-1",
         regionId: "us-sanjose-1",
         enabled: true,
         displayOrder: 1,
@@ -79,9 +77,7 @@ const firePointer = (
 describe("Home pull to refresh", () => {
     const regionStoreState = {
         ociRegions: [{
-            name: "San Jose",
             displayName: "San Jose",
-            value: "us-sanjose-1",
             regionId: "us-sanjose-1",
             enabled: true,
             displayOrder: 1,

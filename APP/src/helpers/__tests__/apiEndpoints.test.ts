@@ -67,9 +67,9 @@ describe("apiEndpoints", () => {
         const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
 
         expect(buildCreateUserApiEndpoint([
-            { value: "us-sanjose-1", enabled: true },
-            { value: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
-            { value: "us-ashburn-1", enabled: false, displayOrder: 1 },
+            { regionId: "us-sanjose-1", enabled: true },
+            { regionId: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
+            { regionId: "us-ashburn-1", enabled: false, displayOrder: 1 },
         ], {
             hostname: "gocloudlaunch.com",
             host: "gocloudlaunch.com",
@@ -82,9 +82,9 @@ describe("apiEndpoints", () => {
         const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
 
         expect(buildAccessCheckApiEndpoint([
-            { value: "us-sanjose-1", enabled: true },
-            { value: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
-            { value: "us-ashburn-1", enabled: false, displayOrder: 1 },
+            { regionId: "us-sanjose-1", enabled: true },
+            { regionId: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
+            { regionId: "us-ashburn-1", enabled: false, displayOrder: 1 },
         ], {
             hostname: "gocloudlaunch.com",
             host: "gocloudlaunch.com",

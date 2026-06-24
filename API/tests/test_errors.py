@@ -1,5 +1,11 @@
-from src.enums import ErrorCode
-from src.errors import HTTP_STATUS_BY_CODE
+from typing import cast
+
+import pytest
+from google.cloud.firestore_v1.base_document import DocumentSnapshot
+
+from src.enums import ErrorCode, Role
+from src.errors import FirebaseWriteFailedError, HTTP_STATUS_BY_CODE, RoleDefaultMissingError
+from src.firebase import _require_role_default, _require_user_role
 
 
 def assert_error_shape(payload, code):
@@ -23,7 +29,47 @@ def test_status_mapping_matches_contract():
     assert HTTP_STATUS_BY_CODE[ErrorCode.CAPACITY_REACHED] == 409
     assert HTTP_STATUS_BY_CODE[ErrorCode.WIREGUARD_APPLY_FAILED] == 500
     assert HTTP_STATUS_BY_CODE[ErrorCode.FIREBASE_WRITE_FAILED] == 500
+    assert HTTP_STATUS_BY_CODE[ErrorCode.ROLE_DEFAULT_MISSING] == 500
     assert HTTP_STATUS_BY_CODE[ErrorCode.INTERNAL_ERROR] == 500
+
+
+class _FakeSnapshot:
+    def __init__(self, exists, data=None):
+        self.exists = exists
+        self._data = data or {}
+
+    def to_dict(self):
+        return self._data
+
+
+def test_require_role_default_raises_when_missing():
+    snapshot = cast(DocumentSnapshot, _FakeSnapshot(exists=False))
+    with pytest.raises(RoleDefaultMissingError):
+        _require_role_default(snapshot, Role.USER)
+
+
+def test_require_role_default_raises_when_malformed():
+    snapshot = cast(DocumentSnapshot, _FakeSnapshot(exists=True, data={"roleId": "admin"}))
+    with pytest.raises(RoleDefaultMissingError):
+        _require_role_default(snapshot, Role.USER)
+
+
+def test_require_role_default_raises_when_limit_non_numeric():
+    snapshot = cast(
+        DocumentSnapshot,
+        _FakeSnapshot(exists=True, data={"roleId": "user", "defaultPerRegionClientLimit": "bad"}),
+    )
+    with pytest.raises(RoleDefaultMissingError):
+        _require_role_default(snapshot, Role.USER)
+
+
+def test_require_user_role_raises_when_limit_non_numeric():
+    snapshot = cast(
+        DocumentSnapshot,
+        _FakeSnapshot(exists=True, data={"roleId": "user", "perRegionClientLimit": "bad"}),
+    )
+    with pytest.raises(FirebaseWriteFailedError):
+        _require_user_role(snapshot, "uid-1")
 
 
 def test_users_requires_auth(client):

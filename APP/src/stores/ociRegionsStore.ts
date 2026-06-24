@@ -65,7 +65,6 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
 
           return {
             ...region,
-            capacityLimit: result.data.capacityLimit,
             capacity: {
               status: "known" as const,
               limit: result.data.capacityLimit,

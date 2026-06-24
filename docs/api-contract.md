@@ -185,7 +185,7 @@ All controlled failures return this shape:
 - Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
   `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
   `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
-  `INTERNAL_ERROR`.
+  `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`.
 - HTTP status mapping:
   - `401`: auth failures (`AUTH_REQUIRED`).
   - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`).
@@ -194,8 +194,8 @@ All controlled failures return this shape:
   - `404`: missing clients (`CLIENT_NOT_FOUND`).
   - `409`: duplicate email, disabled account, and capacity/limit failures (`DUPLICATE_EMAIL`,
     `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`).
-  - `500`: host mutation failures and unexpected failures (`WIREGUARD_APPLY_FAILED`,
-    `FIREBASE_WRITE_FAILED`, `INTERNAL_ERROR`).
+  - `500`: host mutation failures, missing/malformed role defaults, and unexpected failures
+    (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`).
 
 ## Enums
 

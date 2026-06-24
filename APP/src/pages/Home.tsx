@@ -46,7 +46,7 @@ const Home: React.FC = () => {
     const initialRegionsLoading = ociRegions === null && !regionsError;
 
     const [activeRegionId, setActiveRegionId] = useState("");
-    const selectedRegion = enabledRegions.find(r => r.value === activeRegionId) || null;
+    const selectedRegion = enabledRegions.find(r => r.regionId === activeRegionId) || null;
     const selectedRegionCapacityKnown = isRegionCapacityKnown(selectedRegion);
     const selectedRegionFull = isRegionAtCapacity(selectedRegion);
     const selectedRegionCreationBlocked = !selectedRegionCapacityKnown || selectedRegionFull;
@@ -68,7 +68,7 @@ const Home: React.FC = () => {
     const pullDistanceRef = useRef(0);
 
     const activeRegionName = selectedRegion
-        ? getRegionName(selectedRegion.value, ociRegions)
+        ? getRegionName(selectedRegion.regionId, ociRegions)
         : "No region selected";
 
     const showRegionTabs = enabledRegions.length > 1;
@@ -444,8 +444,8 @@ const Home: React.FC = () => {
             return;
         }
 
-        if (!activeRegionId || !enabledRegions.some(region => region.value === activeRegionId)) {
-            setActiveRegionId(enabledRegions[0].value);
+        if (!activeRegionId || !enabledRegions.some(region => region.regionId === activeRegionId)) {
+            setActiveRegionId(enabledRegions[0].regionId);
             clearSelectedClients();
         }
     }, [enabledRegions, activeRegionId]);
@@ -589,16 +589,16 @@ const Home: React.FC = () => {
                     {showRegionTabs ? (
                         <div className="flex flex-wrap gap-2">
                             {enabledRegions.map(region => {
-                                const isActive = region.value === activeRegionId;
+                                const isActive = region.regionId === activeRegionId;
                                 const capacityLabel = getRegionCapacityLabel(region);
                                 const regionFull = isRegionAtCapacity(region);
                                 const regionCapacityKnown = isRegionCapacityKnown(region);
 
                                 return (
                                     <button
-                                        key={region.value}
+                                        key={region.regionId}
                                         type="button"
-                                        onClick={() => selectRegion(region.value)}
+                                        onClick={() => selectRegion(region.regionId)}
                                         className={`rounded-lg border px-4 py-2 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-focus ${
                                             isActive
                                                 ? "border-primary bg-primary-soft text-accent"
@@ -606,7 +606,7 @@ const Home: React.FC = () => {
                                         }`}
                                         aria-pressed={isActive}
                                     >
-                                        <span className="block font-medium">{region.name}</span>
+                                        <span className="block font-medium">{region.displayName}</span>
                                         {capacityLabel && (
                                             <span className={regionFull || !regionCapacityKnown ? "block text-xs text-danger-content" : "block text-xs text-content-muted"}>
                                                 {capacityLabel}
@@ -618,11 +618,11 @@ const Home: React.FC = () => {
                         </div>
                     ) : selectedRegion ? (
                         <div className="flex flex-wrap items-center gap-3 text-sm text-content-secondary">
-                            <span className="font-medium">{selectedRegion.name}</span>
+                            <span className="font-medium">{selectedRegion.displayName}</span>
                             {selectedRegionCapacityKnown && (
                                 <span className={selectedRegionFull ? "text-danger-content" : "text-content-muted"}>
                                     {selectedRegionFull
-                                        ? `${selectedRegion.name} is currently full`
+                                        ? `${selectedRegion.displayName} is currently full`
                                         : getRegionCapacityLabel(selectedRegion)}
                                 </span>
                             )}

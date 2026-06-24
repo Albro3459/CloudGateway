@@ -16,6 +16,7 @@ from .errors import (
     DuplicateEmailError,
     FirebaseWriteFailedError,
     InvalidRequestError,
+    RoleDefaultMissingError,
 )
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
@@ -635,12 +636,18 @@ def _role_from_data(data: dict[str, Any]) -> Role | None:
         return None
 
 
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
 def _user_role_from_data(data: dict[str, Any], uid: str) -> UserRoleDoc | None:
     role = _role_from_data(data)
     if role is None:
         return None
-    raw_limit = data.get("perRegionClientLimit")
-    per_region_client_limit = int(raw_limit) if raw_limit is not None else None
+    try:
+        per_region_client_limit = _optional_int(data.get("perRegionClientLimit"))
+    except (TypeError, ValueError):
+        return None
     return UserRoleDoc(
         uid=data.get("uid") or uid,
         role=role,
@@ -655,10 +662,13 @@ def _role_default_from_data(data: dict[str, Any], role: Role) -> RoleDefaultDoc 
         role_id = role
     if role_id != role:
         return None
-    raw_limit = data.get("defaultPerRegionClientLimit")
+    try:
+        default_per_region_client_limit = _optional_int(data.get("defaultPerRegionClientLimit"))
+    except (TypeError, ValueError):
+        return None
     return RoleDefaultDoc(
         role=role,
-        default_per_region_client_limit=int(raw_limit) if raw_limit is not None else None,
+        default_per_region_client_limit=default_per_region_client_limit,
         updated_at=data.get("updatedAt"),
     )
 
@@ -674,10 +684,10 @@ def _require_user_role(snapshot: DocumentSnapshot, uid: str) -> UserRoleDoc:
 
 def _require_role_default(snapshot: DocumentSnapshot, role: Role) -> RoleDefaultDoc:
     if not snapshot.exists:
-        raise FirebaseWriteFailedError()
+        raise RoleDefaultMissingError(f"Roles/{role.value} is missing. Seed the role default in Firestore.")
     role_default = _role_default_from_data(snapshot.to_dict() or {}, role)
     if role_default is None:
-        raise FirebaseWriteFailedError()
+        raise RoleDefaultMissingError(f"Roles/{role.value} is malformed. Fix the role default in Firestore.")
     return role_default
 
 

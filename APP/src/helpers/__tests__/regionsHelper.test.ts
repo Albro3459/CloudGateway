@@ -12,14 +12,11 @@ describe("regionsHelper", () => {
             wireguardDnsIpv4: "10.0.0.1",
             wireguardDnsIpv6: "fd42:42:42::1",
             wireguardPublicKey: "public-key",
-            capacityLimit: 10,
             healthStatus: "ok",
         });
 
         expect(region).toMatchObject({
-            value: "us-sanjose-1",
             regionId: "us-sanjose-1",
-            name: "San Jose",
             displayName: "San Jose",
             enabled: true,
             wireguardEndpointIpv4: "1.2.3.4",
@@ -29,7 +26,6 @@ describe("regionsHelper", () => {
             wireguardDnsIpv4: "10.0.0.1",
             wireguardDnsIpv6: "fd42:42:42::1",
             wireguardPublicKey: "public-key",
-            capacityLimit: 10,
             displayOrder: 1000,
             healthStatus: "ok",
         });
@@ -53,7 +49,6 @@ describe("regionsHelper", () => {
         const region = parseRegionDocument("us-sanjose-1", {
             displayName: "San Jose",
             enabled: true,
-            capacityLimit: 20,
         });
 
         expect(getRegionCapacityLabel(region)).toBe("Capacity unavailable");
