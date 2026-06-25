@@ -6,11 +6,13 @@
 
 * Shared regional <b>WireGuard VPN</b> platform. Each OCI region runs one long-lived WireGuard server.
 
-* Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and shows stored configs from Firebase.
+* Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
 
 * View, copy, download, or QR-code your client config straight from the dashboard.
 
 * Admins can also sync region clients, if needed, and grant users accounts.
+
+* Built from [CloudLaunch](https://github.com/Albro3459/CloudLaunch), a multi-region cloud deployment platform for deploying servers on AWS. CloudLaunch used mini VPN servers as its proof-of-concept project. CloudGateway builds that idea into a full shared regional WireGuard VPN platform using the same deployment-focused architecture.
 
 ## Screenshots
 
