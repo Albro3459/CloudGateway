@@ -466,6 +466,7 @@ const Home: React.FC = () => {
     }, [activeRegionEntries]);
 
     const createDisabled = !activeRegionId || !selectedRegion || selectedRegionCreationBlocked || regionsLoading || VPNTableEntries === null || loading;
+    const removeDisabled = loading || regionsLoading;
 
     return (
         <div
@@ -661,7 +662,7 @@ const Home: React.FC = () => {
                 onRemoveSelected={handleRemoveSelected}
                 onQRCodeClick={handleQRcode}
                 onDownloadConfig={handleDownloadConfig}
-                removing={loading}
+                removing={removeDisabled}
                 activeRegionName={activeRegionName}
             />
 

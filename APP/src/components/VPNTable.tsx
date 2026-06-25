@@ -298,7 +298,12 @@ export const VPNTable: React.FC<VPNTableData> = ({
                                     setShowConfirm(false);
                                     onRemoveSelected();
                                 }}
-                                className="rounded-lg bg-danger-btn px-4 py-2 text-white transition hover:bg-danger-btn-hover"
+                                disabled={removing}
+                                className={`rounded-lg px-4 py-2 transition ${
+                                    removing
+                                        ? "cursor-not-allowed bg-disabled text-content-disabled"
+                                        : "bg-danger-btn text-white hover:bg-danger-btn-hover"
+                                }`}
                             >
                                 Remove
                             </button>

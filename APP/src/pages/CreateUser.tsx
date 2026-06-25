@@ -21,6 +21,7 @@ const CreateUser: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState<React.ReactNode>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
+    const grantAccessDisabled = !email || loading || regionsLoading;
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -171,13 +172,13 @@ const CreateUser: React.FC = () => {
                 <button
                     type="submit"
                     className={`w-full p-3 rounded-lg transition ${
-                    email
+                    !grantAccessDisabled
                         ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
                         : "bg-disabled text-content-disabled cursor-not-allowed"
                     }`}
-                    disabled={!email}
+                    disabled={grantAccessDisabled}
                 >
-                    Grant Access
+                    {regionsLoading ? "Loading regions..." : "Grant Access"}
                 </button>
                 </form>
             </div>
