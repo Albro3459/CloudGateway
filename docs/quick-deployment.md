@@ -20,7 +20,7 @@ cd APP && npm run deploy && cd -
 2. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
 
    ```sh
-   bash scripts/caddy-release.sh
+   ./scripts/caddy-release.sh
    ```
 
    This creates a `caddy-v<x>` GitHub Release and writes `caddy_binary_tag` / `caddy_binary_sha256` into the configured gitignored regional tfvars. Skip this when the existing pinned Caddy binary is still correct.

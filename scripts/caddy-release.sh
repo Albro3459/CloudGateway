@@ -3,7 +3,7 @@
 # Build and publish the prebuilt CloudGateway Caddy binary.
 #
 # Usage:
-#   bash scripts/caddy-release.sh [--dry-run]
+#   ./scripts/caddy-release.sh [--dry-run]
 
 set -euo pipefail
 

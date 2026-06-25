@@ -10,7 +10,7 @@ The binary is built with:
 Create a release with:
 
 ```sh
-bash scripts/caddy-release.sh
+./scripts/caddy-release.sh
 ```
 
 The script publishes one GitHub Release asset named `cloudgateway-caddy-linux-arm64`
