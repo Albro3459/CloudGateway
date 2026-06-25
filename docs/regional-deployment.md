@@ -18,6 +18,8 @@ Follow the network prerequisites in [OCI/README.md](../OCI/README.md):
 
 The host fetches its bootstrap script and API source from GitHub at boot using `source_repo`/`source_ref`. The ref must be pushed to GitHub before applying - see [docs/github-deployment-setup.md](github-deployment-setup.md) for the tag workflow and the fetched-path contract.
 
+The host also downloads the prebuilt Caddy binary from the GitHub Release named by `caddy_binary_tag` and verifies it against `caddy_binary_sha256`. Publish or refresh that binary with `./scripts/caddy-release.sh` before deploying a region whose tfvars points at a new Caddy binary tag. For first-time setup, use a temporary all-zero `caddy_binary_sha256` only until the release script writes the real hash; never deploy with the zero hash.
+
 Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
 that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, which selects each

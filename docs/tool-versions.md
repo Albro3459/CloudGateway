@@ -32,15 +32,13 @@ The bootstrap installs these packages from the OS package repositories:
 * `python3-pip`
 * `ca-certificates`
 * `curl`
-* `golang-go`
 * `gettext-base`
 
 Pinned or Terraform-controlled host tool versions:
 
 * AdGuard Home: `v0.107.77` by default, controlled by `adguard_home_version`.
-* Caddy: `v2.8.4` by default, controlled by `caddy_version`.
-* xcaddy: `latest` by default, controlled by `xcaddy_version`.
-* Caddy rate limit module: `github.com/mholt/caddy-ratelimit`, controlled by `caddy_rate_limit_module`.
+* Caddy: prebuilt CloudGateway Linux ARM64 binary, controlled by `caddy_binary_tag` and verified with `caddy_binary_sha256`.
+* Caddy build inputs: `OCI/caddy/Dockerfile` builds Caddy `v2.8.4` with `github.com/mholt/caddy-ratelimit`; releases are published with `scripts/caddy-release.sh`.
 
 The deployed API runs in a host-created Python virtual environment at `/opt/cloudgateway/api/.venv`.
 

@@ -35,7 +35,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * <b>React dashboard</b> (`APP/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
-* <b>Caddy</b>: custom build with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
+* <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
 * <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudgateway-sync-peers`.
 * <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to Unbound on localhost. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
 * <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
@@ -63,7 +63,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * React with TypeScript and TailwindCSS for the frontend
 * Python with FastAPI for the regional control plane
 * Firebase for Authentication and Database
-* Caddy (custom build with rate limiting) for the regional API edge
+* Caddy (prebuilt CloudGateway binary with rate limiting) for the regional API edge
 * OCI Compute and Terraform for regional servers
 * AWS SES for email
 
@@ -113,6 +113,7 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)
 * API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
 * Regional server / Terraform: [OCI/README.md](OCI/README.md)
+* Caddy binary build: [OCI/caddy/README.md](OCI/caddy/README.md)
 * Firebase / Firestore: [Firebase/README.md](Firebase/README.md)
 * Cloudflare: [CloudFlare/README.md](CloudFlare/README.md)
 * Tool versions: [docs/tool-versions.md](docs/tool-versions.md)

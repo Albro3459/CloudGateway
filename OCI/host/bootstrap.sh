@@ -75,7 +75,7 @@ log "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl golang-go gettext-base
+apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
 systemctl stop unbound || true
 systemctl stop adguardhome || true
 
@@ -510,18 +510,23 @@ install -d -m 755 "$(dirname "$CLOUDFLARE_ORIGIN_PULL_CA_PATH")"
 curl -fsSL "$CLOUDFLARE_ORIGIN_PULL_CA_URL" -o "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 chmod 644 "$CLOUDFLARE_ORIGIN_PULL_CA_PATH"
 
-# Go needs HOME/GOPATH set. Under cloud-init these are unset for root, so `go install`
-# and `xcaddy build` abort with "neither GOMODCACHE nor GOPATH is set". Set them explicitly.
-export HOME=/root
-export GOPATH=/root/go
-export GOCACHE=/root/.cache/go-build
-export GOMODCACHE=/root/go/pkg/mod
-log "Installing xcaddy"
-GOBIN=/usr/local/bin go install "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION"
+log "Downloading prebuilt Caddy binary"
+CADDY_BINARY_ASSET="cloudgateway-caddy-linux-arm64"
+CADDY_BINARY_URL="https://github.com/$SOURCE_REPO/releases/download/$CADDY_BINARY_TAG/$CADDY_BINARY_ASSET"
+CADDY_WORK_DIR="$(mktemp -d /tmp/cloudgateway-caddy-XXXXXX)"
+CADDY_BINARY_TMP="$CADDY_WORK_DIR/$CADDY_BINARY_ASSET"
+curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
+  "$CADDY_BINARY_URL" \
+  -o "$CADDY_BINARY_TMP"
 
-log "Building Caddy with rate limit module"
-/usr/local/bin/xcaddy build "$CADDY_VERSION" --with "$CADDY_RATE_LIMIT_MODULE" --output /usr/local/bin/caddy
-chmod 755 /usr/local/bin/caddy
+log "Verifying prebuilt Caddy binary"
+printf '%s  %s\n' "$CADDY_BINARY_SHA256" "$CADDY_BINARY_TMP" | sha256sum -c -
+install -m 755 "$CADDY_BINARY_TMP" /usr/local/bin/caddy
+
+if ! /usr/local/bin/caddy list-modules | grep -Fq 'http.handlers.rate_limit'; then
+  echo "Prebuilt Caddy binary does not include http.handlers.rate_limit" >&2
+  exit 1
+fi
 
 log "Rendering and validating Caddyfile"
 # Render the Caddyfile. envsubst gets an explicit variable list so Caddy's own

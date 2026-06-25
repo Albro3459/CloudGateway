@@ -49,9 +49,8 @@ wg_endpoint_hostname   = "wg.us-region-1.gocloudlaunch.com"
 # --- Caddy / Cloudflare ---
 cloudflare_origin_pull_ca_path = "/etc/caddy/cloudflare-origin-pull-ca.pem"
 cloudflare_origin_pull_ca_url  = "https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem"
-caddy_version                  = "v2.8.4"
-xcaddy_version                 = "latest"
-caddy_rate_limit_module        = "github.com/mholt/caddy-ratelimit"
+caddy_binary_tag               = "caddy-v1.0.0"
+caddy_binary_sha256            = "replace_with_cloudgateway_caddy_linux_arm64_sha256"
 caddy_api_rate_limit_events    = 300
 caddy_api_rate_limit_window    = "1m"
 

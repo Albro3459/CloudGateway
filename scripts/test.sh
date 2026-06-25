@@ -71,11 +71,20 @@ test_infra() {
     echo "Initializing Terraform providers"
     run_check "Terraform init" terraform -chdir=OCI/terraform init -backend=false -input=false || return 1
   fi
+  run_check "Terraform format" terraform -chdir=OCI/terraform fmt -check
   run_check "Terraform validate" terraform -chdir=OCI/terraform validate
 
   for script in OCI/host/*.sh scripts/*.sh; do
     run_check "parse $script" bash -n "$script"
   done
+
+  for template in OCI/terraform/*.tftpl; do
+    run_check "parse $template" bash -n "$template"
+  done
+
+  run_check "Caddy release version format" grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$' OCI/caddy/VERSION
+  run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' OCI/caddy/Dockerfile
+  run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' OCI/caddy/Dockerfile
 
   run_check "preflight compile" python3 -m py_compile scripts/terraform-preflight.py
   run_check "preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
