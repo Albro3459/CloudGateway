@@ -35,7 +35,7 @@ The fetched bootstrap installs and configures:
   * Firebase Admin credentials file referenced by `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
   * `cloudgateway-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
   * `cloudgateway-register-region` runs once at the end of bootstrap to self-seed the Firestore region doc (IP, server public key, endpoint), enabling the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). Regional DNS `A` records are managed by Terraform (`cloudflare_record.api`/`.wg`), not by the host.
-* Custom Caddy binary built with `github.com/mholt/caddy-ratelimit`, listening on public `80`/`443`:
+* Prebuilt CloudGateway Caddy binary with `github.com/mholt/caddy-ratelimit`, downloaded from the pinned `caddy_binary_tag` GitHub Release and verified against `caddy_binary_sha256`, listening on public `80`/`443`:
   * serves the Cloudflare Origin CA certificate (`origin_cert`/`origin_key`) on the origin TLS hop - ACME cannot validate a Cloudflare-proxied hostname
   * Cloudflare Authenticated Origin Pulls required
   * exact regional Host/SNI allowlist; unknown hostnames are rejected
@@ -43,7 +43,7 @@ The fetched bootstrap installs and configures:
   * strips `/api/*` and proxies only to `127.0.0.1:<fastapi_port>`
   * logs API HTTP requests only, never VPN traffic
 
-Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, and Caddy/Cloudflare settings. `dashboard_cors_origin` is also rendered into user access emails as the login link, so it must be one exact dashboard URL with no globs, wildcards, patterns, or comma-separated origins. There are no deploy-time client peer variables.
+Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, the pinned Caddy binary tag/hash, and Caddy/Cloudflare settings. `dashboard_cors_origin` is also rendered into user access emails as the login link, so it must be one exact dashboard URL with no globs, wildcards, patterns, or comma-separated origins. There are no deploy-time client peer variables.
 
 ### Regional DNS records
 
@@ -117,6 +117,11 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 
 * Caddy configuration template fetched alongside the bootstrap and rendered on the host with `envsubst`.
 
+[caddy/](caddy/)
+
+* Local Docker build inputs for the prebuilt Linux ARM64 Caddy binary.
+* Published with [scripts/caddy-release.sh](../scripts/caddy-release.sh); regional tfvars pin the release with `caddy_binary_tag` and `caddy_binary_sha256`.
+
 [backdoor-cloud-init.yaml](terraform/backdoor-cloud-init.yaml)
 
 * Cloud-init config that creates the emergency `backdoor` user.
@@ -134,6 +139,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 * Per-region local-only deployment values, for example `us-chicago-1.terraform.tfvars`.
 * Deployed via [./scripts/terraform.sh](../scripts/terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
 * Multi-region apply creates one deploy tag and writes that same `source_ref` into every listed region's tfvars before applying them sequentially.
+* `scripts/caddy-release.sh` writes `caddy_binary_tag` and `caddy_binary_sha256` into the configured region tfvars after publishing a Caddy binary release.
 * `oci_config_profile` names the `~/.oci/config` profile for that region's tenancy.
 * Contains sensitive values such as the WireGuard private key, Firebase credentials, and password hash. Never commit it; `*.tfvars` is gitignored.
 

@@ -39,7 +39,7 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy   # prefer reload over restart for config changes
 ```
 
-* The binary is a custom build with `github.com/mholt/caddy-ratelimit`. A stock `caddy` binary will fail on the rate-limit directives - confirm the installed binary with `caddy list-modules | grep rate` if validation errors mention unknown directives.
+* The binary is the prebuilt CloudGateway release with `github.com/mholt/caddy-ratelimit`. A stock `caddy` binary will fail on the rate-limit directives - confirm the installed binary with `caddy list-modules | grep rate` if validation errors mention unknown directives.
 * Caddy logs HTTP API requests only. While Caddy is down, the dashboard cannot reach the regional API, but VPN tunnels are unaffected.
 
 ## wg-quick@wg0 (WireGuard)

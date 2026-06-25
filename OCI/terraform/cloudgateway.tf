@@ -311,22 +311,24 @@ variable "cloudflare_origin_pull_ca_url" {
   description = "Download URL for the Cloudflare Authenticated Origin Pull CA"
 }
 
-variable "caddy_version" {
+variable "caddy_binary_tag" {
   type        = string
-  default     = "v2.8.4"
-  description = "Caddy version built by xcaddy"
+  description = "GitHub Release tag containing the prebuilt CloudGateway Caddy binary, for example caddy-v1.0.0"
+
+  validation {
+    condition     = can(regex("^caddy-v[0-9]+[.][0-9]+[.][0-9]+$", var.caddy_binary_tag))
+    error_message = "caddy_binary_tag must look like caddy-vX.Y.Z."
+  }
 }
 
-variable "xcaddy_version" {
+variable "caddy_binary_sha256" {
   type        = string
-  default     = "latest"
-  description = "xcaddy version installed by go install"
-}
+  description = "SHA-256 hex digest of the cloudgateway-caddy-linux-arm64 release asset"
 
-variable "caddy_rate_limit_module" {
-  type        = string
-  default     = "github.com/mholt/caddy-ratelimit"
-  description = "xcaddy module path for Caddy API rate limiting"
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.caddy_binary_sha256))
+    error_message = "caddy_binary_sha256 must be a lowercase 64-character SHA-256 hex digest."
+  }
 }
 
 variable "caddy_api_rate_limit_events" {
@@ -418,9 +420,8 @@ locals {
     caddy_acme_email               = var.caddy_acme_email
     cloudflare_origin_pull_ca_path = var.cloudflare_origin_pull_ca_path
     cloudflare_origin_pull_ca_url  = var.cloudflare_origin_pull_ca_url
-    caddy_version                  = var.caddy_version
-    xcaddy_version                 = var.xcaddy_version
-    caddy_rate_limit_module        = var.caddy_rate_limit_module
+    caddy_binary_tag               = var.caddy_binary_tag
+    caddy_binary_sha256            = var.caddy_binary_sha256
     caddy_api_rate_limit_events    = var.caddy_api_rate_limit_events
     caddy_api_rate_limit_window    = var.caddy_api_rate_limit_window
     cloudflare_ipv4_ranges         = var.cloudflare_ipv4_ranges

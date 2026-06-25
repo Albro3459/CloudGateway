@@ -62,6 +62,7 @@ Firebase/backups/
 **/vm_dump.md
 
 **/output.css
+OCI/caddy/build/
 
 **/node_modules/
 **/coverage/
