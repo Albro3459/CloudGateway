@@ -1,7 +1,8 @@
 {
   "include": [
     "API/src",
-    "API/tests"
+    "API/tests",
+    "scripts"
   ],
   "exclude": [
     "API/build",

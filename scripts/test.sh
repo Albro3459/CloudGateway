@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/test.sh            # run everything
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh app infra  # any combination of: api app infra firebase
+#   ./scripts/test.sh app infra  # any combination of: api app infra
 #
 # One-time setup (API venv, APP node_modules, terraform providers) happens
 # automatically on first run.
@@ -17,6 +17,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
+API_PYTHON_TOOLS_READY=0
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
@@ -33,8 +34,12 @@ run_check() {
   return 1
 }
 
-test_api() {
+ensure_api_python_tools() {
   cd "$ROOT/API" || return 1
+
+  if [[ "$API_PYTHON_TOOLS_READY" -eq 1 ]]; then
+    return 0
+  fi
 
   if [[ ! -x .venv/bin/python ]]; then
     echo "Creating API/.venv"
@@ -45,9 +50,25 @@ test_api() {
   # picked up on an existing venv. pip is a no-op when everything is satisfied.
   echo "Syncing API dependencies"
   run_check "API dependency sync" ./.venv/bin/python -m pip install --quiet -e '.[dev]' || return 1
+  API_PYTHON_TOOLS_READY=1
+}
+
+run_pyright() {
+  local name="$1"
+  shift
+  cd "$ROOT" || return 1
+  ensure_api_python_tools || return 1
+  cd "$ROOT" || return 1
+  run_check "$name" API/.venv/bin/pyright --project pyrightconfig.json "$@"
+}
+
+test_api() {
+  ensure_api_python_tools || return 1
+  cd "$ROOT/API" || return 1
 
   run_check "API compile" ./.venv/bin/python -m compileall -q src tests
-  run_check "API pyright" ./.venv/bin/pyright --project ../pyrightconfig.json
+  run_pyright "API pyright" API/src API/tests
+  cd "$ROOT/API" || return 1
   run_check "API pytest" ./.venv/bin/python -m pytest
 }
 
@@ -86,13 +107,11 @@ test_infra() {
   run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' OCI/caddy/Dockerfile
   run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' OCI/caddy/Dockerfile
 
-  run_check "preflight compile" python3 -m py_compile scripts/terraform-preflight.py
-  run_check "preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
-}
+  run_pyright "Terraform preflight pyright" scripts/terraform-preflight.py scripts/test_terraform_preflight.py
+  run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
+  run_check "Terraform  preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
 
-test_firebase() {
-  cd "$ROOT" || return 1
-
+  run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py
 }
@@ -118,7 +137,7 @@ run_step() {
 
 targets=("$@")
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(api app infra firebase)
+  targets=(api app infra)
 fi
 
 for target in "${targets[@]}"; do
@@ -126,9 +145,8 @@ for target in "${targets[@]}"; do
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
     app) run_step "APP tests + typecheck + build (jest + tsc + CRA)" test_app ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
-    firebase) run_step "Firebase backup script (compile + unittest)" test_firebase ;;
     *)
-      echo "Unknown target: $target (expected: api, app, infra, firebase)" >&2
+      echo "Unknown target: $target (expected: api, app, infra)" >&2
       exit 2
       ;;
   esac

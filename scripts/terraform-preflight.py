@@ -235,7 +235,7 @@ def evaluate_region(
         for change in plan_changes:
             address = change.get("address")
             actions = change.get("change", {}).get("actions", [])
-            if actions == ["create"] and external_present.get(address):
+            if isinstance(address, str) and actions == ["create"] and external_present.get(address):
                 errors.append(
                     f"{region_id}: Terraform plan wants to create {address}, but a matching external resource already exists; "
                     "manually reconcile state/resources before deploy."
