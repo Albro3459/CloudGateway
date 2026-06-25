@@ -1,0 +1,153 @@
+# Regional Deployment Runbook
+
+Manual fallback steps to bring up one shared regional WireGuard server and its API by hand. The normal path is automated; see [quick-deployment.md](quick-deployment.md).
+
+Secrets hygiene: never paste WireGuard private keys, full WireGuard configs, Firebase service account credentials, or auth tokens into logs, tickets, chat, or shell history files. Reference peers by client ID or public key only.
+
+## 1. Prepare OCI Networking
+
+Follow the network prerequisites in [OCI/README.md](../OCI/README.md):
+
+* compartment, subnet, and routed IPv6 if IPv6 VPN traffic is wanted
+* ingress TCP `22` only from your approved personal `IPv4/32`
+* ingress UDP `51820` from `0.0.0.0/0` and `::/0`
+* ingress TCP `80`/`443` only from Cloudflare IP ranges
+* egress to `0.0.0.0/0` and `::/0`
+
+## 2. Apply Terraform
+
+The host fetches its bootstrap script and API source from GitHub at boot using `source_repo`/`source_ref`. The ref must be pushed to GitHub before applying - see [docs/github-deployment-setup.md](github-deployment-setup.md) for the tag workflow and the fetched-path contract.
+
+The host also downloads the prebuilt Caddy binary from the GitHub Release named by `caddy_binary_tag` and verifies it against `caddy_binary_sha256`. Publish or refresh that binary with `./scripts/caddy-release.sh` before deploying a region whose tfvars points at a new Caddy binary tag. For first-time setup, use a temporary all-zero `caddy_binary_sha256` only until the release script writes the real hash; never deploy with the zero hash.
+
+Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
+its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
+that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, which selects each
+workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
+share one state file, so a second region would plan to destroy the first.
+
+`./scripts/terraform.sh` also runs a regional preflight before every plan, apply, and
+destroy. It stops the entire deploy if Cloudflare has existing regional API/WireGuard records or OCI
+has a `CloudGatewayManaged=true` VM that is not already in the selected Terraform
+workspace state. It also stops on duplicates. The script reports the region and
+resource IDs; manually reconcile or import the canonical resources before
+rerunning.
+
+```sh
+# One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
+# oci_config_profile, region ID, API hostname, CORS origin, FastAPI port, WireGuard endpoint
+# hostname, tunnel DNS IPs, Firebase credentials, Caddy/Cloudflare settings, WG server key).
+cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfvars
+
+./scripts/terraform.sh <regionId> plan
+./scripts/terraform.sh <regionId> apply
+
+# Multi-region: one deploy tag is created and written to every listed tfvars.
+./scripts/terraform.sh <regionId> <anotherRegionId> plan
+./scripts/terraform.sh <regionId> <anotherRegionId> apply
+```
+
+For `apply`, the script validates all requested var files and `source_ref` lines
+before side effects, saves every region's plan against the new deploy tag, creates
+and pushes one `Deploy v<x>` commit plus `deploy-v<x>` tag, writes that tag into
+every listed `source_ref`, then applies the saved plans one at a time. If one
+region fails, the script stops and already applied regions remain deployed; fix
+the failure and rerun.
+
+The matching OCI profile must exist in `~/.oci/config`, for example:
+
+```ini
+[us-chicago-1]
+user=ocid1.user.oc1..<region user OCID>
+fingerprint=<api key fingerprint>
+tenancy=ocid1.tenancy.oc1..<region tenancy OCID>
+region=us-chicago-1
+key_file=~/.oci/us-chicago-1.pem
+```
+
+Record the instance's public IPv4. After cloud-init finishes, confirm on the host:
+
+* `wg0` is up: `sudo wg show wg0`
+* `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudgateway-sync-peers` rebuilds the live peer set at boot)
+* `cloudgateway-api.service` is active and listening only on `127.0.0.1`
+* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
+* Caddy is active on `80`/`443`
+* `/etc/cloudgateway/api.env` is mode `0600`, root-owned, and `CLOUDGATEWAY_REGION_ID` matches this region
+
+If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started; Terraform apply wall time also includes OCI instance provisioning before cloud-init starts. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudgateway-install-api <ref>` - no redeploy needed.
+
+## 3. Cloudflare DNS (Terraform-managed) and one-time zone setup
+
+The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gocloudlaunch.com`.
+
+DNS is **managed by Terraform**, not by hand. `./scripts/terraform.sh <region> apply` creates/updates two `A` records from the instance's public IPv4 (`cloudflare_record.api`, orange/proxied; `cloudflare_record.wg`, grey/DNS-only) using `cloudflare_api_token` + `cloudflare_zone_id`. They update automatically on rebuild. If a manually-created record already exists for the name, delete it or import it before the first apply; the wrapper preflight stops on unmanaged or duplicate regional records.
+
+If the `cloudflare_api_token` has **Client IP Address Filtering** enabled, allowlist **both** the operator machine's public **IPv4 and IPv6** (`curl -4 https://ifconfig.me`, `curl -6 https://ifconfig.me`). Terraform's provider prefers IPv6 when available, so a v4-only allowlist fails every record op with `Authentication error (10000)` despite a valid token. Residential IPv6 is a rotating /64 - allowlist the `/64` prefix or leave IP filtering off.
+
+One-time per zone (see [CloudFlare/README.md](../CloudFlare/README.md)):
+
+1. SSL/TLS mode = **Full (strict)**.
+2. Create a Cloudflare **Origin CA** cert for `gocloudlaunch.com, *.gocloudlaunch.com` and put it in `origin_cert` / `origin_key` (the host serves it; ACME can't validate a proxied hostname).
+3. **Authenticated Origin Pulls**: turn on Global and Zone-level (upload no cert). The host trusts Cloudflare's shared client cert via the bundled origin-pull CA.
+
+WireGuard traffic does not go through Cloudflare. Only the API hostname is proxied; clients resolve `wg.<regionId>.<origin>` directly to the server public IPv4 at tunnel-up.
+
+## 4. Firebase region doc (self-seeded by the host)
+
+One-time project setup: confirm any required Firestore indexes for the current schema exist (see [Firebase/indexes.md](../Firebase/indexes.md)).
+
+The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
+
+If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudgateway-api` then
+`( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region )`. The upsert is idempotent.
+
+## 5. Validate `/api/health` Through Cloudflare
+
+```sh
+curl -s https://<regionId>.<origin>/api/health
+```
+
+Expected:
+
+```json
+{ "status": "ok", "regionId": "<regionId>" }
+```
+
+Also verify direct origin access fails (Authenticated Origin Pulls plus Host/SNI allowlist plus Cloudflare-only firewall):
+
+```sh
+curl -sk --resolve <regionId>.<origin>:443:<server-public-ipv4> https://<regionId>.<origin>/api/health
+```
+
+This must be rejected. If it returns a healthy response, the origin is reachable without Cloudflare; stop and fix the firewall/Caddy configuration before enabling the region.
+
+## 6. Create and Delete a Test Client from the Dashboard
+
+1. Set `enabled: true` on the region doc so the dashboard shows the region.
+2. Log in to the dashboard, select the new region tab, and create a client with an optional display name.
+3. Confirm the response shows status `active`, assigned tunnel IPv4/IPv6, and a config whose `Endpoint` is `wg.<regionId>.<origin>:51820`.
+4. Confirm the client doc exists at `Regions/{regionId}/Instances/{clientId}` with the expected `ownerUid` and `status`.
+5. On the host, confirm the peer appears in `sudo wg show wg0` (`/etc/wireguard/wg0.conf` stays peer-free by design).
+6. Delete the client from the dashboard. Confirm the peer is gone from `wg show wg0` and the doc status is `removed`.
+
+## 7. Verify WireGuard Connects
+
+1. Create a client and load its config in the WireGuard app (QR or download).
+2. Confirm the config endpoint is `wg.<regionId>.<origin>:51820` and that the name resolves to the server public IPv4 (grey cloud, not proxied).
+3. Activate the tunnel and confirm a handshake on the host:
+
+```sh
+sudo wg show wg0 latest-handshakes
+```
+
+4. Confirm traffic and DNS resolve through the tunnel.
+5. Confirm AdGuard Home is the client-facing DNS service and Unbound is the recursive backend:
+
+```sh
+systemctl status adguardhome
+systemctl status unbound
+```
+
+6. Confirm a known ad/tracker test domain is blocked by the AdGuard DNS filter, then remove the test client.
+
+The region is live. Leave `enabled: true` on the region doc.

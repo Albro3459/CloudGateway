@@ -8,7 +8,7 @@
 #   * -> OS Management tab
 #   * -> See 'Console connection'
 #   * -> 'Launch Cloud Shell connection'
-#   * -> Once it finishes loading, hit the enter key, see 'cloudlaunch login: ', enter your password you used to generate
+#   * -> Once it finishes loading, hit the enter key, see 'cloudgateway login: ', enter your password you used to generate
 
 users:
   - default

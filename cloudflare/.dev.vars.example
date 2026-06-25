@@ -1,4 +1,0 @@
-DEPLOY_URL="https://deploy-function-url...us-west-1.on.aws/"
-SECURE_GET_URL="https://secureget-function-url...us-west-1.on.aws/"
-CREATE_USER_URL="https://createuser-function-url...us-west-1.on.aws/"
-CLOUDLAUNCH_WORKER_SECRET="..." # use `openssl rand -hex 32` to generate

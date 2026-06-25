@@ -1,53 +1,105 @@
-# CloudLaunch:
+# CloudGateway
+
+## About
+
+* Live at: [gocloudlaunch.com](https://www.gocloudlaunch.com/)
+
+* Shared regional <b>WireGuard VPN</b> platform. Each OCI region runs one long-lived WireGuard server.
+
+* Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
+
+* View, copy, download, or QR-code your client config straight from the dashboard.
+
+* Admins can also sync region clients, if needed, and grant users accounts.
+
+* Built from [CloudLaunch](https://github.com/Albro3459/CloudLaunch), a multi-region cloud deployment platform for deploying servers on AWS. CloudLaunch used mini VPN servers as its proof-of-concept project. CloudGateway builds that idea into a full shared regional WireGuard VPN platform using the same deployment-focused architecture.
+
+## Screenshots
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
-   <img src="https://github.com/user-attachments/assets/e30a1af1-057b-4209-abbe-99cb62da9d5c" alt="Dashboard" height="400"/>
-   <img src="https://github.com/user-attachments/assets/2665ae69-5ab6-4d1d-ab18-f1cd32935ae8" alt="Deploy" height="400"/>
+  <img src="https://github.com/user-attachments/assets/13f11324-5489-4f6f-bc54-ba4e18bd1f83" alt="Dashboard" height="400"/>
+  <img src="https://github.com/user-attachments/assets/039c0c18-54e3-4c25-aed4-3b86b78e4cb7" alt="Admin Region Sync" height="400"/>
 </div>
 
-## About:
+## Architecture
 
- * Live at: [gocloudlaunch.com/](https://www.gocloudlaunch.com/)
+```text
+React dashboard
+  -> Firebase Auth
+  -> Firebase reads for dashboard data/config display
+  -> https://<region>.<origin>/api/*
+      -> Cloudflare proxied DNS
+      -> Caddy on regional OCI server
+      -> FastAPI on 127.0.0.1
+      -> Firebase Admin SDK
+      -> WireGuard host commands
 
- * Instantly deploy a secure <b>WireGuard VPN</b>, pre-configured with IPv4, IPv6, and DNS.
+WireGuard client
+  -> wg.<regionId>.<origin>:51820 (non-proxied DNS -> server public IPv4)
+  -> wg0 on regional OCI server
+```
 
- * Deployments run through <b>AWS Lambda</b> and Oracle Cloud Infrastructure stacks, with selectable OCI regions backed by separate OCI account configs.
+Cloudflare fronts the regional API only. It is not part of the VPN data path; WireGuard clients resolve the non-proxied (grey-cloud) `wg.<regionId>.<origin>` record and connect directly to the server's public IPv4.
 
- * Generate your VPN configuration instantly, scan a QR code, or download the <b>.conf</b> file for easy setup on your devices. All in just a few clicks.
+### Components
 
- * <b>Secure, simple, and instant.</b> Your personal cloud VPN, deployed on demand.
- 
-## Languages and Frameworks:
-* React with TypeScript and TailwindCSS for the Frontend
-* Python for the AWS Lambda scripts
+* <b>React dashboard</b> (`APP/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
+* <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
+* <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
+* <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
+* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudgateway-sync-peers`.
+* <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to Unbound on localhost. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
+* <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
+
+## Regional API URLs
+
+* Each region serves its API at `https://<regionId>.<origin>/api/*`, where `<origin>` is the frontend origin host, for example `gocloudlaunch.com`.
+* In production the frontend derives the URL from the selected region's `regionId` plus the current `window.location.origin`. There is no global API router and no base-domain config.
+* `REACT_APP_API_ORIGIN` is a local/dev override only. When set, API helpers call `${REACT_APP_API_ORIGIN}/api/*`. Production builds leave it unset.
+
+## Source of Truth
+
+* Firebase is the single source of truth: users, regions, clients, roles, limits, stored configs, and the WireGuard peer set.
+* Peers are never saved to `wg0.conf` or any other host state file. Client create/delete updates Firebase and applies the live `wg0` change in one locked operation.
+* On reboot, `wg-quick` brings up the interface from the static config and `cloudgateway-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
+
+## Privacy and Logging
+
+* API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails, because those are needed to operate the control plane.
+* VPN traffic logs are forbidden. Never log DNS queries, domains or destination IPs requested by VPN users, browsing/app traffic metadata, packet metadata, or per-user connection history.
+* Never log WireGuard private keys, full WireGuard configs, Firebase service account secrets, or auth tokens.
+
+## Languages and Frameworks
+
+* React with TypeScript and TailwindCSS for the frontend
+* Python with FastAPI for the regional control plane
 * Firebase for Authentication and Database
-* Cloud tools used:
-  * AWS Lambda, SES, DynamoDB, Secrets Manager, IAM, CloudWatch
-  * OCI Resource Manager, Compute, Virtual Networking, and Terraform stacks
-* If you would like documentation on how to configure a Wireguard EC2 VPN yourself, email me: [brodsky.alex22@gmail.com](brodsky.alex22@gmail.com)
+* Caddy (prebuilt CloudGateway binary with rate limiting) for the regional API edge
+* OCI Compute and Terraform for regional servers
+* AWS SES for email
+
+## Tool Versions
+
+See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deployed tooling versions, including Python, Node.js, npm, Terraform, Caddy, and AdGuard Home.
 
 ## Usage
 
-* Only the admin account is active for the time being.
-
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
-* To save the config file or scan the QR code, on either the phone or computer, you need the Wireguard app because the VPN uses the Wireguard protocol.
+* To save the config file or scan the QR code, on either the phone or computer, you need the WireGuard app because the VPN uses the WireGuard protocol.
   * Desktop: [wireguard.com](https://www.wireguard.com/install/) or for iPhone: [AppStore](https://apps.apple.com/us/app/wireguard/id1441195209)
 
 #### On Phone
 
-* Demo in the YouTube video.
+* Install the WireGuard app on your phone.
 
-* Install the Wireguard app on your phone.
+* Either download the config file or scan the QR code in the WireGuard app.
 
-* Either download the config file or scan the QR code in the Wireguard app.
-
-* Enable it in Wireguard and Settings and you're done!
+* Enable it in WireGuard and Settings and you're done!
 
 #### On Mac
 
-* It's much easier to use the Wireguard Desktop app, but you can follow these steps instead:
+* It's much easier to use the WireGuard Desktop app, but you can follow these steps instead:
 
 * Start WireGuard manually:
   ```sh
@@ -64,6 +116,16 @@
   wg-quick down wg-client
   ```
 
-### Running the React Site:
+## More Docs
 
-* See react-frontend folder for React README
+* Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
+* Frontend: [APP/README.md](APP/README.md)
+* Regional API: [API/README.md](API/README.md)
+* Regional API contract: [docs/api-contract.md](docs/api-contract.md)
+* API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
+* Regional server / Terraform: [OCI/README.md](OCI/README.md)
+* Caddy binary build: [OCI/caddy/README.md](OCI/caddy/README.md)
+* Firebase / Firestore: [Firebase/README.md](Firebase/README.md)
+* Cloudflare: [CloudFlare/README.md](CloudFlare/README.md)
+* Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
+* Operations runbooks: [docs/](docs/)
