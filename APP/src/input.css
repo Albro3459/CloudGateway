@@ -1,0 +1,172 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic theme tokens: light values on :root, dark values on .dark.
+   Exposed as utilities (bg-page, text-content, border-edge, ...) via @theme inline below. */
+:root {
+  color-scheme: light;
+
+  --theme-nav: theme(--color-blue-600);
+  --theme-nav-btn: theme(--color-gray-300);
+  --theme-nav-btn-hover: theme(--color-gray-100);
+
+  --theme-primary: theme(--color-blue-600);
+  --theme-primary-hover: theme(--color-blue-700);
+  --theme-primary-soft: theme(--color-blue-50);
+  --theme-primary-soft-edge: theme(--color-blue-200);
+  --theme-accent: theme(--color-blue-600);
+  --theme-accent-strong: theme(--color-blue-800);
+  --theme-focus: theme(--color-blue-500);
+  --theme-focus-soft: theme(--color-blue-100);
+
+  --theme-page: theme(--color-gray-100);
+  --theme-card: theme(--color-white);
+  --theme-inset: theme(--color-gray-50);
+  --theme-inset-strong: theme(--color-gray-200);
+  --theme-inset-strong-hover: theme(--color-gray-300);
+  --theme-disabled: theme(--color-gray-300);
+
+  --theme-content: theme(--color-gray-900);
+  --theme-content-secondary: theme(--color-gray-700);
+  --theme-content-muted: theme(--color-gray-500);
+  --theme-content-faint: theme(--color-gray-400);
+  --theme-content-disabled: theme(--color-gray-500);
+
+  --theme-edge: theme(--color-gray-300);
+  --theme-edge-subtle: theme(--color-gray-200);
+  --theme-edge-faint: theme(--color-gray-100);
+  --theme-neutral-strong: theme(--color-gray-900);
+
+  --theme-success: theme(--color-green-600);
+  --theme-success-soft: theme(--color-green-100);
+  --theme-success-strong: theme(--color-green-800);
+  --theme-success-soft-edge: theme(--color-green-200);
+
+  --theme-warning-soft: theme(--color-yellow-100);
+  --theme-warning-strong: theme(--color-yellow-800);
+  --theme-warning-soft-edge: theme(--color-yellow-200);
+
+  --theme-danger: theme(--color-red-500);
+  --theme-danger-btn: theme(--color-red-600);
+  --theme-danger-btn-hover: theme(--color-red-700);
+  --theme-danger-content: theme(--color-red-600);
+  --theme-danger-soft: theme(--color-red-100);
+  --theme-danger-strong: theme(--color-red-800);
+  --theme-danger-soft-edge: theme(--color-red-200);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --theme-nav: theme(--color-blue-950);
+  --theme-nav-btn: theme(--color-gray-800);
+  --theme-nav-btn-hover: theme(--color-gray-700);
+
+  --theme-primary: theme(--color-blue-600);
+  --theme-primary-hover: theme(--color-blue-500);
+  --theme-primary-soft: theme(--color-blue-950);
+  --theme-primary-soft-edge: theme(--color-blue-900);
+  --theme-accent: theme(--color-blue-400);
+  --theme-accent-strong: theme(--color-blue-300);
+  --theme-focus: theme(--color-blue-500);
+  --theme-focus-soft: theme(--color-blue-900);
+
+  --theme-page: theme(--color-gray-950);
+  --theme-card: theme(--color-gray-900);
+  --theme-inset: theme(--color-gray-800);
+  --theme-inset-strong: theme(--color-gray-700);
+  --theme-inset-strong-hover: theme(--color-gray-600);
+  --theme-disabled: theme(--color-gray-800);
+
+  --theme-content: theme(--color-gray-100);
+  --theme-content-secondary: theme(--color-gray-300);
+  --theme-content-muted: theme(--color-gray-400);
+  --theme-content-faint: theme(--color-gray-500);
+  --theme-content-disabled: theme(--color-gray-600);
+
+  --theme-edge: theme(--color-gray-700);
+  --theme-edge-subtle: theme(--color-gray-800);
+  --theme-edge-faint: theme(--color-gray-800);
+  --theme-neutral-strong: theme(--color-gray-600);
+
+  --theme-success: theme(--color-green-700);
+  --theme-success-soft: theme(--color-green-950);
+  --theme-success-strong: theme(--color-green-300);
+  --theme-success-soft-edge: theme(--color-green-900);
+
+  --theme-warning-soft: theme(--color-yellow-950);
+  --theme-warning-strong: theme(--color-yellow-300);
+  --theme-warning-soft-edge: theme(--color-yellow-900);
+
+  --theme-danger: theme(--color-red-600);
+  --theme-danger-btn: theme(--color-red-700);
+  --theme-danger-btn-hover: theme(--color-red-800);
+  --theme-danger-content: theme(--color-red-400);
+  --theme-danger-soft: theme(--color-red-950);
+  --theme-danger-strong: theme(--color-red-300);
+  --theme-danger-soft-edge: theme(--color-red-900);
+}
+
+@theme inline {
+  --color-nav: var(--theme-nav);
+  --color-nav-btn: var(--theme-nav-btn);
+  --color-nav-btn-hover: var(--theme-nav-btn-hover);
+
+  --color-primary: var(--theme-primary);
+  --color-primary-hover: var(--theme-primary-hover);
+  --color-primary-soft: var(--theme-primary-soft);
+  --color-primary-soft-edge: var(--theme-primary-soft-edge);
+  --color-accent: var(--theme-accent);
+  --color-accent-strong: var(--theme-accent-strong);
+  --color-focus: var(--theme-focus);
+  --color-focus-soft: var(--theme-focus-soft);
+
+  --color-page: var(--theme-page);
+  --color-card: var(--theme-card);
+  --color-inset: var(--theme-inset);
+  --color-inset-strong: var(--theme-inset-strong);
+  --color-inset-strong-hover: var(--theme-inset-strong-hover);
+  --color-disabled: var(--theme-disabled);
+
+  --color-content: var(--theme-content);
+  --color-content-secondary: var(--theme-content-secondary);
+  --color-content-muted: var(--theme-content-muted);
+  --color-content-faint: var(--theme-content-faint);
+  --color-content-disabled: var(--theme-content-disabled);
+
+  --color-edge: var(--theme-edge);
+  --color-edge-subtle: var(--theme-edge-subtle);
+  --color-edge-faint: var(--theme-edge-faint);
+  --color-neutral-strong: var(--theme-neutral-strong);
+
+  --color-success: var(--theme-success);
+  --color-success-soft: var(--theme-success-soft);
+  --color-success-strong: var(--theme-success-strong);
+  --color-success-soft-edge: var(--theme-success-soft-edge);
+
+  --color-warning-soft: var(--theme-warning-soft);
+  --color-warning-strong: var(--theme-warning-strong);
+  --color-warning-soft-edge: var(--theme-warning-soft-edge);
+
+  --color-danger: var(--theme-danger);
+  --color-danger-btn: var(--theme-danger-btn);
+  --color-danger-btn-hover: var(--theme-danger-btn-hover);
+  --color-danger-content: var(--theme-danger-content);
+  --color-danger-soft: var(--theme-danger-soft);
+  --color-danger-strong: var(--theme-danger-strong);
+  --color-danger-soft-edge: var(--theme-danger-soft-edge);
+}
+
+@layer base {
+  body {
+    background-color: var(--color-page);
+    color: var(--color-content);
+  }
+}
+
+@layer utilities {
+  .rounded-full {
+    border-radius: 9999px;
+  }
+}

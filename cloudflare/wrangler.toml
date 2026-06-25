@@ -1,8 +1,0 @@
-name = "cloudlaunch-api"
-main = "src/index.ts"
-compatibility_date = "2026-05-18"
-
-routes = [
-  { pattern = "gocloudlaunch.com/api/*", zone_name = "gocloudlaunch.com" },
-  { pattern = "www.gocloudlaunch.com/api/*", zone_name = "gocloudlaunch.com" }
-]

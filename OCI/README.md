@@ -1,45 +1,81 @@
-# Oracle WireGuard Stack
+# Oracle Shared Regional WireGuard Host
 
-This folder contains the Oracle Cloud Infrastructure Terraform package used to launch a WireGuard VPN instance with cloud-init bootstrap scripts.
+This folder contains the Oracle Cloud Infrastructure Terraform package used to launch one long-lived shared WireGuard server per OCI region, bootstrapped with cloud-init.
 
-CloudLaunch uses this model:
-
-```text
-1 selectable OCI region = 1 OCI account / tenancy config
-```
-
-AWS Lambda is the orchestrator. The `Deploy` Lambda receives a selected region, reads that region's account config from `CloudLaunch.oci.regions.<region>`, signs direct HTTPS requests to OCI Resource Manager, uploads this Terraform package as a stack, creates apply/destroy jobs, and reads Compute/VNIC data after the job finishes.
-
-The Terraform [cloudlaunch.tf](terraform/cloudlaunch.tf) creates the compute instance only. It assumes the compartment, subnet, IPv6 setup, route tables, and security rules already exist in the selected OCI account.
-
-Runtime Lambda deploys do not use `terraform.tfvars`. The Lambda sends stack variables from the selected AWS Secrets Manager region config.
-
-## OCI Policies
-
-Grant the automation group only the access needed for stack orchestration and cleanup in the target compartment.
-
-Policy intent:
-
-* Manage Resource Manager stacks and jobs for the CloudLaunch Terraform package.
-* Read Resource Manager job state so Lambda can resolve the Terraform state output.
-* Read compute instance state after apply and during cleanup.
-* Terminate compute instances when Resource Manager cleanup does not remove the instance cleanly.
-* Read VNIC attachments and VNICs so Lambda can find the public IPv4 address.
-
-Example policy shape:
+CloudGateway uses this model:
 
 ```text
-Allow group CloudLaunchAutomation to manage orm-stacks in compartment <compartment-name>
-Allow group CloudLaunchAutomation to manage orm-jobs in compartment <compartment-name>
-Allow group CloudLaunchAutomation to manage instances in compartment <compartment-name>
-Allow group CloudLaunchAutomation to read virtual-network-family in compartment <compartment-name>
+1 OCI region = 1 long-lived shared WireGuard server
 ```
 
-Tune names and scope to your tenancy. If the subnet, image, or network resources live in another compartment, add the matching read/use policy there.
+Deployment is rare and manual. An operator prepares OCI networking, then deploys
+or rebuilds a region through `./scripts/terraform.sh <region> apply` following
+[docs/regional-deployment.md](../docs/regional-deployment.md). The wrapper
+manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
+DNS/VM resources must be reconciled or imported before rerunning. There is no
+Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack
+deployment.
+
+WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
+
+## What the Host Runs
+
+Cloud-init is a small stub: Terraform bakes only the per-region config and secrets into user-data, and the stub fetches the versioned bootstrap script and API source from GitHub at `source_repo`/`source_ref` before running it. Any deployable ref must contain `OCI/host/bootstrap.sh`, `OCI/host/Caddyfile.template`, and `API/` - see [docs/github-deployment-setup.md](../docs/github-deployment-setup.md).
+
+The fetched bootstrap installs and configures:
+
+* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
+* IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
+* AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
+* Unbound recursive DNS on localhost as the AdGuard Home upstream resolver.
+* Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../docs/deployment-handoff.md):
+  * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
+  * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`
+  * environment file `/etc/cloudgateway/api.env` (mode `0600`, root-owned) with the `CLOUDGATEWAY_*` variables, including `CLOUDGATEWAY_REGION_ID`
+  * Firebase Admin credentials file referenced by `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
+  * `cloudgateway-install-api [ref]` helper for rolling the API to a new pushed ref without redeploying
+  * `cloudgateway-register-region` runs once at the end of bootstrap to self-seed the Firestore region doc (IP, server public key, endpoint), enabling the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). Regional DNS `A` records are managed by Terraform (`cloudflare_record.api`/`.wg`), not by the host.
+* Prebuilt CloudGateway Caddy binary with `github.com/mholt/caddy-ratelimit`, downloaded from the pinned `caddy_binary_tag` GitHub Release and verified against `caddy_binary_sha256`, listening on public `80`/`443`:
+  * serves the Cloudflare Origin CA certificate (`origin_cert`/`origin_key`) on the origin TLS hop - ACME cannot validate a Cloudflare-proxied hostname
+  * Cloudflare Authenticated Origin Pulls required
+  * exact regional Host/SNI allowlist; unknown hostnames are rejected
+  * rate limits on `/api/*`, including `/api/health`
+  * strips `/api/*` and proxies only to `127.0.0.1:<fastapi_port>`
+  * logs API HTTP requests only, never VPN traffic
+
+Terraform inputs cover the shared-server deployment config: source repo/ref, region ID, regional API hostname, dashboard CORS origin, FastAPI port, WireGuard endpoint hostname (`wg.<regionId>.<origin>`, grey-cloud), server tunnel DNS IPs, Firebase credential payload/path, the pinned Caddy binary tag/hash, and Caddy/Cloudflare settings. `dashboard_cors_origin` is also rendered into user access emails as the login link, so it must be one exact dashboard URL with no globs, wildcards, patterns, or comma-separated origins. There are no deploy-time client peer variables.
+
+### Regional DNS records
+
+The region's `A` records (`cloudflare_record.api`, proxied; `cloudflare_record.wg`, grey-cloud) are Terraform-managed and point at the instance public IP, so they follow a rebuild automatically. Two safeguards exist because the Cloudflare provider does not validate the token up front and its record create is an insert, not an upsert:
+
+* `data.cloudflare_zone.this` makes an authenticated Cloudflare call during `plan`/refresh, so an invalid or IP-blocked token fails before the instance is created or replaced. If a deploy errors here, check that the `cloudflare_api_token` is valid and that the operator machine's public IP is in the token's client-IP allowlist.
+* The deploy wrapper blocks unmanaged matching records before Terraform can create
+  more DNS state. If a matching record already exists but is not in Terraform
+  state, import the canonical record or delete/recreate intentionally before
+  rerunning. If a prior half-failed apply left duplicate records, manually
+  reconcile them before rerunning because Terraform cannot safely disambiguate.
+
+A token that is valid but blocked by source-IP filtering used to surface only after the instance was created (the records depend on the instance), leaving an orphaned instance, unupdated records, and duplicates on the next run. The zone preflight now fails that case at plan time.
+
+The deploy wrapper also checks regional resource ownership before every plan,
+apply, and destroy. It queries Cloudflare for the exact API and WireGuard `A` records, and OCI
+for active instances tagged `CloudGatewayManaged=true` in that region's configured
+compartment/profile/region. Zero matching resources is safe for a first deploy.
+Exactly one matching resource is safe only when it is already in the selected
+Terraform workspace state. More than one matching DNS record or VM is unsafe.
+Any unsafe region stops the whole deploy so the operator can manually reconcile
+resources or import the canonical resources into state before rerunning.
+
+AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
+
+See [adguard-home.md](adguard-home.md) for the AdGuard Home runtime configuration and operator rules.
+
+The minimum recommended server shape is 2 OCPU and 4-6 GB RAM, with capacity for roughly 15-25 clients per region. CPU matters more than memory as client count grows because WireGuard encrypts and decrypts traffic for every connection.
 
 ## Network Prerequisites
 
-Before the Lambda creates a stack in a region/account, make sure OCI already has:
+Before applying the stack in a region, make sure OCI already has:
 
 * a target compartment
 * a subnet for the instance
@@ -49,28 +85,42 @@ Before the Lambda creates a stack in a region/account, make sure OCI already has
 * ingress for WireGuard on UDP `51820`
   * IPv4: `0.0.0.0/0`
   * IPv6: `::/0`
+* ingress for HTTP/HTTPS on TCP `80`/`443` restricted to Cloudflare IP ranges only (the regional API origin must not be reachable directly)
 * egress that allows VPN client traffic out to `0.0.0.0/0` and `::/0`
 
-The subnet OCID, source image OCID, availability domain, shape, boot volume settings, and IPv6 subnet CIDR belong in the matching `CloudLaunch.oci.regions.<region>` entry.
+WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limiting protects the regional API only and does not protect UDP VPN traffic.
 
 ## Files
 
-[cloudlaunch.tf](terraform/cloudlaunch.tf)
+[cloudgateway.tf](terraform/cloudgateway.tf)
 
 * Main Terraform file.
 * Declares the input variables.
 * Renders the cloud-init templates.
 * Creates the OCI compute instance and passes SSH keys plus multipart `user_data`.
 
-[wireguard-cloud-init.sh.tftpl](terraform/wireguard-cloud-init.sh.tftpl)
+[stub-cloud-init.sh.tftpl](terraform/stub-cloud-init.sh.tftpl)
 
-* Shell script template rendered by Terraform and run by cloud-init.
-* Installs WireGuard, `iptables`, and `fail2ban`.
+* Small shell script template rendered by Terraform and run by cloud-init.
+* Writes `/etc/cloudgateway/bootstrap.env`, the WireGuard server key, and the optional Firebase credential file from Terraform inputs.
+* Fetches the repo tarball from GitHub at `source_repo`/`source_ref` and runs the versioned bootstrap.
+* Starts the step-marker logging to `/var/log/wireguard-bootstrap.log` so bootstrap failures are easier to pinpoint.
+
+[host/bootstrap.sh](host/bootstrap.sh)
+
+* Full host bootstrap, fetched from GitHub by the stub (never rendered by Terraform).
+* Installs and configures the host services described above from `/etc/cloudgateway/bootstrap.env`.
 * Disables SSH password auth and root SSH login.
-* Enables IPv4 and IPv6 forwarding.
-* Writes `/etc/wireguard/<interface>.conf`.
-* Starts `wg-quick@<interface>`.
-* Writes step markers into `/var/log/wireguard-bootstrap.log` so bootstrap failures are easier to pinpoint.
+* Installs the API from the fetched source and writes the `cloudgateway-install-api` update helper.
+
+[host/Caddyfile.template](host/Caddyfile.template)
+
+* Caddy configuration template fetched alongside the bootstrap and rendered on the host with `envsubst`.
+
+[caddy/](caddy/)
+
+* Local Docker build inputs for the prebuilt Linux ARM64 Caddy binary.
+* Published with [scripts/caddy-release.sh](../scripts/caddy-release.sh); regional tfvars pin the release with `caddy_binary_tag` and `caddy_binary_sha256`.
 
 [backdoor-cloud-init.yaml](terraform/backdoor-cloud-init.yaml)
 
@@ -81,20 +131,30 @@ The subnet OCID, source image OCID, availability domain, shape, boot volume sett
 
 [terraform.tfvars.example](terraform/terraform.tfvars.example)
 
-* Manual stack testing example only.
-* Runtime Lambda deploy values come from the selected `CloudLaunch.oci.regions.<region>` entry.
-* Use this only when testing the Terraform package directly outside the Lambda flow.
+* Example variable values for a regional deployment.
+* Copy to `<regionId>.terraform.tfvars` (one per region) and fill in real values before applying.
 
-[terraform.tfvars](terraform/terraform.tfvars)
+`<regionId>.terraform.tfvars`
 
-* Optional local-only manual testing file.
-* Contains sensitive values such as the WireGuard private key and password hash.
+* Per-region local-only deployment values, for example `us-chicago-1.terraform.tfvars`.
+* Deployed via [./scripts/terraform.sh](../scripts/terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
+* Multi-region apply creates one deploy tag and writes that same `source_ref` into every listed region's tfvars before applying them sequentially.
+* `scripts/caddy-release.sh` writes `caddy_binary_tag` and `caddy_binary_sha256` into the configured region tfvars after publishing a Caddy binary release.
+* `oci_config_profile` names the `~/.oci/config` profile for that region's tenancy.
+* Contains sensitive values such as the WireGuard private key, Firebase credentials, and password hash. Never commit it; `*.tfvars` is gitignored.
 
-[.terraform.lock.hcl](terraform/.terraform.lock.hcl)
+## WireGuard Config Shapes
 
-* Terraform dependency lock file.
-* Useful for local reproducibility.
-* Not required in the zip uploaded by the Lambda flow.
+[wireguard_configs/example.wg0-server.conf](wireguard_configs/example.wg0-server.conf)
+
+* Shared-server interface shape: address, listen port, firewall/NAT `PostUp`/`PostDown`, UDP rate limits.
+* The host firewall blocks VPN client traffic to OCI instance metadata at `169.254.169.254` so `user_data` stays protected.
+* No static `[Peer]` blocks. Peers are managed at runtime by the regional API.
+
+[wireguard_configs/example.wg0-client.conf](wireguard_configs/example.wg0-client.conf)
+
+* Client config shape generated by the regional API: client private key, assigned tunnel IPv4/IPv6, tunnel DNS IPs, server public key, and `Endpoint = wg.<regionId>.<origin>:51820`.
+* The endpoint is a non-proxied (grey-cloud) DNS record resolving to the server public IPv4. WireGuard traffic does not go through Cloudflare; clients re-resolve the name at tunnel-up, so a rebuilt host with a new IP keeps existing clients.
 
 ## Backdoor User
 
@@ -117,6 +177,8 @@ This user is for recovery only.
 
 ## Local Validation
 
+Use Terraform `1.6` or newer. See [../docs/tool-versions.md](../docs/tool-versions.md) for local tooling and deployed host package expectations.
+
 ```sh
 cd terraform
 terraform init
@@ -134,54 +196,6 @@ Useful notes:
 * `terraform validate` requires `terraform init` first on a clean machine.
 * If you change provider-related settings later, rerun `terraform init`.
 
-## Manual Stack Testing
-
-For the Lambda flow, [lambda/Deploy/build_deploy_lambda.sh](../lambda/Deploy/build_deploy_lambda.sh) copies the Terraform files into the Lambda package, and the Lambda uploads them to Resource Manager as a zip-backed config source.
-
-If you manually upload to OCI Stacks, zip only the files Resource Manager actually needs:
-
-* [cloudlaunch.tf](terraform/cloudlaunch.tf)
-* [wireguard-cloud-init.sh.tftpl](terraform/wireguard-cloud-init.sh.tftpl)
-* [backdoor-cloud-init.yaml](terraform/backdoor-cloud-init.yaml)
-* `terraform.tfvars` only if you are intentionally testing with local manual values
-
-Do not include:
-
-* `.terraform/`
-* local provider binaries
-* editor files
-* logs
-* example env
-* any other local scratch files
-
-Usually you do not need to include [.terraform.lock.hcl](terraform/.terraform.lock.hcl) for OCI Stacks.
-
-Example packaging flow from repo root:
-
-```sh
-cd terraform &&
-STACK_TMP="/tmp/cloudlaunch-stack-$(date +%F_%H-%M-%S)" &&
-mkdir -p "$STACK_TMP" &&
-cp cloudlaunch.tf "$STACK_TMP"/ &&
-cp wireguard-cloud-init.sh.tftpl "$STACK_TMP"/ &&
-cp backdoor-cloud-init.yaml "$STACK_TMP"/ &&
-cp terraform.tfvars "$STACK_TMP"/ &&
-cd "$STACK_TMP" &&
-zip -r ~/Desktop/cloudlaunch-stack.zip . &&
-cd - && cd ../
-```
-
-Then in OCI Stacks:
-
-1. Create a new stack or edit the existing one.
-2. Upload the zip.
-3. Review the variables OCI detects.
-4. Plan/apply the stack.
-
-If you prefer to manage variables in the OCI stack UI instead of packaging them, leave `terraform.tfvars` out of the zip and set the variables directly in the stack.
-
-The Lambda path does not use `terraform.tfvars`; it sends stack variables from the AWS `CloudLaunch` secret.
-
 ## Runtime Logs
 
 After the instance launches, useful logs on the VM are:
@@ -196,9 +210,9 @@ sudo sed -n '1,240p' /var/log/wireguard-bootstrap.log
 tail -f /var/log/wireguard-bootstrap.log
 ```
 
-The WireGuard bootstrap log includes explicit step markers so it is easier to see whether failure happened during package install, SSH hardening, `fail2ban`, sysctl setup, or WireGuard startup.
+Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started. Terraform apply wall time also includes OCI instance provisioning before cloud-init starts, so these timestamps measure the host setup work only.
 
-## References
 
-* [OCI request signatures](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/signingrequests.htm)
-* [OCI REST APIs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/usingapi.htm)
+For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
+
+If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../docs/vm-loss-recovery.md).
