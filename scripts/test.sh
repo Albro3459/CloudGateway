@@ -93,8 +93,8 @@ test_infra() {
 test_firebase() {
   cd "$ROOT" || return 1
 
-  run_check "Firebase script compile" python3 -m py_compile Firebase/scripts/backup_firestore.py Firebase/scripts/migrate_firestore_schema.py Firebase/tests/test_firestore_migration.py
-  run_check "Firebase migration tests" python3 -m unittest Firebase.tests.test_firestore_migration
+  run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
+  run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py
 }
 
 run_step() {
@@ -126,7 +126,7 @@ for target in "${targets[@]}"; do
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
     app) run_step "APP tests + typecheck + build (jest + tsc + CRA)" test_app ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
-    firebase) run_step "Firebase scripts (compile + migration unittest)" test_firebase ;;
+    firebase) run_step "Firebase backup script (compile + unittest)" test_firebase ;;
     *)
       echo "Unknown target: $target (expected: api, app, infra, firebase)" >&2
       exit 2

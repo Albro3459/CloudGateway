@@ -45,3 +45,16 @@ and run the regional API. The runtime request/response surface is in
   unknown server peers are removed; sync never writes to Firebase).
 - API routes hold the `/run/cloudgateway-wireguard.lock` flock across each WireGuard mutation plus
   its matching Firebase write.
+
+## Firestore backup
+
+- Before a regional deploy or host replacement, back up Firestore from the repo root:
+
+  ```sh
+  source API/.venv/bin/activate
+  python3 scripts/backup_firestore.py
+  ls -lh Firebase/backups
+  ```
+
+- Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists. Treat backup files as
+  secret material because they can contain full WireGuard configs and client private keys.
