@@ -8,7 +8,7 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 
 * [schema.ts](schema.ts) documents the Firestore collection paths and document shapes as TypeScript types for quick visualization.
 * [firestore.rules](firestore.rules) contains the frontend Firestore security rules. During the schema migration, the rules must be updated alongside the API and app code before deployment.
-* [indexes.md](indexes.md) documents the required Firestore indexes.
+* [indexes.md](indexes.md) documents the required Firestore indexes; [../firestore.indexes.json](../firestore.indexes.json) captures the deployable index configuration.
 * [scripts/backup_firestore.py](scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
 * [scripts/migrate_firestore_schema.py](scripts/migrate_firestore_schema.py) backs up Firestore, creates role defaults and user role assignments, and moves old nested client documents to the regional layout.
 

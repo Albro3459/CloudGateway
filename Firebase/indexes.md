@@ -11,24 +11,52 @@ collection(db, "Regions", regionId, "Instances")
 ```
 
 The regional API counts allocated clients and lists sync input from that direct subcollection.
-No `regionId` collection-group index is needed for regional operations.
-
 Normal dashboard users list their own clients with a collection-group query filtered by owner:
 
 ```ts
 query(collectionGroup(db, "Instances"), where("ownerUid", "==", uid))
 ```
 
-Firestore's automatic single-field indexes support this query unless the console reports a
-project-specific exemption. Admins list all clients with an unfiltered collection-group query.
+Admins list all clients with an unfiltered collection-group query.
 
-Existing projects may keep the older `collectionGroup("Instances").where("regionId", "==", regionId)`
-single-field index until the migration and runtime code changes are complete. It is harmless
-but no longer part of the target schema.
+## Collection-Group Field Indexes
+
+The `Instances` collection group uses these single-field indexes:
+
+| Field path | Ascending | Descending | Arrays |
+| --- | --- | --- | --- |
+| `regionId` | Enabled | Disabled | Disabled |
+| `ownerUid` | Enabled | Disabled | Disabled |
+
+These indexes are captured in the repo root [firestore.indexes.json](../firestore.indexes.json).
+
+To create them in the Firebase Console:
+
+1. Open Firestore.
+2. Go to Indexes.
+3. Open Automatic.
+4. Click Add exemption.
+5. Set Collection ID to `Instances`.
+6. Set Query scope to Collection group.
+7. Set Field path to `ownerUid`.
+8. Enable Ascending only.
+9. Save, then repeat for `regionId`.
+
+`ownerUid` supports the normal-user dashboard query:
+
+```ts
+query(collectionGroup(db, "Instances"), where("ownerUid", "==", uid))
+```
+
+`regionId` supports older or operational collection-group queries scoped to one region:
+
+```ts
+query(collectionGroup(db, "Instances"), where("regionId", "==", regionId))
+```
 
 If a cross-region admin screen later queries all instances with `collectionGroup("Instances")`,
 an unfiltered read uses Firestore's automatically maintained collection-group index. Add a
-specific collection-group index only when the query adds filters or ordering that Firestore
-explicitly requires.
+specific collection-group index only when the query adds more filters or ordering that
+Firestore explicitly requires.
 
 At the moment there are no required composite indexes for the target Firestore schema.
