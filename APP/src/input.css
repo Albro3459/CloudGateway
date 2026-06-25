@@ -31,7 +31,7 @@
   --theme-content-secondary: theme(--color-gray-700);
   --theme-content-muted: theme(--color-gray-500);
   --theme-content-faint: theme(--color-gray-400);
-  --theme-content-disabled: theme(--color-gray-300);
+  --theme-content-disabled: theme(--color-gray-500);
 
   --theme-edge: theme(--color-gray-300);
   --theme-edge-subtle: theme(--color-gray-200);

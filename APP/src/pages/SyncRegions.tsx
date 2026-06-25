@@ -55,6 +55,7 @@ const SyncRegions: React.FC = () => {
     }, [regions]);
 
     const allSelected = regions.length > 0 && selected.size === regions.length;
+    const syncDisabled = syncing || regionsLoading || selected.size === 0;
 
     const toggleRegion = (regionId: string) => {
         setSelected((current) => {
@@ -175,16 +176,18 @@ const SyncRegions: React.FC = () => {
                     <button
                         type="button"
                         onClick={handleSync}
-                        disabled={syncing || selected.size === 0}
+                        disabled={syncDisabled}
                         className={`mt-5 w-full rounded-lg p-3 text-sm font-medium transition ${
-                            !syncing && selected.size > 0
+                            !syncDisabled
                                 ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
                                 : "cursor-not-allowed bg-disabled text-content-disabled"
                         }`}
                     >
                         {syncing
                             ? "Syncing..."
-                            : selected.size > 0
+                            : regionsLoading
+                                ? "Loading regions..."
+                                : selected.size > 0
                                 ? `Sync ${selected.size} region${selected.size === 1 ? "" : "s"}`
                                 : "Sync regions"}
                     </button>
