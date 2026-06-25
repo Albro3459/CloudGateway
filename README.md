@@ -6,9 +6,16 @@
 
 * Shared regional <b>WireGuard VPN</b> platform. Each OCI region runs one long-lived WireGuard server.
 
-* Users do not deploy or terminate their own servers. The dashboard adds and removes WireGuard clients on the existing regional servers and shows stored configs from Firebase.
+* Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and shows stored configs from Firebase.
 
 * View, copy, download, or QR-code your client config straight from the dashboard.
+
+## Screenshots
+
+<div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
+  <img src="placeholder" alt="Dashboard" height="400"/>
+  <img src="placeholder" alt="Admin Region Sync" height="400"/>
+</div>
 
 ## Architecture
 
