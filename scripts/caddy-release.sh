@@ -104,6 +104,14 @@ set_tfvar() {
   fi
 }
 
+format_varfiles() {
+  local varfile
+
+  for varfile in "$@"; do
+    terraform -chdir="$TFDIR" fmt "$(basename "$varfile")" >/dev/null
+  done
+}
+
 update_region_tfvars() {
   local i
 
@@ -112,6 +120,7 @@ update_region_tfvars() {
     set_tfvar "${VARFILES[$i]}" "caddy_binary_tag" "$CADDY_TAG"
     set_tfvar "${VARFILES[$i]}" "caddy_binary_sha256" "$CADDY_SHA256"
   done
+  format_varfiles "${VARFILES[@]}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -155,6 +164,7 @@ done
 require_cmd docker
 require_cmd git
 require_cmd shasum
+require_cmd terraform
 
 cd "$ROOT"
 if [[ "$DRY_RUN" != "true" ]]; then

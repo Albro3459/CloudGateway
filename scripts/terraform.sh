@@ -101,6 +101,12 @@ cleanup_apply_planfiles() {
   done
 }
 
+format_varfile() {
+  local varfile="$1"
+
+  terraform -chdir="$TFDIR" fmt "$(basename "$varfile")" >/dev/null
+}
+
 require_clean_tree() {
   if [[ -n "$(git status --porcelain)" ]]; then
     echo "Working tree is not clean. Commit or stash everything before deploying:" >&2
@@ -183,6 +189,7 @@ set_source_ref() {
   tmp="$(mktemp)"
   sed "s|^[[:space:]]*source_ref[[:space:]]*=.*|source_ref  = \"${tag}\"|" "$varfile" > "$tmp"
   mv "$tmp" "$varfile"
+  format_varfile "$varfile"
 }
 
 select_region_workspace() {
