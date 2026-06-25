@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CREDENTIALS_PATH = REPO_ROOT / "Firebase" / "Secrets" / "firebase-credentials.json"
 BACKUP_DIR = REPO_ROOT / "Firebase" / "backups"
 

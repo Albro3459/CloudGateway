@@ -4,7 +4,7 @@ Required Firestore index reference for the shared regional VPN platform.
 
 ## `Instances` Documents
 
-After the schema migration, client documents live under the region that owns them:
+Client documents live under the region that owns them:
 
 ```ts
 collection(db, "Regions", regionId, "Instances")
@@ -59,4 +59,4 @@ an unfiltered read uses Firestore's automatically maintained collection-group in
 specific collection-group index only when the query adds more filters or ordering that
 Firestore explicitly requires.
 
-At the moment there are no required composite indexes for the target Firestore schema.
+At the moment there are no required composite indexes for the current Firestore schema.

@@ -17,7 +17,17 @@ cd APP && npm run deploy && cd -
 ## Deploy regional servers
 
 1. Commit and push all your changes.
-2. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
+2. Back up Firestore before replacing any regional server:
+
+   ```sh
+   source API/.venv/bin/activate
+   python3 scripts/backup_firestore.py
+   ls -lh Firebase/backups
+   ```
+
+   Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists before continuing.
+
+3. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
 
    ```sh
    ./scripts/caddy-release.sh
@@ -25,7 +35,7 @@ cd APP && npm run deploy && cd -
 
    This creates a `caddy-v<x>` GitHub Release and writes `caddy_binary_tag` / `caddy_binary_sha256` into the configured gitignored regional tfvars. Skip this when the existing pinned Caddy binary is still correct.
 
-3. Deploy one or more regions:
+4. Deploy one or more regions:
 
    ```sh
    ./scripts/terraform.sh <region> [<region> ...]

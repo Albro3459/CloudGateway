@@ -20,6 +20,16 @@ The host fetches its bootstrap script and API source from GitHub at boot using `
 
 The host also downloads the prebuilt Caddy binary from the GitHub Release named by `caddy_binary_tag` and verifies it against `caddy_binary_sha256`. Publish or refresh that binary with `./scripts/caddy-release.sh` before deploying a region whose tfvars points at a new Caddy binary tag. For first-time setup, use a temporary all-zero `caddy_binary_sha256` only until the release script writes the real hash; never deploy with the zero hash.
 
+Before applying Terraform, back up Firestore from the repo root with the API virtualenv activated:
+
+```sh
+source API/.venv/bin/activate
+python3 scripts/backup_firestore.py
+ls -lh Firebase/backups
+```
+
+Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists before continuing. Treat backup files as secret material because they can contain full WireGuard configs and client private keys.
+
 Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
 that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, which selects each

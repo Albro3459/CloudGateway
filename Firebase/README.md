@@ -7,10 +7,9 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 ## Files
 
 * [schema.ts](schema.ts) documents the Firestore collection paths and document shapes as TypeScript types for quick visualization.
-* [firestore.rules](firestore.rules) contains the frontend Firestore security rules. During the schema migration, the rules must be updated alongside the API and app code before deployment.
+* [firestore.rules](firestore.rules) contains the frontend Firestore security rules. Update the rules alongside the API and app code when Firestore access patterns change.
 * [indexes.md](indexes.md) documents the required Firestore indexes; [../firestore.indexes.json](../firestore.indexes.json) captures the deployable index configuration.
-* [scripts/backup_firestore.py](scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
-* [scripts/migrate_firestore_schema.py](scripts/migrate_firestore_schema.py) backs up Firestore, creates role defaults and user role assignments, and moves old nested client documents to the regional layout.
+* [../scripts/backup_firestore.py](../scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
 
 ## Paths
 
@@ -77,38 +76,16 @@ Enforced server-side by the regional FastAPI inside Firestore transactions (not 
 * Admins may use a `null` role default to mean no per-user limit, while still being capped by regional `capacityLimit`.
 * Reservations and client status transitions are done in Firestore transactions by the API.
 
-## Backup and Migration Scripts
+## Backup Script
 
-Run these scripts from the repo root with the API virtualenv activated. They use the
+Run this script from the repo root with the API virtualenv activated. It uses the
 hardcoded Admin SDK credential path `Firebase/Secrets/firebase-credentials.json`.
 
 ```sh
 source API/.venv/bin/activate
-python3 Firebase/scripts/backup_firestore.py
-python3 Firebase/scripts/migrate_firestore_schema.py
+python3 scripts/backup_firestore.py
 ```
 
 Backups are written to `Firebase/backups/backup-<timestamp>.json`. Treat these files as
 secret material because client documents can contain full WireGuard configs and client
 private keys. `Firebase/backups/` is intentionally ignored by git.
-
-The migration script calls the backup script first. It then:
-
-* Creates `Roles/user` with `defaultPerRegionClientLimit` derived from matching legacy
-  region `userClientLimit` values, or `3` when no legacy value exists. The script fails
-  before writes if legacy region values disagree.
-* Creates `Roles/admin` with `defaultPerRegionClientLimit: 10`.
-* Creates `UserRoles/{uid}` from valid old `Roles/{uid}.role` documents and omits
-  `perRegionClientLimit`. Users without an old role assignment remain unprovisioned.
-  The script fails before writes if an old role value is unsupported.
-* Copies old `Users/{uid}/Regions/{regionId}/Instances/{clientId}` client documents to
-  `Regions/{regionId}/Instances/{clientId}`, preserving fields while forcing
-  `ownerUid`, `regionId`, and `clientId` from the old path.
-* Removes stale `activeClientCount` and `userClientLimit` fields from `Regions/{regionId}`.
-* Fails before any writes or deletes if a target role, user-role, or client document
-  already exists with conflicting data.
-* Deletes old nested client documents, old `Users/{uid}/Regions/{regionId}` shadow docs,
-  and old per-user `Roles/{uid}` documents only after the backup and all writes succeed.
-
-Keep the backup until the new `Roles`, `UserRoles`, and
-`Regions/{regionId}/Instances` documents have been verified.

@@ -43,7 +43,6 @@ export type FirebaseUserDoc = {
     uid: string;
     email: string;
     createdAt: FirestoreTimestamp;
-    updatedAt: FirestoreTimestamp;
     disabled?: boolean;
 };
 
