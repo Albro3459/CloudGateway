@@ -17,7 +17,15 @@ cd APP && npm run deploy && cd -
 ## Deploy regional servers
 
 1. Commit and push all your changes.
-2. Deploy one or more regions:
+2. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
+
+   ```sh
+   bash scripts/caddy-release.sh
+   ```
+
+   This creates a `caddy-v<x>` GitHub Release and writes `caddy_binary_tag` / `caddy_binary_sha256` into the configured gitignored regional tfvars. Skip this when the existing pinned Caddy binary is still correct.
+
+3. Deploy one or more regions:
 
    ```sh
    ./scripts/terraform.sh <region> [<region> ...]
@@ -30,8 +38,9 @@ This deploys new VPN servers from your local branch. It validates every listed
 tfvars file has a `source_ref`, saves the final plan for each region, then bumps
 `API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
 `deploy-v<x>` tag, writes that same tag to every listed region's `source_ref`,
-and applies each saved plan in sequence. **This destroys and replaces the
-existing VPN server in each listed region.**
+and applies each saved plan in sequence. The host downloads the pinned Caddy
+binary release and verifies it against `caddy_binary_sha256` during bootstrap.
+**This destroys and replaces the existing VPN server in each listed region.**
 
 Useful forms:
 

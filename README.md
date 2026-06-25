@@ -113,6 +113,7 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)
 * API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
 * Regional server / Terraform: [OCI/README.md](OCI/README.md)
+* Caddy binary build: [OCI/caddy/README.md](OCI/caddy/README.md)
 * Firebase / Firestore: [Firebase/README.md](Firebase/README.md)
 * Cloudflare: [CloudFlare/README.md](CloudFlare/README.md)
 * Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
