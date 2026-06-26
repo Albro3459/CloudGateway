@@ -103,6 +103,10 @@ test_infra() {
     run_check "parse $template" bash -n "$template"
   done
 
+  run_check "Unbound DNSSEC trust anchor" grep -Fq 'auto-trust-anchor-file: "/var/lib/unbound/root.key"' OCI/host/bootstrap.sh
+  run_check "Unbound QNAME minimisation" grep -Fq 'qname-minimisation: yes' OCI/host/bootstrap.sh
+  run_check "AdGuard DNSSEC enabled" grep -Fq 'enable_dnssec: true' OCI/host/bootstrap.sh
+
   run_check "Caddy release version format" grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$' OCI/caddy/VERSION
   run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' OCI/caddy/Dockerfile
   run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' OCI/caddy/Dockerfile

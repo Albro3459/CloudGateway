@@ -220,9 +220,11 @@ if command -v unbound-anchor >/dev/null 2>&1; then
   fi
 fi
 
+UNBOUND_TRUST_ANCHOR_LINE=""
 if [[ -f /var/lib/unbound/root.key ]]; then
   chown unbound:unbound /var/lib/unbound/root.key
   chmod 640 /var/lib/unbound/root.key
+  UNBOUND_TRUST_ANCHOR_LINE='  auto-trust-anchor-file: "/var/lib/unbound/root.key"'
 fi
 
 cat > /etc/unbound/unbound.conf.d/cloudgateway-wireguard.conf <<UNBOUNDCONF
@@ -239,6 +241,9 @@ server:
   prefer-ip6: yes
   root-hints: "/usr/share/dns/root.hints"
   qname-minimisation: yes
+$UNBOUND_TRUST_ANCHOR_LINE
+  harden-dnssec-stripped: yes
+  val-clean-additional: yes
   hide-identity: yes
   hide-version: yes
   verbosity: 0
@@ -295,7 +300,7 @@ dns:
   cache_ttl_max: 0
   cache_optimistic: false
   bogus_nxdomain: []
-  enable_dnssec: false
+  enable_dnssec: true
   aaaa_disabled: false
   max_goroutines: 300
   handle_ddr: true

@@ -27,7 +27,7 @@ The fetched bootstrap installs and configures:
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
-* Unbound recursive DNS on localhost as the AdGuard Home upstream resolver.
+* Unbound recursive DNS on localhost as the AdGuard Home upstream resolver, with DNSSEC validation and QNAME minimisation enabled.
 * Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../docs/deployment-handoff.md):
   * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
   * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`

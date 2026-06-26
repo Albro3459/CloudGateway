@@ -5,7 +5,8 @@ The regional bootstrap configures AdGuard Home automatically. No manual UI setup
 ## Default Configuration
 
 * DNS listens only on the WireGuard tunnel DNS IPs.
-* Upstream DNS is Unbound on `127.0.0.1:5335`.
+* Upstream DNS is Unbound on `127.0.0.1:5335`, which performs DNSSEC validation and QNAME minimisation.
+* DNSSEC is enabled in AdGuard Home so validated answers pass through to clients.
 * Only the AdGuard DNS filter is enabled.
 * Query logging is disabled.
 * Statistics are disabled.
