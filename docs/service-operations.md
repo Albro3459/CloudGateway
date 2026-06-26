@@ -79,22 +79,11 @@ journalctl -u adguardhome -f
 * UI auth is disabled by default because the UI is localhost-only. Treat SSH access as the admin boundary.
 * Only the AdGuard DNS filter should be enabled unless an operator intentionally changes it.
 * Query logging and statistics must stay off. DNS query logs are forbidden VPN traffic logs.
-* AdGuard Home forwards upstream queries to Unbound on localhost port `5335`.
-
-## Unbound (recursive DNS backend), if present
-
-```sh
-systemctl status unbound
-systemctl restart unbound
-journalctl -u unbound -f
-```
-
-* Unbound serves recursive DNS only to AdGuard Home on localhost port `5335`.
-* Query logging must stay off (`verbosity` low, no `log-queries`). DNS query logs are forbidden VPN traffic logs.
-* If clients connect (handshake present) but cannot resolve names, check AdGuard Home first, then Unbound, before suspecting WireGuard.
+* AdGuard Home forwards upstream queries over DNS-over-TLS to Quad9, Mullvad, and LibreDNS, load balanced across the three. There is no self-hosted recursive resolver, because recursion would have to query authoritative servers over plaintext port 53 and expose every lookup to the cloud provider.
+* If clients connect (handshake present) but cannot resolve names, check AdGuard Home first, then verify the host can reach the DoT upstreams on port 853, before suspecting WireGuard.
 
 ## Quick Triage Order
 
 1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudgateway-api.service`, then Cloudflare DNS/proxy.
 2. Client create/delete fails with `WIREGUARD_APPLY_FAILED`: check API journal, then `wg show wg0`, then [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
-3. Tunnel connects but no traffic/DNS: check AdGuard Home, then Unbound, then IP forwarding and the NAT/firewall rules from the server config `PostUp` block.
+3. Tunnel connects but no traffic/DNS: check AdGuard Home, then DoT upstream reachability on port 853, then IP forwarding and the NAT/firewall rules from the server config `PostUp` block.

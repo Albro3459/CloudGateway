@@ -30,7 +30,6 @@ ADGUARD_HOME_VERSION="${ADGUARD_HOME_VERSION:-v0.107.77}"
 ADGUARD_HOME_CONFIG="/etc/adguardhome/AdGuardHome.yaml"
 ADGUARD_HOME_WORK_DIR="/var/lib/adguardhome"
 ADGUARD_DNS_FILTER_URL="https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
-UNBOUND_LISTEN_PORT=5335
 
 wait_for_apt() {
   while ps -eo comm= | grep -Eq '^(apt|apt-get|dpkg)$'; do
@@ -75,8 +74,7 @@ log "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
-systemctl stop unbound || true
+apt-get install -y wireguard iptables fail2ban python3-venv python3-pip ca-certificates curl gettext-base
 systemctl stop adguardhome || true
 
 log "==> Step 2/13: Preparing configuration directories"
@@ -85,8 +83,6 @@ install -d -m 700 /etc/wireguard
 install -d -m 755 /etc/sysctl.d
 install -d -m 755 /etc/ssh/sshd_config.d
 install -d -m 755 /etc/fail2ban/jail.d
-install -d -m 755 /etc/unbound/unbound.conf.d
-install -d -o unbound -g unbound -m 750 /var/lib/unbound
 install -d -m 700 /etc/cloudgateway
 install -d -m 755 /opt/cloudgateway/api
 install -d -m 755 /etc/caddy
@@ -214,45 +210,12 @@ install -m 755 "$ADGUARD_WORK_DIR/AdGuardHome/AdGuardHome" /usr/local/bin/AdGuar
 rm -rf "$ADGUARD_WORK_DIR"
 
 log "==> Step 8/13: Writing DNS resolver configuration"
-if command -v unbound-anchor >/dev/null 2>&1; then
-  if ! unbound-anchor -a /var/lib/unbound/root.key; then
-    log "unbound-anchor could not refresh the DNSSEC trust anchor; continuing without DNSSEC validation"
-  fi
-fi
-
-UNBOUND_TRUST_ANCHOR_LINE=""
-if [[ -f /var/lib/unbound/root.key ]]; then
-  chown unbound:unbound /var/lib/unbound/root.key
-  chmod 640 /var/lib/unbound/root.key
-  UNBOUND_TRUST_ANCHOR_LINE='  auto-trust-anchor-file: "/var/lib/unbound/root.key"'
-fi
-
-cat > /etc/unbound/unbound.conf.d/cloudgateway-wireguard.conf <<UNBOUNDCONF
-server:
-  interface: 127.0.0.1
-  interface: ::1
-  port: $UNBOUND_LISTEN_PORT
-  access-control: 127.0.0.0/8 allow
-  access-control: ::1 allow
-  do-ip4: yes
-  do-ip6: yes
-  do-udp: yes
-  do-tcp: yes
-  prefer-ip6: yes
-  root-hints: "/usr/share/dns/root.hints"
-  qname-minimisation: yes
-$UNBOUND_TRUST_ANCHOR_LINE
-  harden-dnssec-stripped: yes
-  val-clean-additional: yes
-  hide-identity: yes
-  hide-version: yes
-  verbosity: 0
-  log-queries: no
-UNBOUNDCONF
-
-unbound-checkconf
-systemctl enable unbound
-
+# AdGuard Home forwards client queries over DoT to external resolvers, so the
+# cloud provider only sees encrypted DNS, not the domains clients resolve. No
+# self-hosted recursive resolver: recursion needs plaintext port 53 to
+# authoritative servers, which would expose every lookup. load_balance splits
+# the stream across three no-log providers. bootstrap_dns is plaintext but only
+# resolves the resolver hostnames at startup, never user queries.
 cat > "$ADGUARD_HOME_CONFIG" <<ADGUARDCONF
 http:
   address: 127.0.0.1:3000
@@ -275,9 +238,14 @@ dns:
   ratelimit_whitelist: []
   refuse_any: true
   upstream_dns:
-    - 127.0.0.1:$UNBOUND_LISTEN_PORT
+    - tls://dns.quad9.net
+    - tls://dns.mullvad.net
+    - tls://dot.libredns.gr
   upstream_dns_file: ""
-  bootstrap_dns: []
+  bootstrap_dns:
+    - 9.9.9.9 # Quad9
+    - 149.112.112.112 # Quad9
+    - 193.110.81.0 # dns0.eu, independent anycast bootstrap resolver
   fallback_dns: []
   upstream_mode: load_balance
   fastest_timeout: 1s
@@ -409,8 +377,8 @@ chmod 600 "$ADGUARD_HOME_CONFIG"
 cat > /etc/systemd/system/adguardhome.service <<UNIT
 [Unit]
 Description=AdGuard Home DNS filter for CloudGateway VPN clients
-After=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
-Wants=network-online.target wg-quick@$WG_INTERFACE.service unbound.service
+After=network-online.target wg-quick@$WG_INTERFACE.service
+Wants=network-online.target wg-quick@$WG_INTERFACE.service
 
 [Service]
 Type=simple
@@ -675,7 +643,7 @@ systemctl daemon-reload
 systemctl enable cloudgateway-api
 systemctl enable cloudgateway-sync-peers
 
-log "==> Step 13/13: Starting WireGuard, AdGuard Home, unbound, CloudGateway API, and Caddy"
+log "==> Step 13/13: Starting WireGuard, AdGuard Home, CloudGateway API, and Caddy"
 # Start Wireguard
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 
@@ -698,7 +666,6 @@ if ! ip -6 addr show dev "$WG_INTERFACE" | grep -Fq "$WG_DNS_ADDRESS_V6/"; then
   exit 1
 fi
 
-systemctl restart unbound
 systemctl restart adguardhome
 systemctl restart cloudgateway-api
 systemctl restart cloudgateway-origin-firewall
@@ -713,7 +680,6 @@ systemctl start cloudgateway-sync-peers || true
 systemctl --no-pager --full status "wg-quick@$WG_INTERFACE" || true
 wg show || true
 systemctl --no-pager --full status adguardhome || true
-systemctl --no-pager --full status unbound || true
 systemctl --no-pager --full status cloudgateway-api || true
 systemctl --no-pager --full status cloudgateway-sync-peers || true
 systemctl --no-pager --full status cloudgateway-origin-firewall || true
