@@ -26,8 +26,7 @@ The fetched bootstrap installs and configures:
 
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
-* AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to Unbound.
-* Unbound recursive DNS on localhost as the AdGuard Home upstream resolver, with DNSSEC validation and QNAME minimisation enabled.
+* AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding upstream over DNS-over-TLS to Quad9, Mullvad, and LibreDNS (load balanced), with DNSSEC enabled. DoT keeps the cloud provider from seeing the domains clients resolve; the region runs no self-hosted recursive resolver because recursion would query authoritative servers over plaintext port 53.
 * Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../docs/deployment-handoff.md):
   * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
   * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`
@@ -213,6 +212,6 @@ tail -f /var/log/wireguard-bootstrap.log
 Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started. Terraform apply wall time also includes OCI instance provisioning before cloud-init starts, so these timestamps measure the host setup work only.
 
 
-For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
+For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, AdGuard Home), see [docs/service-operations.md](../docs/service-operations.md).
 
 If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../docs/vm-loss-recovery.md).

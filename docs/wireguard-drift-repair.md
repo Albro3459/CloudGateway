@@ -35,7 +35,7 @@ sudo journalctl -u cloudgateway-sync-peers --since "1 hour ago"
 
 Compare against Firestore: the region's client docs live at `Regions/{regionId}/Instances/{clientId}` with `status`, `ownerUid`, and `clientPublicKey` fields (admin/Admin SDK access).
 
-If a user's tunnel is down but their doc is `active` and the peer is present after a sync, the problem is not peer drift - check the endpoint DNS record, handshakes (`wg show wg0 latest-handshakes`), and Unbound per [docs/service-operations.md](service-operations.md).
+If a user's tunnel is down but their doc is `active` and the peer is present after a sync, the problem is not peer drift - check the endpoint DNS record, handshakes (`wg show wg0 latest-handshakes`), and AdGuard Home per [docs/service-operations.md](service-operations.md).
 
 ## Stale Reservations
 

@@ -89,6 +89,6 @@ Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl
 sudo bash /opt/cloudgateway/src/OCI/host/bootstrap.sh
 ```
 
-Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the API/Caddy/Unbound, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
+Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the API/Caddy/AdGuard Home, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
 
 Never paste the contents of `/etc/cloudgateway/bootstrap.env` secrets, `/etc/cloudgateway/wireguard-server.key`, or the Firebase credential file into logs or tickets.

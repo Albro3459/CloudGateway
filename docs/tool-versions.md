@@ -26,8 +26,6 @@ The bootstrap installs these packages from the OS package repositories:
 * `wireguard`
 * `iptables`
 * `fail2ban`
-* `unbound`
-* `dns-root-data`
 * `python3-venv`
 * `python3-pip`
 * `ca-certificates`
