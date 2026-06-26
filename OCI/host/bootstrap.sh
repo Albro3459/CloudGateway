@@ -625,6 +625,7 @@ Description=CloudGateway WireGuard peer sync from Firebase
 Wants=network-online.target
 After=network-online.target wg-quick@$WG_INTERFACE.service
 ConditionPathExists=/opt/cloudgateway/api/.venv/bin/cloudgateway-sync-peers
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -633,7 +634,6 @@ EnvironmentFile=/etc/cloudgateway/api.env
 ExecStart=/opt/cloudgateway/api/.venv/bin/cloudgateway-sync-peers
 Restart=on-failure
 RestartSec=30
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
