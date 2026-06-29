@@ -151,10 +151,11 @@ sudo wg show wg0 latest-handshakes
 ```
 
 4. Confirm traffic and DNS resolve through the tunnel.
-5. Confirm AdGuard Home is the client-facing DNS service forwarding upstream over DoT:
+5. Confirm AdGuard Home is the client-facing DNS service and Unbound is the forward-only DoT backend:
 
 ```sh
 systemctl status adguardhome
+systemctl status unbound
 ```
 
 6. Confirm a known ad/tracker test domain is blocked by the AdGuard DNS filter, then remove the test client.

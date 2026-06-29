@@ -5,19 +5,20 @@ The regional bootstrap configures AdGuard Home automatically. No manual UI setup
 ## Default Configuration
 
 * DNS listens only on the WireGuard tunnel DNS IPs.
-* Upstream DNS is forwarded over DNS-over-TLS (DoT) to Quad9, Mullvad, and LibreDNS, load balanced so each query goes to a single upstream.
-* `bootstrap_dns` (Quad9 plus dns0.eu as an independent anycast resolver) is plaintext but only resolves the upstream resolver hostnames at startup; it never carries user queries.
-* DNSSEC is enabled in AdGuard Home, which sets the DNSSEC OK bit on upstream queries; the DoT resolvers perform validation and AdGuard passes their validated answers through to clients.
+* Upstream DNS is local Unbound on `127.0.0.1:5335`, which forwards over DNS-over-TLS (DoT) to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally.
+* DNSSEC is also enabled in AdGuard Home (it sets the DNSSEC OK bit and passes the validated answers through), but Unbound is the actual validator.
 * Only the AdGuard DNS filter is enabled.
 * Query logging is disabled.
 * Statistics are disabled.
 * The admin UI listens only on `127.0.0.1:3000`.
 
-## Why DNS-over-TLS
+## Why DNS-over-TLS and local validation
 
 Forwarding over DoT means the only DNS leaving the region is encrypted traffic to known, certificate-authenticated resolvers. The cloud provider and any on-path observer cannot see the domains clients look up, only that encrypted DNS is occurring.
 
-This is also why the region runs no self-hosted recursive resolver. Recursion has to query the root, TLD, and authoritative servers over plaintext port 53 (encrypted authoritative DNS is effectively undeployed), which would expose every lookup to the provider in clear. Encrypting egress therefore requires forwarding to an external resolver that speaks DoT. Queries are load balanced across three independent no-log providers so no single upstream sees the full stream.
+Unbound performs DNSSEC validation locally against the root trust anchor, so answer integrity rests on the DNSSEC chain itself rather than on trusting the upstream resolvers - a coerced or compromised resolver cannot feed forged data for a signed zone.
+
+The region runs Unbound as a forward-only resolver, not a recursive one. Recursion would have to query the root, TLD, and authoritative servers over plaintext port 53 (encrypted authoritative DNS is effectively undeployed), which would expose every lookup to the provider in clear. So Unbound forwards over DoT to three independent no-log providers instead, spreading the stream so no single upstream sees all of it. Upstreams are pinned by IP with their TLS certificate name (`IP@853#name`) because Unbound has no bootstrap resolver of its own.
 
 ## Optional UI Access
 

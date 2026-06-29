@@ -103,14 +103,16 @@ test_infra() {
     run_check "parse $template" bash -n "$template"
   done
 
-  run_check "AdGuard DoT upstream Quad9" grep -Fq 'tls://dns.quad9.net' OCI/host/bootstrap.sh
-  run_check "AdGuard DoT upstream Mullvad" grep -Fq 'tls://dns.mullvad.net' OCI/host/bootstrap.sh
-  run_check "AdGuard DoT upstream LibreDNS" grep -Fq 'tls://dot.libredns.gr' OCI/host/bootstrap.sh
-  run_check "AdGuard upstream load balancing" grep -Fq 'upstream_mode: load_balance' OCI/host/bootstrap.sh
-  run_check "AdGuard bootstrap resolver set" grep -Fq 'bootstrap_dns:' OCI/host/bootstrap.sh
-  run_check "AdGuard bootstrap resolver Quad9" grep -Fq '9.9.9.9' OCI/host/bootstrap.sh
+  run_check "Unbound forwards over DoT" grep -Fq 'forward-tls-upstream: yes' OCI/host/bootstrap.sh
+  run_check "Unbound DoT cert bundle" grep -Fq 'tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"' OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC trust anchor" grep -Fq 'auto-trust-anchor-file: "/var/lib/unbound/root.key"' OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream Quad9" grep -Fq '9.9.9.9@853#dns.quad9.net' OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream Mullvad" grep -Fq '194.242.2.2@853#dns.mullvad.net' OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream DNS.SB" grep -Fq '185.222.222.222@853#dns.sb' OCI/host/bootstrap.sh
+  run_check "Unbound no recursive root-hints override" sh -c '! grep -Fq "root-hints:" OCI/host/bootstrap.sh'
+  run_check "Unbound no plaintext recursion fallback" grep -Fq 'forward-first: no' OCI/host/bootstrap.sh
+  run_check "AdGuard upstream is local Unbound" grep -Fq '127.0.0.1:$UNBOUND_LISTEN_PORT' OCI/host/bootstrap.sh
   run_check "AdGuard DNSSEC enabled" grep -Fq 'enable_dnssec: true' OCI/host/bootstrap.sh
-  run_check "No self-hosted recursive resolver" sh -c '! grep -iq unbound OCI/host/bootstrap.sh'
 
   run_check "Caddy release version format" grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$' OCI/caddy/VERSION
   run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' OCI/caddy/Dockerfile
