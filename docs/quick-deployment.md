@@ -65,3 +65,16 @@ If a multi-region apply fails partway through, the script stops. Regions already
 applied stay deployed; fix the failed region and rerun.
 
 For the manual, by-hand fallback, see [regional-deployment.md](regional-deployment.md).
+
+5. Optional: Clear [~/.ssh/known_hosts](~/.ssh/known_hosts) after the new server deployment
+
+`ssh` will yell at you that the IP of your host changed when you try to ssh into the new server, so run this to clear them from `known_hosts` to avoid that:
+```sh
+# Check first:
+ssh-keygen -F wg.us-sanjose-1.gocloudlaunch.com 
+ssh-keygen -F wg.us-chicago-1.gocloudlaunch.com
+
+# Clear:
+ssh-keygen -R wg.us-sanjose-1.gocloudlaunch.com 
+ssh-keygen -R wg.us-chicago-1.gocloudlaunch.com
+```
