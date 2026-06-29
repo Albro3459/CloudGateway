@@ -106,7 +106,9 @@ test_infra() {
   run_check "Unbound forwards over DoT" grep -Fq 'forward-tls-upstream: yes' OCI/host/bootstrap.sh
   run_check "Unbound DoT cert bundle" grep -Fq 'tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"' OCI/host/bootstrap.sh
   run_check "Unbound DNSSEC trust anchor fallback" grep -Fq 'UNBOUND_TRUST_ANCHOR_LINE=' OCI/host/bootstrap.sh
-  run_check "Unbound DNSSEC duplicate trust anchor guard" grep -Fq 'Unbound package config already declares /var/lib/unbound/root.key' OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC is required" grep -Fq 'DNSSEC validation requires /var/lib/unbound/root.key' OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC no fail-soft" sh -c '! grep -Fq "continuing without DNSSEC validation" OCI/host/bootstrap.sh'
+  run_check "Unbound DNSSEC duplicate trust anchor guard" grep -Fq 'Existing Unbound config already declares /var/lib/unbound/root.key' OCI/host/bootstrap.sh
   run_check "Unbound DoT upstream Quad9" grep -Fq '9.9.9.9@853#dns.quad9.net' OCI/host/bootstrap.sh
   run_check "Unbound DoT upstream Mullvad" grep -Fq '194.242.2.2@853#dns.mullvad.net' OCI/host/bootstrap.sh
   run_check "Unbound DoT upstream DNS.SB" grep -Fq '185.222.222.222@853#dns.sb' OCI/host/bootstrap.sh

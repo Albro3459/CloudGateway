@@ -31,6 +31,8 @@ ADGUARD_HOME_CONFIG="/etc/adguardhome/AdGuardHome.yaml"
 ADGUARD_HOME_WORK_DIR="/var/lib/adguardhome"
 ADGUARD_DNS_FILTER_URL="https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt"
 UNBOUND_LISTEN_PORT=5335
+UNBOUND_CLOUDGATEWAY_CONFIG="/etc/unbound/unbound.conf.d/cloudgateway-wireguard.conf"
+UNBOUND_TRUST_ANCHOR_DIRECTIVE='auto-trust-anchor-file: "/var/lib/unbound/root.key"'
 
 wait_for_apt() {
   while ps -eo comm= | grep -Eq '^(apt|apt-get|dpkg)$'; do
@@ -232,19 +234,27 @@ if command -v unbound-anchor >/dev/null 2>&1; then
 fi
 
 UNBOUND_TRUST_ANCHOR_LINE=""
+UNBOUND_EXISTING_TRUST_ANCHOR=0
 if [[ -f /var/lib/unbound/root.key ]]; then
   chown unbound:unbound /var/lib/unbound/root.key
   chmod 640 /var/lib/unbound/root.key
-  if grep -R -F -q 'auto-trust-anchor-file: "/var/lib/unbound/root.key"' /etc/unbound/unbound.conf.d 2>/dev/null; then
-    log "Unbound package config already declares /var/lib/unbound/root.key"
+  while IFS= read -r unbound_conf; do
+    if grep -F -q "$UNBOUND_TRUST_ANCHOR_DIRECTIVE" "$unbound_conf"; then
+      UNBOUND_EXISTING_TRUST_ANCHOR=1
+      break
+    fi
+  done < <(find /etc/unbound/unbound.conf.d -type f -name "*.conf" ! -path "$UNBOUND_CLOUDGATEWAY_CONFIG" 2>/dev/null)
+  if [[ "$UNBOUND_EXISTING_TRUST_ANCHOR" == "1" ]]; then
+    log "Existing Unbound config already declares /var/lib/unbound/root.key"
   else
-    UNBOUND_TRUST_ANCHOR_LINE='  auto-trust-anchor-file: "/var/lib/unbound/root.key"'
+    UNBOUND_TRUST_ANCHOR_LINE="  $UNBOUND_TRUST_ANCHOR_DIRECTIVE"
   fi
 else
-  log "unbound-anchor did not produce /var/lib/unbound/root.key; continuing without DNSSEC validation"
+  echo "DNSSEC validation requires /var/lib/unbound/root.key, but unbound-anchor did not produce it" >&2
+  exit 1
 fi
 
-cat > /etc/unbound/unbound.conf.d/cloudgateway-wireguard.conf <<UNBOUNDCONF
+cat > "$UNBOUND_CLOUDGATEWAY_CONFIG" <<UNBOUNDCONF
 server:
   interface: 127.0.0.1
   interface: ::1
@@ -275,6 +285,14 @@ forward-zone:
   forward-addr: 45.11.45.11@853#dns.sb
 UNBOUNDCONF
 
+if [[ ! -f /var/lib/unbound/root.key ]]; then
+  echo "DNSSEC validation requires /var/lib/unbound/root.key" >&2
+  exit 1
+fi
+if [[ "$UNBOUND_EXISTING_TRUST_ANCHOR" != "1" && -z "$UNBOUND_TRUST_ANCHOR_LINE" ]]; then
+  echo "DNSSEC validation requires an Unbound trust anchor declaration for /var/lib/unbound/root.key" >&2
+  exit 1
+fi
 unbound-checkconf
 systemctl enable unbound
 
