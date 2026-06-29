@@ -235,7 +235,11 @@ UNBOUND_TRUST_ANCHOR_LINE=""
 if [[ -f /var/lib/unbound/root.key ]]; then
   chown unbound:unbound /var/lib/unbound/root.key
   chmod 640 /var/lib/unbound/root.key
-  UNBOUND_TRUST_ANCHOR_LINE='  auto-trust-anchor-file: "/var/lib/unbound/root.key"'
+  if grep -R -F -q 'auto-trust-anchor-file: "/var/lib/unbound/root.key"' /etc/unbound/unbound.conf.d 2>/dev/null; then
+    log "Unbound package config already declares /var/lib/unbound/root.key"
+  else
+    UNBOUND_TRUST_ANCHOR_LINE='  auto-trust-anchor-file: "/var/lib/unbound/root.key"'
+  fi
 else
   log "unbound-anchor did not produce /var/lib/unbound/root.key; continuing without DNSSEC validation"
 fi
