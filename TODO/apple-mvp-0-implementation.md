@@ -11,7 +11,7 @@ Use:
 * App bundle ID: `com.gocloudlaunch.gateway`
 * Tunnel bundle ID: `com.gocloudlaunch.gateway.tunnel`
 * App group: `group.com.gocloudlaunch.gateway`
-* WireGuardKit Swift package URL: `https://git.zx2c4.com/wireguard-apple`
+* WireGuardKit Swift package URL: `https://github.com/Albro3459/wireguard-apple`
 
 Do not add Sign in with Apple, Firestore reads, API config fetches, client creation/removal, region selection, or macOS targets in this stage.
 
@@ -64,10 +64,10 @@ Verify the tunnel entitlements include:
 Add Swift package dependency:
 
 ```text
-https://git.zx2c4.com/wireguard-apple
+https://github.com/Albro3459/wireguard-apple
 ```
 
-Current project note: the package is pinned to official revision `ccc7472fd7d1c7c19584e6a30c45a56b8ba57790` because the current upstream `Package.swift` declares Swift tools 5.3 while using newer platform declarations that Xcode 26 rejects.
+Current project note: the package is pinned to patched fork revision `2cc1e15d40e7b99f2b84ba6617393a1c76da11ee`. The patch is based on official revision `ccc7472fd7d1c7c19584e6a30c45a56b8ba57790` and fixes an Xcode 26 `WireGuardKitC` module build issue.
 
 Link `WireGuardKit` to:
 
@@ -95,7 +95,7 @@ Add `WireGuardGoBridgeiOS` as a dependency of the tunnel extension target.
 
 Local build prerequisite: Go must be installed and visible to Xcode. The WireGuard bridge target uses Go to build `libwg-go.a`.
 
-Known Xcode 26 blocker: official WireGuardKit currently fails to build `WireGuardKitC` because `WireGuardKitC.h` uses Darwin typedefs before importing the module that defines them. A tiny upstream/fork patch should add the missing system include before the `ctl_info` and `sockaddr_ctl` declarations.
+Resolved Xcode 26 blocker: official WireGuardKit failed to build `WireGuardKitC` because `WireGuardKitC.h` used Darwin typedefs before importing the module that defines them. The CloudGateway fork adds the missing system include before the `ctl_info` and `sockaddr_ctl` declarations.
 
 ## Step 4: Add Minimal CloudGatewayKit Boundary
 
@@ -176,7 +176,7 @@ Verify:
 
 MVP 0 is complete when:
 
-* A fresh clone can resolve WireGuardKit from `https://git.zx2c4.com/wireguard-apple`.
+* A fresh clone can resolve WireGuardKit from `https://github.com/Albro3459/wireguard-apple`.
 * No local WireGuardKit checkout is required to build.
 * Xcode builds the app and packet tunnel extension.
 * A real iPhone can install the CloudGateway VPN profile.

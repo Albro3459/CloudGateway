@@ -573,10 +573,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://git.zx2c4.com/wireguard-apple";
+			repositoryURL = "https://github.com/Albro3459/wireguard-apple";
 			requirement = {
 				kind = revision;
-				revision = ccc7472fd7d1c7c19584e6a30c45a56b8ba57790;
+				revision = 2cc1e15d40e7b99f2b84ba6617393a1c76da11ee;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

@@ -86,11 +86,11 @@ Current local fork patch commit:
 2cc1e15d40e7b99f2b84ba6617393a1c76da11ee
 ```
 
-This commit must be pushed by Alex before CloudGateway can pin SwiftPM to it.
+This commit has been pushed to Alex's fork and is now the CloudGateway SwiftPM pin.
 
 ## CloudGateway Update
 
-After the fork patch exists, update the iOS Xcode project package reference from:
+The iOS Xcode project package reference was updated from:
 
 ```text
 https://git.zx2c4.com/wireguard-apple
@@ -102,7 +102,7 @@ to:
 https://github.com/Albro3459/wireguard-apple
 ```
 
-Pin it to the patched commit on `cloudgateway/xcode-26`.
+It is pinned to the patched commit on `cloudgateway/xcode-26`.
 
 Pending patched revision:
 
