@@ -28,7 +28,7 @@ The `Instances` collection group uses these single-field indexes:
 | `regionId` | Enabled | Disabled | Disabled |
 | `ownerUid` | Enabled | Disabled | Disabled |
 
-These indexes are captured in the repo root [firestore.indexes.json](../firestore.indexes.json).
+These indexes are captured in the Firebase directory [firestore.indexes.json](./firestore.indexes.json).
 
 To create them in the Firebase Console:
 

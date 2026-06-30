@@ -20,7 +20,7 @@
 #   ./scripts/terraform.sh chicago destroy            # tear Chicago down (asks yes)
 #
 # Each region gets:
-#   - its own var file:  OCI/terraform/<region-id>.terraform.tfvars (gitignored)
+#   - its own var file:  Infrastructure/OCI/terraform/<region-id>.terraform.tfvars (gitignored)
 #   - its own workspace: isolated state so regions never clobber each other
 #   - its own OCI auth:  the oci_config_profile set inside that var file
 #
@@ -30,8 +30,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TFDIR="$ROOT/OCI/terraform"
-API_VERSION_FILE="$ROOT/API/src/version.py"
+TFDIR="$ROOT/Infrastructure/OCI/terraform"
+API_VERSION_FILE="$ROOT/Backend/API/src/version.py"
 PREFLIGHT="$ROOT/scripts/terraform-preflight.py"
 RAW_ACTION=""      # empty when no action is given (bare `./scripts/terraform.sh <region>`)
 ACTION="apply"
@@ -82,7 +82,7 @@ varfile_error=0
 for i in "${!REGION_IDS[@]}"; do
   if [[ ! -f "${VARFILES[$i]}" ]]; then
     echo "Missing var file: ${VARFILES[$i]}" >&2
-    echo "Copy OCI/terraform/terraform.tfvars.example to ${REGION_IDS[$i]}.terraform.tfvars and fill it in." >&2
+    echo "Copy Infrastructure/OCI/terraform/terraform.tfvars.example to ${REGION_IDS[$i]}.terraform.tfvars and fill it in." >&2
     varfile_error=1
   elif ! grep -q '^[[:space:]]*source_ref[[:space:]]*=' "${VARFILES[$i]}"; then
     echo "Missing source_ref in ${VARFILES[$i]}" >&2
@@ -164,7 +164,7 @@ create_deploy_tag() {
   fi
 
   branch="$(git rev-parse --abbrev-ref HEAD)"
-  echo "==> Bumping API/src/version.py to ${DEPLOY_VERSION}"
+  echo "==> Bumping Backend/API/src/version.py to ${DEPLOY_VERSION}"
   printf '__version__ = "%s"\n' "$DEPLOY_VERSION" > "$API_VERSION_FILE"
 
   echo "==> Committing and pushing Deploy v${DEPLOY_VERSION} on ${branch}"

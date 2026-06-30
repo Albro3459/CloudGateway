@@ -1,7 +1,7 @@
 # Regional API Contract
 
 External request/response contract for the regional FastAPI control plane. For Firestore
-paths, document shapes, security rules, and limits, see [Firebase/README.md](../Firebase/README.md).
+paths, document shapes, security rules, and limits, see [Backend/Firebase/README.md](../Backend/Firebase/README.md).
 
 ## Naming
 

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Full regional host bootstrap. Fetched from GitHub and run by the cloud-init
-# stub (OCI/terraform/stub-cloud-init.sh.tftpl), which has already written
+# stub (Infrastructure/OCI/terraform/stub-cloud-init.sh.tftpl), which has already written
 # /etc/cloudgateway/bootstrap.env, /etc/cloudgateway/wireguard-server.key, the
-# optional Firebase credential file, and extracted this repo's API/ and
-# OCI/host/ into /opt/cloudgateway/src. Runs as root with output already
+# optional Firebase credential file, and extracted this repo's Backend/API/ and
+# Infrastructure/OCI/host/ into /opt/cloudgateway/src. Runs as root with output already
 # redirected to /var/log/wireguard-bootstrap.log by the stub.
 
 set -euo pipefail
@@ -472,7 +472,7 @@ systemctl daemon-reload
 systemctl enable adguardhome
 
 log "==> Step 9/13: Installing CloudGateway API package"
-cp -R "$SRC_DIR/API/." /opt/cloudgateway/api/
+cp -R "$SRC_DIR/Backend/API/." /opt/cloudgateway/api/
 
 python3 -m venv /opt/cloudgateway/api/.venv
 /opt/cloudgateway/api/.venv/bin/pip install --upgrade pip
@@ -490,14 +490,14 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 echo "Fetching API source from $SOURCE_REPO at $REF"
 curl --fail --silent --show-error --location --retry 5 --retry-delay 5 \
   "https://codeload.github.com/$SOURCE_REPO/tar.gz/$REF" -o "$WORK_DIR/src.tar.gz"
-tar -xzf "$WORK_DIR/src.tar.gz" --strip-components=1 -C "$WORK_DIR" --wildcards '*/API'
+tar -xzf "$WORK_DIR/src.tar.gz" --strip-components=1 -C "$WORK_DIR" --wildcards '*/Backend/API'
 
-if [[ ! -f "$WORK_DIR/API/pyproject.toml" ]]; then
-  echo "Downloaded ref $REF does not contain API/pyproject.toml" >&2
+if [[ ! -f "$WORK_DIR/Backend/API/pyproject.toml" ]]; then
+  echo "Downloaded ref $REF does not contain Backend/API/pyproject.toml" >&2
   exit 1
 fi
 
-cp -R "$WORK_DIR/API/." /opt/cloudgateway/api/
+cp -R "$WORK_DIR/Backend/API/." /opt/cloudgateway/api/
 /opt/cloudgateway/api/.venv/bin/pip install /opt/cloudgateway/api
 systemctl restart cloudgateway-api
 systemctl --no-pager --full status cloudgateway-api || true
@@ -580,7 +580,7 @@ log "Rendering and validating Caddyfile"
 # Render the Caddyfile. envsubst gets an explicit variable list so Caddy's own
 # {...} placeholders are left untouched.
 envsubst '$API_HOSTNAME $DASHBOARD_CORS_ORIGIN $FASTAPI_PORT $CADDY_ACME_EMAIL $CLOUDFLARE_ORIGIN_PULL_CA_PATH $ORIGIN_CERT_PATH $ORIGIN_KEY_PATH $CADDY_API_RATE_LIMIT_EVENTS $CADDY_API_RATE_LIMIT_WINDOW' \
-  < "$SRC_DIR/OCI/host/Caddyfile.template" > /etc/caddy/Caddyfile.rendered
+  < "$SRC_DIR/Infrastructure/OCI/host/Caddyfile.template" > /etc/caddy/Caddyfile.rendered
 if [[ -z "$CADDY_ACME_EMAIL" ]]; then
   grep -Ev '^[[:space:]]*email[[:space:]]*$' /etc/caddy/Caddyfile.rendered > /etc/caddy/Caddyfile
   rm -f /etc/caddy/Caddyfile.rendered

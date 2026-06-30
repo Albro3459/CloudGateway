@@ -10,7 +10,7 @@ CloudGateway uses this model:
 
 Deployment is rare and manual. An operator prepares OCI networking, then deploys
 or rebuilds a region through `./scripts/terraform.sh <region> apply` following
-[docs/regional-deployment.md](../docs/regional-deployment.md). The wrapper
+[docs/regional-deployment.md](../../docs/regional-deployment.md). The wrapper
 manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
 DNS/VM resources must be reconciled or imported before rerunning. There is no
 Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack
@@ -20,7 +20,7 @@ WireGuard peers are never created at deploy time and are never saved to `/etc/wi
 
 ## What the Host Runs
 
-Cloud-init is a small stub: Terraform bakes only the per-region config and secrets into user-data, and the stub fetches the versioned bootstrap script and API source from GitHub at `source_repo`/`source_ref` before running it. Any deployable ref must contain `OCI/host/bootstrap.sh`, `OCI/host/Caddyfile.template`, and `API/` - see [docs/github-deployment-setup.md](../docs/github-deployment-setup.md).
+Cloud-init is a small stub: Terraform bakes only the per-region config and secrets into user-data, and the stub fetches the versioned bootstrap script and API source from GitHub at `source_repo`/`source_ref` before running it. Any deployable ref must contain `Infrastructure/OCI/host/bootstrap.sh`, `Infrastructure/OCI/host/Caddyfile.template`, and `Backend/API/` - see [docs/github-deployment-setup.md](../../docs/github-deployment-setup.md).
 
 The fetched bootstrap installs and configures:
 
@@ -28,8 +28,8 @@ The fetched bootstrap installs and configures:
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to local Unbound.
 * Unbound on `127.0.0.1:5335` as the AdGuard Home upstream: a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. DoT keeps the cloud provider from seeing the domains clients resolve; local validation means answer integrity does not depend on trusting the upstreams. Unbound never recurses, so it never queries authoritative servers over plaintext port 53.
-* Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../docs/deployment-handoff.md):
-  * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `API/` source
+* Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../../docs/deployment-handoff.md):
+  * install directory `/opt/cloudgateway/api` with venv `/opt/cloudgateway/api/.venv`, installed from the fetched `Backend/API/` source
   * systemd service `cloudgateway-api.service`, running as root, bound only to `127.0.0.1`
   * environment file `/etc/cloudgateway/api.env` (mode `0600`, root-owned) with the `CLOUDGATEWAY_*` variables, including `CLOUDGATEWAY_REGION_ID`
   * Firebase Admin credentials file referenced by `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
@@ -120,7 +120,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 [caddy/](caddy/)
 
 * Local Docker build inputs for the prebuilt Linux ARM64 Caddy binary.
-* Published with [scripts/caddy-release.sh](../scripts/caddy-release.sh); regional tfvars pin the release with `caddy_binary_tag` and `caddy_binary_sha256`.
+* Published with [scripts/caddy-release.sh](../../scripts/caddy-release.sh); regional tfvars pin the release with `caddy_binary_tag` and `caddy_binary_sha256`.
 
 [backdoor-cloud-init.yaml](terraform/backdoor-cloud-init.yaml)
 
@@ -137,7 +137,7 @@ WireGuard UDP rate limiting lives in the host firewall rules. Caddy rate limitin
 `<regionId>.terraform.tfvars`
 
 * Per-region local-only deployment values, for example `us-chicago-1.terraform.tfvars`.
-* Deployed via [./scripts/terraform.sh](../scripts/terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
+* Deployed via [./scripts/terraform.sh](../../scripts/terraform.sh), which accepts one or more regions, selects each per-region Terraform workspace (isolated state), and uses the matching var file, so regions never share state.
 * Multi-region apply creates one deploy tag and writes that same `source_ref` into every listed region's tfvars before applying them sequentially.
 * `scripts/caddy-release.sh` writes `caddy_binary_tag` and `caddy_binary_sha256` into the configured region tfvars after publishing a Caddy binary release.
 * `oci_config_profile` names the `~/.oci/config` profile for that region's tenancy.
@@ -177,10 +177,10 @@ This user is for recovery only.
 
 ## Local Validation
 
-Use Terraform `1.6` or newer. See [../docs/tool-versions.md](../docs/tool-versions.md) for local tooling and deployed host package expectations.
+Use Terraform `1.6` or newer. See [../../docs/tool-versions.md](../../docs/tool-versions.md) for local tooling and deployed host package expectations.
 
 ```sh
-cd terraform
+cd Infrastructure/OCI/terraform
 terraform init
 terraform validate
 ```
@@ -213,6 +213,6 @@ tail -f /var/log/wireguard-bootstrap.log
 Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started. Terraform apply wall time also includes OCI instance provisioning before cloud-init starts, so these timestamps measure the host setup work only.
 
 
-For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, AdGuard Home, Unbound), see [docs/service-operations.md](../docs/service-operations.md).
+For service-level logs (`cloudgateway-api.service`, Caddy, `wg-quick@wg0`, AdGuard Home, Unbound), see [docs/service-operations.md](../../docs/service-operations.md).
 
-If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../docs/vm-loss-recovery.md).
+If the regional VM or its boot volume is lost, see [docs/vm-loss-recovery.md](../../docs/vm-loss-recovery.md).

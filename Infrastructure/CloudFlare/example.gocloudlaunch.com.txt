@@ -1,7 +1,7 @@
 # These are example CloudFlare DNS records for your domain.
 # My domain is gocloudlaunch.com, so that is what I will use for this example
 # These records are what I use for the following:
-# * Hosting the frontend React APP on GitHub pages
+# * Hosting the frontend React web app on GitHub pages
 # * Routing to the APIs on each server (2 servers: San Jose and Chicago)
 # * Routing to WireGuard on each server (2 servers: San Jose and Chicago)
 # * Emails with both AWS SES (successful client creation and removal) and Firebase (reset password emails)

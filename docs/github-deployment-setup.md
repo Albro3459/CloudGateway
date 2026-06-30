@@ -11,11 +11,11 @@ How the repository on GitHub must be set up for regional deployments to work. At
 
 Any ref used for deployment must contain these paths:
 
-* `OCI/host/bootstrap.sh` - the full host bootstrap run by the stub.
-* `OCI/host/Caddyfile.template` - rendered on the host with `envsubst`.
-* `API/` - `pyproject.toml` plus the `src/` package, installed into the host venv.
+* `Infrastructure/OCI/host/bootstrap.sh` - the full host bootstrap run by the stub.
+* `Infrastructure/OCI/host/Caddyfile.template` - rendered on the host with `envsubst`.
+* `Backend/API/` - `pyproject.toml` plus the `src/` package, installed into the host venv.
 
-The stub baked into an instance's user-data expects these exact paths. Renaming or moving them is a breaking change: older tfvars pinned to newer refs (or the reverse) will fail the stub's path check. If the layout must change, update `OCI/terraform/stub-cloud-init.sh.tftpl` in the same commit and only deploy refs at or after that commit.
+The stub baked into an instance's user-data expects these exact paths. Renaming or moving them is a breaking change: older tfvars pinned to newer refs (or the reverse) will fail the stub's path check. If the layout must change, update `Infrastructure/OCI/terraform/stub-cloud-init.sh.tftpl` in the same commit and only deploy refs at or after that commit.
 
 ## How the Stub Fetches
 
@@ -28,12 +28,12 @@ https://codeload.github.com/<source_repo>/tar.gz/<source_ref>
 * `source_repo`: GitHub `owner/repo`, default `Albro3459/CloudGateway`.
 * `source_ref`: required, no default. Accepts a tag name, a full commit SHA, or a branch name.
 
-It extracts only `API/` and `OCI/host/` into `/opt/cloudgateway/src`, verifies `bootstrap.sh` exists, and runs it. Secrets never come from GitHub - the WireGuard server key, Firebase credentials, and all per-region config are written by the stub from Terraform variables before the fetch.
+It extracts only `Backend/API/` and `Infrastructure/OCI/host/` into `/opt/cloudgateway/src`, verifies `bootstrap.sh` exists, and runs it. Secrets never come from GitHub - the WireGuard server key, Firebase credentials, and all per-region config are written by the stub from Terraform variables before the fetch.
 
 ## Release Workflow
 
 The normal operator path is [`./scripts/terraform.sh`](../scripts/terraform.sh), which bumps
-`API/src/version.py`, creates and pushes one `Deploy vX.Y.Z` commit plus matching
+`Backend/API/src/version.py`, creates and pushes one `Deploy vX.Y.Z` commit plus matching
 `deploy-vX.Y.Z` tag, and writes that tag to every listed region's
 `<regionId>.terraform.tfvars` before applying.
 
@@ -67,7 +67,7 @@ ssh ubuntu@<server-public-ipv4>
 sudo cloudgateway-install-api deploy-v1.1.0
 ```
 
-With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
+With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `Backend/API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
 
 **Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next wrapper deploy plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (Terraform updates the API/WireGuard `A` records, operators update the Firebase region doc IP, and DNS is touched manually only when preflight reports unmanaged state to reconcile/import before rerunning; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
 
@@ -82,13 +82,13 @@ The operating rule for a live region:
 Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl -t wireguard-bootstrap`).
 
 * `Failed to download <repo>@<ref>`: the ref is not on GitHub (not pushed), the repo went private, or the host has no egress. Fix the cause, then either re-run the stub's fetch manually or terminate and re-apply Terraform.
-* `does not contain OCI/host/bootstrap.sh`: the ref predates the fetched-path contract. Pin a ref that satisfies the contract.
+* `does not contain Infrastructure/OCI/host/bootstrap.sh`: the ref predates the fetched-path contract. Pin a ref that satisfies the contract.
 * If the tarball extracted but the bootstrap failed partway during initial deployment, it is safe to re-run after fixing the cause:
 
 ```sh
-sudo bash /opt/cloudgateway/src/OCI/host/bootstrap.sh
+sudo bash /opt/cloudgateway/src/Infrastructure/OCI/host/bootstrap.sh
 ```
 
-Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the API/Caddy/AdGuard Home, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
+Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the Backend/API/Caddy/AdGuard Home, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
 
 Never paste the contents of `/etc/cloudgateway/bootstrap.env` secrets, `/etc/cloudgateway/wireguard-server.key`, or the Firebase credential file into logs or tickets.

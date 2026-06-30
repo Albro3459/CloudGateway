@@ -68,7 +68,7 @@ wg_rate_limit_burst             = 100
 adguard_home_version            = "v0.107.77"
 
 # Server WireGuard private key. Derive the public key with `wg pubkey` and put it in
-# the Firestore region doc wireguardPublicKey (see Firebase/Secrets/regions.json).
+# the Firestore region doc wireguardPublicKey (see Backend/Firebase/Secrets/regions.json).
 wg_server_private_key           = "REPLACE_WITH_WG_SERVER_PRIVATE_KEY"
 
 # --- Firebase Admin credential written to the host for the regional API ---

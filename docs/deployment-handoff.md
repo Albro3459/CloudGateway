@@ -1,6 +1,6 @@
 # API Deployment Handoff
 
-The contract the host bootstrap (Terraform / `OCI/host/bootstrap.sh`) must satisfy to install
+The contract the host bootstrap (Terraform / `Infrastructure/OCI/host/bootstrap.sh`) must satisfy to install
 and run the regional API. The runtime request/response surface is in
 [api-contract.md](api-contract.md).
 
@@ -9,7 +9,7 @@ and run the regional API. The runtime request/response surface is in
 - Host install directory: `/opt/cloudgateway/api`.
 - Python virtualenv: `/opt/cloudgateway/api/.venv`.
 - App import path: `src.main:app`.
-- Dependency metadata: `API/pyproject.toml`. Infrastructure installs the package into the venv
+- Dependency metadata: `Backend/API/pyproject.toml`. Infrastructure installs the package into the venv
   from `/opt/cloudgateway/api`.
 
 ## systemd service
@@ -51,10 +51,10 @@ and run the regional API. The runtime request/response surface is in
 - Before a regional deploy or host replacement, back up Firestore from the repo root:
 
   ```sh
-  source API/.venv/bin/activate
+  source Backend/API/.venv/bin/activate
   python3 scripts/backup_firestore.py
-  ls -lh Firebase/backups
+  ls -lh Backend/Firebase/backups
   ```
 
-- Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists. Treat backup files as
+- Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists. Treat backup files as
   secret material because they can contain full WireGuard configs and client private keys.

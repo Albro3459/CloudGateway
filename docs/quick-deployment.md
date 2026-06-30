@@ -11,7 +11,7 @@ Run the full suite; everything must pass before deploying:
 ## Deploy the frontend
 
 ```sh
-cd APP && npm run deploy && cd -
+cd Frontend/Web && npm run deploy && cd -
 ```
 
 ## Deploy regional servers
@@ -20,12 +20,12 @@ cd APP && npm run deploy && cd -
 2. Back up Firestore before replacing any regional server:
 
    ```sh
-   source API/.venv/bin/activate
+   source Backend/API/.venv/bin/activate
    python3 scripts/backup_firestore.py
-   ls -lh Firebase/backups
+   ls -lh Backend/Firebase/backups
    ```
 
-   Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists before continuing.
+   Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists before continuing.
 
 3. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
 
@@ -42,11 +42,11 @@ cd APP && npm run deploy && cd -
    ```
 
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
-Each region must have a matching gitignored `OCI/terraform/<regionId>.terraform.tfvars`.
+Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
 
 This deploys new VPN servers from your local branch. It validates every listed
 tfvars file has a `source_ref`, saves the final plan for each region, then bumps
-`API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
+`Backend/API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
 `deploy-v<x>` tag, writes that same tag to every listed region's `source_ref`,
 and applies each saved plan in sequence. The host downloads the pinned Caddy
 binary release and verifies it against `caddy_binary_sha256` during bootstrap.

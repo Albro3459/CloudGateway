@@ -1,6 +1,6 @@
 """Send a one-off SES deployment email to verify credentials before deploying.
 
-Run from the API/ directory with the project venv, e.g.:
+Run from the Backend/API/ directory with the project venv, e.g.:
 
   .venv/bin/python scripts/send_test_email.py \
       --to you@example.com \

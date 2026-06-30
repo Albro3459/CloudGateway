@@ -6,7 +6,7 @@ Secrets hygiene: never paste WireGuard private keys, full WireGuard configs, Fir
 
 ## 1. Prepare OCI Networking
 
-Follow the network prerequisites in [OCI/README.md](../OCI/README.md):
+Follow the network prerequisites in [Infrastructure/OCI/README.md](../Infrastructure/OCI/README.md):
 
 * compartment, subnet, and routed IPv6 if IPv6 VPN traffic is wanted
 * ingress TCP `22` only from your approved personal `IPv4/32`
@@ -23,14 +23,14 @@ The host also downloads the prebuilt Caddy binary from the GitHub Release named 
 Before applying Terraform, back up Firestore from the repo root with the API virtualenv activated:
 
 ```sh
-source API/.venv/bin/activate
+source Backend/API/.venv/bin/activate
 python3 scripts/backup_firestore.py
-ls -lh Firebase/backups
+ls -lh Backend/Firebase/backups
 ```
 
-Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists before continuing. Treat backup files as secret material because they can contain full WireGuard configs and client private keys.
+Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists before continuing. Treat backup files as secret material because they can contain full WireGuard configs and client private keys.
 
-Each region has its own var file (`OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
+Each region has its own var file (`Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`, gitignored),
 its own Terraform workspace (isolated state), and its own `~/.oci/config` profile named in
 that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, which selects each
 workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
@@ -47,7 +47,7 @@ rerunning.
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
 # oci_config_profile, region ID, API hostname, CORS origin, FastAPI port, WireGuard endpoint
 # hostname, tunnel DNS IPs, Firebase credentials, Caddy/Cloudflare settings, WG server key).
-cp OCI/terraform/terraform.tfvars.example OCI/terraform/<regionId>.terraform.tfvars
+cp Infrastructure/OCI/terraform/terraform.tfvars.example Infrastructure/OCI/terraform/<regionId>.terraform.tfvars
 
 ./scripts/terraform.sh <regionId> plan
 ./scripts/terraform.sh <regionId> apply
@@ -94,7 +94,7 @@ DNS is **managed by Terraform**, not by hand. `./scripts/terraform.sh <region> a
 
 If the `cloudflare_api_token` has **Client IP Address Filtering** enabled, allowlist **both** the operator machine's public **IPv4 and IPv6** (`curl -4 https://ifconfig.me`, `curl -6 https://ifconfig.me`). Terraform's provider prefers IPv6 when available, so a v4-only allowlist fails every record op with `Authentication error (10000)` despite a valid token. Residential IPv6 is a rotating /64 - allowlist the `/64` prefix or leave IP filtering off.
 
-One-time per zone (see [CloudFlare/README.md](../CloudFlare/README.md)):
+One-time per zone (see [Infrastructure/CloudFlare/README.md](../Infrastructure/CloudFlare/README.md)):
 
 1. SSL/TLS mode = **Full (strict)**.
 2. Create a Cloudflare **Origin CA** cert for `gocloudlaunch.com, *.gocloudlaunch.com` and put it in `origin_cert` / `origin_key` (the host serves it; ACME can't validate a proxied hostname).
@@ -104,7 +104,7 @@ WireGuard traffic does not go through Cloudflare. Only the API hostname is proxi
 
 ## 4. Firebase region doc (self-seeded by the host)
 
-One-time project setup: confirm any required Firestore indexes for the current schema exist (see [Firebase/indexes.md](../Firebase/indexes.md)).
+One-time project setup: confirm any required Firestore indexes for the current schema exist (see [Backend/Firebase/indexes.md](../Backend/Firebase/indexes.md)).
 
 The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
 

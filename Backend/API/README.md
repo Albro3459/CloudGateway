@@ -22,7 +22,7 @@ The API is installed by the OCI host bootstrap from a pushed GitHub ref. It runs
 
 The API runs as root because it owns the privileged mutation path for the live WireGuard interface. It still keeps the exposed surface small: no built-in OpenAPI/docs routes are enabled, and external browser traffic reaches it only through the regional Caddy `/api/*` proxy.
 
-See [OCI/README.md](../OCI/README.md) for Terraform and host bootstrap details, and [docs/service-operations.md](../docs/service-operations.md) for service restart and log inspection notes.
+See [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md) for Terraform and host bootstrap details, and [docs/service-operations.md](../../docs/service-operations.md) for service restart and log inspection notes.
 
 ## Core Responsibilities
 
@@ -98,7 +98,7 @@ All request/response JSON uses camelCase.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
 * `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
 
-For the full route, URL, and error contract, see [docs/api-contract.md](../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Firebase/README.md](../Firebase/README.md).
+For the full route, URL, and error contract, see [docs/api-contract.md](../../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Backend/Firebase/README.md](../Firebase/README.md).
 
 ## Settings
 
@@ -125,12 +125,12 @@ On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudga
 
 ## Local Development
 
-Use Python `3.12` or newer. See [docs/tool-versions.md](../docs/tool-versions.md) for the repo's expected tooling versions.
+Use Python `3.12` or newer. See [docs/tool-versions.md](../../docs/tool-versions.md) for the repo's expected tooling versions.
 
 Install the package in editable mode with development dependencies:
 
 ```sh
-cd API
+cd Backend/API
 python -m venv .venv
 ./.venv/bin/python -m pip install -e ".[dev]"
 ```
@@ -138,7 +138,7 @@ python -m venv .venv
 Run the API locally:
 
 ```sh
-cd API
+cd Backend/API
 CLOUDGATEWAY_REGION_ID=local-region \
 CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
 ./.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
@@ -147,7 +147,7 @@ CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
 Useful local checks:
 
 ```sh
-cd API
+cd Backend/API
 ./.venv/bin/python -m pyright src tests
 ./.venv/bin/python -m pytest
 ```
@@ -168,11 +168,11 @@ The host bootstrap installs this API from GitHub and creates:
 
 Related docs:
 
-* [OCI/README.md](../OCI/README.md): regional host and Terraform package.
-* [docs/github-deployment-setup.md](../docs/github-deployment-setup.md): pushed-ref deployment contract and API rollout helper.
-* [docs/service-operations.md](../docs/service-operations.md): service restarts, logs, and triage.
-* [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md): peer sync behavior and repair flow.
-* [docs/regional-deployment.md](../docs/regional-deployment.md): new-region deployment runbook.
+* [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md): regional host and Terraform package.
+* [docs/github-deployment-setup.md](../../docs/github-deployment-setup.md): pushed-ref deployment contract and API rollout helper.
+* [docs/service-operations.md](../../docs/service-operations.md): service restarts, logs, and triage.
+* [docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md): peer sync behavior and repair flow.
+* [docs/regional-deployment.md](../../docs/regional-deployment.md): new-region deployment runbook.
 
 ## Secrets And Logging
 

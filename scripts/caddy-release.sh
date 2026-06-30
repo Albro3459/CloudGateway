@@ -8,9 +8,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CADDY_DIR="$ROOT/OCI/caddy"
+CADDY_DIR="$ROOT/Infrastructure/OCI/caddy"
 VERSION_FILE="$CADDY_DIR/VERSION"
-TFDIR="$ROOT/OCI/terraform"
+TFDIR="$ROOT/Infrastructure/OCI/terraform"
 ASSET_NAME="cloudgateway-caddy-linux-arm64"
 TAG_PREFIX="caddy-v"
 
@@ -252,9 +252,9 @@ CURRENT_FILE_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 validate_version "$CURRENT_FILE_VERSION"
 
 if [[ "$CURRENT_FILE_VERSION" == "$RELEASE_VERSION" ]]; then
-  echo "==> OCI/caddy/VERSION already at ${RELEASE_VERSION}"
+  echo "==> Infrastructure/OCI/caddy/VERSION already at ${RELEASE_VERSION}"
 else
-  echo "==> Bumping OCI/caddy/VERSION to ${RELEASE_VERSION}"
+  echo "==> Bumping Infrastructure/OCI/caddy/VERSION to ${RELEASE_VERSION}"
   printf '%s\n' "$RELEASE_VERSION" > "$VERSION_FILE"
 
   echo "==> Committing and pushing Caddy v${RELEASE_VERSION} on ${BRANCH}"

@@ -8,8 +8,8 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 
 * [schema.ts](schema.ts) documents the Firestore collection paths and document shapes as TypeScript types for quick visualization.
 * [firestore.rules](firestore.rules) contains the frontend Firestore security rules. Update the rules alongside the API and app code when Firestore access patterns change.
-* [indexes.md](indexes.md) documents the required Firestore indexes; [../firestore.indexes.json](../firestore.indexes.json) captures the deployable index configuration.
-* [../scripts/backup_firestore.py](../scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
+* [indexes.md](indexes.md) documents the required Firestore indexes; [./firestore.indexes.json](./firestore.indexes.json) captures the deployable index configuration.
+* [../../scripts/backup_firestore.py](../../scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
 
 ## Paths
 
@@ -79,13 +79,13 @@ Enforced server-side by the regional FastAPI inside Firestore transactions (not 
 ## Backup Script
 
 Run this script from the repo root with the API virtualenv activated. It uses the
-hardcoded Admin SDK credential path `Firebase/Secrets/firebase-credentials.json`.
+hardcoded Admin SDK credential path `Backend/Firebase/Secrets/firebase-credentials.json`.
 
 ```sh
-source API/.venv/bin/activate
+source Backend/API/.venv/bin/activate
 python3 scripts/backup_firestore.py
 ```
 
-Backups are written to `Firebase/backups/backup-<timestamp>.json`. Treat these files as
+Backups are written to `Backend/Firebase/backups/backup-<timestamp>.json`. Treat these files as
 secret material because client documents can contain full WireGuard configs and client
-private keys. `Firebase/backups/` is intentionally ignored by git.
+private keys. `Backend/Firebase/backups/` is intentionally ignored by git.

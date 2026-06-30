@@ -24,7 +24,7 @@ React dashboard
 * Show stored WireGuard configs from Firebase with QR, copy, and download actions.
 * Provide admin-only user creation and cross-user client visibility/removal where the Firebase role allows it.
 
-The frontend never creates, updates, or deletes VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK. See [../Firebase/README.md](../Firebase/README.md) for Firestore paths, rules, and indexes, and [../API/README.md](../API/README.md) for the API control plane.
+The frontend never creates, updates, or deletes VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK. See [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md) for Firestore paths, rules, and indexes, and [../../Backend/API/README.md](../../Backend/API/README.md) for the API control plane.
 
 ## Architecture
 
@@ -90,17 +90,17 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 ## Running the React Site
 
-Use Node.js `20` LTS or newer with npm `10` or newer. See [../docs/tool-versions.md](../docs/tool-versions.md) for the repo's expected tooling versions.
+Use Node.js `20` LTS or newer with npm `10` or newer. See [../../docs/tool-versions.md](../../docs/tool-versions.md) for the repo's expected tooling versions.
 
 Update dependencies:
 ```sh
-cd APP
+cd Frontend/Web
 npm install
 ```
 
 Run the React app:
 ```sh
-cd APP
+cd Frontend/Web
 npm start
 ```
 
@@ -110,7 +110,7 @@ The `start` script starts React without opening a browser automatically and runs
 
 Keep tailwind css updated while making changes:
 ```sh
-cd APP
+cd Frontend/Web
 npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch
 ```
 
@@ -124,14 +124,14 @@ The generated stylesheet is [src/output.css](src/output.css), built from [src/in
   * Con: Must be run locally and it can be confusing.
 
 ```sh
-cd APP
+cd Frontend/Web
 npm run deploy # deploys to gh-pages branch
 ```
 
 ## Related Docs
 
-* [../README.md](../README.md): product and system overview.
-* [../API/README.md](../API/README.md): regional FastAPI control plane.
-* [../Firebase/README.md](../Firebase/README.md): Firestore schema, rules, indexes, roles, and limits.
-* [../OCI/README.md](../OCI/README.md): regional host, Terraform, Caddy, WireGuard, and bootstrap.
-* [../docs/regional-deployment.md](../docs/regional-deployment.md): new-region deployment flow.
+* [../../README.md](../../README.md): product and system overview.
+* [../../Backend/API/README.md](../../Backend/API/README.md): regional FastAPI control plane.
+* [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md): Firestore schema, rules, indexes, roles, and limits.
+* [../../Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md): regional host, Terraform, Caddy, WireGuard, and bootstrap.
+* [../../docs/regional-deployment.md](../../docs/regional-deployment.md): new-region deployment flow.
