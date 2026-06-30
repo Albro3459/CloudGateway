@@ -23,7 +23,7 @@
 !**/wireguard_configs/example.*
 !**/wireguard_configs/*.example
 
-Firebase/backups/
+Backend/Firebase/backups/
 
 **/*.key
 **/.key.*
@@ -51,7 +51,10 @@ Firebase/backups/
 !**/.subnet-security-list.json.example
 !**/example.subnet-security-list.json
 
-.DS_STORE
+.DS_Store
+
+**/*.xcuserstate
+**/xcuserdata/
 
 **/.terraform*
 **/.terraform/*
@@ -62,7 +65,7 @@ Firebase/backups/
 **/vm_dump.md
 
 **/output.css
-OCI/caddy/build/
+Infrastructure/OCI/caddy/build/
 
 **/node_modules/
 **/coverage/

@@ -2,4 +2,4 @@
 
 Future native macOS app project home.
 
-The macOS app should share VPN configuration and WireGuardKit integration through `GatewayKit`.
+The macOS app should share VPN configuration and WireGuardKit integration through `CloudGatewayKit`.

@@ -2,9 +2,9 @@
 
 ## Direction
 
-Build the Apple client stack iOS-first, with shared code in `Frontend/Apple/GatewayKit` and future macOS reuse through `Frontend/Apple/macOS`.
+Build the Apple client stack iOS-first, with shared code in `Frontend/Apple/CloudGatewayKit` and future macOS reuse through `Frontend/Apple/macOS`.
 
-GatewayKit should be designed as the reusable Apple client core, not as an iOS-only helper. Keep platform-specific code behind small boundaries so the same GatewayKit models, config manager, tunnel lifecycle API, validation, and app-group storage strategy can serve both iOS and macOS.
+CloudGatewayKit should be designed as the reusable Apple client core, not as an iOS-only helper. Keep platform-specific code behind small boundaries so the same CloudGatewayKit models, config manager, tunnel lifecycle API, validation, and app-group storage strategy can serve both iOS and macOS.
 
 Use WireGuardKit as a Swift Package dependency from:
 
@@ -20,9 +20,9 @@ Do not rely on a local `/Users/alexbrodsky/GitHub/wireguard-apple` checkout for 
 Frontend/Apple/iOS
   -> CloudGateway iOS app
   -> Packet tunnel extension
-  -> depends on GatewayKit
+  -> depends on CloudGatewayKit
 
-Frontend/Apple/GatewayKit
+Frontend/Apple/CloudGatewayKit
   -> CloudGateway VPN/config manager wrapper
   -> owns NETunnelProviderManager integration
   -> owns app-group shared config storage
@@ -34,15 +34,15 @@ WireGuardKit
   -> provides WireGuardAdapter, TunnelConfiguration, keys, peers, and packet tunnel support
 ```
 
-## GatewayKit Design Rules
+## CloudGatewayKit Design Rules
 
-Build iOS first, but shape GatewayKit so macOS can reuse the core without a large refactor.
+Build iOS first, but shape CloudGatewayKit so macOS can reuse the core without a large refactor.
 
 Rules:
 
-* Keep SwiftUI views and app lifecycle code outside GatewayKit.
-* Keep direct `NETunnelProviderManager` usage behind GatewayKit APIs.
-* Keep WireGuardKit mapping/parsing behind GatewayKit APIs.
+* Keep SwiftUI views and app lifecycle code outside CloudGatewayKit.
+* Keep direct `NETunnelProviderManager` usage behind CloudGatewayKit APIs.
+* Keep WireGuardKit mapping/parsing behind CloudGatewayKit APIs.
 * Inject platform values instead of hardcoding them: app group ID, app bundle ID, provider bundle ID, tunnel display name, storage locations, and entitlement-related identifiers.
 * Keep iOS/macOS differences in small platform adapters or configuration structs.
 * Name shared types without iOS-only assumptions.
@@ -50,7 +50,7 @@ Rules:
 
 Avoid:
 
-* Hardcoding iOS bundle IDs throughout GatewayKit.
+* Hardcoding iOS bundle IDs throughout CloudGatewayKit.
 * Letting SwiftUI views call NetworkExtension directly.
 * Designing storage around a single app target.
 * Naming core types around iPhone/iOS when they are really Apple-platform concepts.
@@ -90,9 +90,9 @@ Non-goals:
 * Full config manager UI
 * macOS app
 
-## MVP 1: GatewayKit Config Manager Spine
+## MVP 1: CloudGatewayKit Config Manager Spine
 
-Goal: replace hardcoded tunnel setup with a small reusable GatewayKit API.
+Goal: replace hardcoded tunnel setup with a small reusable CloudGatewayKit API.
 
 Design the API for both iOS and macOS from the start, even if only the iOS app uses it during this stage.
 
@@ -109,9 +109,9 @@ Build:
 Done when:
 
 * The iOS app no longer talks directly to `NETunnelProviderManager`.
-* GatewayKit can install, update, remove, start, and stop one CloudGateway tunnel.
+* CloudGatewayKit can install, update, remove, start, and stop one CloudGateway tunnel.
 * The tunnel extension can load the config needed to start from the app-managed profile/shared storage.
-* The core GatewayKit API does not expose iOS-only assumptions that would block a macOS client.
+* The core CloudGatewayKit API does not expose iOS-only assumptions that would block a macOS client.
 
 ## MVP 2: CloudGateway Config Source
 
@@ -121,7 +121,7 @@ Build:
 
 * Temporary developer auth or manual token entry if needed
 * Fetch one assigned client config from the backend or Firestore-backed API flow
-* Save the fetched config through GatewayKit
+* Save the fetched config through CloudGatewayKit
 * Replace the installed VPN profile when config changes
 * Clear/remove local config when the user removes the VPN client
 
@@ -151,15 +151,15 @@ Done when:
 
 ## MVP 4: macOS Reuse
 
-Goal: reuse GatewayKit for the macOS app.
+Goal: reuse CloudGatewayKit for the macOS app.
 
 Build:
 
 * macOS app target
 * macOS packet tunnel extension
 * macOS-specific signing/capability setup
-* Shared GatewayKit APIs with platform-specific wrappers only where needed
+* Shared CloudGatewayKit APIs with platform-specific wrappers only where needed
 
 Done when:
 
-* macOS can install, start, stop, and remove a CloudGateway WireGuard tunnel using the same GatewayKit core model as iOS.
+* macOS can install, start, stop, and remove a CloudGateway WireGuard tunnel using the same CloudGatewayKit core model as iOS.

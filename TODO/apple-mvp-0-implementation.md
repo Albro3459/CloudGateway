@@ -91,24 +91,24 @@ iphoneos
 
 Add `WireGuardGoBridgeiOS` as a dependency of the tunnel extension target.
 
-## Step 4: Add Minimal GatewayKit Boundary
+## Step 4: Add Minimal CloudGatewayKit Boundary
 
 Create a minimal local Swift package under:
 
 ```text
-Frontend/Apple/GatewayKit/
+Frontend/Apple/CloudGatewayKit/
 ```
 
-For MVP 0, keep GatewayKit small:
+For MVP 0, keep CloudGatewayKit small:
 
 * `GatewayPlatformConfiguration`
 * `GatewayVPNManager`
 * `GatewayTunnelStatus`
 * hardcoded/manual config input path
 
-Design constraint: even in MVP 0, inject app group ID, app bundle ID, provider bundle ID, and display name instead of hardcoding them deep in GatewayKit.
+Design constraint: even in MVP 0, inject app group ID, app bundle ID, provider bundle ID, and display name instead of hardcoding them deep in CloudGatewayKit.
 
-The iOS SwiftUI app should call GatewayKit. SwiftUI views should not call `NETunnelProviderManager` directly.
+The iOS SwiftUI app should call CloudGatewayKit. SwiftUI views should not call `NETunnelProviderManager` directly.
 
 ## Step 5: Install VPN Profile
 
@@ -133,7 +133,7 @@ Implement app controls:
 * Stop
 * status/error text
 
-Use `NETunnelProviderSession.startTunnel()` and `stopVPNTunnel()` through GatewayKit.
+Use `NETunnelProviderSession.startTunnel()` and `stopVPNTunnel()` through CloudGatewayKit.
 
 Observe status via `NEVPNStatusDidChange`.
 
@@ -175,14 +175,14 @@ MVP 0 is complete when:
 * Xcode builds the app and packet tunnel extension.
 * A real iPhone can install the CloudGateway VPN profile.
 * A real iPhone can start and stop a WireGuard tunnel.
-* The implementation path does not block later macOS reuse of GatewayKit.
+* The implementation path does not block later macOS reuse of CloudGatewayKit.
 
 ## Expected Follow-Up
 
 After MVP 0 works, move to MVP 1:
 
 * remove hardcoded config assumptions
-* formalize GatewayKit config models
+* formalize CloudGatewayKit config models
 * add install/update/remove APIs
 * add app-group storage
 * keep the same API shape for future macOS support

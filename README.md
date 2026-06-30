@@ -44,7 +44,7 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 ### Components
 
 * <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
-* <b>GatewayKit</b> (`Frontend/Apple/GatewayKit/`): planned shared Apple VPN wrapper around WireGuardKit for iOS and macOS apps.
+* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): planned shared Apple VPN wrapper around WireGuardKit for iOS and macOS apps.
 * <b>iOS app</b> (`Frontend/Apple/iOS/`): planned CloudGateway app and packet tunnel extension.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
