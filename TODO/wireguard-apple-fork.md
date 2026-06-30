@@ -80,6 +80,14 @@ The header uses Darwin typedefs such as `u_int32_t`, `u_int16_t`, and `u_char` b
 
 Do not refactor WireGuardKit, rename package products, or move CloudGateway code into the fork.
 
+Current local fork patch commit:
+
+```text
+2cc1e15d40e7b99f2b84ba6617393a1c76da11ee
+```
+
+This commit must be pushed by Alex before CloudGateway can pin SwiftPM to it.
+
 ## CloudGateway Update
 
 After the fork patch exists, update the iOS Xcode project package reference from:
@@ -95,6 +103,12 @@ https://github.com/Albro3459/wireguard-apple
 ```
 
 Pin it to the patched commit on `cloudgateway/xcode-26`.
+
+Pending patched revision:
+
+```text
+2cc1e15d40e7b99f2b84ba6617393a1c76da11ee
+```
 
 ## Verification
 
