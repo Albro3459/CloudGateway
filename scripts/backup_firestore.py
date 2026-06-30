@@ -12,8 +12,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CREDENTIALS_PATH = REPO_ROOT / "Firebase" / "Secrets" / "firebase-credentials.json"
-BACKUP_DIR = REPO_ROOT / "Firebase" / "backups"
+CREDENTIALS_PATH = REPO_ROOT / "Backend" / "Firebase" / "Secrets" / "firebase-credentials.json"
+BACKUP_DIR = REPO_ROOT / "Backend" / "Firebase" / "backups"
 
 
 def get_firestore_client() -> Any:

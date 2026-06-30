@@ -23,7 +23,7 @@
 !**/wireguard_configs/example.*
 !**/wireguard_configs/*.example
 
-Backend/Firebase/backups/
+**/backups/*
 
 **/*.key
 **/.key.*
