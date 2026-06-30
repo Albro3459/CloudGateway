@@ -8,10 +8,9 @@ public struct GatewayWireGuardConfig: Equatable, Sendable {
         guard !trimmedValue.isEmpty else {
             throw GatewayVPNError.missingWireGuardConfiguration
         }
-        guard trimmedValue.contains("[Interface]"),
-              trimmedValue.contains("PrivateKey"),
-              trimmedValue.contains("[Peer]"),
-              trimmedValue.contains("PublicKey") else {
+        do {
+            _ = try GatewayWireGuardConfigParser.parse(trimmedValue)
+        } catch {
             throw GatewayVPNError.invalidWireGuardConfiguration
         }
         self.rawValue = trimmedValue

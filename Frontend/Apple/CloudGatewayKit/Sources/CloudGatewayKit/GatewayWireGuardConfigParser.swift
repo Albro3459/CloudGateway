@@ -1,8 +1,31 @@
 import Foundation
-import WireGuardKit
+import Network
 
-enum WgQuickConfigParser {
-    enum ParseError: Error {
+public struct GatewayParsedWireGuardConfig: Equatable, Sendable {
+    public let name: String?
+    public let interface: GatewayParsedWireGuardInterface
+    public let peers: [GatewayParsedWireGuardPeer]
+}
+
+public struct GatewayParsedWireGuardInterface: Equatable, Sendable {
+    public let privateKey: String
+    public var listenPort: UInt16?
+    public var addresses = [String]()
+    public var dns = [String]()
+    public var dnsSearch = [String]()
+    public var mtu: UInt16?
+}
+
+public struct GatewayParsedWireGuardPeer: Equatable, Sendable {
+    public let publicKey: String
+    public var preSharedKey: String?
+    public var allowedIPs = [String]()
+    public var endpoint: String?
+    public var persistentKeepAlive: UInt16?
+}
+
+public enum GatewayWireGuardConfigParser {
+    public enum ParseError: Error, Equatable, Sendable {
         case invalidLine(String)
         case noInterface
         case multipleInterfaces
@@ -30,11 +53,11 @@ enum WgQuickConfigParser {
         case peer
     }
 
-    static func parse(_ config: String, named name: String?) throws -> TunnelConfiguration {
+    public static func parse(_ config: String, named name: String? = nil) throws -> GatewayParsedWireGuardConfig {
         var section = Section.none
         var attributes = [String: String]()
-        var interfaceConfiguration: InterfaceConfiguration?
-        var peerConfigurations = [PeerConfiguration]()
+        var interfaceConfiguration: GatewayParsedWireGuardInterface?
+        var peerConfigurations = [GatewayParsedWireGuardPeer]()
 
         let lines = config.split { $0.isNewline }
 
@@ -80,7 +103,7 @@ enum WgQuickConfigParser {
             throw ParseError.multiplePeersWithSamePublicKey
         }
 
-        return TunnelConfiguration(
+        return GatewayParsedWireGuardConfig(
             name: name,
             interface: interfaceConfiguration,
             peers: peerConfigurations
@@ -139,15 +162,15 @@ enum WgQuickConfigParser {
         }
     }
 
-    private static func makeInterface(from attributes: [String: String]) throws -> InterfaceConfiguration {
+    private static func makeInterface(from attributes: [String: String]) throws -> GatewayParsedWireGuardInterface {
         guard let privateKeyString = attributes["privatekey"] else {
             throw ParseError.interfaceHasNoPrivateKey
         }
-        guard let privateKey = PrivateKey(base64Key: privateKeyString) else {
+        guard isValidWireGuardKey(privateKeyString) else {
             throw ParseError.interfaceHasInvalidPrivateKey(privateKeyString)
         }
 
-        var interface = InterfaceConfiguration(privateKey: privateKey)
+        var interface = GatewayParsedWireGuardInterface(privateKey: privateKeyString)
         if let listenPortString = attributes["listenport"] {
             guard let listenPort = UInt16(listenPortString) else {
                 throw ParseError.interfaceHasInvalidListenPort(listenPortString)
@@ -156,16 +179,16 @@ enum WgQuickConfigParser {
         }
         if let addressesString = attributes["address"] {
             interface.addresses = try addressesString.csvValues().map { addressString in
-                guard let address = IPAddressRange(from: addressString) else {
+                guard isValidIPAddressRange(addressString) else {
                     throw ParseError.interfaceHasInvalidAddress(addressString)
                 }
-                return address
+                return addressString
             }
         }
         if let dnsString = attributes["dns"] {
             for dnsValue in dnsString.csvValues() {
-                if let dnsServer = DNSServer(from: dnsValue) {
-                    interface.dns.append(dnsServer)
+                if isValidIPAddress(dnsValue) {
+                    interface.dns.append(dnsValue)
                 } else if dnsValue.range(of: #"^[A-Za-z0-9.-]+$"#, options: .regularExpression) != nil {
                     interface.dnsSearch.append(dnsValue)
                 } else {
@@ -182,34 +205,34 @@ enum WgQuickConfigParser {
         return interface
     }
 
-    private static func makePeer(from attributes: [String: String]) throws -> PeerConfiguration {
+    private static func makePeer(from attributes: [String: String]) throws -> GatewayParsedWireGuardPeer {
         guard let publicKeyString = attributes["publickey"] else {
             throw ParseError.peerHasNoPublicKey
         }
-        guard let publicKey = PublicKey(base64Key: publicKeyString) else {
+        guard isValidWireGuardKey(publicKeyString) else {
             throw ParseError.peerHasInvalidPublicKey(publicKeyString)
         }
 
-        var peer = PeerConfiguration(publicKey: publicKey)
+        var peer = GatewayParsedWireGuardPeer(publicKey: publicKeyString)
         if let preSharedKeyString = attributes["presharedkey"] {
-            guard let preSharedKey = PreSharedKey(base64Key: preSharedKeyString) else {
+            guard isValidWireGuardKey(preSharedKeyString) else {
                 throw ParseError.peerHasInvalidPreSharedKey(preSharedKeyString)
             }
-            peer.preSharedKey = preSharedKey
+            peer.preSharedKey = preSharedKeyString
         }
         if let allowedIPsString = attributes["allowedips"] {
             peer.allowedIPs = try allowedIPsString.csvValues().map { allowedIPString in
-                guard let allowedIP = IPAddressRange(from: allowedIPString) else {
+                guard isValidIPAddressRange(allowedIPString) else {
                     throw ParseError.peerHasInvalidAllowedIP(allowedIPString)
                 }
-                return allowedIP
+                return allowedIPString
             }
         }
         if let endpointString = attributes["endpoint"] {
-            guard let endpoint = Endpoint(from: endpointString) else {
+            guard isValidEndpoint(endpointString) else {
                 throw ParseError.peerHasInvalidEndpoint(endpointString)
             }
-            peer.endpoint = endpoint
+            peer.endpoint = endpointString
         }
         if let persistentKeepAliveString = attributes["persistentkeepalive"] {
             guard let persistentKeepAlive = UInt16(persistentKeepAliveString) else {
@@ -218,6 +241,60 @@ enum WgQuickConfigParser {
             peer.persistentKeepAlive = persistentKeepAlive
         }
         return peer
+    }
+
+    private static func isValidWireGuardKey(_ value: String) -> Bool {
+        guard let data = Data(base64Encoded: value) else {
+            return false
+        }
+        return data.count == 32
+    }
+
+    private static func isValidIPAddressRange(_ value: String) -> Bool {
+        let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let prefix = Int(parts[1]),
+              isValidIPAddress(String(parts[0])) else {
+            return false
+        }
+
+        if IPv4Address(String(parts[0])) != nil {
+            return (0...32).contains(prefix)
+        }
+        return (0...128).contains(prefix)
+    }
+
+    private static func isValidIPAddress(_ value: String) -> Bool {
+        IPv4Address(value) != nil || IPv6Address(value) != nil
+    }
+
+    private static func isValidEndpoint(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+
+        let hostString: String
+        let portString: String
+        if value.first == "[" {
+            guard let endOfHost = value.dropFirst().firstIndex(of: "]") else { return false }
+            let afterHost = value.index(after: endOfHost)
+            guard afterHost < value.endIndex, value[afterHost] == ":" else { return false }
+            hostString = String(value[value.index(after: value.startIndex)..<endOfHost])
+            portString = String(value[value.index(after: afterHost)...])
+        } else {
+            guard let separator = value.lastIndex(of: ":") else { return false }
+            hostString = String(value[..<separator])
+            portString = String(value[value.index(after: separator)...])
+            guard !hostString.contains(":") else { return false }
+        }
+
+        guard !hostString.isEmpty,
+              UInt16(portString) != nil else {
+            return false
+        }
+
+        if isValidIPAddress(hostString) {
+            return true
+        }
+        return hostString.range(of: #"^[A-Za-z0-9.-]+$"#, options: .regularExpression) != nil
     }
 }
 

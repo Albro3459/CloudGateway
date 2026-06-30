@@ -1,20 +1,23 @@
 import CloudGatewayKit
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
-    @State private var wireGuardConfig = """
+    private static let templateConfig = """
     [Interface]
     PrivateKey = <paste-private-key>
-    Address = 10.0.0.2/32
-    DNS = 9.9.9.9
+    Address = 10.0.0.2/32, fd42:42:42::2/128
+    DNS = 10.0.0.1, fd42:42:42::1
 
     [Peer]
     PublicKey = <paste-public-key>
+    Endpoint = wg.us-sanjose-1.gocloudlaunch.com:51820
     AllowedIPs = 0.0.0.0/0, ::/0
-    Endpoint = wg.us-chicago-1.gocloudlaunch.com:51820
     PersistentKeepalive = 25
     """
-    @State private var statusText = "Not installed"
+
+    @State private var wireGuardConfig = templateConfig
+    @State private var tunnelStatus: GatewayTunnelStatus?
     @State private var errorText: String?
     @State private var isWorking = false
 
@@ -32,33 +35,55 @@ struct ContentView: View {
             Form {
                 Section("Tunnel") {
                     Text(statusText)
+                        .foregroundStyle(statusColor)
 
                     Button("Install VPN") {
                         Task {
                             await installTunnel()
                         }
                     }
-                    .disabled(isWorking)
+                    .disabled(isWorking || wireGuardConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button("Start") {
                         Task {
                             await startTunnel()
                         }
                     }
-                    .disabled(isWorking)
+                    .disabled(isWorking || tunnelStatus == nil || tunnelStatus == .connected || tunnelStatus == .connecting)
 
                     Button("Stop") {
                         Task {
                             await stopTunnel()
                         }
                     }
-                    .disabled(isWorking)
+                    .disabled(isWorking || tunnelStatus == nil || tunnelStatus == .disconnected || tunnelStatus == .disconnecting)
+
+                    Button("Remove VPN", role: .destructive) {
+                        Task {
+                            await removeTunnel()
+                        }
+                    }
+                    .disabled(isWorking || tunnelStatus == nil)
                 }
 
                 Section("WireGuard Config") {
+                    HStack {
+                        Button("Paste") {
+                            pasteConfig()
+                        }
+                        Button("Template") {
+                            wireGuardConfig = Self.templateConfig
+                            errorText = nil
+                        }
+                        Button("Clear", role: .destructive) {
+                            wireGuardConfig = ""
+                            errorText = nil
+                        }
+                    }
+
                     TextEditor(text: $wireGuardConfig)
                         .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 220)
+                        .frame(minHeight: 280)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
@@ -83,7 +108,6 @@ struct ContentView: View {
             let config = try GatewayWireGuardConfig(wireGuardConfig)
             let tunnel = GatewayTunnelConfiguration(wireGuardConfig: config)
             try await manager.installTunnel(tunnel)
-            statusText = "Installed"
             await refreshStatus()
         }
     }
@@ -105,14 +129,34 @@ struct ContentView: View {
     }
 
     @MainActor
+    private func removeTunnel() async {
+        await run {
+            try await manager.removeTunnel()
+            tunnelStatus = nil
+        }
+    }
+
+    @MainActor
     private func refreshStatus() async {
         do {
-            statusText = try await manager.installedStatus().displayName
+            tunnelStatus = try await manager.installedStatus()
         } catch GatewayVPNError.missingInstalledTunnel {
-            statusText = "Not installed"
+            tunnelStatus = nil
         } catch {
             errorText = error.localizedDescription
         }
+    }
+
+    @MainActor
+    private func pasteConfig() {
+        guard let pastedConfig = UIPasteboard.general.string,
+              !pastedConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorText = "Clipboard does not contain a WireGuard config."
+            return
+        }
+
+        wireGuardConfig = pastedConfig
+        errorText = nil
     }
 
     @MainActor
@@ -127,6 +171,25 @@ struct ContentView: View {
             try await operation()
         } catch {
             errorText = String(describing: error)
+        }
+    }
+
+    private var statusText: String {
+        tunnelStatus?.displayName ?? "Not installed"
+    }
+
+    private var statusColor: Color {
+        switch tunnelStatus {
+        case .connected:
+            .green
+        case .connecting, .reasserting, .disconnecting:
+            .orange
+        case .invalid:
+            .red
+        case .disconnected:
+            .secondary
+        case nil:
+            .secondary
         }
     }
 }

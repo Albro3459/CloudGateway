@@ -12,7 +12,6 @@
 		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000004 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000019 /* WireGuardKit */; };
 		ABCDEF000000000000000027 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000031 /* PacketTunnelProvider.swift */; };
-		ABCDEF000000000000000028 /* WgQuickConfigParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000032 /* WgQuickConfigParser.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -52,7 +51,6 @@
 		ABCDEF000000000000000029 /* CloudGatewayTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CloudGatewayTunnel.entitlements; sourceTree = "<group>"; };
 		ABCDEF000000000000000030 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		ABCDEF000000000000000031 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
-		ABCDEF000000000000000032 /* WgQuickConfigParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WgQuickConfigParser.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -108,7 +106,6 @@
 				ABCDEF000000000000000029 /* CloudGatewayTunnel.entitlements */,
 				ABCDEF000000000000000030 /* Info.plist */,
 				ABCDEF000000000000000031 /* PacketTunnelProvider.swift */,
-				ABCDEF000000000000000032 /* WgQuickConfigParser.swift */,
 			);
 			path = CloudGatewayTunnel;
 			sourceTree = "<group>";
@@ -253,7 +250,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				ABCDEF000000000000000027 /* PacketTunnelProvider.swift in Sources */,
-				ABCDEF000000000000000028 /* WgQuickConfigParser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -525,24 +521,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				ABCDEF000000000000000023 /* Debug */,
-				ABCDEF000000000000000024 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				ABCDEF000000000000000025 /* Debug */,
-				ABCDEF000000000000000026 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		605109642FF35D5F002E2D4C /* Build configuration list for PBXProject "CloudGateway" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -557,6 +535,24 @@
 			buildConfigurations = (
 				605109752FF35D60002E2D4C /* Debug */,
 				605109762FF35D60002E2D4C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ABCDEF000000000000000023 /* Debug */,
+				ABCDEF000000000000000024 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ABCDEF000000000000000025 /* Debug */,
+				ABCDEF000000000000000026 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
