@@ -67,6 +67,8 @@ Add Swift package dependency:
 https://git.zx2c4.com/wireguard-apple
 ```
 
+Current project note: the package is pinned to official revision `ccc7472fd7d1c7c19584e6a30c45a56b8ba57790` because the current upstream `Package.swift` declares Swift tools 5.3 while using newer platform declarations that Xcode 26 rejects.
+
 Link `WireGuardKit` to:
 
 * app target
@@ -80,7 +82,7 @@ Add the required external build target:
 * Directory:
 
 ```text
-${BUILD_DIR%Build/*}SourcePackages/checkouts/wireguard-apple/Sources/WireGuardKitGo
+$(BUILD_DIR)/../../SourcePackages/checkouts/wireguard-apple/Sources/WireGuardKitGo
 ```
 
 Set that target's `SDKROOT` to:
@@ -90,6 +92,10 @@ iphoneos
 ```
 
 Add `WireGuardGoBridgeiOS` as a dependency of the tunnel extension target.
+
+Local build prerequisite: Go must be installed and visible to Xcode. The WireGuard bridge target uses Go to build `libwg-go.a`.
+
+Known Xcode 26 blocker: official WireGuardKit currently fails to build `WireGuardKitC` because `WireGuardKitC.h` uses Darwin typedefs before importing the module that defines them. A tiny upstream/fork patch should add the missing system include before the `ctl_info` and `sockaddr_ctl` declarations.
 
 ## Step 4: Add Minimal CloudGatewayKit Boundary
 
