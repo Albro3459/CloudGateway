@@ -6,14 +6,58 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
+		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
+		ABCDEF000000000000000004 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000019 /* WireGuardKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		ABCDEF000000000000000005 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 605109612FF35D5F002E2D4C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ABCDEF000000000000000013;
+			remoteInfo = CloudGatewayTunnel;
+		};
+		ABCDEF000000000000000006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 605109612FF35D5F002E2D4C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ABCDEF000000000000000011;
+			remoteInfo = WireGuardGoBridgeiOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		ABCDEF000000000000000007 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		605109692FF35D5F002E2D4C /* CloudGateway.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudGateway.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CloudGatewayTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		6051096B2FF35D5F002E2D4C /* CloudGateway */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = CloudGateway;
+			sourceTree = "<group>";
+		};
+		ABCDEF000000000000000009 /* CloudGatewayTunnel */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CloudGatewayTunnel;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +67,16 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ABCDEF000000000000000010 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */,
+				ABCDEF000000000000000004 /* WireGuardKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				6051096B2FF35D5F002E2D4C /* CloudGateway */,
+				ABCDEF000000000000000009 /* CloudGatewayTunnel */,
 				6051096A2FF35D5F002E2D4C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,11 +96,29 @@
 			isa = PBXGroup;
 			children = (
 				605109692FF35D5F002E2D4C /* CloudGateway.app */,
+				ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
+
+/* Begin PBXLegacyTarget section */
+		ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */ = {
+			isa = PBXLegacyTarget;
+			buildArgumentsString = "$(ACTION)";
+			buildConfigurationList = ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */;
+			buildPhases = (
+			);
+			buildToolPath = /usr/bin/make;
+			buildWorkingDirectory = "${BUILD_DIR%Build/*}SourcePackages/checkouts/wireguard-apple/Sources/WireGuardKitGo";
+			dependencies = (
+			);
+			name = WireGuardGoBridgeiOS;
+			passBuildSettingsInEnvironment = 1;
+			productName = WireGuardGoBridge;
+		};
+/* End PBXLegacyTarget section */
 
 /* Begin PBXNativeTarget section */
 		605109682FF35D5F002E2D4C /* CloudGateway */ = {
@@ -55,20 +128,48 @@
 				605109652FF35D5F002E2D4C /* Sources */,
 				605109662FF35D5F002E2D4C /* Frameworks */,
 				605109672FF35D5F002E2D4C /* Resources */,
+				ABCDEF000000000000000007 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				ABCDEF000000000000000022 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				6051096B2FF35D5F002E2D4C /* CloudGateway */,
 			);
 			name = CloudGateway;
 			packageProductDependencies = (
+				ABCDEF000000000000000018 /* CloudGatewayKit */,
 			);
 			productName = CloudGateway;
 			productReference = 605109692FF35D5F002E2D4C /* CloudGateway.app */;
 			productType = "com.apple.product-type.application";
+		};
+		ABCDEF000000000000000013 /* CloudGatewayTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */;
+			buildPhases = (
+				ABCDEF000000000000000015 /* Sources */,
+				ABCDEF000000000000000010 /* Frameworks */,
+				ABCDEF000000000000000016 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				ABCDEF000000000000000017 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				ABCDEF000000000000000009 /* CloudGatewayTunnel */,
+			);
+			name = CloudGatewayTunnel;
+			packageProductDependencies = (
+				ABCDEF000000000000000018 /* CloudGatewayKit */,
+				ABCDEF000000000000000019 /* WireGuardKit */,
+			);
+			productName = CloudGatewayTunnel;
+			productReference = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -83,6 +184,9 @@
 					605109682FF35D5F002E2D4C = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					ABCDEF000000000000000013 = {
+						CreatedOnToolsVersion = 26.5;
+					};
 				};
 			};
 			buildConfigurationList = 605109642FF35D5F002E2D4C /* Build configuration list for PBXProject "CloudGateway" */;
@@ -94,18 +198,31 @@
 			);
 			mainGroup = 605109602FF35D5F002E2D4C;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */,
+				ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6051096A2FF35D5F002E2D4C /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				605109682FF35D5F002E2D4C /* CloudGateway */,
+				ABCDEF000000000000000013 /* CloudGatewayTunnel */,
+				ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		605109672FF35D5F002E2D4C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ABCDEF000000000000000016 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +239,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		ABCDEF000000000000000015 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		ABCDEF000000000000000017 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */;
+			targetProxy = ABCDEF000000000000000006 /* PBXContainerItemProxy */;
+		};
+		ABCDEF000000000000000022 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ABCDEF000000000000000013 /* CloudGatewayTunnel */;
+			targetProxy = ABCDEF000000000000000005 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		605109722FF35D60002E2D4C /* Debug */ = {
@@ -310,9 +447,89 @@
 			};
 			name = Release;
 		};
+		ABCDEF000000000000000023 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		ABCDEF000000000000000024 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				SDKROOT = iphoneos;
+			};
+			name = Release;
+		};
+		ABCDEF000000000000000025 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = CloudGatewayTunnel/CloudGatewayTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CRQWDQ7QQR;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CloudGatewayTunnel/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.gateway.tunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		ABCDEF000000000000000026 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = CloudGatewayTunnel/CloudGatewayTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CRQWDQ7QQR;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CloudGatewayTunnel/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.gateway.tunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ABCDEF000000000000000023 /* Debug */,
+				ABCDEF000000000000000024 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ABCDEF000000000000000025 /* Debug */,
+				ABCDEF000000000000000026 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		605109642FF35D5F002E2D4C /* Build configuration list for PBXProject "CloudGateway" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -332,6 +549,37 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../CloudGatewayKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://git.zx2c4.com/wireguard-apple";
+			requirement = {
+				kind = revision;
+				revision = ccc7472fd7d1c7c19584e6a30c45a56b8ba57790;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		ABCDEF000000000000000018 /* CloudGatewayKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */;
+			productName = CloudGatewayKit;
+		};
+		ABCDEF000000000000000019 /* WireGuardKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */;
+			productName = WireGuardKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 605109612FF35D5F002E2D4C /* Project object */;
 }
