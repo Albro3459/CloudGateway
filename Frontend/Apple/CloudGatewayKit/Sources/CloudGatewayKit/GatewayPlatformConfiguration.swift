@@ -1,4 +1,4 @@
-public struct GatewayPlatformConfiguration: Sendable {
+public struct GatewayPlatformConfiguration: Equatable, Sendable {
     public let appGroupIdentifier: String
     public let appBundleIdentifier: String
     public let providerBundleIdentifier: String

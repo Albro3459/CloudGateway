@@ -19,7 +19,10 @@ let package = Package(
         .target(
             name: "CloudGatewayKit"
         ),
-
+        .testTarget(
+            name: "CloudGatewayKitTests",
+            dependencies: ["CloudGatewayKit"]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

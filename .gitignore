@@ -82,6 +82,7 @@ yarn-error.log*
 .pytest_cache/
 .venv/
 build/
+**/.build/
 *.egg-info/
 **/__pycache__/
 *.py[cod]
