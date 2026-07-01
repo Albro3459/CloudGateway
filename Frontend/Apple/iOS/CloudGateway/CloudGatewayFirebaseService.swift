@@ -3,33 +3,25 @@ import FirebaseAuth
 import FirebaseFirestore
 import Foundation
 
-enum CloudGatewayAppError: LocalizedError {
-    case missingCurrentUser
-    case noEnabledRegions
-    case missingSelectedRegion
-    case invalidAPIResponse
-    case accessDenied(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .missingCurrentUser:
-            "Sign in again to continue."
-        case .noEnabledRegions:
-            "No enabled CloudGateway regions are available."
-        case .missingSelectedRegion:
-            "Choose a region first."
-        case .invalidAPIResponse:
-            "CloudGateway returned an invalid response."
-        case .accessDenied(let message):
-            message
-        }
+extension CloudGatewayViewModel {
+    /// Production wiring: the live Firebase service + a config manager backed by the
+    /// packet-tunnel VPN manager and on-disk cache. Kept out of the Firebase-free core
+    /// so the view model can be unit-tested against a mock service.
+    convenience init() {
+        let platform = GatewayPlatformConfiguration(
+            appGroupIdentifier: "group.com.gocloudlaunch.gateway",
+            appBundleIdentifier: "com.gocloudlaunch.gateway",
+            providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
+            tunnelDisplayName: "CloudGateway"
+        )
+        self.init(
+            service: CloudGatewayFirebaseService(),
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: GatewayVPNManager(platform: platform),
+                cache: CloudGatewayConfigCache(platform: platform)
+            )
+        )
     }
-}
-
-struct CloudGatewayAccessCheck: Decodable, Equatable {
-    let userId: String
-    let email: String?
-    let role: String
 }
 
 struct CloudGatewayCreateClientResponse: Decodable, Equatable {
@@ -40,47 +32,34 @@ struct CloudGatewayCreateClientResponse: Decodable, Equatable {
     let wireguardConfig: String
 }
 
-struct CloudGatewayDeleteClientResponse: Decodable, Equatable {
-    let userId: String
-    let clientId: String
-    let regionId: String
-    let status: CloudGatewayClientStatus
-}
-
 struct CloudGatewayCapacityResponse: Decodable, Equatable {
     let regionId: String
     let capacityLimit: Int
     let allocatedClientCount: Int
 }
 
-struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
-    let regionId: String
-    let syncedAt: String
-    let added: Int
-    let updated: Int
-    let removed: Int
-    let noChanges: Bool
-}
-
-final class CloudGatewayFirebaseService {
+final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let db = Firestore.firestore()
     private let apiOriginHost = "gocloudlaunch.com"
 
-    var currentUser: User? {
-        Auth.auth().currentUser
+    var currentUser: AuthenticatedUser? {
+        Auth.auth().currentUser.map(AuthenticatedUser.init)
     }
 
-    func addAuthStateListener(_ listener: @escaping (User?) -> Void) -> AuthStateDidChangeListenerHandle {
+    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
         Auth.auth().addStateDidChangeListener { _, user in
-            listener(user)
+            listener(user.map(AuthenticatedUser.init))
         }
     }
 
-    nonisolated func removeAuthStateListener(_ handle: AuthStateDidChangeListenerHandle) {
+    nonisolated func removeAuthStateListener(_ token: Any) {
+        guard let handle = token as? AuthStateDidChangeListenerHandle else {
+            return
+        }
         Auth.auth().removeStateDidChangeListener(handle)
     }
 
-    func signIn(email: String, password: String) async throws -> User {
+    func signIn(email: String, password: String) async throws -> AuthenticatedUser {
         try await withCheckedThrowingContinuation { continuation in
             Auth.auth().signIn(withEmail: email, password: password) { result, error in
                 if let error {
@@ -91,7 +70,7 @@ final class CloudGatewayFirebaseService {
                     continuation.resume(throwing: CloudGatewayAppError.missingCurrentUser)
                     return
                 }
-                continuation.resume(returning: user)
+                continuation.resume(returning: AuthenticatedUser(user))
             }
         }
     }
@@ -100,8 +79,11 @@ final class CloudGatewayFirebaseService {
         try Auth.auth().signOut()
     }
 
-    func idToken(for user: User) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+    func idToken() async throws -> String {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             user.getIDToken { token, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -401,6 +383,12 @@ final class CloudGatewayFirebaseService {
         } catch {
             throw CloudGatewayAppError.invalidAPIResponse
         }
+    }
+}
+
+private extension AuthenticatedUser {
+    init(_ user: User) {
+        self.init(uid: user.uid, email: user.email)
     }
 }
 

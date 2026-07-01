@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 607A1C1A2FF5498A0001783A /* CloudGatewayKit */; };
 		ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
@@ -50,16 +51,36 @@
 
 /* Begin PBXFileReference section */
 		605109692FF35D5F002E2D4C /* CloudGateway.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudGateway.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		607A1C082FF548230001783A /* CloudGatewayTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudGatewayTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CloudGatewayTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		ABCDEF000000000000000029 /* CloudGatewayTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CloudGatewayTunnel.entitlements; sourceTree = "<group>"; };
 		ABCDEF000000000000000030 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		ABCDEF000000000000000031 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		607A1C1E2FF54A3F0001783A /* Exceptions for "CloudGateway" folder in "CloudGatewayTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				CloudGatewayServicing.swift,
+				CloudGatewayViewModel.swift,
+			);
+			target = 607A1C072FF548230001783A /* CloudGatewayTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		6051096B2FF35D5F002E2D4C /* CloudGateway */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				607A1C1E2FF54A3F0001783A /* Exceptions for "CloudGateway" folder in "CloudGatewayTests" target */,
+			);
 			path = CloudGateway;
+			sourceTree = "<group>";
+		};
+		607A1C092FF548230001783A /* CloudGatewayTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CloudGatewayTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -73,6 +94,14 @@
 				ABCDEF000000000000000040 /* FirebaseCore in Frameworks */,
 				ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */,
 				ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		607A1C052FF548230001783A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,6 +122,8 @@
 			children = (
 				6051096B2FF35D5F002E2D4C /* CloudGateway */,
 				ABCDEF000000000000000009 /* CloudGatewayTunnel */,
+				607A1C092FF548230001783A /* CloudGatewayTests */,
+				607A1C192FF5498A0001783A /* Frameworks */,
 				6051096A2FF35D5F002E2D4C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -102,8 +133,16 @@
 			children = (
 				605109692FF35D5F002E2D4C /* CloudGateway.app */,
 				ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */,
+				607A1C082FF548230001783A /* CloudGatewayTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		607A1C192FF5498A0001783A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		ABCDEF000000000000000009 /* CloudGatewayTunnel */ = {
@@ -164,6 +203,29 @@
 			productReference = 605109692FF35D5F002E2D4C /* CloudGateway.app */;
 			productType = "com.apple.product-type.application";
 		};
+		607A1C072FF548230001783A /* CloudGatewayTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 607A1C0E2FF548230001783A /* Build configuration list for PBXNativeTarget "CloudGatewayTests" */;
+			buildPhases = (
+				607A1C042FF548230001783A /* Sources */,
+				607A1C052FF548230001783A /* Frameworks */,
+				607A1C062FF548230001783A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				607A1C092FF548230001783A /* CloudGatewayTests */,
+			);
+			name = CloudGatewayTests;
+			packageProductDependencies = (
+				607A1C1A2FF5498A0001783A /* CloudGatewayKit */,
+			);
+			productName = CloudGatewayTests;
+			productReference = 607A1C082FF548230001783A /* CloudGatewayTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		ABCDEF000000000000000013 /* CloudGatewayTunnel */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */;
@@ -199,6 +261,9 @@
 					605109682FF35D5F002E2D4C = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					607A1C072FF548230001783A = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					ABCDEF000000000000000013 = {
 						CreatedOnToolsVersion = 26.5;
 					};
@@ -226,12 +291,20 @@
 				605109682FF35D5F002E2D4C /* CloudGateway */,
 				ABCDEF000000000000000013 /* CloudGatewayTunnel */,
 				ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */,
+				607A1C072FF548230001783A /* CloudGatewayTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		605109672FF35D5F002E2D4C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		607A1C062FF548230001783A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -249,6 +322,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		605109652FF35D5F002E2D4C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		607A1C042FF548230001783A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -466,6 +546,54 @@
 			};
 			name = Release;
 		};
+		607A1C0F2FF548230001783A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CRQWDQ7QQR;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.CloudGatewayTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Debug;
+		};
+		607A1C102FF548230001783A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CRQWDQ7QQR;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.CloudGatewayTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
 		ABCDEF000000000000000023 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -549,6 +677,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		607A1C0E2FF548230001783A /* Build configuration list for PBXNativeTarget "CloudGatewayTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				607A1C0F2FF548230001783A /* Debug */,
+				607A1C102FF548230001783A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -596,6 +733,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		607A1C1A2FF5498A0001783A /* CloudGatewayKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */;
+			productName = CloudGatewayKit;
+		};
 		ABCDEF000000000000000018 /* CloudGatewayKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */;

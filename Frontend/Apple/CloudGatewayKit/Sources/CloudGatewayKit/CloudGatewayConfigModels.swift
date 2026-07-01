@@ -211,6 +211,76 @@ public enum CloudGatewayConfigSelection {
         return options.filter { $0.client.regionId == regionId }
     }
 
+    public static func mergeClients(
+        existing: [CloudGatewayClient],
+        fetched: [CloudGatewayClient]
+    ) -> [CloudGatewayClient] {
+        var clientsByKey = Dictionary(
+            uniqueKeysWithValues: fetched.map { (clientKey(for: $0), $0) }
+        )
+        for client in existing {
+            clientsByKey[clientKey(for: client)] = client
+        }
+        return Array(clientsByKey.values)
+    }
+
+    public static func resolvedRegionSelection(
+        current: String?,
+        regions: [CloudGatewayRegion]
+    ) -> String? {
+        if let current, regions.contains(where: { $0.regionId == current }) {
+            return current
+        }
+        return regions.first?.regionId
+    }
+
+    public static func prunedClientSelection(
+        current: String?,
+        regionId: String?,
+        options: [CloudGatewayClientOption]
+    ) -> String? {
+        guard let current else {
+            return nil
+        }
+        let filtered = clientOptions(in: regionId, options: options)
+        return filtered.contains(where: { $0.client.clientId == current }) ? current : nil
+    }
+
+    public static func selectedRegion(
+        id: String?,
+        in regions: [CloudGatewayRegion]
+    ) -> CloudGatewayRegion? {
+        guard let id else {
+            return nil
+        }
+        return regions.first { $0.regionId == id }
+    }
+
+    public static func selectedOption(
+        clientId: String?,
+        in options: [CloudGatewayClientOption]
+    ) -> CloudGatewayClientOption? {
+        guard let clientId else {
+            return nil
+        }
+        return options.first { $0.client.clientId == clientId }
+    }
+
+    public static func usableSelection(
+        _ option: CloudGatewayClientOption?
+    ) -> CloudGatewayClientOption? {
+        guard let option,
+              option.client.hasUsableConfig,
+              option.region?.enabled == true else {
+            return nil
+        }
+        return option
+    }
+
+    private static func clientKey(for client: CloudGatewayClient) -> String {
+        "\(client.regionId)/\(client.clientId)"
+    }
+
     public static func usableOptions(
         clients: [CloudGatewayClient],
         regions: [CloudGatewayRegion]

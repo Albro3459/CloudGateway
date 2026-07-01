@@ -186,6 +186,92 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(!CloudGatewayConfigSelection.containsUsableClient(matching: cached, in: options))
 }
 
+@Test func mergeClientsLetsExistingOverrideFetchedByRegionAndClientId() {
+    let fetched = [
+        CloudGatewayClient(clientId: "a", clientName: "Old A", regionId: "us-sanjose-1", status: .active, wireGuardConfig: usableConfig),
+        CloudGatewayClient(clientId: "b", clientName: "B", regionId: "us-sanjose-1", status: .active, wireGuardConfig: usableConfig),
+    ]
+    let existing = [
+        CloudGatewayClient(clientId: "a", clientName: "New A", regionId: "us-sanjose-1", status: .creating, wireGuardConfig: nil),
+        CloudGatewayClient(clientId: "a", clientName: "Other Region A", regionId: "us-ashburn-1", status: .active, wireGuardConfig: usableConfig),
+    ]
+
+    let merged = CloudGatewayConfigSelection.mergeClients(existing: existing, fetched: fetched)
+    let byKey = Dictionary(uniqueKeysWithValues: merged.map { ("\($0.regionId)/\($0.clientId)", $0) })
+
+    #expect(merged.count == 3)
+    #expect(byKey["us-sanjose-1/a"]?.clientName == "New A")
+    #expect(byKey["us-sanjose-1/a"]?.status == .creating)
+    #expect(byKey["us-sanjose-1/b"]?.clientName == "B")
+    #expect(byKey["us-ashburn-1/a"]?.clientName == "Other Region A")
+}
+
+@Test func resolvedRegionSelectionKeepsValidSelectionOtherwiseFallsBackToFirst() {
+    let regions = [
+        CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true, displayOrder: 10),
+        CloudGatewayRegion(regionId: "us-ashburn-1", displayName: "Ashburn", enabled: true, displayOrder: 20),
+    ]
+
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(current: "us-ashburn-1", regions: regions) == "us-ashburn-1")
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(current: "us-gone-1", regions: regions) == "us-sanjose-1")
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(current: nil, regions: regions) == "us-sanjose-1")
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(current: "us-sanjose-1", regions: []) == nil)
+}
+
+@Test func prunedClientSelectionDropsSelectionOutsideFilteredRegion() {
+    let options = [
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(clientId: "sj", clientName: "Phone", regionId: "us-sanjose-1", status: .active, wireGuardConfig: usableConfig),
+            region: CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true)
+        ),
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(clientId: "ash", clientName: "Laptop", regionId: "us-ashburn-1", status: .active, wireGuardConfig: usableConfig),
+            region: CloudGatewayRegion(regionId: "us-ashburn-1", displayName: "Ashburn", enabled: true)
+        ),
+    ]
+
+    #expect(CloudGatewayConfigSelection.prunedClientSelection(current: "sj", regionId: "us-sanjose-1", options: options) == "sj")
+    #expect(CloudGatewayConfigSelection.prunedClientSelection(current: "sj", regionId: "us-ashburn-1", options: options) == nil)
+    #expect(CloudGatewayConfigSelection.prunedClientSelection(current: "gone", regionId: nil, options: options) == nil)
+    #expect(CloudGatewayConfigSelection.prunedClientSelection(current: nil, regionId: nil, options: options) == nil)
+}
+
+@Test func selectedRegionAndOptionResolveByIdentifier() {
+    let regions = [
+        CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true),
+        CloudGatewayRegion(regionId: "us-ashburn-1", displayName: "Ashburn", enabled: true),
+    ]
+    let options = [
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(clientId: "sj", clientName: "Phone", regionId: "us-sanjose-1", status: .active, wireGuardConfig: usableConfig),
+            region: regions[0]
+        )
+    ]
+
+    #expect(CloudGatewayConfigSelection.selectedRegion(id: "us-ashburn-1", in: regions)?.regionId == "us-ashburn-1")
+    #expect(CloudGatewayConfigSelection.selectedRegion(id: nil, in: regions) == nil)
+    #expect(CloudGatewayConfigSelection.selectedRegion(id: "us-gone-1", in: regions) == nil)
+    #expect(CloudGatewayConfigSelection.selectedOption(clientId: "sj", in: options)?.client.clientId == "sj")
+    #expect(CloudGatewayConfigSelection.selectedOption(clientId: nil, in: options) == nil)
+    #expect(CloudGatewayConfigSelection.selectedOption(clientId: "missing", in: options) == nil)
+}
+
+@Test func usableSelectionRequiresActiveConfigAndEnabledRegion() {
+    func option(status: CloudGatewayClientStatus, config: String?, regionEnabled: Bool, hasRegion: Bool = true) -> CloudGatewayClientOption {
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(clientId: "c", clientName: "Phone", regionId: "us-sanjose-1", status: status, wireGuardConfig: config),
+            region: hasRegion ? CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: regionEnabled) : nil
+        )
+    }
+
+    #expect(CloudGatewayConfigSelection.usableSelection(option(status: .active, config: usableConfig, regionEnabled: true)) != nil)
+    #expect(CloudGatewayConfigSelection.usableSelection(option(status: .creating, config: usableConfig, regionEnabled: true)) == nil)
+    #expect(CloudGatewayConfigSelection.usableSelection(option(status: .active, config: nil, regionEnabled: true)) == nil)
+    #expect(CloudGatewayConfigSelection.usableSelection(option(status: .active, config: usableConfig, regionEnabled: false)) == nil)
+    #expect(CloudGatewayConfigSelection.usableSelection(option(status: .active, config: usableConfig, regionEnabled: true, hasRegion: false)) == nil)
+    #expect(CloudGatewayConfigSelection.usableSelection(nil) == nil)
+}
+
 @Test func configMatchesRequiresSameClientRegionAndConfig() throws {
     let snapshot = CloudGatewayConfigSnapshot(
         clientId: "client-1",

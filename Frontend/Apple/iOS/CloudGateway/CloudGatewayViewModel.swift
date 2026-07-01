@@ -1,6 +1,5 @@
 import CloudGatewayKit
 import Combine
-import FirebaseAuth
 import Foundation
 
 @MainActor
@@ -25,10 +24,10 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published var selectedClientId: String?
     @Published var newClientName = ""
 
-    private let service = CloudGatewayFirebaseService()
+    private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
     private var configState = CloudGatewayConfigManagerState()
-    private var authHandle: AuthStateDidChangeListenerHandle?
+    private var authHandle: Any?
 
     var isSignedIn: Bool {
         signedInUid != nil
@@ -39,10 +38,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var selectedRegion: CloudGatewayRegion? {
-        guard let selectedRegionId else {
-            return nil
-        }
-        return regions.first { $0.regionId == selectedRegionId }
+        CloudGatewayConfigSelection.selectedRegion(id: selectedRegionId, in: regions)
     }
 
     var filteredClientOptions: [CloudGatewayClientOption] {
@@ -50,19 +46,11 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var selectedClientOption: CloudGatewayClientOption? {
-        guard let selectedClientId else {
-            return nil
-        }
-        return filteredClientOptions.first { $0.client.clientId == selectedClientId }
+        CloudGatewayConfigSelection.selectedOption(clientId: selectedClientId, in: filteredClientOptions)
     }
 
     var selectedConfigOption: CloudGatewayClientOption? {
-        guard let selectedClientOption,
-              selectedClientOption.client.hasUsableConfig,
-              selectedClientOption.region?.enabled == true else {
-            return nil
-        }
-        return selectedClientOption
+        CloudGatewayConfigSelection.usableSelection(selectedClientOption)
     }
 
     var canSyncSelectedRegion: Bool {
@@ -89,17 +77,9 @@ final class CloudGatewayViewModel: ObservableObject {
             || remoteInvalidInstalledConfig
     }
 
-    init() {
-        let platform = GatewayPlatformConfiguration(
-            appGroupIdentifier: "group.com.gocloudlaunch.gateway",
-            appBundleIdentifier: "com.gocloudlaunch.gateway",
-            providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
-            tunnelDisplayName: "CloudGateway"
-        )
-        configManager = CloudGatewayConfigManager(
-            tunnelManager: GatewayVPNManager(platform: platform),
-            cache: CloudGatewayConfigCache(platform: platform)
-        )
+    init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
+        self.service = service
+        self.configManager = configManager
         authHandle = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)
@@ -158,7 +138,7 @@ final class CloudGatewayViewModel: ObservableObject {
             guard role == "admin" else {
                 throw CloudGatewayAppError.accessDenied("Admin access is required to sync a region.")
             }
-            let token = try await service.idToken(for: user)
+            let token = try await service.idToken()
             let response = try await service.syncRegion(regionId: regionId, idToken: token)
             lastSyncText = "\(response.regionId): +\(response.added) ~\(response.updated) -\(response.removed)"
             try await loadRemoteState(for: user)
@@ -173,7 +153,7 @@ final class CloudGatewayViewModel: ObservableObject {
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
-            let token = try await service.idToken(for: user)
+            let token = try await service.idToken()
             let created = try await service.createClient(
                 regionId: regionId,
                 clientName: newClientName,
@@ -193,7 +173,7 @@ final class CloudGatewayViewModel: ObservableObject {
             guard let selectedClientOption else {
                 throw CloudGatewayAppError.accessDenied("Choose a config to delete.")
             }
-            let token = try await service.idToken(for: user)
+            let token = try await service.idToken()
             let response = try await service.deleteClient(
                 clientId: selectedClientOption.client.clientId,
                 userId: user.uid,
@@ -256,7 +236,7 @@ final class CloudGatewayViewModel: ObservableObject {
         installStateLabel(for: option) == nil ? "Install" : "Install Update"
     }
 
-    private func handleAuthState(_ user: User?) async {
+    private func handleAuthState(_ user: AuthenticatedUser?) async {
         if let user {
             signedInEmail = user.email
             signedInUid = user.uid
@@ -276,14 +256,14 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    private func loadRemoteState(for user: User) async throws {
+    private func loadRemoteState(for user: AuthenticatedUser) async throws {
         try await loadRemoteState(for: user, existingClients: [])
     }
 
-    private func loadRemoteState(for user: User, existingClients: [CloudGatewayClient]) async throws {
+    private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
         signedInEmail = user.email
         signedInUid = user.uid
-        let token = try await service.idToken(for: user)
+        let token = try await service.idToken()
         let enabledRegions = try await service.fetchEnabledRegions()
         guard !enabledRegions.isEmpty else {
             throw CloudGatewayAppError.noEnabledRegions
@@ -298,7 +278,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadRemoteStateOrSignOut(
-        for user: User,
+        for user: AuthenticatedUser,
         signOutOnAnyFailure: Bool
     ) async throws {
         do {
@@ -358,32 +338,25 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func ensureSelectedRegion() {
-        if let selectedRegionId, regions.contains(where: { $0.regionId == selectedRegionId }) {
-            return
-        }
-        selectedRegionId = regions.first?.regionId
+        selectedRegionId = CloudGatewayConfigSelection.resolvedRegionSelection(
+            current: selectedRegionId,
+            regions: regions
+        )
     }
 
     private func pruneSelectedClient() {
-        guard let selectedClientId else {
-            return
-        }
-        if !filteredClientOptions.contains(where: { $0.client.clientId == selectedClientId }) {
-            self.selectedClientId = nil
-        }
+        selectedClientId = CloudGatewayConfigSelection.prunedClientSelection(
+            current: selectedClientId,
+            regionId: selectedRegionId,
+            options: clientOptions
+        )
     }
 
     private func merge(
         existingClients: [CloudGatewayClient],
         fetchedClients: [CloudGatewayClient]
     ) -> [CloudGatewayClient] {
-        var clientsByKey = Dictionary(
-            uniqueKeysWithValues: fetchedClients.map { ("\($0.regionId)/\($0.clientId)", $0) }
-        )
-        for client in existingClients {
-            clientsByKey["\(client.regionId)/\(client.clientId)"] = client
-        }
-        return Array(clientsByKey.values)
+        CloudGatewayConfigSelection.mergeClients(existing: existingClients, fetched: fetchedClients)
     }
 
     private func run(_ operation: () async throws -> Void) async {

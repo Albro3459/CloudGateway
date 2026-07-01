@@ -169,7 +169,7 @@ Done when:
 
 Known limitations:
 
-* There is not yet a dedicated iOS XCTest target for mocked Firebase/API view-model tests.
+* View-model orchestration tests live in `Frontend/Apple/iOS/CloudGatewayTests/` against a mock `CloudGatewayServicing`. They are a host-less logic bundle (the app scheme can't build for the simulator because the packet-tunnel extension links WireGuard's device-only `libwg-go.a`), so they need a one-time Xcode target and are not yet in the `./scripts/test.sh apple` gate; see `CloudGatewayTests/README.md`. The thin Firebase/URLSession adapter stays build-validated only.
 * Signed no-device build still depends on local signing/provisioning setup and should be run with `./scripts/test.sh apple --signed` when provisioning is available.
 * Capacity failures are shown as unavailable; create still relies on the regional API for the authoritative capacity/limit rejection.
 

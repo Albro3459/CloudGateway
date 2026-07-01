@@ -42,7 +42,9 @@ Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receiv
 
 ## Current Limitations
 
-The native iOS app has no dedicated XCTest target yet. Shared sorting, filtering, reconciliation, and cache behavior are covered by `CloudGatewayKit` tests; app-target service and view-model behavior is currently validated by the generic iOS build.
+Shared sorting, filtering, reconciliation, selection/merge, and cache behavior are covered by `CloudGatewayKit` tests (run under `swift test`). View-model orchestration (remote-load sequencing, sign-out branching, capacity gating, selection prune) has tests in `CloudGatewayTests/`, wired against a mock `CloudGatewayServicing` so no Firebase or network is involved.
+
+That test target is a host-less logic bundle because the app scheme cannot build for the iOS Simulator — the `CloudGatewayTunnel` extension links WireGuard's device-only `libwg-go.a`. It therefore is not part of the `./scripts/test.sh apple` gate (which stays `swift test` + the unsigned no-device build); see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for the one-time Xcode wiring and the `xcodebuild test` command. The thin `CloudGatewayFirebaseService` URLSession/Firestore adapter remains build-validated only.
 
 Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
 
