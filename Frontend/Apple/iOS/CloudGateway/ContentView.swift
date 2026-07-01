@@ -79,6 +79,7 @@ struct ContentView: View {
                 }
                 .disabled(viewModel.isWorking)
             }
+            .buttonStyle(.borderless)
         }
     }
 
@@ -107,6 +108,7 @@ struct ContentView: View {
                 }
                 .disabled(viewModel.isWorking || viewModel.tunnelStatus == nil || viewModel.tunnelStatus == .disconnected || viewModel.tunnelStatus == .disconnecting)
             }
+            .buttonStyle(.borderless)
 
             Button("Remove VPN", role: .destructive) {
                 Task {
