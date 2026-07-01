@@ -41,16 +41,20 @@ Build iOS first, but shape CloudGatewayKit so macOS can reuse the core without a
 Rules:
 
 * Keep SwiftUI views and app lifecycle code outside CloudGatewayKit.
+* Keep Firebase SDK imports and concrete Auth/Firestore queries outside CloudGatewayKit; app targets should map Firebase data into shared models.
 * Keep direct `NETunnelProviderManager` usage behind CloudGatewayKit APIs.
 * Keep WireGuardKit mapping/parsing behind CloudGatewayKit APIs.
 * Inject platform values instead of hardcoding them: app group ID, app bundle ID, provider bundle ID, tunnel display name, storage locations, and entitlement-related identifiers.
 * Keep iOS/macOS differences in small platform adapters or configuration structs.
 * Name shared types without iOS-only assumptions.
 * Prefer a small shared API surface that can serve both apps: install/update/remove, start/stop, status observation, config validation, and config storage.
+* Put the shared config manager in CloudGatewayKit, backed by protocols for remote config loading, access checking, VPN installation, and cache storage.
 
 Avoid:
 
 * Hardcoding iOS bundle IDs throughout CloudGatewayKit.
+* Linking Firebase into the packet tunnel extension.
+* Making CloudGatewayKit depend on Firebase concrete types.
 * Letting SwiftUI views call NetworkExtension directly.
 * Designing storage around a single app target.
 * Naming core types around iPhone/iOS when they are really Apple-platform concepts.
