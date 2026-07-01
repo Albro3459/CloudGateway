@@ -11,9 +11,6 @@ struct ContentView: View {
                     accountSection
                     tunnelSection
                     configsSection
-                    #if DEBUG
-                    debugSection
-                    #endif
                 } else {
                     signInSection
                     tunnelSection
@@ -156,25 +153,6 @@ struct ContentView: View {
             }
         }
     }
-
-    #if DEBUG
-    private var debugSection: some View {
-        Section("Debug Pasted Config") {
-            TextEditor(text: $viewModel.debugWireGuardConfig)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 180)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-
-            Button("Install Pasted Config") {
-                Task {
-                    await viewModel.installDebugConfig()
-                }
-            }
-            .disabled(viewModel.isWorking || viewModel.debugWireGuardConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-    }
-    #endif
 
     private var statusColor: Color {
         switch viewModel.tunnelStatus {

@@ -60,29 +60,6 @@ public actor CloudGatewayConfigManager {
     }
 
     @discardableResult
-    public func installDebugConfig(_ rawConfig: String) async throws -> CloudGatewayConfigManagerState {
-        let config = try GatewayWireGuardConfig(rawConfig)
-        let snapshot = CloudGatewayConfigSnapshot(
-            clientId: "debug",
-            regionId: "debug",
-            clientName: "Debug Config",
-            regionDisplayName: "Debug",
-            status: .active,
-            wireGuardConfig: config.rawValue,
-            readAt: now(),
-            updatedAt: nil
-        )
-        try await tunnelManager.installTunnel(
-            GatewayTunnelConfiguration(identifier: "debug", wireGuardConfig: config)
-        )
-        try await cache.save(snapshot)
-        state.cachedSnapshot = snapshot
-        state.staleText = nil
-        state.remoteInvalidInstalledConfig = false
-        return try await refreshStatus()
-    }
-
-    @discardableResult
     public func startTunnel() async throws -> CloudGatewayConfigManagerState {
         guard !state.remoteInvalidInstalledConfig else {
             throw CloudGatewayConfigManagerError.remoteInvalidInstalledConfig
@@ -134,10 +111,6 @@ public actor CloudGatewayConfigManager {
         state.remoteInvalidInstalledConfig = false
         guard let cachedSnapshot = state.cachedSnapshot else {
             state.staleText = nil
-            return
-        }
-        if cachedSnapshot.clientId == "debug" {
-            state.staleText = "Debug config is installed."
             return
         }
         guard let matchingOption = CloudGatewayConfigSelection.matchingOption(
