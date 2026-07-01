@@ -69,12 +69,21 @@ See `example.gocloudlaunch.com.txt` for the full set. Summary:
 * `gocloudlaunch.com` (apex) -> GitHub Pages IPs, **proxied** - hosts the React frontend.
 * `api.gocloudlaunch.com` -> `us-sanjose-1.gocloudlaunch.com` as a **proxied** (orange)
   CNAME - manually managed global API host for `GET /regions` and
-  `POST /auth/check-access`. Apply a Cloudflare rate-limit rule for `GET /api/regions`.
+  `POST /auth/check-access`.
 * `<regionId>.gocloudlaunch.com` -> server public IPv4, **proxied** (orange) - regional API.
   **Terraform-managed** (`cloudflare_record.api`).
 * `wg.<regionId>.gocloudlaunch.com` -> server public IPv4, **DNS-only** (grey) - WireGuard
   endpoint; never proxied (Cloudflare does not proxy WireGuard UDP). **Terraform-managed**
   (`cloudflare_record.wg`).
+* Apply a rate limit rule for API requests:
+```
+(
+  http.host eq "api.gocloudlaunch.com"
+  or http.host eq "us-sanjose-1.gocloudlaunch.com"
+  or http.host eq "us-chicago-1.gocloudlaunch.com"
+)
+and starts_with(http.request.uri.path, "/api/")
+```
 * Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase - managed by hand.
 
 The two per-region `A` records are created/updated by `./scripts/terraform.sh <region> apply`
