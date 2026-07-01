@@ -172,6 +172,74 @@ Verify:
 * Stop turns the tunnel off.
 * App relaunch still sees the installed profile/status.
 
+## No-Device Build Verification
+
+When no iPhone is available, use these checks to verify the app is ready for device testing. These checks prove compile health, package resolution, signing/profile setup, and generated entitlements. They do not prove that the packet tunnel can install or pass traffic.
+
+Run CloudGatewayKit tests:
+
+```sh
+swift test
+```
+
+from:
+
+```text
+Frontend/Apple/CloudGatewayKit
+```
+
+Run an unsigned generic iOS build:
+
+```sh
+xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
+```
+
+This catches Swift/package/project build failures without requiring provisioning to be correct.
+
+Run a signed generic iOS build:
+
+```sh
+xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS build
+```
+
+This checks that Xcode can resolve Swift packages, build `WireGuardGoBridgeiOS`, sign the app and tunnel extension, and use explicit provisioning profiles for:
+
+* `com.gocloudlaunch.gateway`
+* `com.gocloudlaunch.gateway.tunnel`
+
+If signing fails with `iOS Team Provisioning Profile: *`, Xcode is using a wildcard profile. The app and tunnel need explicit profiles because App Groups, Data Protection, and Network Extension entitlements cannot be satisfied by a wildcard profile.
+
+Inspect generated entitlements after a signed build:
+
+```sh
+cat ~/Library/Developer/Xcode/DerivedData/CloudGateway-*/Build/Intermediates.noindex/CloudGateway.build/Debug-iphoneos/CloudGateway.build/CloudGateway.app.xcent
+cat ~/Library/Developer/Xcode/DerivedData/CloudGateway-*/Build/Intermediates.noindex/CloudGateway.build/Debug-iphoneos/CloudGatewayTunnel.build/CloudGatewayTunnel.appex.xcent
+```
+
+Expected app entitlements include:
+
+* `com.apple.security.application-groups` with `group.com.gocloudlaunch.gateway`
+* `com.apple.developer.default-data-protection`
+
+Expected tunnel entitlements include:
+
+* `com.apple.security.application-groups` with `group.com.gocloudlaunch.gateway`
+* `com.apple.developer.default-data-protection`
+* `com.apple.developer.networking.networkextension` with `packet-tunnel-provider`
+
+The app target may also include Sign in with Apple or Network Extension if those capabilities are enabled in Xcode. The tunnel target must include `packet-tunnel-provider`.
+
+Known WireGuard build prerequisite:
+
+* Go must be installed.
+* The CloudGateway WireGuard fork is patched so Xcode GUI builds can find Homebrew Go from `/opt/homebrew/bin` when building `WireGuardGoBridgeiOS`.
+
+Simulator note:
+
+* The simulator is useful for UI and some compile checks.
+* Packet tunnel behavior must be verified on a real iPhone.
+* WireGuard Go bridge builds for simulator can fail on Apple Silicon depending on architecture/toolchain settings, so generic iOS/device builds are the better readiness check.
+
 ## Acceptance Criteria
 
 MVP 0 is complete when:
