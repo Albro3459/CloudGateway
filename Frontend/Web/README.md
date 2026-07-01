@@ -2,12 +2,13 @@
 
 React + TypeScript dashboard for the shared regional VPN platform. Users pick a region, add/remove WireGuard clients, and view stored configs (QR, download, copy) from Firebase.
 
-The frontend is a static GitHub Pages app. It does not own VPN server state directly; it authenticates users with Firebase, reads dashboard data from Firestore, and sends client/user mutations to the selected regional FastAPI control plane.
+The frontend is a static GitHub Pages app. It does not own VPN server state directly; it authenticates users with Firebase, reads display-safe region discovery from the apex API, reads dashboard data from Firestore, and sends client/user mutations to FastAPI.
 
 ```text
 React dashboard
   -> Firebase Auth
-  -> Firestore reads for regions, users, client docs, and stored configs
+  -> https://api.<origin>/api/* for regions and access checks
+  -> Firestore reads for users, client docs, and stored configs
   -> https://<regionId>.<origin>/api/*
       -> regional FastAPI
       -> Firebase Admin SDK
@@ -17,8 +18,8 @@ React dashboard
 ## Core Responsibilities
 
 * Sign users in with Firebase email/password or Google sign-in.
-* Confirm account access through the regional API before entering the dashboard.
-* Read enabled regions from Firestore and cache them in the client.
+* Confirm account access through the apex API before entering the dashboard.
+* Read enabled regions from the apex API and cache them in the client.
 * Show region tabs, capacity hints, client status, tunnel addresses, and server endpoints.
 * Create and remove WireGuard clients by calling the regional API with a Firebase bearer token.
 * Show stored WireGuard configs from Firebase with QR, copy, and download actions.
@@ -49,13 +50,13 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 [src/helpers/APIHelper.ts](src/helpers/APIHelper.ts)
 
-* Typed fetch wrapper for regional FastAPI calls.
-* Adds Firebase bearer auth, sends JSON, and normalizes FastAPI error responses.
+* Typed fetch wrapper for apex and regional FastAPI calls.
+* Adds Firebase bearer auth where required, sends JSON, and normalizes FastAPI error responses.
 
 [src/helpers/apiEndpoints.ts](src/helpers/apiEndpoints.ts)
 
-* Builds regional API URLs.
-* Uses `REACT_APP_API_ORIGIN` for local/dev overrides and derived `https://<regionId>.<origin>/api/*` URLs for production.
+* Builds apex and regional API URLs.
+* Uses `REACT_APP_API_ORIGIN` for local/dev overrides and derived `https://api.<origin>/api/*` / `https://<regionId>.<origin>/api/*` URLs for production.
 
 [src/helpers/firebaseDbHelper.ts](src/helpers/firebaseDbHelper.ts)
 
@@ -64,7 +65,7 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 [src/stores/ociRegionsStore.ts](src/stores/ociRegionsStore.ts)
 
 * Zustand store for enabled region documents.
-* Reads `Regions` from Firestore, matching security-rule requirements for non-admin users.
+* Reads the display-safe region list from `GET /regions`, then fans out authenticated capacity requests per region.
 
 [src/helpers/regionsHelper.ts](src/helpers/regionsHelper.ts), [src/helpers/usersHelper.ts](src/helpers/usersHelper.ts), [src/helpers/vpnStatus.ts](src/helpers/vpnStatus.ts)
 
@@ -73,9 +74,11 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 ## Data Flow
 
 * Firebase Auth owns browser sign-in state and ID tokens.
-* Firestore provides dashboard reads for enabled regions, users, roles, client documents, and stored WireGuard configs.
-* The regional FastAPI owns protected mutations:
+* Firestore provides dashboard reads for users, roles, client documents, and stored WireGuard configs.
+* The apex FastAPI host owns global/read API calls:
+  * `GET /api/regions`
   * `POST /api/auth/check-access`
+* Regional FastAPI hosts own protected regional calls:
   * `GET /api/capacity`
   * `POST /api/clients`
   * `DELETE /api/clients/{clientId}`
@@ -84,9 +87,10 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 ## API Origin Behavior
 
+* Production builds derive apex API URLs from the current frontend origin: `https://api.<origin>/api/*`.
 * Production builds derive each regional API URL from the selected region and the current frontend origin: `https://<regionId>.<origin>/api/*`, where `<origin>` comes from `window.location.host`. For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gocloudlaunch.com/api/*`.
 * `REACT_APP_API_ORIGIN` is a local/dev override only. When set, API helpers send all API calls to `${REACT_APP_API_ORIGIN}/api/*` instead of deriving a regional hostname. Use it to point at a locally running regional API.
-* Production builds leave `REACT_APP_API_ORIGIN` unset. There is no global API router and no Cloudflare Worker dev proxy.
+* Production builds leave `REACT_APP_API_ORIGIN` unset. There is no Cloudflare Worker dev proxy.
 
 ## Running the React Site
 

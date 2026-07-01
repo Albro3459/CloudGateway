@@ -1,4 +1,4 @@
-import { buildAccessCheckApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
+import { buildAccessCheckApiEndpoint, buildApexApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
 import type { ApiRegionOption } from "./apiEndpoints";
 
 type FastApiError = {
@@ -76,6 +76,16 @@ export type RegionCapacityResponse = {
     regionId: string;
     capacityLimit: number;
     allocatedClientCount: number;
+};
+
+export type RegionSummary = {
+    regionId: string;
+    displayName: string;
+    displayOrder: number;
+};
+
+export type RegionsResponse = {
+    regions: RegionSummary[];
 };
 
 export type RegionSyncResponse = {
@@ -186,6 +196,36 @@ const sendJsonRequest = async <TResponse>(
         };
     }
 };
+
+const sendUnauthenticatedGet = async <TResponse>(
+    endpoint: string,
+): Promise<ApiHelperResult<TResponse>> => {
+    try {
+        const response = await fetch(endpoint, {
+            method: "GET",
+            redirect: "follow",
+        });
+        const result = await parseApiResponse(response);
+
+        if (!response.ok) {
+            return getApiFailure(result, response.status);
+        }
+
+        return {
+            success: true,
+            data: result as TResponse,
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown API Error",
+        };
+    }
+};
+
+export const fetchRegions = (): Promise<ApiHelperResult<RegionsResponse>> => (
+    sendUnauthenticatedGet<RegionsResponse>(buildApexApiEndpoint("regions"))
+);
 
 export const getRegionCapacity = (
     regionId: string,

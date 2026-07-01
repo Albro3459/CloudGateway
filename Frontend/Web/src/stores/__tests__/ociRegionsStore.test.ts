@@ -1,12 +1,5 @@
-jest.mock("firebase/firestore", () => ({
-    collection: jest.fn(),
-    getDocs: jest.fn(),
-    getFirestore: jest.fn(),
-    query: jest.fn((...args) => args),
-    where: jest.fn(),
-}));
-
 jest.mock("../../helpers/APIHelper", () => ({
+    fetchRegions: jest.fn(),
     getRegionCapacity: jest.fn(),
 }));
 
@@ -16,25 +9,24 @@ describe("ociRegionsStore", () => {
         jest.resetModules();
     });
 
-    const mockRegionDocs = () => {
-        const { getDocs } = require("firebase/firestore");
-        getDocs.mockResolvedValue({
-            docs: [
-                {
-                    id: "us-sanjose-1",
-                    data: () => ({
+    const mockRegions = () => {
+        const { fetchRegions } = require("../../helpers/APIHelper");
+        fetchRegions.mockResolvedValue({
+            success: true,
+            data: {
+                regions: [
+                    {
+                        regionId: "us-sanjose-1",
                         displayName: "San Jose",
-                        enabled: true,
                         displayOrder: 1,
-                        capacityLimit: 20,
-                    }),
-                },
-            ],
+                    },
+                ],
+            },
         });
     };
 
     it("merges matching regional capacity responses", async () => {
-        mockRegionDocs();
+        mockRegions();
         const { getRegionCapacity } = require("../../helpers/APIHelper");
         getRegionCapacity.mockResolvedValue({
             success: true,
@@ -61,7 +53,7 @@ describe("ociRegionsStore", () => {
     });
 
     it("ignores mismatched regional capacity responses", async () => {
-        mockRegionDocs();
+        mockRegions();
         const { getRegionCapacity } = require("../../helpers/APIHelper");
         getRegionCapacity.mockResolvedValue({
             success: true,

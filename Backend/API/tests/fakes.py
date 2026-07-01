@@ -29,6 +29,7 @@ from src.repository import (
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    region_display_order,
     require_region,
     utc_now,
 )
@@ -161,6 +162,12 @@ class FakeRepository(FirebaseRepository):
 
     def get_region(self, region_id: str) -> RegionDoc | None:
         return self.regions.get(region_id)
+
+    def list_enabled_regions(self) -> list[RegionDoc]:
+        return sorted(
+            [region for region in self.regions.values() if region.enabled],
+            key=region_display_order,
+        )
 
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
         region = RegionDoc(

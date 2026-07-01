@@ -28,14 +28,15 @@ none of the edge protections (DDoS, rate limiting, WAF) are bypassed.
 * `example.cloud-gateway.pem` / `example.cloud-gateway.key` - committed
   placeholder cert/key.
 * `example.gocloudlaunch.com.txt` - committed example of the full DNS record set (frontend
-  GitHub Pages, per-region API + WireGuard records, email DKIM/SPF/DMARC).
+  GitHub Pages, apex API, per-region API + WireGuard records, email DKIM/SPF/DMARC).
 
 ## Generating the Origin CA certificate
 
 Cloudflare dashboard -> **SSL/TLS -> Origin Server -> Create Certificate**:
 
-* Hostnames: `gocloudlaunch.com, *.gocloudlaunch.com` (the wildcard covers every regional API
-  host, e.g. `us-chicago-1.gocloudlaunch.com`).
+* Hostnames: `gocloudlaunch.com, *.gocloudlaunch.com` (the wildcard covers the apex API
+  host and every regional API host, e.g. `api.gocloudlaunch.com` and
+  `us-chicago-1.gocloudlaunch.com`).
 * Validity: 15 years.
 * Format: PEM.
 
@@ -66,6 +67,9 @@ files and reloading Caddy).
 See `example.gocloudlaunch.com.txt` for the full set. Summary:
 
 * `gocloudlaunch.com` (apex) -> GitHub Pages IPs, **proxied** - hosts the React frontend.
+* `api.gocloudlaunch.com` -> the public IPv4 for the enabled `displayOrder: 1` region,
+  **proxied** (orange) - manually managed global API host for `GET /regions` and
+  `POST /auth/check-access`. Apply a Cloudflare rate-limit rule for `GET /api/regions`.
 * `<regionId>.gocloudlaunch.com` -> server public IPv4, **proxied** (orange) - regional API.
   **Terraform-managed** (`cloudflare_record.api`).
 * `wg.<regionId>.gocloudlaunch.com` -> server public IPv4, **DNS-only** (grey) - WireGuard
@@ -77,7 +81,7 @@ The two per-region `A` records are created/updated by `./scripts/terraform.sh <r
 from the instance's public IP (they self-heal on rebuild), using a Cloudflare API token
 with **Zone: gocloudlaunch.com -> DNS: Edit**. The token lives only on the operator
 machine (`cloudflare_api_token` tfvar), never on a host. The apex/www/email records stay
-manual. Before the first apply for a region, delete any pre-existing manual `<regionId>` /
+manual, including `api.gocloudlaunch.com`. Before the first apply for a region, delete any pre-existing manual `<regionId>` /
 `wg.<regionId>` record or import the canonical record; the wrapper preflight stops on
 unmanaged or duplicate regional records before Terraform can create more DNS state.
 

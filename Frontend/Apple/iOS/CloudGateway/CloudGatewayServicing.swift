@@ -62,7 +62,7 @@ protocol CloudGatewayServicing {
     func signOut() throws
     func idToken() async throws -> String
     func fetchUserRole(uid: String) async throws -> String?
-    func fetchEnabledRegions() async throws -> [CloudGatewayRegion]
+    func fetchRegions() async throws -> [CloudGatewayRegion]
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck
     func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion]
     func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient]

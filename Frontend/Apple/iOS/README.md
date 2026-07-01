@@ -11,10 +11,11 @@ Both targets should use the app group `group.com.gocloudlaunch.gateway`.
 
 ## Firebase Config Manager
 
-The app target uses Firebase email/password auth, reads Firestore directly, and verifies access through the first enabled region API endpoint:
+The app target uses Firebase email/password auth, reads client and role state from Firestore, fetches enabled regions from the apex API, and verifies access through the apex API endpoint:
 
 ```text
-https://<regionId>.gocloudlaunch.com/api/auth/check-access
+GET  https://api.gocloudlaunch.com/api/regions
+POST https://api.gocloudlaunch.com/api/auth/check-access
 ```
 
 The signed-in user can browse enabled regions, see region capacity, filter owned configs by region, create a config in the selected region, delete a selected config, refresh Firestore/API state, and install/start/stop a chosen WireGuard config internally. The app does not auto-select a VPN config, and it does not use pasted configs, QR codes, the WireGuard app, or manual config files.

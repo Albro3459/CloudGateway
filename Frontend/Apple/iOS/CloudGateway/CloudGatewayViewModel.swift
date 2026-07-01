@@ -264,7 +264,7 @@ final class CloudGatewayViewModel: ObservableObject {
         signedInEmail = user.email
         signedInUid = user.uid
         let token = try await service.idToken()
-        let enabledRegions = try await service.fetchEnabledRegions()
+        let enabledRegions = try await service.fetchRegions()
         guard !enabledRegions.isEmpty else {
             throw CloudGatewayAppError.noEnabledRegions
         }

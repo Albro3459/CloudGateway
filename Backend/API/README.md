@@ -2,10 +2,16 @@
 
 FastAPI control plane for one shared regional WireGuard host. Each deployed OCI region runs its own copy of this API on the VM that owns the region's `wg0` interface.
 
-The API is regional, not global:
+Each region runs the same API. Regional hostnames serve region-scoped traffic, and
+`api.gocloudlaunch.com` points at the display-order-1 region for global/read traffic:
 
 ```text
 Dashboard
+  -> https://api.<origin>/api/*
+      -> Cloudflare proxied DNS
+      -> Caddy on the display-order-1 regional OCI host
+      -> FastAPI on 127.0.0.1
+      -> Firebase Admin SDK
   -> https://<regionId>.<origin>/api/*
       -> Cloudflare proxied DNS
       -> Caddy on the regional OCI host
@@ -14,7 +20,7 @@ Dashboard
       -> local WireGuard commands
 ```
 
-Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/capacity`, `/clients`, `/clients/{clientId}`, `/users`, and `/auth/check-access`.
+Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/users`, and `/auth/check-access`.
 
 ## Runtime Model
 
@@ -28,7 +34,7 @@ See [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md) for Terra
 
 * Verify Firebase bearer tokens on protected requests.
 * Enforce provisioned-user and admin-only access rules.
-* Read users, roles, regions, and client documents from Firestore.
+* Read users, roles, regions, and client documents from Firestore, including unauthenticated display-safe region discovery through the apex host.
 * Reserve client IDs, tunnel IPs, and regional capacity in Firestore transactions.
 * Generate per-client WireGuard keypairs and client config text.
 * Apply live `wg0` peer changes with `wg set` under a local lock.
@@ -92,7 +98,8 @@ Firebase is the product source of truth for users, regions, roles, limits, store
 All request/response JSON uses camelCase.
 
 * `GET /health`: unauthenticated health check for the regional API.
-* `POST /auth/check-access`: verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
+* `GET /regions`: unauthenticated apex route returning enabled region names and display order only.
+* `POST /auth/check-access`: apex route that verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
 * `GET /capacity`: returns local regional capacity, counting `creating` plus `active` client docs.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.

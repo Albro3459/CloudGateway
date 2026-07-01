@@ -45,6 +45,18 @@ export const buildRegionalApiEndpoint = (
     return `https://${regionId}.${getFrontendOriginHost(location)}/api/${apiPath}`;
 };
 
+export const buildApexApiEndpoint = (
+    path: string,
+    location: LocationLike = getWindowLocation(),
+) => {
+    const apiPath = normalizeApiPath(path);
+    if (API_ORIGIN) {
+        return `${API_ORIGIN}/api/${apiPath}`;
+    }
+
+    return `https://api.${getFrontendOriginHost(location)}/api/${apiPath}`;
+};
+
 export type ApiRegionOption = {
     regionId?: string;
     enabled?: boolean;
@@ -88,14 +100,6 @@ export const buildAccessCheckApiEndpoint = (
     regions: ApiRegionOption[] | null | undefined,
     location: LocationLike = getWindowLocation(),
 ) => {
-    if (API_ORIGIN) {
-        return `${API_ORIGIN}/api/auth/check-access`;
-    }
-
-    const regionId = getFirstEnabledRegionId(regions);
-    if (!regionId) {
-        throw new Error("No enabled regions are available for access verification");
-    }
-
-    return buildRegionalApiEndpoint(regionId, "auth/check-access", location);
+    void regions;
+    return buildApexApiEndpoint("auth/check-access", location);
 };

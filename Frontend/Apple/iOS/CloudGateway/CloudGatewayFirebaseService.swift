@@ -38,6 +38,16 @@ struct CloudGatewayCapacityResponse: Decodable, Equatable {
     let allocatedClientCount: Int
 }
 
+struct CloudGatewayRegionsResponse: Decodable, Equatable {
+    struct Region: Decodable, Equatable {
+        let regionId: String
+        let displayName: String
+        let displayOrder: Int
+    }
+
+    let regions: [Region]
+}
+
 final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let db = Firestore.firestore()
     private let apiOriginHost = "gocloudlaunch.com"
@@ -106,12 +116,21 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return string(snapshot.data()?["roleId"])
     }
 
-    func fetchEnabledRegions() async throws -> [CloudGatewayRegion] {
-        let snapshot = try await getDocuments(
-            db.collection("Regions").whereField("enabled", isEqualTo: true)
+    func fetchRegions() async throws -> [CloudGatewayRegion] {
+        let response: CloudGatewayRegionsResponse = try await sendUnauthenticatedRequest(
+            url: apexAPIURL(path: "regions"),
+            method: "GET"
         )
-        let regions = snapshot.documents.compactMap { document in
-            region(from: document.documentID, data: document.data())
+        let regions: [CloudGatewayRegion] = response.regions.compactMap { region in
+            guard !region.regionId.isEmpty, !region.displayName.isEmpty else {
+                return nil
+            }
+            return CloudGatewayRegion(
+                regionId: region.regionId,
+                displayName: region.displayName,
+                enabled: true,
+                displayOrder: region.displayOrder
+            )
         }
         return CloudGatewayConfigSelection.sortedRegions(regions)
     }
@@ -137,12 +156,14 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
-        try await sendJSONRequest(
-            url: firstEnabledRegionURL(regions: regions, path: "auth/check-access"),
+        _ = regions
+        let response: CloudGatewayAccessCheck = try await sendJSONRequest(
+            url: apexAPIURL(path: "auth/check-access"),
             method: "POST",
             idToken: idToken,
             body: EmptyRequest()
         )
+        return response
     }
 
     func fetchCapacity(regionId: String, idToken: String) async throws -> CloudGatewayCapacityResponse {
@@ -242,19 +263,6 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         }
     }
 
-    private func region(from documentId: String, data: [String: Any]) -> CloudGatewayRegion? {
-        let regionId = string(data["regionId"]) ?? documentId
-        guard let displayName = string(data["displayName"]), !regionId.isEmpty else {
-            return nil
-        }
-        return CloudGatewayRegion(
-            regionId: regionId,
-            displayName: displayName,
-            enabled: bool(data["enabled"]),
-            displayOrder: int(data["displayOrder"]) ?? 1000
-        )
-    }
-
     private func client(
         from documentId: String,
         regionFallback: String?,
@@ -302,26 +310,6 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
-    private func bool(_ value: Any?) -> Bool {
-        if let value = value as? Bool {
-            return value
-        }
-        if let value = value as? NSNumber {
-            return value.boolValue
-        }
-        return false
-    }
-
-    private func int(_ value: Any?) -> Int? {
-        if let value = value as? Int {
-            return value
-        }
-        if let value = value as? NSNumber {
-            return value.intValue
-        }
-        return nil
-    }
-
     private func date(_ value: Any?) -> Date? {
         if let value = value as? Timestamp {
             return value.dateValue()
@@ -329,11 +317,12 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return value as? Date
     }
 
-    private func firstEnabledRegionURL(regions: [CloudGatewayRegion], path: String) throws -> URL {
-        guard let region = CloudGatewayConfigSelection.sortedRegions(regions).first(where: \.enabled) else {
-            throw CloudGatewayAppError.noEnabledRegions
-        }
-        return regionalAPIURL(regionId: region.regionId, path: path)
+    private func apexAPIURL(path: String) -> URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "api.\(apiOriginHost)"
+        components.path = "/api/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
+        return components.url!
     }
 
     private func regionalAPIURL(regionId: String, path: String) -> URL {
@@ -367,6 +356,15 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         request.httpMethod = method
         request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return try await send(request)
+    }
+
+    private func sendUnauthenticatedRequest<Response: Decodable>(
+        url: URL,
+        method: String
+    ) async throws -> Response {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
         return try await send(request)
     }
 

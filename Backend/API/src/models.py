@@ -19,6 +19,16 @@ class HealthResponse(ApiModel):
     region_id: str
 
 
+class RegionSummary(ApiModel):
+    region_id: str
+    display_name: str
+    display_order: int
+
+
+class RegionsResponse(ApiModel):
+    regions: list[RegionSummary]
+
+
 class CreateClientRequest(ApiModel):
     region_id: str = Field(min_length=1)
     client_name: str | None = None

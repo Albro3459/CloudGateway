@@ -153,6 +153,10 @@ def assert_user_limit_available(*, owner_allocated_count: int, per_region_client
         raise LimitReachedError()
 
 
+def region_display_order(region: RegionDoc) -> tuple[int, str]:
+    return (region.display_order if region.display_order is not None else 1000, region.region_id)
+
+
 def _first_unused_tunnel_ip(*, cidr: str, used: set[str], prefix_length: int) -> str:
     hosts = ip_network(cidr, strict=False).hosts()
     try:
@@ -190,6 +194,10 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def get_region(self, region_id: str) -> RegionDoc | None:
         """Return a region document, or None when it does not exist."""
+
+    @abstractmethod
+    def list_enabled_regions(self) -> list[RegionDoc]:
+        """Return enabled regions sorted by display order."""
 
     @abstractmethod
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:

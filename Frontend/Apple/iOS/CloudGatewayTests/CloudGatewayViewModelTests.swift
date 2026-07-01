@@ -19,16 +19,16 @@ final class CloudGatewayViewModelTests: XCTestCase {
         return service
     }
 
-    // MARK: - Dedup (the fetchEnabledRegions-once fix)
+    // MARK: - Dedup (the fetchRegions-once fix)
 
-    func testRefreshFetchesEnabledRegionsExactlyOnce() async {
+    func testRefreshFetchesRegionsExactlyOnce() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
         let viewModel = makeViewModel(service)
 
         await viewModel.refresh()
 
-        XCTAssertEqual(service.fetchEnabledRegionsCallCount, 1)
+        XCTAssertEqual(service.fetchRegionsCallCount, 1)
         XCTAssertEqual(service.addCapacityCallCount, 1)
         XCTAssertNil(viewModel.errorText)
         XCTAssertEqual(viewModel.selectedRegionId, "us-sanjose-1")

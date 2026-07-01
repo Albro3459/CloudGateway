@@ -26,6 +26,8 @@ from .models import (
     DeleteClientRequest,
     DeleteClientResponse,
     HealthResponse,
+    RegionSummary,
+    RegionsResponse,
 )
 from .notifications import create_ses_client, send_access_grant_email
 from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, require_region, utc_now
@@ -40,6 +42,20 @@ T = TypeVar("T")
 @router.get("/health", response_model=HealthResponse)
 def health(request: Request) -> HealthResponse:
     return HealthResponse(region_id=request.app.state.settings.region_id)
+
+
+@router.get("/regions", response_model=RegionsResponse)
+def list_regions(request: Request) -> RegionsResponse:
+    return RegionsResponse(
+        regions=[
+            RegionSummary(
+                region_id=region.region_id,
+                display_name=region.display_name,
+                display_order=region.display_order if region.display_order is not None else 1000,
+            )
+            for region in request.app.state.repository.list_enabled_regions()
+        ]
+    )
 
 
 @router.post("/auth/check-access", response_model=AccessCheckResponse)

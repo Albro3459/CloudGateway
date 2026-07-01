@@ -36,6 +36,7 @@ from .repository import (
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    region_display_order,
     require_region,
     utc_now,
 )
@@ -120,6 +121,11 @@ class FirestoreRepository(FirebaseRepository):
         if not doc.exists:
             return None
         return _region_from_data(doc.to_dict() or {}, region_id)
+
+    def list_enabled_regions(self) -> list[RegionDoc]:
+        snapshots = self._db().collection("Regions").where(filter=FieldFilter("enabled", "==", True)).get()
+        regions = [_region_from_snapshot(snapshot, snapshot.id) for snapshot in snapshots]
+        return sorted((region for region in regions if region is not None and region.enabled), key=region_display_order)
 
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
         db = self._db()

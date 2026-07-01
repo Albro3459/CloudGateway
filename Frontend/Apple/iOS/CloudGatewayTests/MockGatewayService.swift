@@ -14,7 +14,7 @@ final class MockGatewayService: CloudGatewayServicing {
     // Injectable errors.
     var idTokenError: Error?
     var signInError: Error?
-    var fetchEnabledRegionsError: Error?
+    var fetchRegionsError: Error?
     var checkAccessError: Error?
     var fetchUserRoleError: Error?
     var fetchOwnedClientsError: Error?
@@ -23,7 +23,7 @@ final class MockGatewayService: CloudGatewayServicing {
     var syncRegionError: Error?
 
     // Call counters.
-    private(set) var fetchEnabledRegionsCallCount = 0
+    private(set) var fetchRegionsCallCount = 0
     private(set) var fetchUserRoleCallCount = 0
     private(set) var fetchOwnedClientsCallCount = 0
     private(set) var addCapacityCallCount = 0
@@ -71,10 +71,10 @@ final class MockGatewayService: CloudGatewayServicing {
         return userRole
     }
 
-    func fetchEnabledRegions() async throws -> [CloudGatewayRegion] {
-        fetchEnabledRegionsCallCount += 1
-        if let fetchEnabledRegionsError {
-            throw fetchEnabledRegionsError
+    func fetchRegions() async throws -> [CloudGatewayRegion] {
+        fetchRegionsCallCount += 1
+        if let fetchRegionsError {
+            throw fetchRegionsError
         }
         return CloudGatewayConfigSelection.sortedRegions(enabledRegions)
     }

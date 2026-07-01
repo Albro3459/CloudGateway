@@ -13,17 +13,20 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 ## External API URLs
 
+- Apex API base URL is `https://api.<origin>/api`, for example
+  `https://api.gocloudlaunch.com/api`.
 - Regional API base URL is `https://<regionId>.<origin>/api`.
 - `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com`.
-- For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls
-  `https://us-sanjose-1.gocloudlaunch.com/api/*`.
+- For a frontend loaded from `https://gocloudlaunch.com`, global/read calls use
+  `https://api.gocloudlaunch.com/api/*`; region `us-sanjose-1` mutations and capacity calls
+  use `https://us-sanjose-1.gocloudlaunch.com/api/*`.
 - FastAPI internal routes do not include `/api`. Caddy strips `/api/*` before proxying to FastAPI.
 - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API
-  calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and the regional API URL is
-  derived from `window.location.origin` plus the selected `regionId`.
-- There is no global API router and no frontend base-domain config.
+  calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and API URLs are derived
+  from `window.location.origin`.
+- The apex API host serves global/read traffic: `GET /regions` and `POST /auth/check-access`.
 - Native Apple clients use the same production regional hostname shape with origin
-  `gocloudlaunch.com`. Access verification uses an enabled region endpoint; capacity, create,
+  `gocloudlaunch.com`, and use `api.gocloudlaunch.com` for apex calls. Capacity, create,
   delete, and sync calls use the selected or target config region.
 
 ## Routes
@@ -37,6 +40,46 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 {
   "status": "ok",
   "regionId": "us-sanjose-1"
+}
+```
+
+### `GET /regions`
+
+- Apex. Unauthenticated.
+- Returns enabled regions only, sorted by `displayOrder`. This is display-safe discovery data
+  only; it never includes capacity, endpoint IPs, hostnames, WireGuard public keys, DNS settings,
+  health state, or `enabled`.
+- Response `200`:
+
+```json
+{
+  "regions": [
+    {
+      "regionId": "us-sanjose-1",
+      "displayName": "San Jose",
+      "displayOrder": 1
+    },
+    {
+      "regionId": "us-ashburn-1",
+      "displayName": "Ashburn",
+      "displayOrder": 2
+    }
+  ]
+}
+```
+
+### `POST /auth/check-access`
+
+- Apex. Requires Firebase bearer auth.
+- Verifies that the authenticated user is provisioned and returns their role. Unprovisioned
+  users are denied and disabled as before.
+- Response `200`:
+
+```json
+{
+  "userId": "firebase-uid",
+  "email": "user@example.com",
+  "role": "user"
 }
 ```
 
@@ -73,6 +116,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 - Requires Firebase bearer auth for a provisioned user.
 - Regional: returns capacity for this API server's local region only.
+- Signed-in clients fan this out per region after `GET /regions`; guests never call it.
 - `allocatedClientCount` counts client docs with status `creating` or `active`.
 - Response `200`:
 

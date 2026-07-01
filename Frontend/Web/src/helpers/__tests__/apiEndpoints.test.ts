@@ -9,12 +9,16 @@ describe("apiEndpoints", () => {
     it("uses REACT_APP_API_ORIGIN for local/dev override", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "https://api.example.test/";
-        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
+        const { buildApexApiEndpoint, buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "/clients", {
             hostname: "localhost",
             host: "localhost:3000",
         })).toBe("https://api.example.test/api/clients");
+        expect(buildApexApiEndpoint("/regions", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("https://api.example.test/api/regions");
     });
 
     it("derives production regional URLs from the current frontend host", async () => {
@@ -26,6 +30,17 @@ describe("apiEndpoints", () => {
             hostname: "gocloudlaunch.com",
             host: "gocloudlaunch.com:443",
         })).toBe("https://us-sanjose-1.gocloudlaunch.com/api/clients");
+    });
+
+    it("derives production apex URLs from the current frontend host", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildApexApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildApexApiEndpoint("regions", {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com:443",
+        })).toBe("https://api.gocloudlaunch.com/api/regions");
     });
 
     it("preserves ports for localhost derived URLs", async () => {
@@ -76,7 +91,7 @@ describe("apiEndpoints", () => {
         })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/users");
     });
 
-    it("selects first enabled region for access checks", async () => {
+    it("uses the apex host for access checks", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
         const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
@@ -88,7 +103,7 @@ describe("apiEndpoints", () => {
         ], {
             hostname: "gocloudlaunch.com",
             host: "gocloudlaunch.com",
-        })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/auth/check-access");
+        })).toBe("https://api.gocloudlaunch.com/api/auth/check-access");
     });
 });
 

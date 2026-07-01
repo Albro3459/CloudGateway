@@ -97,6 +97,29 @@ describe("APIHelper", () => {
         expect(result).toEqual({ success: true, data: responseBody });
     });
 
+    it("fetches regions through the unauthenticated apex endpoint", async () => {
+        const responseBody = {
+            regions: [
+                {
+                    regionId: "us-sanjose-1",
+                    displayName: "San Jose",
+                    displayOrder: 1,
+                },
+            ],
+        };
+        mockFetch.mockResolvedValue(mockJsonResponse(responseBody));
+        const { fetchRegions } = require("../APIHelper");
+
+        const result = await fetchRegions();
+        const request = mockFetch.mock.calls[0][1] as RequestInit;
+
+        expect(mockFetch).toHaveBeenCalledWith("https://api.example.test/api/regions", expect.any(Object));
+        expect(request.method).toBe("GET");
+        expect(request.headers).toBeUndefined();
+        expect(request.body).toBeUndefined();
+        expect(result).toEqual({ success: true, data: responseBody });
+    });
+
     it("returns typed FastAPI error details", async () => {
         mockFetch.mockResolvedValue(mockJsonResponse({
             error: {
@@ -129,7 +152,7 @@ describe("APIHelper", () => {
         });
     });
 
-    it("checks account access through the regional auth endpoint", async () => {
+    it("checks account access through the apex auth endpoint", async () => {
         const responseBody = {
             userId: "user-1",
             email: "user@example.com",

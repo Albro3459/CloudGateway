@@ -38,8 +38,8 @@ The fetched bootstrap installs and configures:
 * Prebuilt CloudGateway Caddy binary with `github.com/mholt/caddy-ratelimit`, downloaded from the pinned `caddy_binary_tag` GitHub Release and verified against `caddy_binary_sha256`, listening on public `80`/`443`:
   * serves the Cloudflare Origin CA certificate (`origin_cert`/`origin_key`) on the origin TLS hop - ACME cannot validate a Cloudflare-proxied hostname
   * Cloudflare Authenticated Origin Pulls required
-  * exact regional Host/SNI allowlist; unknown hostnames are rejected
-  * rate limits on `/api/*`, including `/api/health`
+  * exact Host/SNI allowlist for the regional API hostname plus `api.gocloudlaunch.com`; unknown hostnames are rejected
+  * rate limits on `/api/*`, including `/api/health` and unauthenticated `/api/regions`
   * strips `/api/*` and proxies only to `127.0.0.1:<fastapi_port>`
   * logs API HTTP requests only, never VPN traffic
 

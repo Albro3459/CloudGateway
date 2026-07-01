@@ -1,7 +1,6 @@
 import { create } from 'zustand';
-import { collection, getDocs, getFirestore, query, where } from 'firebase/firestore';
-import { getRegionCapacity } from '../helpers/APIHelper';
-import { parseRegionDocument, Region, sortRegions } from '../helpers/regionsHelper';
+import { fetchRegions, getRegionCapacity } from '../helpers/APIHelper';
+import { Region, sortRegions } from '../helpers/regionsHelper';
 
 interface OciRegionsStore {
   ociRegions: Region[] | null;
@@ -36,20 +35,17 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
     set({ loading: true, error: null });
 
     try {
-      const db = getFirestore();
-      // Security rules only allow provisioned users to read enabled regions, so
-      // the query must match or it is rejected outright (an unprovisioned user's
-      // read is denied, which surfaces as a generic access error at sign-in).
-      const regionsSnapshot = await getDocs(query(collection(db, "Regions"), where("enabled", "==", true)));
+      const regionsResult = await fetchRegions();
+      if (!regionsResult.success) {
+        throw new Error(regionsResult.error);
+      }
       const regions = sortRegions(
-        regionsSnapshot.docs.reduce<Region[]>((result, regionDoc) => {
-          const region = parseRegionDocument(regionDoc.id, regionDoc.data());
-          if (region) {
-            result.push(region);
-          }
-
-          return result;
-        }, [])
+        regionsResult.data.regions.map<Region>((region) => ({
+          regionId: region.regionId,
+          displayName: region.displayName,
+          enabled: true,
+          displayOrder: region.displayOrder,
+        }))
       );
       const regionsWithCapacity = await Promise.all(
         regions.map(async (region) => {

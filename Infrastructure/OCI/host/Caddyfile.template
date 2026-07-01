@@ -3,7 +3,7 @@
 	order rate_limit before reverse_proxy
 }
 
-${API_HOSTNAME} {
+${API_HOSTNAME}, api.gocloudlaunch.com {
 	# Cloudflare Origin CA cert (ACME can't validate a proxied hostname). Edge trusts it
 	# in Full (strict). client_auth enforces Authenticated Origin Pulls (mTLS).
 	tls ${ORIGIN_CERT_PATH} ${ORIGIN_KEY_PATH} {
