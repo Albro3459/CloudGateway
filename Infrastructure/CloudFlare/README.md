@@ -67,8 +67,8 @@ files and reloading Caddy).
 See `example.gocloudlaunch.com.txt` for the full set. Summary:
 
 * `gocloudlaunch.com` (apex) -> GitHub Pages IPs, **proxied** - hosts the React frontend.
-* `api.gocloudlaunch.com` -> the public IPv4 for the enabled `displayOrder: 1` region,
-  **proxied** (orange) - manually managed global API host for `GET /regions` and
+* `api.gocloudlaunch.com` -> `us-sanjose-1.gocloudlaunch.com` as a **proxied** (orange)
+  CNAME - manually managed global API host for `GET /regions` and
   `POST /auth/check-access`. Apply a Cloudflare rate-limit rule for `GET /api/regions`.
 * `<regionId>.gocloudlaunch.com` -> server public IPv4, **proxied** (orange) - regional API.
   **Terraform-managed** (`cloudflare_record.api`).

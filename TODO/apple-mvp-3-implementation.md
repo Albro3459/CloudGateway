@@ -26,7 +26,7 @@ Each step lands independently and keeps `./scripts/test.sh` green.
 
 ## Program Decisions
 
-1. **Apex `api.gocloudlaunch.com`** — A record → the `displayOrder: 1` region's IP; every region's Caddy also serves the subdomain (cert reused); Cloudflare-proxied and rate-limited. Carries global/read traffic; region-specific mutations hit `<regionId>.gocloudlaunch.com`.
+1. **Apex `api.gocloudlaunch.com`** — proxied CNAME → `us-sanjose-1.gocloudlaunch.com`; every region's Caddy also serves the subdomain (cert reused); Cloudflare-proxied and rate-limited. Carries global/read traffic; region-specific mutations hit `<regionId>.gocloudlaunch.com`.
 2. **`GET /regions`** (apex, unauthenticated) = region list only (`regionId`, `displayName`, `displayOrder`), no capacity; the single region-list source for every client. **`GET /capacity`** (region host, authenticated) = per-region capacity, fanned out by signed-in clients only.
 3. **Guests** are tokenless and see region name/order only.
 4. **Sign-out** leaves the installed tunnel in place and only hides the in-app config UI (accounts are device-independent).

@@ -8,7 +8,7 @@ Goal: add a global apex host so guests (and all clients) can discover regions wi
 
 Split traffic by whether it touches a specific region's live WireGuard interface or reports that region's own state.
 
-* **Apex host `api.gocloudlaunch.com`** — a manually created DNS A record pointing at the IP of the first region (the `displayOrder: 1` region). Every region's Caddy gets a small config update to also serve the `api.` subdomain (cert reused). Cloudflare-proxied and rate-limited. Serves global / cross-region traffic:
+* **Apex host `api.gocloudlaunch.com`** — a manually created proxied DNS CNAME alias to `us-sanjose-1.gocloudlaunch.com`. Every region's Caddy gets a small config update to also serve the `api.` subdomain (cert reused). Cloudflare-proxied and rate-limited. Serves global / cross-region traffic:
   * `GET /regions` — **unauthenticated**, used by every client (guest and signed-in). Returns all enabled regions as a display-safe list only — `regionId`, `displayName`, `displayOrder` — and **no capacity**. The single region-list source for all clients. Response shape:
 
     ```json
@@ -36,7 +36,7 @@ Guest region visibility falls out of this: guests call the unauthenticated apex 
 
 ## Infra
 
-* [Infrastructure/CloudFlare](../Infrastructure/CloudFlare): apex DNS A record `api.gocloudlaunch.com` → the `displayOrder: 1` region's IP (manually managed, per the decision to point at whichever region should be first). Cloudflare-proxied with a rate-limit rule on the unauthenticated `GET /regions`.
+* [Infrastructure/CloudFlare](../Infrastructure/CloudFlare): apex DNS CNAME `api.gocloudlaunch.com` → `us-sanjose-1.gocloudlaunch.com` (manually managed). Cloudflare-proxied with a rate-limit rule on the unauthenticated `GET /regions`.
 * [Infrastructure/OCI](../Infrastructure/OCI) Caddy: every region's Caddyfile also accepts the `api.gocloudlaunch.com` host and routes it to the local API, reusing the existing cert. Keep WireGuard traffic on the grey-cloud `wg.<regionId>` records untouched.
 
 ## Client Changes
