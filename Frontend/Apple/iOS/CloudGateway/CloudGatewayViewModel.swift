@@ -7,7 +7,9 @@ import Foundation
 final class CloudGatewayViewModel: ObservableObject {
     @Published var email = ""
     @Published var password = ""
+    #if DEBUG
     @Published var debugWireGuardConfig = ""
+    #endif
     @Published private(set) var signedInEmail: String?
     @Published private(set) var signedInUid: String?
     @Published private(set) var role: String?
@@ -105,11 +107,13 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    #if DEBUG
     func installDebugConfig() async {
         await run {
             apply(try await configManager.installDebugConfig(debugWireGuardConfig))
         }
     }
+    #endif
 
     func startTunnel() async {
         await run {

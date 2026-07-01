@@ -148,7 +148,12 @@ public enum CloudGatewayConfigSelection {
         let regionsById = Dictionary(uniqueKeysWithValues: regions.map { ($0.regionId, $0) })
         return clients
             .filter(\.hasUsableConfig)
-            .map { CloudGatewayClientOption(client: $0, region: regionsById[$0.regionId]) }
+            .compactMap { client in
+                guard let region = regionsById[client.regionId], region.enabled else {
+                    return nil
+                }
+                return CloudGatewayClientOption(client: client, region: region)
+            }
             .sorted(by: compareOptions)
     }
 

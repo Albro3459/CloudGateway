@@ -20,7 +20,7 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(CloudGatewayConfigSelection.sortedRegions(regions).map(\.regionId) == ["us-a", "us-b", "us-z"])
 }
 
-@Test func usableOptionsFilterInactiveAndMissingConfigs() {
+@Test func usableOptionsFilterInactiveMissingConfigsAndUnavailableRegions() {
     let clients = [
         CloudGatewayClient(
             clientId: "active",
@@ -50,16 +50,32 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
             status: .removed,
             wireGuardConfig: usableConfig
         ),
+        CloudGatewayClient(
+            clientId: "missing-region",
+            clientName: "Missing Region",
+            regionId: "us-missing-1",
+            status: .active,
+            wireGuardConfig: usableConfig
+        ),
+        CloudGatewayClient(
+            clientId: "disabled-region",
+            clientName: "Disabled Region",
+            regionId: "us-disabled-1",
+            status: .active,
+            wireGuardConfig: usableConfig
+        ),
     ]
 
     let options = CloudGatewayConfigSelection.usableOptions(
         clients: clients,
         regions: [
-            CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true)
+            CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true),
+            CloudGatewayRegion(regionId: "us-disabled-1", displayName: "Disabled", enabled: false),
         ]
     )
 
     #expect(options.map(\.client.clientId) == ["active"])
+    #expect(options.first?.region == CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true))
 }
 
 @Test func usableOptionsSortByRegionThenClientName() {

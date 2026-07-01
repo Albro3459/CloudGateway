@@ -6,7 +6,7 @@ import WireGuardKit
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var adapter = WireGuardAdapter(with: self) { level, message in
         let logType: OSLogType = level == .error ? .error : .debug
-        os_log("%{public}@", log: .default, type: logType, message)
+        os_log("%{private}@", log: .default, type: logType, message)
     }
 
     override func startTunnel(

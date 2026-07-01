@@ -11,7 +11,9 @@ struct ContentView: View {
                     accountSection
                     tunnelSection
                     configsSection
+                    #if DEBUG
                     debugSection
+                    #endif
                 } else {
                     signInSection
                     tunnelSection
@@ -155,6 +157,7 @@ struct ContentView: View {
         }
     }
 
+    #if DEBUG
     private var debugSection: some View {
         Section("Debug Pasted Config") {
             TextEditor(text: $viewModel.debugWireGuardConfig)
@@ -171,6 +174,7 @@ struct ContentView: View {
             .disabled(viewModel.isWorking || viewModel.debugWireGuardConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
+    #endif
 
     private var statusColor: Color {
         switch viewModel.tunnelStatus {
