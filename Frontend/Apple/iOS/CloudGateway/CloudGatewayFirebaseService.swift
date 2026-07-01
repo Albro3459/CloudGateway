@@ -134,8 +134,7 @@ final class CloudGatewayFirebaseService {
         return CloudGatewayConfigSelection.sortedRegions(regions)
     }
 
-    func fetchEnabledRegionsWithCapacity(idToken: String) async throws -> [CloudGatewayRegion] {
-        let regions = try await fetchEnabledRegions()
+    func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion] {
         var regionsWithCapacity = [CloudGatewayRegion]()
         for region in regions {
             do {
@@ -203,7 +202,7 @@ final class CloudGatewayFirebaseService {
         idToken: String
     ) async throws -> CloudGatewayDeleteClientResponse {
         try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "clients/\(clientId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? clientId)"),
+            url: regionalAPIURL(regionId: regionId, path: "clients/\(clientId)"),
             method: "DELETE",
             idToken: idToken,
             body: DeleteClientRequest(userId: userId, regionId: regionId)

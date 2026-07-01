@@ -290,10 +290,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
         let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
         role = (try? await service.fetchUserRole(uid: user.uid)) ?? access.role
-        let regions = try await service.fetchEnabledRegionsWithCapacity(idToken: token)
-        guard !regions.isEmpty else {
-            throw CloudGatewayAppError.noEnabledRegions
-        }
+        let regions = await service.addCapacity(to: enabledRegions, idToken: token)
         let clients = merge(existingClients: existingClients, fetchedClients: try await service.fetchOwnedClients(uid: user.uid))
         apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
         ensureSelectedRegion()
