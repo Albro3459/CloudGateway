@@ -59,6 +59,8 @@ https://us-sanjose-1.gocloudlaunch.com/api/auth/check-access
 
 for access verification. Region-derived native API routing can replace this later. Firestore region `displayOrder` is still used for display and config-list sorting.
 
+MVP 2 replaced this temporary access-check endpoint with region-derived native API routing. The app now uses the first enabled region for access verification and the selected/config region for capacity, create, delete, and sync calls.
+
 ## Source Of Truth And Cache
 
 Firestore/API state is authoritative. Local Apple storage is a cache of the last known usable config.

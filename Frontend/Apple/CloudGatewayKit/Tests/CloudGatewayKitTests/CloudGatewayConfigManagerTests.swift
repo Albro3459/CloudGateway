@@ -30,6 +30,30 @@ private enum ManagerTestError: Error {
     #expect(await cache.savedSnapshots().isEmpty)
 }
 
+@Test func managerApplyRemoteStateKeepsRegionsAndAllOwnedClients() async throws {
+    let tunnelManager = RecordingTunnelManager()
+    let cache = MemoryConfigCache()
+    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+
+    let state = try await manager.applyRemoteState(
+        regions: [region()],
+        clients: [
+            client(id: "active"),
+            CloudGatewayClient(
+                clientId: "creating",
+                clientName: "Creating",
+                regionId: "us-sanjose-1",
+                status: .creating,
+                wireGuardConfig: nil
+            ),
+        ]
+    )
+
+    #expect(state.regions.map(\.regionId) == ["us-sanjose-1"])
+    #expect(state.clientOptions.map(\.client.clientId) == ["creating", "active"])
+    #expect(state.configOptions.map(\.client.clientId) == ["active"])
+}
+
 @Test func managerInstallSavesCacheAfterTunnelInstallSucceeds() async throws {
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache()
@@ -94,6 +118,30 @@ private enum ManagerTestError: Error {
     #expect(!state.remoteInvalidInstalledConfig)
     #expect(state.staleText == "The installed config has changed remotely. Install the update to refresh the local tunnel.")
     #expect(state.installState(for: state.configOptions[0]) == .updateAvailable)
+}
+
+@Test func managerRemoveInstalledConfigIfMatchesOnlyClearsMatchingLocalTunnel() async throws {
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let cache = MemoryConfigCache(snapshot: cachedSnapshot(clientId: "client-1"))
+    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    _ = try await manager.loadLocalState()
+
+    var state = try await manager.removeInstalledConfigIfMatches(
+        clientId: "other",
+        regionId: "us-sanjose-1"
+    )
+
+    #expect(state.cachedSnapshot?.clientId == "client-1")
+    #expect(await tunnelManager.removeCount() == 0)
+
+    state = try await manager.removeInstalledConfigIfMatches(
+        clientId: "client-1",
+        regionId: "us-sanjose-1"
+    )
+
+    #expect(state.cachedSnapshot == nil)
+    #expect(await tunnelManager.removeCount() == 1)
+    #expect(await cache.clearCount() == 1)
 }
 
 @Test func managerRemoveTunnelClearsCacheAndInstalledState() async throws {

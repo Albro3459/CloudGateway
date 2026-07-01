@@ -20,6 +20,8 @@ public enum CloudGatewayConfigInstallState: Equatable, Sendable {
 }
 
 public struct CloudGatewayConfigManagerState: Equatable, Sendable {
+    public var regions: [CloudGatewayRegion]
+    public var clientOptions: [CloudGatewayClientOption]
     public var configOptions: [CloudGatewayClientOption]
     public var cachedSnapshot: CloudGatewayConfigSnapshot?
     public var tunnelStatus: GatewayTunnelStatus?
@@ -28,6 +30,8 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
     public var remoteInvalidInstalledConfig: Bool
 
     public init(
+        regions: [CloudGatewayRegion] = [],
+        clientOptions: [CloudGatewayClientOption] = [],
         configOptions: [CloudGatewayClientOption] = [],
         cachedSnapshot: CloudGatewayConfigSnapshot? = nil,
         tunnelStatus: GatewayTunnelStatus? = nil,
@@ -35,6 +39,8 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
         lastRefreshDate: Date? = nil,
         remoteInvalidInstalledConfig: Bool = false
     ) {
+        self.regions = regions
+        self.clientOptions = clientOptions
         self.configOptions = configOptions
         self.cachedSnapshot = cachedSnapshot
         self.tunnelStatus = tunnelStatus

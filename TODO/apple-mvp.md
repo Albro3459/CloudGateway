@@ -142,6 +142,37 @@ Done when:
 * The app can reconnect after a config update.
 * The app can remove the VPN profile and local config cleanly.
 
+## MVP 2: Native Config Manager
+
+Goal: make the iOS app a real CloudGateway config manager for signed-in users.
+
+Build:
+
+* Region-aware API routing using `https://<regionId>.gocloudlaunch.com/api/*`.
+* Enabled region picker/filter backed by global Firestore `Regions` reads.
+* Per-region capacity display through `GET /capacity`.
+* Owned config list showing display name, status, and region.
+* Create config flow through `POST /clients` in the selected region.
+* Delete config flow through `DELETE /clients/{clientId}` in the config's region, with destructive confirmation.
+* Refresh state from Firestore/API.
+* Admin-only selected-region peer sync through `POST /admin/sync`, showing counts but not raw peer audit logs.
+* Install/update/start/stop the explicitly selected active config through CloudGatewayKit and the packet tunnel extension.
+
+Done when:
+
+* Firebase/Firestore/API are the authenticated source of truth.
+* Local Apple cache remains only an offline/stale cache and is overwritten by remote truth after auth.
+* The app does not auto-select configs.
+* The app does not use pasted config UI, QR codes, the external WireGuard app, or manual config files.
+* Shared sorting, filtering, reconciliation, and cache behavior are covered by CloudGatewayKit tests.
+* `./scripts/test.sh apple` passes for CloudGatewayKit tests and the unsigned no-device iOS build.
+
+Known limitations:
+
+* There is not yet a dedicated iOS XCTest target for mocked Firebase/API view-model tests.
+* Signed no-device build still depends on local signing/provisioning setup and should be run with `./scripts/test.sh apple --signed` when provisioning is available.
+* Capacity failures are shown as unavailable; create still relies on the regional API for the authoritative capacity/limit rejection.
+
 ## MVP 3: Product Flow
 
 Goal: turn the proof into the first usable CloudGateway iOS app.
@@ -150,11 +181,9 @@ Build:
 
 * Sign in with Apple
 * Account/session handling
-* Region selection
-* Client create/remove flow
-* Config fetch/install flow
 * Connection status and error recovery
 * Basic privacy-safe diagnostics
+* App polish around MVP2 config manager flows
 
 Done when:
 

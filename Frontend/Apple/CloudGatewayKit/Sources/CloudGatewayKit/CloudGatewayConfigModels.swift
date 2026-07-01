@@ -12,17 +12,63 @@ public struct CloudGatewayRegion: Codable, Equatable, Sendable {
     public let displayName: String
     public let enabled: Bool
     public let displayOrder: Int
+    public let capacity: CloudGatewayRegionCapacity?
 
     public init(
         regionId: String,
         displayName: String,
         enabled: Bool,
-        displayOrder: Int = 1000
+        displayOrder: Int = 1000,
+        capacity: CloudGatewayRegionCapacity? = nil
     ) {
         self.regionId = regionId
         self.displayName = displayName
         self.enabled = enabled
         self.displayOrder = displayOrder
+        self.capacity = capacity
+    }
+}
+
+public struct CloudGatewayRegionCapacity: Codable, Equatable, Sendable {
+    public enum Status: String, Codable, Equatable, Sendable {
+        case known
+        case unknown
+    }
+
+    public let status: Status
+    public let limit: Int?
+    public let allocated: Int?
+
+    public init(status: Status, limit: Int? = nil, allocated: Int? = nil) {
+        self.status = status
+        self.limit = limit
+        self.allocated = allocated
+    }
+
+    public static func known(limit: Int, allocated: Int) -> CloudGatewayRegionCapacity {
+        CloudGatewayRegionCapacity(status: .known, limit: limit, allocated: allocated)
+    }
+
+    public static var unknown: CloudGatewayRegionCapacity {
+        CloudGatewayRegionCapacity(status: .unknown)
+    }
+
+    public var isKnown: Bool {
+        status == .known
+    }
+
+    public var isAtCapacity: Bool {
+        guard status == .known, let limit, let allocated else {
+            return false
+        }
+        return allocated >= limit
+    }
+
+    public var displayText: String {
+        guard status == .known, let limit, let allocated else {
+            return "Capacity unavailable"
+        }
+        return "\(allocated) / \(limit) used"
     }
 }
 
@@ -139,6 +185,30 @@ public enum CloudGatewayConfigSelection {
             }
             return lhs.regionId.localizedCaseInsensitiveCompare(rhs.regionId) == .orderedAscending
         }
+    }
+
+    public static func clientOptions(
+        clients: [CloudGatewayClient],
+        regions: [CloudGatewayRegion],
+        includeRemoved: Bool = false
+    ) -> [CloudGatewayClientOption] {
+        let regionsById = Dictionary(uniqueKeysWithValues: regions.map { ($0.regionId, $0) })
+        return clients
+            .filter { includeRemoved || $0.status != .removed }
+            .map { client in
+                CloudGatewayClientOption(client: client, region: regionsById[client.regionId])
+            }
+            .sorted(by: compareOptions)
+    }
+
+    public static func clientOptions(
+        in regionId: String?,
+        options: [CloudGatewayClientOption]
+    ) -> [CloudGatewayClientOption] {
+        guard let regionId, !regionId.isEmpty else {
+            return options
+        }
+        return options.filter { $0.client.regionId == regionId }
     }
 
     public static func usableOptions(

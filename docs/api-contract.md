@@ -22,6 +22,9 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and the regional API URL is
   derived from `window.location.origin` plus the selected `regionId`.
 - There is no global API router and no frontend base-domain config.
+- Native Apple clients use the same production regional hostname shape with origin
+  `gocloudlaunch.com`. Access verification uses an enabled region endpoint; capacity, create,
+  delete, and sync calls use the selected or target config region.
 
 ## Routes
 

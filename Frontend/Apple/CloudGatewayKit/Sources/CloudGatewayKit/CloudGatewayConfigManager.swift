@@ -29,14 +29,31 @@ public actor CloudGatewayConfigManager {
         regions: [CloudGatewayRegion],
         clients: [CloudGatewayClient]
     ) async throws -> CloudGatewayConfigManagerState {
+        state.regions = CloudGatewayConfigSelection.sortedRegions(regions)
+        state.clientOptions = CloudGatewayConfigSelection.clientOptions(
+            clients: clients,
+            regions: state.regions
+        )
         state.configOptions = CloudGatewayConfigSelection.usableOptions(
             clients: clients,
-            regions: regions
+            regions: state.regions
         )
         state.cachedSnapshot = try await cache.load()
         updateStaleState()
         state.lastRefreshDate = now()
         return try await refreshStatus()
+    }
+
+    @discardableResult
+    public func removeInstalledConfigIfMatches(
+        clientId: String,
+        regionId: String
+    ) async throws -> CloudGatewayConfigManagerState {
+        guard state.cachedSnapshot?.clientId == clientId,
+              state.cachedSnapshot?.regionId == regionId else {
+            return state
+        }
+        return try await removeTunnel()
     }
 
     @discardableResult

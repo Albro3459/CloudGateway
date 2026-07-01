@@ -3,14 +3,18 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
+    @State private var clientPendingDelete: CloudGatewayClientOption?
 
     var body: some View {
         NavigationStack {
             Form {
                 if viewModel.isSignedIn {
                     accountSection
-                    tunnelSection
+                    regionsSection
+                    createSection
                     configsSection
+                    selectedConfigSection
+                    tunnelSection
                 } else {
                     signInSection
                     tunnelSection
@@ -31,6 +35,20 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("CloudGateway")
+            .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
+                Button("Delete", role: .destructive) {
+                    Task {
+                        await viewModel.deleteSelectedClient()
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    clientPendingDelete = nil
+                }
+            } message: {
+                if let clientPendingDelete {
+                    Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional WireGuard peer and the local VPN profile if this config is installed.")
+                }
+            }
         }
     }
 
@@ -63,6 +81,9 @@ struct ContentView: View {
             if let lastRefreshText = viewModel.lastRefreshText {
                 LabeledContent("Configs", value: lastRefreshText)
             }
+            if let lastSyncText = viewModel.lastSyncText {
+                LabeledContent("Last Sync", value: lastSyncText)
+            }
 
             HStack {
                 Button("Refresh") {
@@ -80,6 +101,120 @@ struct ContentView: View {
                 .disabled(viewModel.isWorking)
             }
             .buttonStyle(.borderless)
+        }
+    }
+
+    private var regionsSection: some View {
+        Section("Regions") {
+            if viewModel.regions.isEmpty {
+                Text("No enabled regions are available.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Picker("Region", selection: $viewModel.selectedRegionId) {
+                    ForEach(viewModel.regions, id: \.regionId) { region in
+                        Text(region.displayName).tag(Optional(region.regionId))
+                    }
+                }
+
+                if let region = viewModel.selectedRegion {
+                    LabeledContent("Selected", value: region.regionId)
+                    if let capacity = region.capacity {
+                        LabeledContent("Capacity", value: capacity.displayText)
+                            .foregroundStyle(capacity.isAtCapacity ? .red : .primary)
+                    } else {
+                        LabeledContent("Capacity", value: "Loading")
+                    }
+                    if region.capacity?.isAtCapacity == true {
+                        Text("This region is currently full. Choose another region before creating a config.")
+                            .foregroundStyle(.red)
+                    }
+                    if viewModel.role == "admin" {
+                        Button("Sync Selected Region") {
+                            Task {
+                                await viewModel.syncSelectedRegion()
+                            }
+                        }
+                        .disabled(!viewModel.canSyncSelectedRegion)
+                    }
+                }
+            }
+        }
+    }
+
+    private var createSection: some View {
+        Section("Create Config") {
+            TextField("Name", text: $viewModel.newClientName)
+                .textInputAutocapitalization(.words)
+
+            Button("Create In Selected Region") {
+                Task {
+                    await viewModel.createClient()
+                }
+            }
+            .disabled(viewModel.createDisabled)
+        }
+    }
+
+    private var configsSection: some View {
+        Section("Owned Configs") {
+            if viewModel.filteredClientOptions.isEmpty {
+                Text("No configs found in this region.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.filteredClientOptions) { option in
+                    Button {
+                        viewModel.selectedClientId = option.client.clientId
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.client.displayName)
+                                    .font(.headline)
+                                Text(option.regionDisplayName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Text(statusText(for: option.client.status))
+                                    .font(.caption)
+                                    .foregroundStyle(statusColor(for: option.client.status))
+                            }
+                            Spacer()
+                            if viewModel.selectedClientId == option.client.clientId {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var selectedConfigSection: some View {
+        Section("Selected Config") {
+            if let option = viewModel.selectedClientOption {
+                LabeledContent("Name", value: option.client.displayName)
+                LabeledContent("Region", value: option.regionDisplayName)
+                LabeledContent("Status", value: statusText(for: option.client.status))
+
+                if let installStateLabel = viewModel.installStateLabel(for: option) {
+                    LabeledContent("Local", value: installStateLabel)
+                }
+
+                Button(viewModel.installButtonTitle(for: option)) {
+                    Task {
+                        await viewModel.installSelectedClient()
+                    }
+                }
+                .disabled(viewModel.installDisabled)
+
+                Button("Delete Config", role: .destructive) {
+                    clientPendingDelete = option
+                }
+                .disabled(viewModel.deleteDisabled)
+            } else {
+                Text("Choose a config to view details and actions.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -119,43 +254,6 @@ struct ContentView: View {
         }
     }
 
-    private var configsSection: some View {
-        Section("Available Configs") {
-            if viewModel.configOptions.isEmpty {
-                Text("No active CloudGateway client config found.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(viewModel.configOptions) { option in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.client.displayName)
-                                    .font(.headline)
-                                Text(option.regionDisplayName)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if let installStateLabel = viewModel.installStateLabel(for: option) {
-                                Text(installStateLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(installStateLabel == "Installed" ? .green : .orange)
-                            }
-                        }
-
-                        Button(viewModel.installButtonTitle(for: option)) {
-                            Task {
-                                await viewModel.install(option)
-                            }
-                        }
-                        .disabled(viewModel.isWorking)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-    }
-
     private var statusColor: Color {
         switch viewModel.tunnelStatus {
         case .connected:
@@ -167,6 +265,43 @@ struct ContentView: View {
         case .disconnected:
             .secondary
         case nil:
+            .secondary
+        }
+    }
+
+    private var deleteConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { clientPendingDelete != nil },
+            set: { isPresented in
+                if !isPresented {
+                    clientPendingDelete = nil
+                }
+            }
+        )
+    }
+
+    private func statusText(for status: CloudGatewayClientStatus) -> String {
+        switch status {
+        case .creating:
+            "Creating"
+        case .active:
+            "Active"
+        case .failed:
+            "Failed"
+        case .removed:
+            "Removed"
+        }
+    }
+
+    private func statusColor(for status: CloudGatewayClientStatus) -> Color {
+        switch status {
+        case .active:
+            .green
+        case .creating:
+            .orange
+        case .failed:
+            .red
+        case .removed:
             .secondary
         }
     }
