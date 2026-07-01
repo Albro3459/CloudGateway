@@ -119,15 +119,18 @@ Goal: connect the app to real CloudGateway configuration data.
 
 Build:
 
-* Temporary developer auth or manual token entry if needed
-* Fetch one assigned client config from the backend or Firestore-backed API flow
-* Save the fetched config through CloudGatewayKit
-* Replace the installed VPN profile when config changes
+* Firebase email/password auth
+* Firestore reads for enabled regions and owned client configs
+* Regional API access verification with a Firebase ID token
+* User-selected active config list showing client display name and region
+* Save the user-selected config through CloudGatewayKit
+* Replace the installed VPN profile only when the user chooses a config
 * Clear/remove local config when the user removes the VPN client
 
 Done when:
 
-* A real user/client config can be fetched and installed.
+* A real user's active configs can be listed.
+* The user can choose which config to install.
 * The app can reconnect after a config update.
 * The app can remove the VPN profile and local config cleanly.
 

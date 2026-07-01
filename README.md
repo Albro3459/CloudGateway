@@ -8,7 +8,7 @@
 
 * Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
 
-* View, copy, download, or QR-code your client config straight from the dashboard.
+* View, copy, download, or QR-code your client config straight from the dashboard. The native iOS app can sign in, list active Firebase-backed configs, and install a selected config without the separate WireGuard app.
 
 * Admins can also sync region clients, if needed, and grant users accounts.
 
@@ -44,8 +44,8 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 ### Components
 
 * <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
-* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): planned shared Apple VPN wrapper around WireGuardKit for iOS and macOS apps.
-* <b>iOS app</b> (`Frontend/Apple/iOS/`): planned CloudGateway app and packet tunnel extension.
+* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and future macOS apps.
+* <b>iOS app</b> (`Frontend/Apple/iOS/`): CloudGateway app and packet tunnel extension. It uses Firebase Auth/Firestore to list owned configs and installs the user-selected config internally.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
@@ -88,16 +88,15 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
-* To save the config file or scan the QR code, on either the phone or computer, you need the WireGuard app because the VPN uses the WireGuard protocol.
-  * Desktop: [wireguard.com](https://www.wireguard.com/install/) or for iPhone: [AppStore](https://apps.apple.com/us/app/wireguard/id1441195209)
+* Desktop clients still use the WireGuard app or `wg-quick`.
+* The native iOS app is replacing the iPhone QR/config-file flow by installing the selected config through its packet tunnel extension.
 
 #### On Phone
 
-* Install the WireGuard app on your phone.
-
-* Either download the config file or scan the QR code in the WireGuard app.
-
-* Enable it in WireGuard and Settings and you're done!
+* Build and install the CloudGateway iOS app from Xcode.
+* Sign in with your Firebase email/password account.
+* Choose one active config by client display name and region.
+* Install the VPN profile, then start or stop the tunnel from the app.
 
 #### On Mac
 

@@ -1,6 +1,6 @@
 # Apple MVP 1: Firebase Auth And Config Source
 
-Goal: replace the MVP 0 pasted WireGuard config flow with the same Firebase/Auth/Firestore/API model used by the React dashboard.
+Goal: replace the MVP 0 pasted WireGuard config flow with the same Firebase/Auth/Firestore/API trust model used by the React dashboard. The iOS app lists the user's active configs and installs only the config the user chooses.
 
 ## Current Web Data Flow
 
@@ -46,10 +46,18 @@ App launch/sign-in flow:
 4. Read enabled `Regions` from Firestore.
 5. Call `POST /api/auth/check-access`.
 6. Read this user's `Instances` docs from Firestore.
-7. Select an active client with a non-empty `wireguardConfig`.
-8. Install or update the local Network Extension tunnel with that config.
+7. Show active clients with non-empty `wireguardConfig`, using client display name plus region display name.
+8. Install or update the local Network Extension tunnel only after the user chooses a config.
 
-The app should not ask the user to paste or edit WireGuard config. The local pasted config UI remains a debug tool only until this flow replaces it.
+The app should not ask normal users to paste or edit WireGuard config. The pasted config UI is a debug fallback only.
+
+For this first native implementation, iOS uses:
+
+```text
+https://us-sanjose-1.gocloudlaunch.com/api/auth/check-access
+```
+
+for access verification. Region-derived native API routing can replace this later. Firestore region `displayOrder` is still used for display and config-list sorting.
 
 ## Source Of Truth And Cache
 
@@ -67,12 +75,12 @@ The cache should store enough metadata to reconcile safely:
 
 Reconciliation rules:
 
-* Remote active config exists and differs from cache: cache it and reinstall/update the tunnel.
-* Remote active config matches cache: keep current tunnel.
-* Remote client is removed, disabled, or missing `wireguardConfig`: remove or disable the local tunnel.
+* User chooses a remote active config: cache it and install/update the tunnel.
+* Remote active config matches the cached installed client: keep current tunnel.
+* Cached client is removed, disabled, or missing `wireguardConfig`: show stale state and require the user to choose another config before reinstalling.
 * Remote is unavailable: allow the cached installed tunnel to remain usable, but show stale/offline state.
 
-Do not merge local and remote configs. Accept the remote config or keep the last known cached config only when offline.
+Do not merge local and remote configs. Do not auto-select or auto-install a config for the user.
 
 ## Firebase SDK Setup
 
@@ -95,6 +103,8 @@ FirebaseCore
 FirebaseAuth
 FirebaseFirestore
 ```
+
+The current package resolution uses Firebase iOS SDK `11.15.0`.
 
 Do not add Firebase products to the packet tunnel extension unless the extension explicitly needs them later. The tunnel should keep using provider configuration from the containing app.
 
@@ -167,9 +177,22 @@ Initial shared model names can mirror Firestore/API concepts:
 
 * `CloudGatewayRegion`
 * `CloudGatewayClient`
-* `CloudGatewayUserRole`
 * `CloudGatewayConfigSnapshot`
-* `CloudGatewayConfigCoordinator`
+* `CloudGatewayConfigSelection`
+* `CloudGatewayConfigCache`
+
+## MVP 1 Acceptance
+
+Done when:
+
+* The app target links `FirebaseCore`, `FirebaseAuth`, and `FirebaseFirestore`.
+* Firebase configures on launch.
+* Email/password sign-in and sign-out work.
+* Signed-in users are access-checked through the regional API.
+* Owned active configs are listed with client display name and region display name.
+* The app installs only the user-selected config.
+* No Firebase SDK products are linked to the packet tunnel extension.
+* `swift test`, unsigned generic iOS build, and signed generic iOS build have been attempted and documented.
 
 ## References
 

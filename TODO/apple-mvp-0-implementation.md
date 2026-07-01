@@ -67,7 +67,7 @@ Add Swift package dependency:
 https://github.com/Albro3459/wireguard-apple
 ```
 
-Current project note: the package is pinned to patched fork revision `2cc1e15d40e7b99f2b84ba6617393a1c76da11ee`. The patch is based on official revision `ccc7472fd7d1c7c19584e6a30c45a56b8ba57790` and fixes an Xcode 26 `WireGuardKitC` module build issue.
+Current project note: the package is pinned to patched fork revision `ba0929fb7fc63ec604d69c35abf47688d17a6252`. The patch line is based on official revision `ccc7472fd7d1c7c19584e6a30c45a56b8ba57790`, fixes an Xcode 26 `WireGuardKitC` module build issue, and includes the Go discovery fix needed for Xcode GUI builds on ARM macOS.
 
 Link `WireGuardKit` to:
 
@@ -255,8 +255,9 @@ MVP 0 is complete when:
 
 After MVP 0 works, move to MVP 1:
 
-* remove hardcoded config assumptions
-* formalize CloudGatewayKit config models
-* add install/update/remove APIs
-* add app-group storage
-* keep the same API shape for future macOS support
+* add Firebase email/password auth
+* read enabled regions and owned client configs from Firestore
+* verify account access through the regional API
+* list active configs by display name and region
+* install/update only the config chosen by the user
+* cache the last installed config in app-group storage

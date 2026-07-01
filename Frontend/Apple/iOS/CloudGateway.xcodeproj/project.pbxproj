@@ -12,6 +12,9 @@
 		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000004 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000019 /* WireGuardKit */; };
 		ABCDEF000000000000000027 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000031 /* PacketTunnelProvider.swift */; };
+		ABCDEF000000000000000040 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000050 /* FirebaseCore */; };
+		ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000051 /* FirebaseAuth */; };
+		ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000052 /* FirebaseFirestore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +70,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */,
+				ABCDEF000000000000000040 /* FirebaseCore in Frameworks */,
+				ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */,
+				ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,6 +156,9 @@
 			name = CloudGateway;
 			packageProductDependencies = (
 				ABCDEF000000000000000018 /* CloudGatewayKit */,
+				ABCDEF000000000000000050 /* FirebaseCore */,
+				ABCDEF000000000000000051 /* FirebaseAuth */,
+				ABCDEF000000000000000052 /* FirebaseFirestore */,
 			);
 			productName = CloudGateway;
 			productReference = 605109692FF35D5F002E2D4C /* CloudGateway.app */;
@@ -207,6 +216,7 @@
 			packageReferences = (
 				ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */,
 				ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */,
+				ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6051096A2FF35D5F002E2D4C /* Products */;
@@ -575,6 +585,14 @@
 				revision = ba0929fb7fc63ec604d69c35abf47688d17a6252;
 			};
 		};
+		ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -587,6 +605,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */;
 			productName = WireGuardKit;
+		};
+		ABCDEF000000000000000050 /* FirebaseCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCore;
+		};
+		ABCDEF000000000000000051 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		ABCDEF000000000000000052 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

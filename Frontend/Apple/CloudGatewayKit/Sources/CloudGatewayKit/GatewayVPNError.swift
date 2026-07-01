@@ -3,4 +3,5 @@ public enum GatewayVPNError: Error, Equatable, Sendable {
     case missingTunnelSession
     case missingWireGuardConfiguration
     case invalidWireGuardConfiguration
+    case missingAppGroupContainer
 }

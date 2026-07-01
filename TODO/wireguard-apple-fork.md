@@ -80,13 +80,13 @@ The header uses Darwin typedefs such as `u_int32_t`, `u_int16_t`, and `u_char` b
 
 Do not refactor WireGuardKit, rename package products, or move CloudGateway code into the fork.
 
-Current local fork patch commit:
+Current local fork patch line:
 
 ```text
-2cc1e15d40e7b99f2b84ba6617393a1c76da11ee
+ba0929fb7fc63ec604d69c35abf47688d17a6252
 ```
 
-This commit has been pushed to Alex's fork and is now the CloudGateway SwiftPM pin.
+This revision has been pushed to Alex's fork and is now the CloudGateway SwiftPM pin. It includes the Xcode 26 `WireGuardKitC` include fix plus the WireGuard Go bridge discovery fix for Xcode GUI builds.
 
 ## CloudGateway Update
 
@@ -104,10 +104,10 @@ https://github.com/Albro3459/wireguard-apple
 
 It is pinned to the patched commit on `cloudgateway/xcode-26`.
 
-Pending patched revision:
+Current patched revision:
 
 ```text
-2cc1e15d40e7b99f2b84ba6617393a1c76da11ee
+ba0929fb7fc63ec604d69c35abf47688d17a6252
 ```
 
 ## Verification

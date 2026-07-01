@@ -1,94 +1,30 @@
 import CloudGatewayKit
 import SwiftUI
-import UIKit
 
 struct ContentView: View {
-    private static let templateConfig = """
-    [Interface]
-    PrivateKey = <paste-private-key>
-    Address = 10.0.0.2/32, fd42:42:42::2/128
-    DNS = 10.0.0.1, fd42:42:42::1
-
-    [Peer]
-    PublicKey = <paste-public-key>
-    Endpoint = wg.us-sanjose-1.gocloudlaunch.com:51820
-    AllowedIPs = 0.0.0.0/0, ::/0
-    PersistentKeepalive = 25
-    """
-
-    @State private var wireGuardConfig = templateConfig
-    @State private var tunnelStatus: GatewayTunnelStatus?
-    @State private var errorText: String?
-    @State private var isWorking = false
-
-    private let manager = GatewayVPNManager(
-        platform: GatewayPlatformConfiguration(
-            appGroupIdentifier: "group.com.gocloudlaunch.gateway",
-            appBundleIdentifier: "com.gocloudlaunch.gateway",
-            providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
-            tunnelDisplayName: "CloudGateway"
-        )
-    )
+    @StateObject private var viewModel = CloudGatewayViewModel()
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Tunnel") {
-                    Text(statusText)
-                        .foregroundStyle(statusColor)
-
-                    Button("Install VPN") {
-                        Task {
-                            await installTunnel()
-                        }
-                    }
-                    .disabled(isWorking || wireGuardConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    Button("Start") {
-                        Task {
-                            await startTunnel()
-                        }
-                    }
-                    .disabled(isWorking || tunnelStatus == nil || tunnelStatus == .connected || tunnelStatus == .connecting)
-
-                    Button("Stop") {
-                        Task {
-                            await stopTunnel()
-                        }
-                    }
-                    .disabled(isWorking || tunnelStatus == nil || tunnelStatus == .disconnected || tunnelStatus == .disconnecting)
-
-                    Button("Remove VPN", role: .destructive) {
-                        Task {
-                            await removeTunnel()
-                        }
-                    }
-                    .disabled(isWorking || tunnelStatus == nil)
+                if viewModel.isSignedIn {
+                    accountSection
+                    tunnelSection
+                    configsSection
+                    debugSection
+                } else {
+                    signInSection
+                    tunnelSection
                 }
 
-                Section("WireGuard Config") {
-                    HStack {
-                        Button("Paste") {
-                            pasteConfig()
-                        }
-                        Button("Template") {
-                            wireGuardConfig = Self.templateConfig
-                            errorText = nil
-                        }
-                        Button("Clear", role: .destructive) {
-                            wireGuardConfig = ""
-                            errorText = nil
-                        }
+                if let staleText = viewModel.staleText {
+                    Section("Remote State") {
+                        Text(staleText)
+                            .foregroundStyle(.orange)
                     }
-
-                    TextEditor(text: $wireGuardConfig)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 280)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
                 }
 
-                if let errorText {
+                if let errorText = viewModel.errorText {
                     Section("Error") {
                         Text(errorText)
                             .foregroundStyle(.red)
@@ -96,90 +32,148 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("CloudGateway")
-            .task {
-                await refreshStatus()
+        }
+    }
+
+    private var signInSection: some View {
+        Section("Sign In") {
+            TextField("Email", text: $viewModel.email)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+                .autocorrectionDisabled()
+
+            SecureField("Password", text: $viewModel.password)
+
+            Button("Sign In") {
+                Task {
+                    await viewModel.signIn()
+                }
+            }
+            .disabled(viewModel.isWorking)
+        }
+    }
+
+    private var accountSection: some View {
+        Section("Account") {
+            if let signedInEmail = viewModel.signedInEmail {
+                LabeledContent("Email", value: signedInEmail)
+            }
+            if let role = viewModel.role {
+                LabeledContent("Role", value: role)
+            }
+            if let lastRefreshText = viewModel.lastRefreshText {
+                LabeledContent("Configs", value: lastRefreshText)
+            }
+
+            HStack {
+                Button("Refresh") {
+                    Task {
+                        await viewModel.refresh()
+                    }
+                }
+                .disabled(viewModel.isWorking)
+
+                Button("Sign Out") {
+                    Task {
+                        await viewModel.signOut()
+                    }
+                }
+                .disabled(viewModel.isWorking)
             }
         }
     }
 
-    @MainActor
-    private func installTunnel() async {
-        await run {
-            let config = try GatewayWireGuardConfig(wireGuardConfig)
-            let tunnel = GatewayTunnelConfiguration(wireGuardConfig: config)
-            try await manager.installTunnel(tunnel)
-            await refreshStatus()
+    private var tunnelSection: some View {
+        Section("Tunnel") {
+            Text(viewModel.statusText)
+                .foregroundStyle(statusColor)
+
+            if let cachedSnapshot = viewModel.cachedSnapshot {
+                LabeledContent("Installed", value: cachedSnapshot.clientDisplayName)
+                LabeledContent("Region", value: cachedSnapshot.regionDisplayName)
+            }
+
+            HStack {
+                Button("Start") {
+                    Task {
+                        await viewModel.startTunnel()
+                    }
+                }
+                .disabled(viewModel.startDisabled)
+
+                Button("Stop") {
+                    Task {
+                        await viewModel.stopTunnel()
+                    }
+                }
+                .disabled(viewModel.isWorking || viewModel.tunnelStatus == nil || viewModel.tunnelStatus == .disconnected || viewModel.tunnelStatus == .disconnecting)
+            }
+
+            Button("Remove VPN", role: .destructive) {
+                Task {
+                    await viewModel.removeTunnel()
+                }
+            }
+            .disabled(viewModel.isWorking || viewModel.tunnelStatus == nil)
         }
     }
 
-    @MainActor
-    private func startTunnel() async {
-        await run {
-            try await manager.startTunnel()
-            await refreshStatus()
+    private var configsSection: some View {
+        Section("Available Configs") {
+            if viewModel.configOptions.isEmpty {
+                Text("No active CloudGateway client config found.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.configOptions) { option in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.client.displayName)
+                                    .font(.headline)
+                                Text(option.regionDisplayName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let installStateLabel = viewModel.installStateLabel(for: option) {
+                                Text(installStateLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(installStateLabel == "Installed" ? .green : .orange)
+                            }
+                        }
+
+                        Button(viewModel.installButtonTitle(for: option)) {
+                            Task {
+                                await viewModel.install(option)
+                            }
+                        }
+                        .disabled(viewModel.isWorking)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
         }
     }
 
-    @MainActor
-    private func stopTunnel() async {
-        await run {
-            try await manager.stopTunnel()
-            await refreshStatus()
+    private var debugSection: some View {
+        Section("Debug Pasted Config") {
+            TextEditor(text: $viewModel.debugWireGuardConfig)
+                .font(.system(.body, design: .monospaced))
+                .frame(minHeight: 180)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+
+            Button("Install Pasted Config") {
+                Task {
+                    await viewModel.installDebugConfig()
+                }
+            }
+            .disabled(viewModel.isWorking || viewModel.debugWireGuardConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-    }
-
-    @MainActor
-    private func removeTunnel() async {
-        await run {
-            try await manager.removeTunnel()
-            tunnelStatus = nil
-        }
-    }
-
-    @MainActor
-    private func refreshStatus() async {
-        do {
-            tunnelStatus = try await manager.installedStatus()
-        } catch GatewayVPNError.missingInstalledTunnel {
-            tunnelStatus = nil
-        } catch {
-            errorText = error.localizedDescription
-        }
-    }
-
-    @MainActor
-    private func pasteConfig() {
-        guard let pastedConfig = UIPasteboard.general.string,
-              !pastedConfig.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            errorText = "Clipboard does not contain a WireGuard config."
-            return
-        }
-
-        wireGuardConfig = pastedConfig
-        errorText = nil
-    }
-
-    @MainActor
-    private func run(_ operation: () async throws -> Void) async {
-        isWorking = true
-        errorText = nil
-        defer {
-            isWorking = false
-        }
-
-        do {
-            try await operation()
-        } catch {
-            errorText = String(describing: error)
-        }
-    }
-
-    private var statusText: String {
-        tunnelStatus?.displayName ?? "Not installed"
     }
 
     private var statusColor: Color {
-        switch tunnelStatus {
+        switch viewModel.tunnelStatus {
         case .connected:
             .green
         case .connecting, .reasserting, .disconnecting:
@@ -190,25 +184,6 @@ struct ContentView: View {
             .secondary
         case nil:
             .secondary
-        }
-    }
-}
-
-private extension GatewayTunnelStatus {
-    var displayName: String {
-        switch self {
-        case .invalid:
-            "Invalid"
-        case .disconnected:
-            "Disconnected"
-        case .connecting:
-            "Connecting"
-        case .connected:
-            "Connected"
-        case .reasserting:
-            "Reasserting"
-        case .disconnecting:
-            "Disconnecting"
         }
     }
 }
