@@ -34,10 +34,17 @@ Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receiv
 From the repo root:
 
 ```sh
+./scripts/test.sh apple
+./scripts/test.sh apple --signed
+```
+
+The unsigned Apple target proves compile health and package resolution. The signed variant checks explicit provisioning for the app and tunnel extension.
+
+Equivalent raw commands:
+
+```sh
 swift test --package-path Frontend/Apple/CloudGatewayKit
 xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS build
 ```
-
-The unsigned build proves compile health and package resolution. The signed build also checks explicit provisioning for the app and tunnel extension.

@@ -21,8 +21,8 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var remoteInvalidInstalledConfig = false
 
     private let service = CloudGatewayFirebaseService()
-    private let manager: GatewayVPNManager
-    private let cache: CloudGatewayConfigCache
+    private let configManager: CloudGatewayConfigManager
+    private var configState = CloudGatewayConfigManagerState()
     private var authHandle: AuthStateDidChangeListenerHandle?
 
     var isSignedIn: Bool {
@@ -48,8 +48,10 @@ final class CloudGatewayViewModel: ObservableObject {
             providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
             tunnelDisplayName: "CloudGateway"
         )
-        manager = GatewayVPNManager(platform: platform)
-        cache = CloudGatewayConfigCache(platform: platform)
+        configManager = CloudGatewayConfigManager(
+            tunnelManager: GatewayVPNManager(platform: platform),
+            cache: CloudGatewayConfigCache(platform: platform)
+        )
         authHandle = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)
@@ -99,76 +101,43 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func install(_ option: CloudGatewayClientOption) async {
         await run {
-            let snapshot = try CloudGatewayConfigSelection.snapshot(from: option)
-            try await manager.installTunnel(snapshot.tunnelConfiguration())
-            try await cache.save(snapshot)
-            cachedSnapshot = snapshot
-            staleText = nil
-            remoteInvalidInstalledConfig = false
-            await refreshStatus()
+            apply(try await configManager.install(option))
         }
     }
 
     func installDebugConfig() async {
         await run {
-            let config = try GatewayWireGuardConfig(debugWireGuardConfig)
-            let snapshot = CloudGatewayConfigSnapshot(
-                clientId: "debug",
-                regionId: "debug",
-                clientName: "Debug Config",
-                regionDisplayName: "Debug",
-                status: .active,
-                wireGuardConfig: config.rawValue,
-                readAt: Date(),
-                updatedAt: nil
-            )
-            try await manager.installTunnel(GatewayTunnelConfiguration(identifier: "debug", wireGuardConfig: config))
-            try await cache.save(snapshot)
-            cachedSnapshot = snapshot
-            staleText = nil
-            remoteInvalidInstalledConfig = false
-            await refreshStatus()
+            apply(try await configManager.installDebugConfig(debugWireGuardConfig))
         }
     }
 
     func startTunnel() async {
         await run {
-            guard !remoteInvalidInstalledConfig else {
-                throw CloudGatewayAppError.accessDenied("The installed config is no longer active remotely. Choose another config before starting.")
-            }
-            try await manager.startTunnel()
-            await refreshStatus()
+            apply(try await configManager.startTunnel())
         }
     }
 
     func stopTunnel() async {
         await run {
-            try await manager.stopTunnel()
-            await refreshStatus()
+            apply(try await configManager.stopTunnel())
         }
     }
 
     func removeTunnel() async {
         await run {
-            try await manager.removeTunnel()
-            try await cache.clear()
-            cachedSnapshot = nil
-            tunnelStatus = nil
-            staleText = nil
-            remoteInvalidInstalledConfig = false
+            apply(try await configManager.removeTunnel())
         }
     }
 
     func installStateLabel(for option: CloudGatewayClientOption) -> String? {
-        guard let cachedSnapshot,
-              cachedSnapshot.clientId == option.client.clientId,
-              cachedSnapshot.regionId == option.client.regionId else {
+        switch configState.installState(for: option) {
+        case .installed:
+            return "Installed"
+        case .updateAvailable:
+            return "Update Available"
+        case nil:
             return nil
         }
-        if CloudGatewayConfigSelection.configMatches(cachedSnapshot, option: option) {
-            return "Installed"
-        }
-        return "Update Available"
     }
 
     func installButtonTitle(for option: CloudGatewayClientOption) -> String {
@@ -189,11 +158,10 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func loadLocalState() async {
         do {
-            cachedSnapshot = try await cache.load()
+            apply(try await configManager.loadLocalState())
         } catch {
             errorText = error.localizedDescription
         }
-        await refreshStatus()
     }
 
     private func loadRemoteState(for user: User) async throws {
@@ -207,11 +175,7 @@ final class CloudGatewayViewModel: ObservableObject {
             throw CloudGatewayAppError.noEnabledRegions
         }
         let clients = try await service.fetchOwnedClients(uid: user.uid)
-        configOptions = CloudGatewayConfigSelection.usableOptions(clients: clients, regions: regions)
-        cachedSnapshot = try await cache.load()
-        updateStaleState()
-        lastRefreshText = "Updated \(Date().formatted(date: .omitted, time: .shortened))"
-        await refreshStatus()
+        apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
     }
 
     private func loadRemoteStateOrSignOut(
@@ -244,38 +208,6 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    private func updateStaleState() {
-        remoteInvalidInstalledConfig = false
-        guard let cachedSnapshot else {
-            staleText = nil
-            return
-        }
-        if cachedSnapshot.clientId == "debug" {
-            staleText = "Debug config is installed."
-            return
-        }
-        guard let matchingOption = CloudGatewayConfigSelection.matchingOption(for: cachedSnapshot, in: configOptions) else {
-            staleText = "The last installed config is not active remotely. Choose another config before starting."
-            remoteInvalidInstalledConfig = true
-            return
-        }
-        if CloudGatewayConfigSelection.configMatches(cachedSnapshot, option: matchingOption) {
-            staleText = nil
-        } else {
-            staleText = "The installed config has changed remotely. Install the update to refresh the local tunnel."
-        }
-    }
-
-    private func refreshStatus() async {
-        do {
-            tunnelStatus = try await manager.installedStatus()
-        } catch GatewayVPNError.missingInstalledTunnel {
-            tunnelStatus = nil
-        } catch {
-            errorText = error.localizedDescription
-        }
-    }
-
     private func clearRemoteState() {
         signedInEmail = nil
         signedInUid = nil
@@ -284,6 +216,18 @@ final class CloudGatewayViewModel: ObservableObject {
         staleText = nil
         lastRefreshText = nil
         remoteInvalidInstalledConfig = false
+    }
+
+    private func apply(_ state: CloudGatewayConfigManagerState) {
+        configState = state
+        configOptions = state.configOptions
+        cachedSnapshot = state.cachedSnapshot
+        tunnelStatus = state.tunnelStatus
+        staleText = state.staleText
+        remoteInvalidInstalledConfig = state.remoteInvalidInstalledConfig
+        if let lastRefreshDate = state.lastRefreshDate {
+            lastRefreshText = "Updated \(lastRefreshDate.formatted(date: .omitted, time: .shortened))"
+        }
     }
 
     private func run(_ operation: () async throws -> Void) async {
@@ -297,9 +241,8 @@ final class CloudGatewayViewModel: ObservableObject {
             try await operation()
         } catch {
             errorText = error.localizedDescription
-            if isSignedIn, cachedSnapshot != nil, staleText == nil {
-                staleText = "Unable to refresh remote state. The last installed config remains available offline."
-                remoteInvalidInstalledConfig = false
+            if isSignedIn {
+                apply(await configManager.markRemoteRefreshUnavailable())
             }
         }
     }

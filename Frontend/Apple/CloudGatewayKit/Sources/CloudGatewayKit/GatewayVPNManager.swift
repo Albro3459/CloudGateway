@@ -74,3 +74,5 @@ public final class GatewayVPNManager {
         }
     }
 }
+
+extension GatewayVPNManager: CloudGatewayTunnelManaging {}

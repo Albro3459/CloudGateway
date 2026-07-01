@@ -169,7 +169,7 @@ Decision: keep Firebase as an app-level adapter and keep the shared config manag
 
 This avoids a large iOS-to-macOS refactor later without turning MVP 1 into a generic sync framework. `CloudGatewayKit` should own platform-neutral config state, validation, selection, reconciliation, cache writes, and VPN install orchestration. The iOS and macOS app targets should own Firebase setup, Auth, Firestore reads, regional API calls, and SwiftUI lifecycle.
 
-Proposed layers:
+Current layers:
 
 * iOS app target: SwiftUI screens, Firebase app setup, Firebase/Auth/Firestore adapter, regional API adapter, platform composition.
 * `CloudGatewayKit`: shared models, config manager, config selection/reconciliation, cache updates, VPN install/update/remove/start/stop.
@@ -183,8 +183,9 @@ Initial shared model names can mirror Firestore/API concepts:
 * `CloudGatewayConfigSnapshot`
 * `CloudGatewayConfigSelection`
 * `CloudGatewayConfigCache`
+* `CloudGatewayConfigManager`
 
-Before config-manager work grows much larger, move non-UI orchestration out of `CloudGatewayViewModel` into a small shared `CloudGatewayConfigManager` in `CloudGatewayKit`. That manager should depend on protocols for remote config loading, access checking, VPN installation, and cache storage. The first concrete implementation can remain Firebase-backed in the iOS app target.
+The non-UI config orchestration now lives in `CloudGatewayConfigManager` in `CloudGatewayKit`. It depends on protocols for VPN installation and cache storage. The first concrete remote implementation remains Firebase-backed in the iOS app target.
 
 ## MVP 1 Acceptance
 

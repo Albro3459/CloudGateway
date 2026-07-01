@@ -96,15 +96,18 @@ Non-goals:
 
 ## MVP 1: CloudGatewayKit Config Manager Spine
 
-Goal: replace hardcoded tunnel setup with a small reusable CloudGatewayKit API.
+Goal: replace hardcoded or view-model-owned tunnel setup with a small reusable CloudGatewayKit config manager API.
 
 Design the API for both iOS and macOS from the start, even if only the iOS app uses it during this stage.
 
 Build:
 
 * `GatewayVPNManager`
+* `CloudGatewayConfigManager`
 * `GatewayTunnelConfiguration`
 * WireGuard config parsing/validation boundary
+* User-selected active config list state
+* Local/remote config reconciliation
 * Install/update/remove VPN profile methods
 * Start/stop methods
 * Tunnel status observation
@@ -113,11 +116,12 @@ Build:
 Done when:
 
 * The iOS app no longer talks directly to `NETunnelProviderManager`.
+* Non-UI config orchestration lives in CloudGatewayKit instead of the SwiftUI view model.
 * CloudGatewayKit can install, update, remove, start, and stop one CloudGateway tunnel.
 * The tunnel extension can load the config needed to start from the app-managed profile/shared storage.
 * The core CloudGatewayKit API does not expose iOS-only assumptions that would block a macOS client.
 
-## MVP 2: CloudGateway Config Source
+## MVP 1: CloudGateway Config Source
 
 Goal: connect the app to real CloudGateway configuration data.
 

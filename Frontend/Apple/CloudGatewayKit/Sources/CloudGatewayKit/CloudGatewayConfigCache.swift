@@ -55,6 +55,8 @@ public actor CloudGatewayConfigCache {
     }
 }
 
+extension CloudGatewayConfigCache: CloudGatewayConfigCaching {}
+
 private extension JSONEncoder {
     static var gatewayConfig: JSONEncoder {
         let encoder = JSONEncoder()

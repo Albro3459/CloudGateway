@@ -5,7 +5,9 @@
 # Usage:
 #   ./scripts/test.sh            # run everything
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh web infra  # any combination of: api web infra
+#   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
+#   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
+#   ./scripts/test.sh web infra  # any combination of: api web infra apple
 #
 # One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
@@ -18,6 +20,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
 API_PYTHON_TOOLS_READY=0
+APPLE_SIGNED=0
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
@@ -85,6 +88,28 @@ test_web() {
   run_check "Web production build" npm run build
 }
 
+test_apple() {
+  cd "$ROOT" || return 1
+
+  run_check "Apple CloudGatewayKit tests" swift test --package-path Frontend/Apple/CloudGatewayKit
+  run_check "Apple iOS project list" xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
+
+  if [[ "$APPLE_SIGNED" -eq 1 ]]; then
+    run_check "Apple signed no-device iOS build" \
+      xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+        -scheme CloudGateway \
+        -destination generic/platform=iOS \
+        build
+  else
+    run_check "Apple unsigned no-device iOS build" \
+      xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+        -scheme CloudGateway \
+        -destination generic/platform=iOS \
+        CODE_SIGNING_ALLOWED=NO \
+        build
+  fi
+}
+
 test_infra() {
   cd "$ROOT" || return 1
 
@@ -149,7 +174,14 @@ run_step() {
   fi
 }
 
-targets=("$@")
+targets=()
+for arg in "$@"; do
+  case "$arg" in
+    --signed) APPLE_SIGNED=1 ;;
+    *) targets+=("$arg") ;;
+  esac
+done
+
 if [[ ${#targets[@]} -eq 0 ]]; then
   targets=(api web infra)
 fi
@@ -158,9 +190,10 @@ for target in "${targets[@]}"; do
   case "$target" in
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
     web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
+    apple) run_step "Apple tests + no-device iOS build" test_apple ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     *)
-      echo "Unknown target: $target (expected: api, web, infra)" >&2
+      echo "Unknown target: $target (expected: api, web, apple, infra; optional flag: --signed)" >&2
       exit 2
       ;;
   esac
