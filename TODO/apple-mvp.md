@@ -62,6 +62,8 @@ Avoid:
 
 ## MVP 0: Entitlement And Tunnel Proof
 
+**Status: Completed** — validated on device (managed signing, `packet-tunnel-provider` entitlement, system VPN prompt, `NETunnelProviderManager` install, and WireGuardKit tunnel bring-up).
+
 Goal: prove Apple signing, Network Extension entitlement, and WireGuardKit tunnel startup work on a real iPhone.
 
 Build:
@@ -96,6 +98,8 @@ Non-goals:
 
 ## MVP 1: CloudGatewayKit Config Manager Spine
 
+**Status: Completed** — non-UI orchestration lives in `CloudGatewayConfigManager` (install/update/remove/start/stop, status, reconciliation, cache) behind VPN and cache protocols; the app no longer touches `NETunnelProviderManager` directly and the core API carries no iOS-only assumptions.
+
 Goal: replace hardcoded or view-model-owned tunnel setup with a small reusable CloudGatewayKit config manager API.
 
 Design the API for both iOS and macOS from the start, even if only the iOS app uses it during this stage.
@@ -123,6 +127,8 @@ Done when:
 
 ## MVP 1: CloudGateway Config Source
 
+**Status: Completed** — see [apple-mvp-1-firebase-auth.md](apple-mvp-1-firebase-auth.md) acceptance. Firebase email/password auth, Firestore region/client reads, ID-token access checks, user-selected config install/update/remove, and cache reconciliation are in place; superseded by MVP 2's region-derived routing.
+
 Goal: connect the app to real CloudGateway configuration data.
 
 Build:
@@ -143,6 +149,8 @@ Done when:
 * The app can remove the VPN profile and local config cleanly.
 
 ## MVP 2: Native Config Manager
+
+**Status: Completed** — region-derived API routing, enabled-region picker with per-region capacity, owned-config list, create/delete (with confirmation)/refresh/admin-sync, and selected-config install/update/start/stop through CloudGatewayKit are all implemented and tested. `./scripts/test.sh apple` is green.
 
 Goal: make the iOS app a real CloudGateway config manager for signed-in users.
 
@@ -169,7 +177,7 @@ Done when:
 
 Known limitations:
 
-* View-model orchestration tests live in `Frontend/Apple/iOS/CloudGatewayTests/` against a mock `CloudGatewayServicing`. They are a host-less logic bundle (the app scheme can't build for the simulator because the packet-tunnel extension links WireGuard's device-only `libwg-go.a`), so they need a one-time Xcode target and are not yet in the `./scripts/test.sh apple` gate; see `CloudGatewayTests/README.md`. The thin Firebase/URLSession adapter stays build-validated only.
+* View-model orchestration tests live in `Frontend/Apple/iOS/CloudGatewayTests/` against a mock `CloudGatewayServicing` and now run in the `./scripts/test.sh apple` gate via `xcodebuild test` on the `CloudGatewayTests` scheme. They are a host-less logic bundle because the app scheme can't build for the simulator (the packet-tunnel extension links WireGuard's device-only `libwg-go.a`); the simulator is overridable with `APPLE_TEST_SIMULATOR`. The thin Firebase/URLSession adapter stays build-validated only.
 * Signed no-device build still depends on local signing/provisioning setup and should be run with `./scripts/test.sh apple --signed` when provisioning is available.
 * Capacity failures are shown as unavailable; create still relies on the regional API for the authoritative capacity/limit rejection.
 

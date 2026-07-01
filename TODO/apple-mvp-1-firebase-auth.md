@@ -191,6 +191,8 @@ The non-UI config orchestration now lives in `CloudGatewayConfigManager` in `Clo
 
 ## MVP 1 Acceptance
 
+**Status: Completed.** All criteria below are met; superseded by MVP 2's region-derived routing. On-device live sign-in is the user's responsibility to smoke-test; the flow is otherwise build- and unit-test-validated.
+
 Done when:
 
 * The app target links `FirebaseCore`, `FirebaseAuth`, and `FirebaseFirestore`.
