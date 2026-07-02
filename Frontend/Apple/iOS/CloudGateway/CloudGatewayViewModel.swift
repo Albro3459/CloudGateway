@@ -105,7 +105,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var createDisabled: Bool {
-        isWorking || !selectedRegionAllowsCreate
+        isWorking || newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !selectedRegionAllowsCreate
     }
 
     var deleteDisabled: Bool {
@@ -297,10 +297,14 @@ final class CloudGatewayViewModel: ObservableObject {
                     : "Capacity for this region is unavailable."
                 throw CloudGatewayAppError.accessDenied(message)
             }
+            let trimmedClientName = newClientName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedClientName.isEmpty else {
+                throw CloudGatewayAppError.accessDenied("Enter a display name, for example John's iPhone.")
+            }
             let token = try await service.idToken()
             let created = try await service.createClient(
                 regionId: regionId,
-                clientName: newClientName,
+                clientName: trimmedClientName,
                 idToken: token
             )
             newClientName = ""

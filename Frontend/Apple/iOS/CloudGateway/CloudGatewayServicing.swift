@@ -80,7 +80,7 @@ protocol CloudGatewayServicing {
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck
     func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion]
     func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient]
-    func createClient(regionId: String, clientName: String?, idToken: String) async throws -> CloudGatewayClient
+    func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse

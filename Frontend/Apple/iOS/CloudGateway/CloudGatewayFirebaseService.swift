@@ -244,7 +244,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func createClient(
         regionId: String,
-        clientName: String?,
+        clientName: String,
         idToken: String
     ) async throws -> CloudGatewayClient {
         let response: CloudGatewayCreateClientResponse = try await sendJSONRequest(
@@ -253,7 +253,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             idToken: idToken,
             body: CreateClientRequest(
                 regionId: regionId,
-                clientName: clientName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                clientName: clientName.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         )
         return CloudGatewayClient(
@@ -471,7 +471,7 @@ private struct EmptyRequest: Encodable {}
 
 private struct CreateClientRequest: Encodable {
     let regionId: String
-    let clientName: String?
+    let clientName: String
 }
 
 private struct DeleteClientRequest: Encodable {
@@ -492,12 +492,6 @@ private extension JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
     }
 }
 

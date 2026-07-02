@@ -14,7 +14,6 @@ from .errors import (
 )
 
 
-DEFAULT_CLIENT_NAME = "CloudGateway Client"
 ALLOCATED_CLIENT_STATUSES = {ClientStatus.CREATING, ClientStatus.ACTIVE}
 
 
@@ -104,11 +103,8 @@ class ClientDoc:
     last_error_message: str | None = None
 
 
-def clean_client_name(value: str | None) -> str:
-    if value is None:
-        return DEFAULT_CLIENT_NAME
-    value = value.strip()
-    return value or DEFAULT_CLIENT_NAME
+def clean_client_name(value: str) -> str:
+    return value.strip()
 
 
 def utc_now() -> datetime:
@@ -246,7 +242,7 @@ class FirebaseRepository(ABC):
         owner_uid: str,
         owner_email: str | None,
         region_id: str,
-        client_name: str | None,
+        client_name: str,
     ) -> ClientDoc:
         """Reserve a creating client document and regional capacity."""
 

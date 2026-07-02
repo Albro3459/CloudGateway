@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from src.enums import ClientStatus, Role
 from src.models import (
     CreateClientRequest,
@@ -15,11 +18,20 @@ def test_request_accepts_camel_case():
     assert request.client_name == "Phone"
 
 
-def test_request_accepts_snake_case_internally():
-    request = CreateClientRequest(region_id="us-test-1", client_name=" ")
+def test_request_trims_snake_case_internally():
+    request = CreateClientRequest(region_id="us-test-1", client_name=" Phone ")
 
     assert request.region_id == "us-test-1"
-    assert request.client_name is None
+    assert request.client_name == "Phone"
+
+
+@pytest.mark.parametrize("payload", [
+    {"regionId": "us-test-1"},
+    {"regionId": "us-test-1", "clientName": " "},
+])
+def test_request_requires_client_name(payload):
+    with pytest.raises(ValidationError):
+        CreateClientRequest.model_validate(payload)
 
 
 def test_response_serializes_camel_case():

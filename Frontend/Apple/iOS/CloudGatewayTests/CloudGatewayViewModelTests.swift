@@ -367,6 +367,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         await viewModel.refresh()
 
+        XCTAssertTrue(viewModel.createDisabled)
+        viewModel.newClientName = "John's iPhone"
+
         XCTAssertFalse(viewModel.createDisabled)
     }
 
@@ -435,16 +438,33 @@ final class CloudGatewayViewModelTests: XCTestCase {
         let viewModel = makeViewModel(service)
         await viewModel.refresh()
 
-        viewModel.newClientName = "Laptop"
+        viewModel.newClientName = "  Laptop  "
         await viewModel.createClient()
 
         XCTAssertEqual(service.createClientCallCount, 1)
+        XCTAssertEqual(service.createClientName, "Laptop")
         XCTAssertEqual(viewModel.newClientName, "")
         XCTAssertNil(viewModel.errorText)
         // The created client is merged in ahead of the (here empty) fetched list, so it
         // must remain visible after the reload — guards mergeClients' existing-override.
         XCTAssertTrue(viewModel.filteredClientOptions.contains { $0.client.clientId == "created-1" })
         XCTAssertEqual(viewModel.successText, "Laptop was created.")
+    }
+
+    func testCreateClientRequiresDisplayNameBeforeServiceCall() async {
+        let service = signedInService()
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))
+        ]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        viewModel.newClientName = "   "
+        await viewModel.createClient()
+
+        XCTAssertEqual(service.createClientCallCount, 0)
+        XCTAssertNotNil(viewModel.errorText)
+        XCTAssertTrue(viewModel.createDisabled)
     }
 
     func testDismissMessagesClearsErrorAndSuccess() async {
@@ -455,10 +475,12 @@ final class CloudGatewayViewModelTests: XCTestCase {
         let viewModel = makeViewModel(service)
         await viewModel.refresh()
 
+        viewModel.newClientName = "Phone"
         await viewModel.createClient()
         XCTAssertNotNil(viewModel.successText)
 
         service.createClientError = CloudGatewayAppError.invalidAPIResponse
+        viewModel.newClientName = "Laptop"
         await viewModel.createClient()
         XCTAssertNotNil(viewModel.errorText)
 

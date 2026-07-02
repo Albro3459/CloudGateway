@@ -238,14 +238,19 @@ const Home: React.FC = () => {
             return;
         }
 
+        const trimmedClientName = clientName.trim();
+        if (!trimmedClientName) {
+            showBanner("error", "Enter a display name, for example John's iPhone.");
+            return;
+        }
+
         setLoading(true);
         setBanner(null);
 
         try {
-            const trimmedClientName = clientName.trim();
             const response = await createClient({
                 regionId: activeRegionId,
-                ...(trimmedClientName ? { clientName: trimmedClientName } : {}),
+                clientName: trimmedClientName,
             }, jwtToken);
 
             if (!response.success) {
@@ -465,7 +470,7 @@ const Home: React.FC = () => {
         });
     }, [activeRegionEntries]);
 
-    const createDisabled = !activeRegionId || !selectedRegion || selectedRegionCreationBlocked || regionsLoading || VPNTableEntries === null || loading;
+    const createDisabled = !clientName.trim() || !activeRegionId || !selectedRegion || selectedRegionCreationBlocked || regionsLoading || VPNTableEntries === null || loading;
     const removeDisabled = loading || regionsLoading;
 
     return (
@@ -559,7 +564,8 @@ const Home: React.FC = () => {
                                 value={clientName}
                                 onChange={(e) => setClientName(e.target.value)}
                                 maxLength={80}
-                                placeholder="Optional"
+                                placeholder="ex: John's iPhone"
+                                required
                                 className="mt-1 w-full rounded-lg border border-edge-subtle bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
                             />
                         </label>

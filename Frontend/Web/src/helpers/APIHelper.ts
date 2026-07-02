@@ -29,7 +29,7 @@ export type ApiHelperResult<T> = ApiHelperSuccess<T> | ApiHelperFailure;
 
 export type CreateClientRequest = {
     regionId: string;
-    clientName?: string;
+    clientName: string;
 };
 
 export type CreateClientResponse = {

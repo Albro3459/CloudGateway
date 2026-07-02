@@ -269,7 +269,7 @@ class FakeRepository(FirebaseRepository):
         owner_uid: str,
         owner_email: str | None,
         region_id: str,
-        client_name: str | None,
+        client_name: str,
     ) -> ClientDoc:
         ensure_local_region(region_id, self.local_region_id)
         with self._lock:

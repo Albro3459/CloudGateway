@@ -210,6 +210,79 @@ describe("Home pull to refresh", () => {
         expect(screen.queryByText(/currently full/)).toBeNull();
     });
 
+    it("requires a client display name before creating", async () => {
+        const { createClient } = require("../../helpers/APIHelper");
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{
+                ...regionStoreState.ociRegions[0],
+                capacity: {
+                    status: "known",
+                    limit: 20,
+                    allocated: 8,
+                },
+            }],
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+
+        const input = await screen.findByLabelText("Client display name");
+        expect(input.getAttribute("placeholder")).toBe("ex: John's iPhone");
+        expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(true);
+        expect(createClient).not.toHaveBeenCalled();
+    });
+
+    it("creates clients with a trimmed required display name", async () => {
+        const { createClient } = require("../../helpers/APIHelper");
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+
+        createClient.mockResolvedValue({
+            success: true,
+            data: {
+                clientId: "client-1",
+                regionId: "us-sanjose-1",
+                clientName: "John's iPhone",
+                status: "active",
+                assignedTunnelIpv4: "10.0.0.2/32",
+                assignedTunnelIpv6: "fd42:42:42::2/128",
+                serverEndpointIpv4: "203.0.113.10",
+                wireguardConfig: "[Interface]",
+            },
+        });
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{
+                ...regionStoreState.ociRegions[0],
+                capacity: {
+                    status: "known",
+                    limit: 20,
+                    allocated: 8,
+                },
+            }],
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+
+        fireEvent.change(await screen.findByLabelText("Client display name"), {
+            target: { value: "  John's iPhone  " },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Create Client" }));
+
+        await waitFor(() => {
+            expect(createClient).toHaveBeenCalledWith(
+                { regionId: "us-sanjose-1", clientName: "John's iPhone" },
+                "firebase-token",
+            );
+        });
+        expect(await screen.findByText("John's iPhone was created in San Jose.")).toBeTruthy();
+    });
+
     it("does not refresh when the pull is below the threshold", async () => {
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
         const { fetchOciRegions } = require("../../stores/ociRegionsStore");

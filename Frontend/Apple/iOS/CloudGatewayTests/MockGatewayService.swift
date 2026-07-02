@@ -31,6 +31,7 @@ final class MockGatewayService: CloudGatewayServicing {
 
     // Captured inputs.
     private(set) var sendPasswordResetEmail: String?
+    private(set) var createClientName: String?
     private(set) var grantAccessEmail: String?
     private(set) var grantAccessRegionId: String?
 
@@ -148,8 +149,9 @@ final class MockGatewayService: CloudGatewayServicing {
         return ownedClients
     }
 
-    func createClient(regionId: String, clientName: String?, idToken: String) async throws -> CloudGatewayClient {
+    func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient {
         createClientCallCount += 1
+        createClientName = clientName
         if let createClientError {
             throw createClientError
         }

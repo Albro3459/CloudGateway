@@ -453,7 +453,7 @@ struct ContentView: View {
 
                 ThemedTextField(
                     title: "Client display name",
-                    placeholder: "Optional",
+                    placeholder: "ex: John's iPhone",
                     text: $viewModel.newClientName,
                     keyboardType: .default
                 )

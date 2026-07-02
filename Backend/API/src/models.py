@@ -31,15 +31,15 @@ class RegionsResponse(ApiModel):
 
 class CreateClientRequest(ApiModel):
     region_id: str = Field(min_length=1)
-    client_name: str | None = None
+    client_name: str = Field(min_length=1, max_length=80)
 
     @field_validator("client_name")
     @classmethod
-    def blank_client_name_is_default(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def client_name_is_required(cls, value: str) -> str:
         value = value.strip()
-        return value or None
+        if not value:
+            raise ValueError("Client display name is required.")
+        return value
 
 
 class CreateClientResponse(ApiModel):

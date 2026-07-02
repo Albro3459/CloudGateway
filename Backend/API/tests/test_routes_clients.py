@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from src.enums import ClientStatus
 from src.errors import FirebaseWriteFailedError
 from src.repository import RegionDoc
@@ -169,6 +171,20 @@ def test_create_client_reserves_applies_and_activates(client, repository, wiregu
     assert stored.client_public_key == "fake-public-1"
     assert set(wireguard.peers) == {"fake-public-1"}
     assert wireguard.peers["fake-public-1"] == ("10.0.0.2/32", "fd42:42:42::2/128")
+
+
+@pytest.mark.parametrize("body", [
+    {"regionId": REGION_ID},
+    {"regionId": REGION_ID, "clientName": " "},
+])
+def test_create_client_requires_client_name(client, repository, body):
+    seed_region(repository)
+
+    response = client.post("/clients", json=body, headers=auth_header())
+
+    assert response.status_code == 400
+    assert_error_shape(response.json(), "INVALID_REQUEST")
+    assert repository.clients == {}
 
 
 def test_create_client_retries_one_transient_wireguard_add_failure(client, repository, wireguard):

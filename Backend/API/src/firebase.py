@@ -379,7 +379,7 @@ class FirestoreRepository(FirebaseRepository):
         owner_uid: str,
         owner_email: str | None,
         region_id: str,
-        client_name: str | None,
+        client_name: str,
     ) -> ClientDoc:
         ensure_local_region(region_id, self._settings.region_id)
         db = self._db()
@@ -742,7 +742,7 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
         client_id=data.get("clientId") or client_id,
         owner_uid=data.get("ownerUid") or "",
         owner_email=data.get("ownerEmail") or "",
-        client_name=data.get("clientName") or clean_client_name(None),
+        client_name=data.get("clientName") or "",
         region_id=data.get("regionId") or "",
         status=ClientStatus(data.get("status")),
         assigned_tunnel_ipv4=data.get("assignedTunnelIpv4") or "",
@@ -776,7 +776,7 @@ def _client_write_data(
     client_id: str,
     owner_uid: str,
     owner_email: str | None,
-    client_name: str | None,
+    client_name: str,
     region: RegionDoc,
     assigned_tunnel_ipv4: str,
     assigned_tunnel_ipv6: str,

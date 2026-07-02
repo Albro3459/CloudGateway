@@ -66,7 +66,7 @@ def reserve(
     *,
     uid: str = "user-1",
     email: str = "user@example.com",
-    client_name: str | None = "Phone",
+    client_name: str = "Phone",
 ):
     return repository.reserve_client(
         owner_uid=uid,
@@ -157,14 +157,14 @@ def test_assign_tunnel_ips_raises_when_either_pool_is_exhausted(
 
 
 def test_reserve_client_creates_creating_doc_and_user_doc(repository: FakeRepository):
-    client = reserve(repository, client_name="  ")
+    client = reserve(repository, client_name=" Phone ")
 
     parsed_id = UUID(client.client_id)
     assert parsed_id.version == 4
     assert client.status == ClientStatus.CREATING
     assert client.owner_uid == "user-1"
     assert client.owner_email == "user@example.com"
-    assert client.client_name == "CloudGateway Client"
+    assert client.client_name == "Phone"
     assert client.assigned_tunnel_ipv4 == "10.0.0.2/32"
     assert client.assigned_tunnel_ipv6 == "fd42:42:42::2/128"
     assert client.server_endpoint_ipv4 == "203.0.113.10"
@@ -183,7 +183,7 @@ def test_reserve_client_enforces_local_region(repository: FakeRepository):
             owner_uid="user-1",
             owner_email="user@example.com",
             region_id="us-other-1",
-            client_name=None,
+            client_name="Phone",
         )
 
 
