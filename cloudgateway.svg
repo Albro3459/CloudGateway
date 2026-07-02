@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">CloudGateway favicon</title>
+  <desc id="desc">A cloud and upload gateway mark for a VPN platform. The area outside the rounded icon is transparent.</desc>
+  <defs>
+    <linearGradient id="bg" x1="6" y1="7" x2="57" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#39C3F6"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="cloud" x1="14" y1="22" x2="52" y2="45" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E0EFFF"/>
+    </linearGradient>
+    <linearGradient id="gate" x1="25" y1="25" x2="41" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1E3A8A"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+
+  <path fill="url(#cloud)" d="M18.1 45.6h28.4c6.2 0 10.8-4.1 10.8-9.4 0-5-4.2-9.1-9.4-9.5C45.4 20 39.2 15.8 32 15.8c-7.3 0-13.6 4.5-15.9 11.2-5.5.7-9.4 4.8-9.4 9.9 0 5.2 4.4 8.7 11.4 8.7Z"/>
+
+  <path fill="url(#gate)" d="M23.2 45.6V32.2c0-4.9 3.6-7.9 8.8-7.9h.1c5.1 0 8.7 3 8.7 7.9v13.4h-5.9V35.3H29v10.3h-5.8Z"/>
+
+  <path fill="#FFFFFF" d="M32 27.7 39.1 35h-4v10.6h-6.2V35h-4L32 27.7Z"/>
+</svg>
