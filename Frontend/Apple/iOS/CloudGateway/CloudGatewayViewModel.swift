@@ -36,6 +36,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private let configManager: CloudGatewayConfigManager
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
+    private var isSigningOut = false
 
     var isSignedIn: Bool {
         appMode == .signedIn
@@ -149,6 +150,8 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     func signOut() async {
+        isSigningOut = true
+        defer { isSigningOut = false }
         await run {
             try service.signOut()
             try await loadGuestState()
@@ -310,7 +313,10 @@ final class CloudGatewayViewModel: ObservableObject {
         } else if isWorking {
             // Session ended mid-operation: drop to guest but keep regions loaded
             // so the guest dashboard isn't left empty until a manual refresh.
-            try? await loadGuestState()
+            // signOut() already drives this transition, so skip the redundant load.
+            if !isSigningOut {
+                try? await loadGuestState()
+            }
         } else {
             await refresh()
         }
