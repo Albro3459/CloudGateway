@@ -19,6 +19,75 @@ final class CloudGatewayViewModelTests: XCTestCase {
         return service
     }
 
+    // MARK: - Guest flow
+
+    func testGuestRefreshLoadsRegionsWithoutAuthCalls() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [
+            TestFixtures.region("us-ashburn-1", displayOrder: 20, capacity: .known(limit: 10, allocated: 2)),
+            TestFixtures.region("us-sanjose-1", displayOrder: 10, capacity: .known(limit: 10, allocated: 1)),
+        ]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1", "us-ashburn-1"])
+        XCTAssertTrue(viewModel.regions.allSatisfy { $0.capacity == nil })
+        XCTAssertEqual(viewModel.selectedRegionId, "us-sanjose-1")
+        XCTAssertEqual(service.fetchRegionsCallCount, 1)
+        XCTAssertEqual(service.checkAccessCallCount, 0)
+        XCTAssertEqual(service.addCapacityCallCount, 0)
+        XCTAssertEqual(service.fetchUserRoleCallCount, 0)
+        XCTAssertEqual(service.fetchOwnedClientsCallCount, 0)
+    }
+
+    func testGuestCreateIsBlockedBeforeAPI() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        viewModel.newClientName = "Guest laptop"
+        await viewModel.createClient()
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertTrue(viewModel.createDisabled)
+        XCTAssertNotNil(viewModel.errorText)
+        XCTAssertEqual(service.createClientCallCount, 0)
+    }
+
+    func testSignOutReturnsToGuestAndHidesInstalledConfig() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        guard let option = viewModel.configOptions.first else {
+            XCTFail("Expected an active signed-in config option.")
+            return
+        }
+        await viewModel.install(option)
+
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+        XCTAssertNotNil(viewModel.cachedSnapshot)
+        XCTAssertNotNil(viewModel.visibleCachedSnapshot)
+        XCTAssertNotNil(viewModel.visibleTunnelStatus)
+
+        await viewModel.signOut()
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertNotNil(viewModel.cachedSnapshot)
+        XCTAssertNil(viewModel.visibleCachedSnapshot)
+        XCTAssertNil(viewModel.visibleTunnelStatus)
+        XCTAssertTrue(viewModel.startDisabled)
+        XCTAssertTrue(viewModel.stopDisabled)
+        XCTAssertTrue(viewModel.removeTunnelDisabled)
+    }
+
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {
@@ -87,6 +156,10 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertTrue(viewModel.createDisabled)
+
+        await viewModel.createClient()
+
+        XCTAssertEqual(service.createClientCallCount, 0)
     }
 
     func testCreateDisabledWhenSelectedRegionCapacityMissing() async {
@@ -170,7 +243,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
     func testDismissMessagesClearsErrorAndSuccess() async {
         let service = signedInService()
-        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))
+        ]
         let viewModel = makeViewModel(service)
         await viewModel.refresh()
 

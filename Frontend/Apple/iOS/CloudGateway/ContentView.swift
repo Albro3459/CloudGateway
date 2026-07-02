@@ -4,16 +4,24 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
+    @State private var isShowingLogin = false
     @Environment(\.cloudGatewayTheme) private var theme
 
     var body: some View {
         ZStack {
             theme.page.ignoresSafeArea()
 
-            if viewModel.isSignedIn {
+            switch viewModel.appMode {
+            case .loading:
+                loadingView
+            case .guest:
+                if isShowingLogin {
+                    loginView
+                } else {
+                    guestDashboard
+                }
+            case .signedIn:
                 signedInDashboard
-            } else {
-                signedOutView
             }
 
             if viewModel.isWorking {
@@ -21,6 +29,11 @@ struct ContentView: View {
             }
         }
         .foregroundStyle(theme.content)
+        .onChange(of: viewModel.appMode) { _, mode in
+            if mode == .signedIn {
+                isShowingLogin = false
+            }
+        }
         .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
             Button("Delete", role: .destructive) {
                 Task {
@@ -34,6 +47,17 @@ struct ContentView: View {
             if let clientPendingDelete {
                 Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional WireGuard peer and the local VPN profile if this config is installed.")
             }
+        }
+    }
+
+    private var loadingView: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .tint(theme.content)
+            Text("CloudGateway")
+                .font(.headline)
+                .foregroundStyle(theme.contentSecondary)
         }
     }
 
@@ -53,6 +77,26 @@ struct ContentView: View {
                     createPanel
                     clientsPanel
                     tunnelPanel
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
+            }
+            .refreshable {
+                await viewModel.refresh()
+            }
+        }
+    }
+
+    private var guestDashboard: some View {
+        VStack(spacing: 0) {
+            guestNav
+
+            ScrollView {
+                VStack(spacing: 16) {
+                    messages
+                    regionsPanel
+                    guestCreatePanel
+                    guestClientsPanel
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 18)
@@ -103,9 +147,52 @@ struct ContentView: View {
         .background(theme.nav)
     }
 
-    private var signedOutView: some View {
+    private var guestNav: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CloudGateway")
+                    .font(.headline)
+                    .foregroundStyle(theme.content)
+                Text("Guest")
+                    .font(.caption)
+                    .foregroundStyle(theme.contentSecondary)
+            }
+
+            Spacer()
+
+            Button {
+                Task {
+                    await viewModel.refresh()
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(IconNavButtonStyle())
+            .disabled(viewModel.isWorking)
+            .accessibilityLabel("Refresh")
+
+            Button("Sign in") {
+                isShowingLogin = true
+            }
+            .buttonStyle(NavTextButtonStyle())
+            .disabled(viewModel.isWorking)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(theme.nav)
+    }
+
+    private var loginView: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
+                Button {
+                    isShowingLogin = false
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(IconNavButtonStyle())
+                .accessibilityLabel("Back")
+
                 Text("CloudGateway")
                     .font(.headline)
                     .foregroundStyle(theme.content)
@@ -145,6 +232,38 @@ struct ContentView: View {
                             }
                             .buttonStyle(PrimaryButtonStyle())
                             .disabled(viewModel.isWorking)
+
+                            VStack(spacing: 10) {
+                                DividerLine(text: "or")
+
+                                Button {
+                                } label: {
+                                    Label("Continue with Apple", systemImage: "apple.logo")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .disabled(true)
+
+                                Button("Continue with Google") {
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .disabled(true)
+
+                                Button {
+                                    Task {
+                                        await viewModel.continueAsGuest()
+                                        isShowingLogin = false
+                                    }
+                                } label: {
+                                    Label("Continue as Guest", systemImage: "eye")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .disabled(viewModel.isWorking)
+                            }
+
+                            Link(destination: requestAccessURL) {
+                                Label("Request access", systemImage: "envelope")
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
                         }
                     }
 
@@ -227,14 +346,15 @@ struct ContentView: View {
                         ForEach(viewModel.regions, id: \.regionId) { region in
                             RegionButton(
                                 region: region,
-                                isSelected: region.regionId == viewModel.selectedRegionId
+                                isSelected: region.regionId == viewModel.selectedRegionId,
+                                showsCapacity: viewModel.isSignedIn
                             ) {
                                 viewModel.selectedRegionId = region.regionId
                             }
                         }
                     }
 
-                    if let selectedRegion = viewModel.selectedRegion {
+                    if viewModel.isSignedIn, let selectedRegion = viewModel.selectedRegion {
                         RegionCapacityNote(region: selectedRegion)
                     }
                 }
@@ -266,6 +386,50 @@ struct ContentView: View {
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(viewModel.createDisabled)
+            }
+        }
+    }
+
+    private var guestCreatePanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "Create Client",
+                    subtitle: "Sign in before creating a WireGuard config."
+                )
+
+                HStack(spacing: 10) {
+                    Button("Sign in") {
+                        isShowingLogin = true
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+
+                    Link(destination: requestAccessURL) {
+                        Label("Request Access", systemImage: "envelope")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var guestClientsPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "VPN Clients",
+                    subtitle: "Sign in to see your VPN clients on this device."
+                )
+
+                EmptyState(
+                    title: "Clients are hidden while signed out",
+                    message: "Guest mode only shows available regions."
+                )
+
+                Button("Sign in") {
+                    isShowingLogin = true
+                }
+                .buttonStyle(SecondaryButtonStyle())
             }
         }
     }
@@ -323,14 +487,14 @@ struct ContentView: View {
                 )
 
                 HStack(spacing: 10) {
-                    TunnelStatusBadge(status: viewModel.tunnelStatus)
+                    TunnelStatusBadge(status: viewModel.visibleTunnelStatus)
                     Text(viewModel.statusText)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.contentSecondary)
                     Spacer()
                 }
 
-                if let cachedSnapshot = viewModel.cachedSnapshot {
+                if let cachedSnapshot = viewModel.visibleCachedSnapshot {
                     VStack(alignment: .leading, spacing: 6) {
                         DetailLine(label: "Installed", value: cachedSnapshot.clientDisplayName)
                         DetailLine(label: "Region", value: cachedSnapshot.regionDisplayName)
@@ -397,6 +561,10 @@ struct ContentView: View {
     private var versionText: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         return "v\(version ?? "1.0")"
+    }
+
+    private var requestAccessURL: URL {
+        URL(string: "mailto:Brodsky.Alex22@gmail.com?subject=CloudGateway%20Access%20Request")!
     }
 }
 
@@ -494,6 +662,7 @@ private struct RegionButton: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let region: CloudGatewayRegion
     let isSelected: Bool
+    let showsCapacity: Bool
     let action: () -> Void
 
     var body: some View {
@@ -502,9 +671,11 @@ private struct RegionButton: View {
                 Text(region.displayName)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isSelected ? theme.accent : theme.contentSecondary)
-                Text(region.capacity?.displayText ?? "Capacity unavailable")
-                    .font(.caption)
-                    .foregroundStyle(capacityColor)
+                if showsCapacity {
+                    Text(region.capacity?.displayText ?? "Capacity unavailable")
+                        .font(.caption)
+                        .foregroundStyle(capacityColor)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -523,6 +694,25 @@ private struct RegionButton: View {
             return theme.dangerContent
         }
         return theme.contentMuted
+    }
+}
+
+private struct DividerLine: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle()
+                .fill(theme.edgeSubtle)
+                .frame(height: 1)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(theme.contentFaint)
+            Rectangle()
+                .fill(theme.edgeSubtle)
+                .frame(height: 1)
+        }
     }
 }
 

@@ -2,10 +2,17 @@ import CloudGatewayKit
 import Combine
 import Foundation
 
+enum CloudGatewayAppMode: Equatable {
+    case loading
+    case guest
+    case signedIn
+}
+
 @MainActor
 final class CloudGatewayViewModel: ObservableObject {
     @Published var email = ""
     @Published var password = ""
+    @Published private(set) var appMode: CloudGatewayAppMode = .loading
     @Published private(set) var signedInEmail: String?
     @Published private(set) var signedInUid: String?
     @Published private(set) var role: String?
@@ -31,11 +38,19 @@ final class CloudGatewayViewModel: ObservableObject {
     private var authHandle: Any?
 
     var isSignedIn: Bool {
-        signedInUid != nil
+        appMode == .signedIn
     }
 
     var statusText: String {
-        tunnelStatus?.displayName ?? "Not installed"
+        visibleTunnelStatus?.displayName ?? "Not installed"
+    }
+
+    var visibleCachedSnapshot: CloudGatewayConfigSnapshot? {
+        isSignedIn ? cachedSnapshot : nil
+    }
+
+    var visibleTunnelStatus: GatewayTunnelStatus? {
+        isSignedIn ? tunnelStatus : nil
     }
 
     var selectedRegion: CloudGatewayRegion? {
@@ -59,14 +74,11 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var isAdmin: Bool {
-        role == "admin"
+        isSignedIn && role == "admin"
     }
 
     var createDisabled: Bool {
-        guard let capacity = selectedRegion?.capacity, capacity.isKnown else {
-            return true
-        }
-        return isWorking || capacity.isAtCapacity
+        isWorking || !selectedRegionAllowsCreate
     }
 
     var deleteDisabled: Bool {
@@ -74,30 +86,32 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
-        isWorking || option.client.status == .removed
+        isWorking || !isSignedIn || option.client.status == .removed
     }
 
     var installDisabled: Bool {
-        isWorking || selectedConfigOption == nil
+        isWorking || !isSignedIn || selectedConfigOption == nil
     }
 
     var startDisabled: Bool {
         isWorking
-            || tunnelStatus == nil
-            || tunnelStatus == .connected
-            || tunnelStatus == .connecting
+            || !isSignedIn
+            || visibleTunnelStatus == nil
+            || visibleTunnelStatus == .connected
+            || visibleTunnelStatus == .connecting
             || remoteInvalidInstalledConfig
     }
 
     var stopDisabled: Bool {
         isWorking
-            || tunnelStatus == nil
-            || tunnelStatus == .disconnected
-            || tunnelStatus == .disconnecting
+            || !isSignedIn
+            || visibleTunnelStatus == nil
+            || visibleTunnelStatus == .disconnected
+            || visibleTunnelStatus == .disconnecting
     }
 
     var removeTunnelDisabled: Bool {
-        isWorking || tunnelStatus == nil
+        isWorking || visibleTunnelStatus == nil
     }
 
     init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
@@ -137,17 +151,24 @@ final class CloudGatewayViewModel: ObservableObject {
     func signOut() async {
         await run {
             try service.signOut()
-            clearRemoteState()
+            try await loadGuestState()
         }
     }
 
     func refresh() async {
         await run {
-            guard let user = service.currentUser else {
-                throw CloudGatewayAppError.missingCurrentUser
+            if let user = service.currentUser {
+                try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+            } else {
+                try await loadGuestState()
             }
-            try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
         }
+    }
+
+    // Guest entry point from the login screen; refresh() already resolves to
+    // guest state when there is no signed-in user.
+    func continueAsGuest() async {
+        await refresh()
     }
 
     func syncSelectedRegion() async {
@@ -176,6 +197,13 @@ final class CloudGatewayViewModel: ObservableObject {
             }
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
+            }
+            guard selectedRegionAllowsCreate else {
+                let capacity = selectedRegion?.capacity
+                let message = (capacity?.isKnown == true && capacity?.isAtCapacity == true)
+                    ? "This region is full."
+                    : "Capacity for this region is unavailable."
+                throw CloudGatewayAppError.accessDenied(message)
             }
             let token = try await service.idToken()
             let created = try await service.createClient(
@@ -275,17 +303,22 @@ final class CloudGatewayViewModel: ObservableObject {
         if let user {
             signedInEmail = user.email
             signedInUid = user.uid
+            appMode = .signedIn
             if !isWorking && configOptions.isEmpty {
                 await refresh()
             }
+        } else if isWorking {
+            // Session ended mid-operation: drop to guest but keep regions loaded
+            // so the guest dashboard isn't left empty until a manual refresh.
+            try? await loadGuestState()
         } else {
-            clearRemoteState()
+            await refresh()
         }
     }
 
     private func loadLocalState() async {
         do {
-            apply(try await configManager.loadLocalState())
+            applyLocal(try await configManager.loadLocalState())
         } catch {
             errorText = error.localizedDescription
         }
@@ -298,6 +331,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
         signedInEmail = user.email
         signedInUid = user.uid
+        appMode = .signedIn
         let token = try await service.idToken()
         let enabledRegions = try await service.fetchRegions()
         guard !enabledRegions.isEmpty else {
@@ -343,6 +377,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func clearRemoteState() {
+        appMode = .guest
         signedInEmail = nil
         signedInUid = nil
         role = nil
@@ -359,6 +394,16 @@ final class CloudGatewayViewModel: ObservableObject {
         newClientName = ""
     }
 
+    private func loadGuestState() async throws {
+        clearRemoteState()
+        let enabledRegions = try await service.fetchRegions()
+        guard !enabledRegions.isEmpty else {
+            throw CloudGatewayAppError.noEnabledRegions
+        }
+        regions = CloudGatewayConfigSelection.sortedRegions(enabledRegions.map(regionWithoutCapacity))
+        ensureSelectedRegion()
+    }
+
     private func apply(_ state: CloudGatewayConfigManagerState) {
         configState = state
         regions = state.regions
@@ -373,6 +418,13 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    private func applyLocal(_ state: CloudGatewayConfigManagerState) {
+        configState.cachedSnapshot = state.cachedSnapshot
+        configState.tunnelStatus = state.tunnelStatus
+        cachedSnapshot = state.cachedSnapshot
+        tunnelStatus = state.tunnelStatus
+    }
+
     private func ensureSelectedRegion() {
         selectedRegionId = CloudGatewayConfigSelection.resolvedRegionSelection(
             current: selectedRegionId,
@@ -385,6 +437,22 @@ final class CloudGatewayViewModel: ObservableObject {
             current: selectedClientId,
             regionId: selectedRegionId,
             options: clientOptions
+        )
+    }
+
+    private var selectedRegionAllowsCreate: Bool {
+        guard isSignedIn, let capacity = selectedRegion?.capacity, capacity.isKnown else {
+            return false
+        }
+        return !capacity.isAtCapacity
+    }
+
+    private func regionWithoutCapacity(_ region: CloudGatewayRegion) -> CloudGatewayRegion {
+        CloudGatewayRegion(
+            regionId: region.regionId,
+            displayName: region.displayName,
+            enabled: region.enabled,
+            displayOrder: region.displayOrder
         )
     }
 
