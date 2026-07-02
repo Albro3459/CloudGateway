@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 607A1C1A2FF5498A0001783A /* CloudGatewayKit */; };
 		60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 60B438382FF611BE0089F40B /* GoogleSignIn */; };
+		60B4383B2FF611BE0089F40B /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 60B4383A2FF611BE0089F40B /* GoogleSignInSwift */; };
 		ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
@@ -102,6 +103,7 @@
 				60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */,
 				ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */,
 				ABCDEF000000000000000040 /* FirebaseCore in Frameworks */,
+				60B4383B2FF611BE0089F40B /* GoogleSignInSwift in Frameworks */,
 				ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */,
 				ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */,
 			);
@@ -209,6 +211,7 @@
 				ABCDEF000000000000000051 /* FirebaseAuth */,
 				ABCDEF000000000000000052 /* FirebaseFirestore */,
 				60B438382FF611BE0089F40B /* GoogleSignIn */,
+				60B4383A2FF611BE0089F40B /* GoogleSignInSwift */,
 			);
 			productName = CloudGateway;
 			productReference = 605109692FF35D5F002E2D4C /* CloudGateway.app */;
@@ -764,6 +767,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 60B438372FF611BE0089F40B /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignIn;
+		};
+		60B4383A2FF611BE0089F40B /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 60B438372FF611BE0089F40B /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
 		};
 		ABCDEF000000000000000018 /* CloudGatewayKit */ = {
 			isa = XCSwiftPackageProductDependency;
