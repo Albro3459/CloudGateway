@@ -292,6 +292,7 @@ struct ContentView: View {
                                 installState: viewModel.installStateLabel(for: option),
                                 installTitle: viewModel.installButtonTitle(for: option),
                                 installDisabled: viewModel.selectedClientId == option.client.clientId ? viewModel.installDisabled : !option.client.hasUsableConfig,
+                                deleteDisabled: viewModel.deleteDisabled(for: option),
                                 onSelect: {
                                     viewModel.selectedClientId = option.client.clientId
                                 },
@@ -551,6 +552,7 @@ private struct ClientRow: View {
     let installState: String?
     let installTitle: String
     let installDisabled: Bool
+    let deleteDisabled: Bool
     let onSelect: () -> Void
     let onInstall: () -> Void
     let onDelete: () -> Void
@@ -595,7 +597,7 @@ private struct ClientRow: View {
                     Label("Delete", systemImage: "trash")
                 }
                 .buttonStyle(DangerButtonStyle())
-                .disabled(option.client.status == .removed)
+                .disabled(deleteDisabled)
             }
         }
         .padding(12)

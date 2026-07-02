@@ -63,11 +63,18 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var createDisabled: Bool {
-        isWorking || selectedRegion == nil || selectedRegion?.capacity?.isAtCapacity == true
+        guard let capacity = selectedRegion?.capacity, capacity.isKnown else {
+            return true
+        }
+        return isWorking || capacity.isAtCapacity
     }
 
     var deleteDisabled: Bool {
         isWorking || selectedClientOption == nil
+    }
+
+    func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
+        isWorking || option.client.status == .removed
     }
 
     var installDisabled: Bool {

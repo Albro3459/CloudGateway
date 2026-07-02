@@ -77,6 +77,28 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.createDisabled)
     }
 
+    func testCreateDisabledWhenSelectedRegionCapacityUnknown() async {
+        let service = signedInService()
+        service.enabledRegions = [
+            TestFixtures.region("us-unknown-1", capacity: .unknown)
+        ]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.createDisabled)
+    }
+
+    func testCreateDisabledWhenSelectedRegionCapacityMissing() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-missing-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.createDisabled)
+    }
+
     func testCreateEnabledWhenCapacityAvailable() async {
         let service = signedInService()
         service.enabledRegions = [
@@ -163,6 +185,20 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.errorText)
         XCTAssertNil(viewModel.successText)
+    }
+
+    func testDeleteDisabledForRemovedClients() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        let option = CloudGatewayClientOption(
+            client: TestFixtures.client("removed-1", regionId: "us-sanjose-1", status: .removed),
+            region: TestFixtures.region("us-sanjose-1")
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.deleteDisabled(for: option))
     }
 
     // MARK: - Role resolution

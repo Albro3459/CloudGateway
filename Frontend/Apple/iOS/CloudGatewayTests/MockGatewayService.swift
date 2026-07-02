@@ -171,12 +171,16 @@ enum TestFixtures {
         )
     }
 
-    static func client(_ id: String, regionId: String) -> CloudGatewayClient {
+    static func client(
+        _ id: String,
+        regionId: String,
+        status: CloudGatewayClientStatus = .active
+    ) -> CloudGatewayClient {
         CloudGatewayClient(
             clientId: id,
             clientName: id,
             regionId: regionId,
-            status: .active,
+            status: status,
             wireGuardConfig: usableConfig
         )
     }
