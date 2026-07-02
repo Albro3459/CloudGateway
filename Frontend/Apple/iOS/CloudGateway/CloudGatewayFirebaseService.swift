@@ -1,7 +1,10 @@
 import CloudGatewayKit
 import FirebaseAuth
+import FirebaseCore
 import FirebaseFirestore
 import Foundation
+import GoogleSignIn
+import UIKit
 
 extension CloudGatewayViewModel {
     /// Production wiring: the live Firebase service + a config manager backed by the
@@ -83,6 +86,59 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
                 continuation.resume(returning: AuthenticatedUser(user))
             }
         }
+    }
+
+    func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        let credential = OAuthProvider.appleCredential(
+            withIDToken: idToken,
+            rawNonce: rawNonce,
+            fullName: nil
+        )
+        let result = try await Auth.auth().signIn(with: credential)
+        return AuthenticatedUser(result.user)
+    }
+
+    func signInWithGoogle() async throws -> AuthenticatedUser {
+        let (idToken, accessToken) = try await Self.presentGoogleSignIn(clientID: googleClientID())
+        let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
+        let result = try await Auth.auth().signIn(with: credential)
+        return AuthenticatedUser(result.user)
+    }
+
+    private func googleClientID() throws -> String {
+        guard let clientID = FirebaseApp.app()?.options.clientID else {
+            throw CloudGatewayAppError.invalidAPIResponse
+        }
+        return clientID
+    }
+
+    @MainActor
+    private static func presentGoogleSignIn(clientID: String) async throws -> (idToken: String, accessToken: String) {
+        guard let presenting = topViewController() else {
+            throw CloudGatewayAppError.invalidAPIResponse
+        }
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
+        do {
+            let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: presenting)
+            guard let idToken = result.user.idToken?.tokenString else {
+                throw CloudGatewayAppError.invalidAPIResponse
+            }
+            return (idToken, result.user.accessToken.tokenString)
+        } catch let error as GIDSignInError where error.code == .canceled {
+            throw CloudGatewayAppError.cancelled
+        }
+    }
+
+    @MainActor
+    private static func topViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive } ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        var top = scene?.keyWindow?.rootViewController
+        while let presented = top?.presentedViewController {
+            top = presented
+        }
+        return top
     }
 
     func sendPasswordReset(email: String) async throws {

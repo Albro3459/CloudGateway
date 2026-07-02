@@ -1,4 +1,5 @@
 import FirebaseCore
+import GoogleSignIn
 import SwiftUI
 import UIKit
 
@@ -21,6 +22,9 @@ struct CloudGatewayApp: App {
             ContentView()
                 .environment(\.cloudGatewayTheme, CloudGatewayTheme())
                 .preferredColorScheme(.dark)
+                .onOpenURL { url in
+                    GIDSignIn.sharedInstance.handle(url)
+                }
         }
     }
 }

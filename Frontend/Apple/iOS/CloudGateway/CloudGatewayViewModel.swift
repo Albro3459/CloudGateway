@@ -168,6 +168,32 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    func completeAppleSignIn(idToken: String, rawNonce: String) async {
+        await run {
+            let user = try await service.signInWithApple(idToken: idToken, rawNonce: rawNonce)
+            try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: true)
+        }
+    }
+
+    func signInWithGoogle() async {
+        await run {
+            do {
+                let user = try await service.signInWithGoogle()
+                try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: true)
+            } catch CloudGatewayAppError.cancelled {
+                // User dismissed the Google sheet; not an error.
+            }
+        }
+    }
+
+    // The Apple button reports non-cancellation failures from the view layer;
+    // route them through run so they surface like every other CloudGatewayAppError.
+    func reportAppleSignInFailure() async {
+        await run {
+            throw CloudGatewayAppError.appleSignInFailed
+        }
+    }
+
     func signOut() async {
         isSigningOut = true
         defer { isSigningOut = false }
@@ -420,7 +446,7 @@ final class CloudGatewayViewModel: ObservableObject {
         switch error {
         case .accessDenied(_), .noEnabledRegions:
             return true
-        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse:
+        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed:
             return false
         }
     }

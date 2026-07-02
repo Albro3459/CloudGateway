@@ -1,3 +1,4 @@
+import AuthenticationServices
 import CloudGatewayKit
 import SwiftUI
 
@@ -7,6 +8,7 @@ struct ContentView: View {
     @State private var isShowingLogin = false
     @State private var isShowingAbout = false
     @State private var isConfirmingReset = false
+    @State private var appleRawNonce = ""
     @Environment(\.cloudGatewayTheme) private var theme
 
     var body: some View {
@@ -279,17 +281,28 @@ struct ContentView: View {
                             VStack(spacing: 10) {
                                 DividerLine(text: "or")
 
-                                Button {
-                                } label: {
-                                    Label("Continue with Apple", systemImage: "apple.logo")
+                                SignInWithAppleButton(.signIn) { request in
+                                    let nonce = AppleSignInNonce.randomNonceString()
+                                    appleRawNonce = nonce
+                                    request.requestedScopes = [.fullName, .email]
+                                    request.nonce = AppleSignInNonce.sha256(nonce)
+                                } onCompletion: { result in
+                                    handleAppleCompletion(result)
                                 }
-                                .buttonStyle(SecondaryButtonStyle())
-                                .disabled(true)
+                                .signInWithAppleButtonStyle(.whiteOutline)
+                                .frame(height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .disabled(viewModel.isWorking)
 
-                                Button("Continue with Google") {
+                                Button {
+                                    Task {
+                                        await viewModel.signInWithGoogle()
+                                    }
+                                } label: {
+                                    Label("Continue with Google", systemImage: "g.circle")
                                 }
                                 .buttonStyle(SecondaryButtonStyle())
-                                .disabled(true)
+                                .disabled(viewModel.isWorking)
 
                                 Button {
                                     Task {
@@ -633,6 +646,32 @@ struct ContentView: View {
 
     private var requestAccessURL: URL {
         URL(string: "mailto:Brodsky.Alex22@gmail.com?subject=CloudGateway%20Access%20Request")!
+    }
+
+    private func handleAppleCompletion(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8)
+            else {
+                Task {
+                    await viewModel.reportAppleSignInFailure()
+                }
+                return
+            }
+            Task {
+                await viewModel.completeAppleSignIn(idToken: idToken, rawNonce: appleRawNonce)
+            }
+        case .failure(let error):
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            Task {
+                await viewModel.reportAppleSignInFailure()
+            }
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 # Apple MVP 3: Sign In With Apple And Google
 
-Status: Planning. Part of the [Apple MVP 3 program](apple-mvp-3-implementation.md). Done **last**, after the [UI build](apple-mvp-3-ui.md) ships email/password with placeholder provider buttons.
+Status: Implemented. Part of the [Apple MVP 3 program](apple-mvp-3-implementation.md). Sign in with Apple (native `ASAuthorization` + nonce) and Google (`GoogleSignIn` SDK) both bridge to Firebase behind the `CloudGatewayServicing` seam and route through the shared post-sign-in load; an unprovisioned provider user is signed out to the request-access path. Name is not captured (uid/email only). Provider UI verified on device; view-model coverage is host-less.
 
 Goal: replace the placeholder "Continue with Apple" / "Continue with Google" buttons with working Firebase-backed provider sign-in.
 

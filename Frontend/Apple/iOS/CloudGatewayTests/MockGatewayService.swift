@@ -14,6 +14,8 @@ final class MockGatewayService: CloudGatewayServicing {
     // Injectable errors.
     var idTokenError: Error?
     var signInError: Error?
+    var signInWithAppleError: Error?
+    var signInWithGoogleError: Error?
     var sendPasswordResetError: Error?
     var fetchRegionsError: Error?
     var checkAccessError: Error?
@@ -39,6 +41,8 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var addCapacityCallCount = 0
     private(set) var checkAccessCallCount = 0
     private(set) var signInCallCount = 0
+    private(set) var signInWithAppleCallCount = 0
+    private(set) var signInWithGoogleCallCount = 0
     private(set) var sendPasswordResetCallCount = 0
     private(set) var signOutCallCount = 0
     private(set) var createClientCallCount = 0
@@ -59,6 +63,26 @@ final class MockGatewayService: CloudGatewayServicing {
             throw signInError
         }
         let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: email)
+        currentUser = user
+        return user
+    }
+
+    func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        signInWithAppleCallCount += 1
+        if let signInWithAppleError {
+            throw signInWithAppleError
+        }
+        let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: currentUser?.email ?? "apple@example.com")
+        currentUser = user
+        return user
+    }
+
+    func signInWithGoogle() async throws -> AuthenticatedUser {
+        signInWithGoogleCallCount += 1
+        if let signInWithGoogleError {
+            throw signInWithGoogleError
+        }
+        let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: currentUser?.email ?? "google@example.com")
         currentUser = user
         return user
     }

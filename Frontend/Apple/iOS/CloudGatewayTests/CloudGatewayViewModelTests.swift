@@ -232,6 +232,76 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.errorText)
     }
 
+    // MARK: - Provider sign-in
+
+    func testAppleSignInLoadsProvisionedUser() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.completeAppleSignIn(idToken: "tok", rawNonce: "nonce")
+
+        XCTAssertEqual(service.signInWithAppleCallCount, 1)
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+        XCTAssertTrue(viewModel.isSignedIn)
+        XCTAssertEqual(service.signOutCallCount, 0)
+        XCTAssertNil(viewModel.errorText)
+    }
+
+    func testGoogleSignInLoadsProvisionedUser() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.signInWithGoogle()
+
+        XCTAssertEqual(service.signInWithGoogleCallCount, 1)
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+        XCTAssertTrue(viewModel.isSignedIn)
+        XCTAssertEqual(service.signOutCallCount, 0)
+    }
+
+    func testAppleSignInSignsOutUnprovisionedUser() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.checkAccessError = CloudGatewayAppError.accessDenied("Request access to continue.")
+        let viewModel = makeViewModel(service)
+
+        await viewModel.completeAppleSignIn(idToken: "tok", rawNonce: "nonce")
+
+        XCTAssertEqual(service.signInWithAppleCallCount, 1)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
+    func testGoogleSignInSwallowsCancellation() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.signInWithGoogleError = CloudGatewayAppError.cancelled
+        let viewModel = makeViewModel(service)
+
+        await viewModel.signInWithGoogle()
+
+        XCTAssertEqual(service.signInWithGoogleCallCount, 1)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertEqual(service.signOutCallCount, 0)
+    }
+
+    func testGoogleSignInSurfacesRealError() async {
+        let service = MockGatewayService()
+        service.signInWithGoogleError = CloudGatewayAppError.invalidAPIResponse
+        let viewModel = makeViewModel(service)
+
+        await viewModel.signInWithGoogle()
+
+        XCTAssertEqual(service.signInWithGoogleCallCount, 1)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
     // MARK: - Capacity gating
 
     func testCreateDisabledWhenSelectedRegionAtCapacity() async {

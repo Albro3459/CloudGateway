@@ -7,6 +7,8 @@ enum CloudGatewayAppError: LocalizedError {
     case missingSelectedRegion
     case invalidAPIResponse
     case accessDenied(String)
+    case cancelled
+    case appleSignInFailed
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +22,10 @@ enum CloudGatewayAppError: LocalizedError {
             "CloudGateway returned an invalid response."
         case .accessDenied(let message):
             message
+        case .cancelled:
+            "Sign in was cancelled."
+        case .appleSignInFailed:
+            "Apple sign in failed."
         }
     }
 }
@@ -64,6 +70,8 @@ protocol CloudGatewayServicing {
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any
     func removeAuthStateListener(_ token: Any)
     func signIn(email: String, password: String) async throws -> AuthenticatedUser
+    func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
+    func signInWithGoogle() async throws -> AuthenticatedUser
     func sendPasswordReset(email: String) async throws
     func signOut() throws
     func idToken() async throws -> String
