@@ -51,6 +51,11 @@ struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
     let noChanges: Bool
 }
 
+struct CloudGatewayGrantAccessResponse: Decodable, Equatable {
+    let email: String
+    let alreadyExisted: Bool
+}
+
 /// App-side seam over Firebase Auth + the regional API so `CloudGatewayViewModel`
 /// can be exercised with a mock. Firebase-free on purpose: the only conformer that
 /// touches Firebase is `CloudGatewayFirebaseService`.
@@ -59,6 +64,7 @@ protocol CloudGatewayServicing {
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any
     func removeAuthStateListener(_ token: Any)
     func signIn(email: String, password: String) async throws -> AuthenticatedUser
+    func sendPasswordReset(email: String) async throws
     func signOut() throws
     func idToken() async throws -> String
     func fetchUserRole(uid: String) async throws -> String?
@@ -69,4 +75,5 @@ protocol CloudGatewayServicing {
     func createClient(regionId: String, clientName: String?, idToken: String) async throws -> CloudGatewayClient
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse
+    func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse
 }

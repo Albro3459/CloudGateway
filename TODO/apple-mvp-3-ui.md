@@ -1,6 +1,6 @@
 # Apple MVP 3: iOS UI Build
 
-Status: Planning. Part of the [Apple MVP 3 program](apple-mvp-3-implementation.md). Depends on the [apex/API piece](mvp-3-apex-and-api.md) for the region source and routing.
+Status: Implemented (email/password path). Part of the [Apple MVP 3 program](apple-mvp-3-implementation.md); the apex region source and routing are wired. Built: theme layer, `loading/guest/signedIn` modes, Login (with Reset password + disabled provider placeholders + Continue as Guest + Request Access), guest + signed-in dashboards, VPN table, Admin (Sync Region + Grant User Access), About, and signed-out installed-config hiding. Remaining: Sign in with Apple/Google ([providers piece](apple-mvp-3-providers.md)).
 
 Goal: a full SwiftUI rebuild of the iOS app matching the React site's visual language, dark-mode-first with a theme abstraction, including the Apple-review-safe guest flow. Connection status, error recovery, and privacy-safe diagnostics are part of this build (MVP 3 is the finished app).
 
@@ -19,7 +19,7 @@ Mirror the web semantic tokens in [Frontend/Web/src/input.css](../Frontend/Web/s
   * content = gray-100, content-secondary = gray-300, content-muted = gray-400, content-faint = gray-500, content-disabled = gray-600
   * edge = gray-700, edge-subtle = gray-800, edge-faint = gray-800
   * success = green-700, warning-soft = yellow-950 / warning-strong = yellow-300, danger = red-600, danger-content = red-400
-* Task: resolve each shade to its exact Tailwind v4 default hex during implementation (do not eyeball); produce a token→hex table as the first UI deliverable.
+* Done: the Tailwind shades were resolved to exact hex to build the theme. [Frontend/Apple/iOS/CloudGateway/CloudGatewayTheme.swift](../Frontend/Apple/iOS/CloudGateway/CloudGatewayTheme.swift) is the resolved token→hex source of truth.
 
 ## Navigation And Root State
 
@@ -113,10 +113,10 @@ Extend the host-less `CloudGatewayTests` bundle:
 
 SwiftUI views themselves are not unit-tested (consistent with the existing limitation); rely on manual/device verification for visuals.
 
-## Open Items
+## Open Items (resolved)
 
-* Provider button placeholder style: disabled vs "coming soon" tag vs hidden-until-ready (leaning: visible disabled with a subtle "coming soon").
-* Whether iOS needs the config detail / QR modal.
+* Provider button placeholder style: **visible disabled** (Apple/Google buttons shown but `.disabled(true)`), no "coming soon" tag.
+* Config detail / QR modal: **no QR at all**; config detail **deferred** (iOS installs directly).
 
 ## Acceptance
 

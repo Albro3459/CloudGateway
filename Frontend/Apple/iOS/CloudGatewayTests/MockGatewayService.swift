@@ -14,6 +14,7 @@ final class MockGatewayService: CloudGatewayServicing {
     // Injectable errors.
     var idTokenError: Error?
     var signInError: Error?
+    var sendPasswordResetError: Error?
     var fetchRegionsError: Error?
     var checkAccessError: Error?
     var fetchUserRoleError: Error?
@@ -21,6 +22,15 @@ final class MockGatewayService: CloudGatewayServicing {
     var createClientError: Error?
     var deleteClientError: Error?
     var syncRegionError: Error?
+    var grantAccessError: Error?
+
+    // Grant-access response tuning.
+    var grantAccessAlreadyExisted = false
+
+    // Captured inputs.
+    private(set) var sendPasswordResetEmail: String?
+    private(set) var grantAccessEmail: String?
+    private(set) var grantAccessRegionId: String?
 
     // Call counters.
     private(set) var fetchRegionsCallCount = 0
@@ -29,10 +39,12 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var addCapacityCallCount = 0
     private(set) var checkAccessCallCount = 0
     private(set) var signInCallCount = 0
+    private(set) var sendPasswordResetCallCount = 0
     private(set) var signOutCallCount = 0
     private(set) var createClientCallCount = 0
     private(set) var deleteClientCallCount = 0
     private(set) var syncRegionCallCount = 0
+    private(set) var grantAccessCallCount = 0
 
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
         // Intentionally does not fire so tests drive loads explicitly.
@@ -49,6 +61,14 @@ final class MockGatewayService: CloudGatewayServicing {
         let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: email)
         currentUser = user
         return user
+    }
+
+    func sendPasswordReset(email: String) async throws {
+        sendPasswordResetCallCount += 1
+        sendPasswordResetEmail = email
+        if let sendPasswordResetError {
+            throw sendPasswordResetError
+        }
     }
 
     func signOut() throws {
@@ -144,6 +164,16 @@ final class MockGatewayService: CloudGatewayServicing {
             removed: 0,
             noChanges: false
         )
+    }
+
+    func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse {
+        grantAccessCallCount += 1
+        grantAccessEmail = email
+        grantAccessRegionId = regionId
+        if let grantAccessError {
+            throw grantAccessError
+        }
+        return CloudGatewayGrantAccessResponse(email: email, alreadyExisted: grantAccessAlreadyExisted)
     }
 }
 

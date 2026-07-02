@@ -31,6 +31,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published var selectedRegionId: String?
     @Published var selectedClientId: String?
     @Published var newClientName = ""
+    @Published var newAccessEmail = ""
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
@@ -72,6 +73,13 @@ final class CloudGatewayViewModel: ObservableObject {
 
     var canSyncSelectedRegion: Bool {
         role == "admin" && selectedRegion != nil && !isWorking
+    }
+
+    var canGrantAccess: Bool {
+        isAdmin
+            && !newAccessEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && regions.first != nil
+            && !isWorking
     }
 
     var isAdmin: Bool {
@@ -149,6 +157,17 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    func resetPassword() async {
+        await run {
+            let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
+                throw CloudGatewayAppError.accessDenied("Enter a valid email address.")
+            }
+            try await service.sendPasswordReset(email: trimmedEmail)
+            successText = "Password reset email sent."
+        }
+    }
+
     func signOut() async {
         isSigningOut = true
         defer { isSigningOut = false }
@@ -190,6 +209,30 @@ final class CloudGatewayViewModel: ObservableObject {
             lastSyncText = "\(response.regionId): +\(response.added) ~\(response.updated) -\(response.removed)"
             try await loadRemoteState(for: user)
             successText = "Synced \(response.regionId)."
+        }
+    }
+
+    func grantAccess() async {
+        await run {
+            guard service.currentUser != nil else {
+                throw CloudGatewayAppError.missingCurrentUser
+            }
+            guard role == "admin" else {
+                throw CloudGatewayAppError.accessDenied("Admin access is required to grant access.")
+            }
+            let trimmedEmail = newAccessEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
+                throw CloudGatewayAppError.accessDenied("Enter a valid email address.")
+            }
+            guard let regionId = regions.first?.regionId else {
+                throw CloudGatewayAppError.missingSelectedRegion
+            }
+            let token = try await service.idToken()
+            let response = try await service.grantAccess(email: trimmedEmail, regionId: regionId, idToken: token)
+            newAccessEmail = ""
+            successText = response.alreadyExisted
+                ? "Existing account granted access: \(response.email)"
+                : "User access granted: \(response.email)"
         }
     }
 

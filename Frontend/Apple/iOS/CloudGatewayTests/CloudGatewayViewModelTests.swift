@@ -88,6 +88,107 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.removeTunnelDisabled)
     }
 
+    // MARK: - Reset password
+
+    func testResetPasswordSendsEmailForValidAddress() async {
+        let service = MockGatewayService()
+        let viewModel = makeViewModel(service)
+        viewModel.email = "user@example.com"
+
+        await viewModel.resetPassword()
+
+        XCTAssertEqual(service.sendPasswordResetCallCount, 1)
+        XCTAssertEqual(service.sendPasswordResetEmail, "user@example.com")
+        XCTAssertNotNil(viewModel.successText)
+        XCTAssertNil(viewModel.errorText)
+    }
+
+    func testResetPasswordBlocksInvalidEmail() async {
+        let service = MockGatewayService()
+        let viewModel = makeViewModel(service)
+        viewModel.email = "not-an-email"
+
+        await viewModel.resetPassword()
+
+        XCTAssertEqual(service.sendPasswordResetCallCount, 0)
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
+    // MARK: - Grant access
+
+    private func signedInAdminService() -> MockGatewayService {
+        let service = signedInService()
+        service.userRole = "admin"
+        service.accessRole = "admin"
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))
+        ]
+        return service
+    }
+
+    func testGrantAccessGrantsForAdminNewUser() async {
+        let service = signedInAdminService()
+        service.grantAccessAlreadyExisted = false
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.isAdmin)
+        viewModel.newAccessEmail = "new@example.com"
+        XCTAssertTrue(viewModel.canGrantAccess)
+
+        await viewModel.grantAccess()
+
+        XCTAssertEqual(service.grantAccessCallCount, 1)
+        XCTAssertEqual(service.grantAccessEmail, "new@example.com")
+        XCTAssertEqual(service.grantAccessRegionId, "us-sanjose-1")
+        XCTAssertEqual(viewModel.successText, "User access granted: new@example.com")
+        XCTAssertEqual(viewModel.newAccessEmail, "")
+    }
+
+    func testGrantAccessReportsExistingAccount() async {
+        let service = signedInAdminService()
+        service.grantAccessAlreadyExisted = true
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newAccessEmail = "existing@example.com"
+
+        await viewModel.grantAccess()
+
+        XCTAssertEqual(service.grantAccessCallCount, 1)
+        XCTAssertEqual(viewModel.successText, "Existing account granted access: existing@example.com")
+    }
+
+    func testGrantAccessBlockedForNonAdmin() async {
+        let service = signedInService()
+        service.userRole = "user"
+        service.accessRole = "user"
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newAccessEmail = "new@example.com"
+
+        XCTAssertFalse(viewModel.canGrantAccess)
+
+        await viewModel.grantAccess()
+
+        XCTAssertEqual(service.grantAccessCallCount, 0)
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
+    func testGrantAccessBlockedForEmptyEmail() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newAccessEmail = "   "
+
+        XCTAssertFalse(viewModel.canGrantAccess)
+
+        await viewModel.grantAccess()
+
+        XCTAssertEqual(service.grantAccessCallCount, 0)
+        XCTAssertNotNil(viewModel.errorText)
+    }
+
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {

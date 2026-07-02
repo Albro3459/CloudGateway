@@ -85,6 +85,18 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         }
     }
 
+    func sendPasswordReset(email: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            Auth.auth().sendPasswordReset(withEmail: email) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     func signOut() throws {
         try Auth.auth().signOut()
     }
@@ -218,6 +230,15 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             method: "POST",
             idToken: idToken,
             body: SyncRegionRequest(regionId: regionId)
+        )
+    }
+
+    func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse {
+        try await sendJSONRequest(
+            url: regionalAPIURL(regionId: regionId, path: "users"),
+            method: "POST",
+            idToken: idToken,
+            body: GrantAccessRequest(email: email)
         )
     }
 
@@ -404,6 +425,10 @@ private struct DeleteClientRequest: Encodable {
 
 private struct SyncRegionRequest: Encodable {
     let regionId: String
+}
+
+private struct GrantAccessRequest: Encodable {
+    let email: String
 }
 
 private extension JSONDecoder {

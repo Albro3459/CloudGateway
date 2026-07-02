@@ -5,6 +5,8 @@ struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var isShowingLogin = false
+    @State private var isShowingAbout = false
+    @State private var isConfirmingReset = false
     @Environment(\.cloudGatewayTheme) private var theme
 
     var body: some View {
@@ -33,6 +35,21 @@ struct ContentView: View {
             if mode == .signedIn {
                 isShowingLogin = false
             }
+        }
+        .sheet(isPresented: $isShowingAbout) {
+            AboutView(version: versionText) {
+                isShowingAbout = false
+            }
+        }
+        .alert("Send password reset email?", isPresented: $isConfirmingReset) {
+            Button("Send") {
+                Task {
+                    await viewModel.resetPassword()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("We'll email a password reset link to the address entered above.")
         }
         .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
             Button("Delete", role: .destructive) {
@@ -124,6 +141,14 @@ struct ContentView: View {
             Spacer()
 
             Button {
+                isShowingAbout = true
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(IconNavButtonStyle())
+            .accessibilityLabel("About")
+
+            Button {
                 Task {
                     await viewModel.refresh()
                 }
@@ -159,6 +184,14 @@ struct ContentView: View {
             }
 
             Spacer()
+
+            Button {
+                isShowingAbout = true
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(IconNavButtonStyle())
+            .accessibilityLabel("About")
 
             Button {
                 Task {
@@ -233,6 +266,16 @@ struct ContentView: View {
                             .buttonStyle(PrimaryButtonStyle())
                             .disabled(viewModel.isWorking)
 
+                            Button {
+                                isConfirmingReset = true
+                            } label: {
+                                Text("Reset password")
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(theme.accent)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.isWorking)
+
                             VStack(spacing: 10) {
                                 DividerLine(text: "or")
 
@@ -304,26 +347,51 @@ struct ContentView: View {
 
     private var adminPanel: some View {
         ThemedPanel {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 SectionHeader(
                     title: "Admin",
-                    subtitle: "Sync the selected region's live peers with Firebase."
+                    subtitle: "Manage regions and user access."
                 )
 
-                Button {
-                    Task {
-                        await viewModel.syncSelectedRegion()
-                    }
-                } label: {
-                    Label("Sync Selected Region", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .buttonStyle(SecondaryButtonStyle())
-                .disabled(!viewModel.canSyncSelectedRegion)
-
-                if let lastSyncText = viewModel.lastSyncText {
-                    Text(lastSyncText)
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Sync the selected region's live peers with Firebase.")
+                        .font(.subheadline)
                         .foregroundStyle(theme.contentMuted)
+
+                    Button {
+                        Task {
+                            await viewModel.syncSelectedRegion()
+                        }
+                    } label: {
+                        Label("Sync Selected Region", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(!viewModel.canSyncSelectedRegion)
+
+                    if let lastSyncText = viewModel.lastSyncText {
+                        Text(lastSyncText)
+                            .font(.caption)
+                            .foregroundStyle(theme.contentMuted)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    ThemedTextField(
+                        title: "Grant User Access",
+                        placeholder: "Email",
+                        text: $viewModel.newAccessEmail,
+                        keyboardType: .emailAddress
+                    )
+
+                    Button {
+                        Task {
+                            await viewModel.grantAccess()
+                        }
+                    } label: {
+                        Label("Grant Access", systemImage: "person.badge.plus")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(!viewModel.canGrantAccess)
                 }
             }
         }
@@ -603,6 +671,74 @@ private struct SectionHeader: View {
                 .font(.subheadline)
                 .foregroundStyle(theme.contentMuted)
         }
+    }
+}
+
+private struct AboutView: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let version: String
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Text("About")
+                        .font(.headline)
+                        .foregroundStyle(theme.content)
+                    Spacer()
+                    Button("Done", action: onClose)
+                        .buttonStyle(NavTextButtonStyle())
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(theme.nav)
+
+                ScrollView {
+                    VStack(spacing: 16) {
+                        ThemedPanel {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("What is CloudGateway?")
+                                    .font(.title2.bold())
+                                    .foregroundStyle(theme.content)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Created by Alex Brodsky")
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(theme.contentSecondary)
+                                    HStack(spacing: 14) {
+                                        Link("GitHub", destination: URL(string: "https://github.com/Albro3459/CloudGateway/")!)
+                                        Link("LinkedIn", destination: URL(string: "https://www.linkedin.com/in/brodsky-alex22/")!)
+                                        Link("Email", destination: URL(string: "mailto:Brodsky.Alex22@gmail.com")!)
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .tint(theme.accent)
+                                }
+
+                                Text("Create secure WireGuard VPN clients on shared regional CloudGateway servers, pre-configured with IPv4, IPv6, and DNS.")
+                                    .foregroundStyle(theme.contentSecondary)
+                                Text("Each region runs a dedicated FastAPI control plane behind Cloudflare-protected Caddy, with Firebase storing user and client state.")
+                                    .foregroundStyle(theme.contentSecondary)
+                                Text("Create a config in the selected region and install it on this device in just a few taps.")
+                                    .foregroundStyle(theme.contentSecondary)
+                                Text("Secure, simple, and instant. Your personal VPN clients, managed on demand.")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(theme.content)
+                            }
+                        }
+
+                        Text(version)
+                            .font(.caption)
+                            .foregroundStyle(theme.contentFaint)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 18)
+                }
+            }
+        }
+        .foregroundStyle(theme.content)
     }
 }
 
