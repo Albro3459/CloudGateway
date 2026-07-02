@@ -204,6 +204,55 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.errorText)
     }
 
+    func testAdminRefreshLoadsAllClients() async {
+        let service = signedInAdminService()
+        service.ownedClients = [
+            TestFixtures.client("mine", regionId: "us-sanjose-1", ownerUid: "admin-uid", ownerEmail: "admin@example.com"),
+            TestFixtures.client("theirs", regionId: "us-sanjose-1", ownerUid: "user-uid", ownerEmail: "user@example.com"),
+        ]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(service.fetchOwnedClientsCallCount, 0)
+        XCTAssertEqual(service.fetchAllClientsCallCount, 1)
+        XCTAssertEqual(viewModel.filteredClientOptions.map(\.client.clientId), ["mine", "theirs"])
+        XCTAssertEqual(viewModel.filteredClientOptions.last?.client.ownerEmail, "user@example.com")
+    }
+
+    func testAdminDeleteUsesSelectedClientOwnerUid() async {
+        let service = signedInAdminService()
+        service.currentUser = AuthenticatedUser(uid: "admin-uid", email: "admin@example.com")
+        service.ownedClients = [
+            TestFixtures.client("theirs", regionId: "us-sanjose-1", ownerUid: "user-uid", ownerEmail: "user@example.com")
+        ]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        viewModel.selectedClientId = "theirs"
+        await viewModel.deleteSelectedClient()
+
+        XCTAssertEqual(service.deleteClientCallCount, 1)
+        XCTAssertEqual(service.deleteClientUserId, "user-uid")
+    }
+
+    func testSyncSelectedRegionCapturesResult() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        await viewModel.syncSelectedRegion()
+
+        XCTAssertEqual(service.syncRegionCallCount, 1)
+        XCTAssertEqual(viewModel.lastSyncText, "us-sanjose-1: +1 ~0 -0")
+        XCTAssertEqual(viewModel.syncResult?.regionId, "us-sanjose-1")
+        XCTAssertTrue(viewModel.syncResult?.logText.contains("Added: 1") == true)
+
+        viewModel.dismissSyncResult()
+
+        XCTAssertNil(viewModel.syncResult)
+    }
+
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {
@@ -245,6 +294,17 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.signOutCallCount, 0)
         XCTAssertTrue(viewModel.isSignedIn)
         XCTAssertNotNil(viewModel.errorText)
+    }
+
+    func testRefreshIgnoresCancellationError() async {
+        let service = signedInService()
+        service.fetchRegionsError = CancellationError()
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertNil(viewModel.staleText)
     }
 
     // MARK: - Provider sign-in
@@ -449,6 +509,39 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // must remain visible after the reload — guards mergeClients' existing-override.
         XCTAssertTrue(viewModel.filteredClientOptions.contains { $0.client.clientId == "created-1" })
         XCTAssertEqual(viewModel.successText, "Laptop was created.")
+    }
+
+    func testSyncClientReloadsRemoteStateBeforeInstall() async {
+        let service = signedInService()
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))
+        ]
+        service.ownedClients = [TestFixtures.client("phone", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        guard let staleOption = viewModel.filteredClientOptions.first else {
+            XCTFail("Expected a client option.")
+            return
+        }
+
+        service.ownedClients = [
+            CloudGatewayClient(
+                clientId: "phone",
+                clientName: "Renamed phone",
+                regionId: "us-sanjose-1",
+                status: .active,
+                wireGuardConfig: TestFixtures.usableConfig + "\n# refreshed",
+                ownerUid: "u1",
+                ownerEmail: "a@b.com"
+            )
+        ]
+
+        await viewModel.sync(staleOption)
+
+        XCTAssertEqual(service.fetchOwnedClientsCallCount, 2)
+        XCTAssertEqual(viewModel.installedSnapshots.first?.clientName, "Renamed phone")
+        XCTAssertEqual(viewModel.successText, "Renamed phone is synced.")
     }
 
     func testCreateClientRequiresDisplayNameBeforeServiceCall() async {

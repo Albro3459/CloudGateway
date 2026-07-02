@@ -32,6 +32,7 @@ final class MockGatewayService: CloudGatewayServicing {
     // Captured inputs.
     private(set) var sendPasswordResetEmail: String?
     private(set) var createClientName: String?
+    private(set) var deleteClientUserId: String?
     private(set) var grantAccessEmail: String?
     private(set) var grantAccessRegionId: String?
 
@@ -39,6 +40,7 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var fetchRegionsCallCount = 0
     private(set) var fetchUserRoleCallCount = 0
     private(set) var fetchOwnedClientsCallCount = 0
+    private(set) var fetchAllClientsCallCount = 0
     private(set) var addCapacityCallCount = 0
     private(set) var checkAccessCallCount = 0
     private(set) var signInCallCount = 0
@@ -149,6 +151,14 @@ final class MockGatewayService: CloudGatewayServicing {
         return ownedClients
     }
 
+    func fetchAllClients() async throws -> [CloudGatewayClient] {
+        fetchAllClientsCallCount += 1
+        if let fetchOwnedClientsError {
+            throw fetchOwnedClientsError
+        }
+        return ownedClients
+    }
+
     func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient {
         createClientCallCount += 1
         createClientName = clientName
@@ -166,6 +176,7 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse {
         deleteClientCallCount += 1
+        deleteClientUserId = userId
         if let deleteClientError {
             throw deleteClientError
         }
@@ -230,14 +241,18 @@ enum TestFixtures {
     static func client(
         _ id: String,
         regionId: String,
-        status: CloudGatewayClientStatus = .active
+        status: CloudGatewayClientStatus = .active,
+        ownerUid: String? = nil,
+        ownerEmail: String? = nil
     ) -> CloudGatewayClient {
         CloudGatewayClient(
             clientId: id,
             clientName: id,
             regionId: regionId,
             status: status,
-            wireGuardConfig: usableConfig
+            wireGuardConfig: usableConfig,
+            ownerUid: ownerUid,
+            ownerEmail: ownerEmail
         )
     }
 

@@ -8,6 +8,37 @@ enum CloudGatewayAppMode: Equatable {
     case signedIn
 }
 
+struct CloudGatewaySyncResult: Identifiable, Equatable {
+    let regionId: String
+    let syncedAt: String
+    let added: Int
+    let updated: Int
+    let removed: Int
+    let noChanges: Bool
+
+    var id: String {
+        "\(regionId)-\(syncedAt)"
+    }
+
+    var summary: String {
+        noChanges
+            ? "\(regionId): no changes"
+            : "\(regionId): +\(added) ~\(updated) -\(removed)"
+    }
+
+    var logText: String {
+        """
+        CloudGateway sync result
+        Region: \(regionId)
+        Synced at: \(syncedAt)
+        Added: \(added)
+        Updated: \(updated)
+        Removed: \(removed)
+        No changes: \(noChanges ? "yes" : "no")
+        """
+    }
+}
+
 @MainActor
 final class CloudGatewayViewModel: ObservableObject {
     @Published var email = ""
@@ -27,6 +58,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var staleText: String?
     @Published private(set) var lastRefreshText: String?
     @Published private(set) var lastSyncText: String?
+    @Published private(set) var syncResult: CloudGatewaySyncResult?
     @Published private(set) var remoteInvalidInstalledConfig = false
     @Published var selectedRegionId: String?
     @Published var selectedClientId: String? {
@@ -143,6 +175,14 @@ final class CloudGatewayViewModel: ObservableObject {
         isWorking || selectedClientId == nil || visibleTunnelStatus == nil
     }
 
+    var isLoadingRegions: Bool {
+        isWorking && regions.isEmpty
+    }
+
+    var isLoadingClients: Bool {
+        isSignedIn && isWorking && clientOptions.isEmpty
+    }
+
     init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
         self.service = service
         self.configManager = configManager
@@ -233,6 +273,16 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    func pullToRefresh() async {
+        await run(showsWorkingOverlay: false) {
+            if let user = service.currentUser {
+                try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+            } else {
+                try await loadGuestState()
+            }
+        }
+    }
+
     // Guest entry point from the login screen; refresh() already resolves to
     // guest state when there is no signed-in user.
     func continueAsGuest() async {
@@ -252,7 +302,16 @@ final class CloudGatewayViewModel: ObservableObject {
             }
             let token = try await service.idToken()
             let response = try await service.syncRegion(regionId: regionId, idToken: token)
-            lastSyncText = "\(response.regionId): +\(response.added) ~\(response.updated) -\(response.removed)"
+            let result = CloudGatewaySyncResult(
+                regionId: response.regionId,
+                syncedAt: response.syncedAt,
+                added: response.added,
+                updated: response.updated,
+                removed: response.removed,
+                noChanges: response.noChanges
+            )
+            syncResult = result
+            lastSyncText = result.summary
             try await loadRemoteState(for: user)
             successText = "Synced \(response.regionId)."
         }
@@ -325,7 +384,7 @@ final class CloudGatewayViewModel: ObservableObject {
             let token = try await service.idToken()
             let response = try await service.deleteClient(
                 clientId: selectedClientOption.client.clientId,
-                userId: user.uid,
+                userId: selectedClientOption.client.ownerUid ?? user.uid,
                 regionId: selectedClientOption.client.regionId,
                 idToken: token
             )
@@ -354,6 +413,25 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    func sync(_ option: CloudGatewayClientOption) async {
+        await run {
+            guard let user = service.currentUser else {
+                throw CloudGatewayAppError.missingCurrentUser
+            }
+            try await loadRemoteState(for: user)
+            guard let freshOption = clientOptions.first(where: {
+                $0.client.clientId == option.client.clientId
+                    && $0.client.regionId == option.client.regionId
+                    && $0.client.hasUsableConfig
+            }) else {
+                throw CloudGatewayAppError.accessDenied("This VPN client is not ready to sync.")
+            }
+            selectedClientId = freshOption.client.clientId
+            apply(try await configManager.install(freshOption))
+            successText = "\(freshOption.client.displayName) is synced."
+        }
+    }
+
     func startTunnel() async {
         await run {
             guard let selectedClientId else {
@@ -364,6 +442,11 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    func startTunnel(for option: CloudGatewayClientOption) async {
+        selectedClientId = option.client.clientId
+        await startTunnel()
+    }
+
     func stopTunnel() async {
         await run {
             guard let selectedClientId else {
@@ -372,6 +455,11 @@ final class CloudGatewayViewModel: ObservableObject {
             apply(try await configManager.stopTunnel(identifier: selectedClientId))
             successText = "VPN stopped."
         }
+    }
+
+    func stopTunnel(for option: CloudGatewayClientOption) async {
+        selectedClientId = option.client.clientId
+        await stopTunnel()
     }
 
     func removeTunnel() async {
@@ -388,9 +476,17 @@ final class CloudGatewayViewModel: ObservableObject {
         configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
 
+    func tunnelStatus(for option: CloudGatewayClientOption) -> GatewayTunnelStatus? {
+        configState.tunnelStatus(for: option.client.clientId)
+    }
+
     func dismissMessages() {
         errorText = nil
         successText = nil
+    }
+
+    func dismissSyncResult() {
+        syncResult = nil
     }
 
     func installStateLabel(for option: CloudGatewayClientOption) -> String? {
@@ -406,6 +502,29 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func installButtonTitle(for option: CloudGatewayClientOption) -> String {
         installStateLabel(for: option) == nil ? "Install" : "Install Update"
+    }
+
+    func syncDisabled(for option: CloudGatewayClientOption) -> Bool {
+        isWorking || !isSignedIn || !option.client.hasUsableConfig
+    }
+
+    func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {
+        let clientId = option.client.clientId
+        let status = configState.tunnelStatus(for: clientId)
+        return isWorking
+            || !isSignedIn
+            || status == nil
+            || status == .invalid
+            || configState.remoteInvalidInstalledConfig(for: clientId)
+    }
+
+    func toggleIsOn(for option: CloudGatewayClientOption) -> Bool {
+        switch configState.tunnelStatus(for: option.client.clientId) {
+        case .connected, .connecting, .reasserting:
+            return true
+        case .invalid, .disconnected, .disconnecting, nil:
+            return false
+        }
     }
 
     private func handleAuthState(_ user: AuthenticatedUser?) async {
@@ -452,7 +571,10 @@ final class CloudGatewayViewModel: ObservableObject {
         let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
         role = (try? await service.fetchUserRole(uid: user.uid)) ?? access.role
         let regions = await service.addCapacity(to: enabledRegions, idToken: token)
-        let clients = merge(existingClients: existingClients, fetchedClients: try await service.fetchOwnedClients(uid: user.uid))
+        let fetchedClients = role == "admin"
+            ? try await service.fetchAllClients()
+            : try await service.fetchOwnedClients(uid: user.uid)
+        let clients = merge(existingClients: existingClients, fetchedClients: fetchedClients)
         apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
         ensureSelectedRegion()
         pruneSelectedClient()
@@ -499,6 +621,7 @@ final class CloudGatewayViewModel: ObservableObject {
         staleText = nil
         lastRefreshText = nil
         lastSyncText = nil
+        syncResult = nil
         remoteInvalidInstalledConfig = false
         successText = nil
         selectedRegionId = nil
@@ -592,16 +715,23 @@ final class CloudGatewayViewModel: ObservableObject {
         CloudGatewayConfigSelection.mergeClients(existing: existingClients, fetched: fetchedClients)
     }
 
-    private func run(_ operation: () async throws -> Void) async {
-        isWorking = true
+    private func run(showsWorkingOverlay: Bool = true, _ operation: () async throws -> Void) async {
+        if showsWorkingOverlay {
+            isWorking = true
+        }
         errorText = nil
         successText = nil
         defer {
-            isWorking = false
+            if showsWorkingOverlay {
+                isWorking = false
+            }
         }
 
         do {
             try await operation()
+        } catch is CancellationError {
+        } catch CloudGatewayAppError.cancelled {
+        } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
         } catch {
             errorText = error.localizedDescription
             if isSignedIn {

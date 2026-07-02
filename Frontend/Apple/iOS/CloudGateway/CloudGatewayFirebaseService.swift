@@ -262,7 +262,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             regionId: response.regionId,
             status: response.status,
             wireGuardConfig: response.wireguardConfig,
-            updatedAt: nil
+            updatedAt: nil,
+            ownerUid: Auth.auth().currentUser?.uid,
+            ownerEmail: Auth.auth().currentUser?.email
         )
     }
 
@@ -302,6 +304,14 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         let snapshot = try await getDocuments(
             db.collectionGroup("Instances").whereField("ownerUid", isEqualTo: uid)
         )
+        return snapshot.documents.compactMap { document in
+            let regionFallback = document.reference.parent.parent?.documentID
+            return client(from: document.documentID, regionFallback: regionFallback, data: document.data())
+        }
+    }
+
+    func fetchAllClients() async throws -> [CloudGatewayClient] {
+        let snapshot = try await getDocuments(db.collectionGroup("Instances"))
         return snapshot.documents.compactMap { document in
             let regionFallback = document.reference.parent.parent?.documentID
             return client(from: document.documentID, regionFallback: regionFallback, data: document.data())
@@ -360,7 +370,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             regionId: regionId,
             status: status,
             wireGuardConfig: string(data["wireguardConfig"]),
-            updatedAt: date(data["updatedAt"])
+            updatedAt: date(data["updatedAt"]),
+            ownerUid: string(data["ownerUid"]),
+            ownerEmail: string(data["ownerEmail"]) ?? string(data["email"])
         )
     }
 

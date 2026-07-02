@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
+    @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var isShowingLogin = false
     @State private var isShowingAbout = false
     @State private var isConfirmingReset = false
@@ -31,6 +32,8 @@ struct ContentView: View {
             if viewModel.isWorking {
                 workingOverlay
             }
+
+            topMessages
         }
         .foregroundStyle(theme.content)
         .onChange(of: viewModel.appMode) { _, mode in
@@ -41,6 +44,14 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingAbout) {
             AboutView(version: versionText) {
                 isShowingAbout = false
+            }
+        }
+        .sheet(item: $clientShowingDetails) { option in
+            ClientDetailsView(option: option)
+        }
+        .sheet(isPresented: syncResultPresented) {
+            if let result = viewModel.syncResult {
+                SyncResultView(result: result)
             }
         }
         .alert("Send password reset email?", isPresented: $isConfirmingReset) {
@@ -64,7 +75,7 @@ struct ContentView: View {
             }
         } message: {
             if let clientPendingDelete {
-                Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional WireGuard peer and the local VPN profile if this config is installed.")
+                Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional VPN peer and the local VPN profile if this config is installed.")
             }
         }
     }
@@ -86,22 +97,20 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
-                    messages
-
                     if viewModel.isAdmin {
                         adminPanel
                     }
 
-                    regionsPanel
                     createPanel
+                    regionsPanel
                     clientsPanel
-                    tunnelPanel
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 18)
             }
+            .scrollDismissesKeyboard(.immediately)
             .refreshable {
-                await viewModel.refresh()
+                await viewModel.pullToRefresh()
             }
         }
     }
@@ -112,16 +121,16 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
-                    messages
-                    regionsPanel
                     guestCreatePanel
+                    regionsPanel
                     guestClientsPanel
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 18)
             }
+            .scrollDismissesKeyboard(.immediately)
             .refreshable {
-                await viewModel.refresh()
+                await viewModel.pullToRefresh()
             }
         }
     }
@@ -239,8 +248,6 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
-                    messages
-
                     ThemedPanel {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Login")
@@ -260,7 +267,7 @@ struct ContentView: View {
                                 text: $viewModel.password
                             )
 
-                            Button("Login") {
+                            Button("Sign in") {
                                 Task {
                                     await viewModel.signIn()
                                 }
@@ -317,7 +324,7 @@ struct ContentView: View {
                             }
 
                             Link(destination: requestAccessURL) {
-                                Label("Request access", systemImage: "envelope")
+                                Label("Request Access", systemImage: "envelope")
                             }
                             .buttonStyle(SecondaryButtonStyle())
                         }
@@ -330,32 +337,40 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 18)
             }
+            .scrollDismissesKeyboard(.immediately)
         }
     }
 
     @ViewBuilder
-    private var messages: some View {
-        if let errorText = viewModel.errorText {
-            MessageBanner(
-                text: errorText,
-                style: .error,
-                onDismiss: viewModel.dismissMessages
-            )
-        } else if let successText = viewModel.successText {
-            MessageBanner(
-                text: successText,
-                style: .success,
-                onDismiss: viewModel.dismissMessages
-            )
-        }
+    private var topMessages: some View {
+        VStack(spacing: 8) {
+            if let errorText = viewModel.errorText {
+                MessageBanner(
+                    text: errorText,
+                    style: .error,
+                    onDismiss: viewModel.dismissMessages
+                )
+            } else if let successText = viewModel.successText {
+                MessageBanner(
+                    text: successText,
+                    style: .success,
+                    onDismiss: viewModel.dismissMessages
+                )
+            }
 
-        if let staleText = viewModel.staleText {
-            MessageBanner(
-                text: staleText,
-                style: .warning,
-                onDismiss: nil
-            )
+            if let staleText = viewModel.staleText {
+                MessageBanner(
+                    text: staleText,
+                    style: .warning,
+                    onDismiss: nil
+                )
+            }
+
+            Spacer()
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .allowsHitTesting(viewModel.errorText != nil || viewModel.successText != nil || viewModel.staleText != nil)
     }
 
     private var adminPanel: some View {
@@ -367,10 +382,6 @@ struct ContentView: View {
                 )
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Sync the selected region's live peers with Firebase.")
-                        .font(.subheadline)
-                        .foregroundStyle(theme.contentMuted)
-
                     Button {
                         Task {
                             await viewModel.syncSelectedRegion()
@@ -378,7 +389,7 @@ struct ContentView: View {
                     } label: {
                         Label("Sync Selected Region", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(PrimaryButtonStyle())
                     .disabled(!viewModel.canSyncSelectedRegion)
 
                     if let lastSyncText = viewModel.lastSyncText {
@@ -403,7 +414,7 @@ struct ContentView: View {
                     } label: {
                         Label("Grant Access", systemImage: "person.badge.plus")
                     }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(PrimaryButtonStyle())
                     .disabled(!viewModel.canGrantAccess)
                 }
             }
@@ -418,7 +429,15 @@ struct ContentView: View {
                     subtitle: "Choose where new VPN clients are created."
                 )
 
-                if viewModel.regions.isEmpty {
+                if viewModel.isLoadingRegions {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(theme.contentSecondary)
+                        Text("Loading regions...")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.contentMuted)
+                    }
+                } else if viewModel.regions.isEmpty {
                     Text("No enabled regions are available.")
                         .font(.subheadline)
                         .foregroundStyle(theme.contentMuted)
@@ -447,12 +466,12 @@ struct ContentView: View {
         ThemedPanel {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
-                    title: "Create Client",
-                    subtitle: "Create a WireGuard config in the selected region."
+                    title: "Create VPN Client",
+                    subtitle: "Create a VPN config in the selected region."
                 )
 
                 ThemedTextField(
-                    title: "Client display name",
+                    title: "Display name",
                     placeholder: "ex: John's iPhone",
                     text: $viewModel.newClientName,
                     keyboardType: .default
@@ -463,7 +482,7 @@ struct ContentView: View {
                         await viewModel.createClient()
                     }
                 } label: {
-                    Label("Create Client", systemImage: "plus")
+                    Label("Create VPN Client", systemImage: "plus")
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(viewModel.createDisabled)
@@ -475,8 +494,8 @@ struct ContentView: View {
         ThemedPanel {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
-                    title: "Create Client",
-                    subtitle: "Sign in before creating a WireGuard config."
+                    title: "Create VPN Client",
+                    subtitle: "Sign in before creating a VPN config."
                 )
 
                 HStack(spacing: 10) {
@@ -520,10 +539,18 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
                     title: "VPN Clients",
-                    subtitle: viewModel.isAdmin ? "Showing clients visible to your account." : "Install, update, or remove your clients."
+                    subtitle: viewModel.isAdmin ? "Manage VPN clients." : "Manage your VPN clients."
                 )
 
-                if viewModel.filteredClientOptions.isEmpty {
+                if viewModel.isLoadingClients {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(theme.contentSecondary)
+                        Text("Loading VPN clients...")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.contentMuted)
+                    }
+                } else if viewModel.filteredClientOptions.isEmpty {
                     EmptyState(
                         title: "No clients in this region",
                         message: "Create a client to install a VPN profile on this device."
@@ -534,87 +561,44 @@ struct ContentView: View {
                             ClientRow(
                                 option: option,
                                 isSelected: viewModel.selectedClientId == option.client.clientId,
+                                showsOwnerEmail: viewModel.isAdmin,
                                 installState: viewModel.installStateLabel(for: option),
-                                installTitle: viewModel.installButtonTitle(for: option),
+                                status: viewModel.tunnelStatus(for: option),
                                 tunnelStatus: viewModel.tunnelStatusLabel(for: option),
-                                installDisabled: viewModel.selectedClientId == option.client.clientId ? viewModel.installDisabled : !option.client.hasUsableConfig,
+                                toggleIsOn: viewModel.toggleIsOn(for: option),
+                                toggleDisabled: viewModel.toggleDisabled(for: option),
+                                syncDisabled: viewModel.syncDisabled(for: option),
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
                                 onSelect: {
                                     viewModel.selectedClientId = option.client.clientId
                                 },
-                                onInstall: {
+                                onToggle: { isOn in
                                     viewModel.selectedClientId = option.client.clientId
                                     Task {
-                                        await viewModel.install(option)
+                                        if isOn {
+                                            await viewModel.startTunnel(for: option)
+                                        } else {
+                                            await viewModel.stopTunnel(for: option)
+                                        }
+                                    }
+                                },
+                                onSync: {
+                                    viewModel.selectedClientId = option.client.clientId
+                                    Task {
+                                        await viewModel.sync(option)
                                     }
                                 },
                                 onDelete: {
                                     viewModel.selectedClientId = option.client.clientId
                                     clientPendingDelete = option
+                                },
+                                onDetails: {
+                                    clientShowingDetails = option
                                 }
                             )
                         }
                     }
                 }
-            }
-        }
-    }
-
-    private var tunnelPanel: some View {
-        ThemedPanel {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(
-                    title: "Selected VPN",
-                    subtitle: "Manage the selected local VPN profile on this device."
-                )
-
-                HStack(spacing: 10) {
-                    TunnelStatusBadge(status: viewModel.visibleTunnelStatus)
-                    Text(viewModel.statusText)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(theme.contentSecondary)
-                    Spacer()
-                }
-
-                if let installedSnapshot = viewModel.visibleInstalledSnapshot {
-                    VStack(alignment: .leading, spacing: 6) {
-                        DetailLine(label: "Installed", value: installedSnapshot.clientDisplayName)
-                        DetailLine(label: "Region", value: installedSnapshot.regionDisplayName)
-                    }
-                } else {
-                    EmptyState(
-                        title: "No selected VPN profile",
-                        message: "Choose an installed client to manage its local VPN profile."
-                    )
-                }
-
-                HStack(spacing: 10) {
-                    Button("Start") {
-                        Task {
-                            await viewModel.startTunnel()
-                        }
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(viewModel.startDisabled)
-
-                    Button("Stop") {
-                        Task {
-                            await viewModel.stopTunnel()
-                        }
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(viewModel.stopDisabled)
-                }
-
-                Button(role: .destructive) {
-                    Task {
-                        await viewModel.removeTunnel()
-                    }
-                } label: {
-                    Label("Remove VPN", systemImage: "trash")
-                }
-                .buttonStyle(DangerButtonStyle())
-                .disabled(viewModel.removeTunnelDisabled)
             }
         }
     }
@@ -647,6 +631,17 @@ struct ContentView: View {
 
     private var requestAccessURL: URL {
         URL(string: "mailto:Brodsky.Alex22@gmail.com?subject=CloudGateway%20Access%20Request")!
+    }
+
+    private var syncResultPresented: Binding<Bool> {
+        Binding(
+            get: { viewModel.syncResult != nil },
+            set: { isPresented in
+                if !isPresented {
+                    viewModel.dismissSyncResult()
+                }
+            }
+        )
     }
 
     private func handleAppleCompletion(_ result: Result<ASAuthorization, Error>) {
@@ -716,6 +711,7 @@ private struct SectionHeader: View {
 
 private struct AboutView: View {
     @Environment(\.cloudGatewayTheme) private var theme
+    @State private var isShowingEmail = false
     let version: String
     let onClose: () -> Void
 
@@ -751,13 +747,17 @@ private struct AboutView: View {
                                     HStack(spacing: 14) {
                                         Link("GitHub", destination: URL(string: "https://github.com/Albro3459/CloudGateway/")!)
                                         Link("LinkedIn", destination: URL(string: "https://www.linkedin.com/in/brodsky-alex22/")!)
-                                        Link("Email", destination: URL(string: "mailto:Brodsky.Alex22@gmail.com")!)
+                                        Button("Email") {
+                                            isShowingEmail = true
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(theme.accent)
                                     }
                                     .font(.caption.weight(.semibold))
                                     .tint(theme.accent)
                                 }
 
-                                Text("Create secure WireGuard VPN clients on shared regional CloudGateway servers, pre-configured with IPv4, IPv6, and DNS.")
+                                Text("Create secure VPN clients on shared regional CloudGateway servers, pre-configured with IPv4, IPv6, and DNS.")
                                     .foregroundStyle(theme.contentSecondary)
                                 Text("Each region runs a dedicated FastAPI control plane behind Cloudflare-protected Caddy, with Firebase storing user and client state.")
                                     .foregroundStyle(theme.contentSecondary)
@@ -779,6 +779,109 @@ private struct AboutView: View {
             }
         }
         .foregroundStyle(theme.content)
+        .sheet(isPresented: $isShowingEmail) {
+            EmailContactView()
+        }
+    }
+}
+
+private struct EmailContactView: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Email")
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    Text("Brodsky.Alex22@gmail.com")
+                        .font(.headline)
+                        .foregroundStyle(theme.contentSecondary)
+                        .textSelection(.enabled)
+
+                    Link(destination: URL(string: "mailto:Brodsky.Alex22@gmail.com")!) {
+                        Label("Open Mail", systemImage: "envelope")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.height(240)])
+    }
+}
+
+private struct ClientDetailsView: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let option: CloudGatewayClientOption
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(option.client.displayName)
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        DetailLine(label: "VPN id", value: option.client.clientId)
+                        DetailLine(label: "Region id", value: option.client.regionId)
+                        DetailLine(label: "Connection URL", value: endpoint)
+                        DetailLine(label: "Owner email", value: option.client.ownerEmail ?? "Unknown")
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.medium])
+    }
+
+    private var endpoint: String {
+        guard let config = option.client.wireGuardConfig,
+              let parsed = try? GatewayWireGuardConfigParser.parse(config),
+              let endpoint = parsed.peers.first?.endpoint else {
+            return "Unavailable"
+        }
+        return endpoint
+    }
+}
+
+private struct SyncResultView: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let result: CloudGatewaySyncResult
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Sync Results")
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        DetailLine(label: "Region", value: result.regionId)
+                        DetailLine(label: "Added", value: "\(result.added)")
+                        DetailLine(label: "Updated", value: "\(result.updated)")
+                        DetailLine(label: "Removed", value: "\(result.removed)")
+                    }
+
+                    ShareLink(item: result.logText) {
+                        Label("Download Logs", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.medium])
     }
 }
 
@@ -915,14 +1018,19 @@ private struct ClientRow: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let option: CloudGatewayClientOption
     let isSelected: Bool
+    let showsOwnerEmail: Bool
     let installState: String?
-    let installTitle: String
+    let status: GatewayTunnelStatus?
     let tunnelStatus: String?
-    let installDisabled: Bool
+    let toggleIsOn: Bool
+    let toggleDisabled: Bool
+    let syncDisabled: Bool
     let deleteDisabled: Bool
     let onSelect: () -> Void
-    let onInstall: () -> Void
+    let onToggle: (Bool) -> Void
+    let onSync: () -> Void
     let onDelete: () -> Void
+    let onDetails: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -932,13 +1040,12 @@ private struct ClientRow: View {
                         Text(option.client.displayName)
                             .font(.headline)
                             .foregroundStyle(theme.content)
-                        Text(option.regionDisplayName)
-                            .font(.subheadline)
-                            .foregroundStyle(theme.contentMuted)
-                        Text(option.client.clientId)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(theme.contentFaint)
-                            .lineLimit(1)
+                        if showsOwnerEmail {
+                            Text(option.client.ownerEmail ?? "Unknown owner")
+                                .font(.subheadline)
+                                .foregroundStyle(theme.contentMuted)
+                                .lineLimit(1)
+                        }
                     }
 
                     Spacer()
@@ -959,17 +1066,40 @@ private struct ClientRow: View {
                 }
             }
             .buttonStyle(.plain)
+            .onLongPressGesture(perform: onDetails)
 
             HStack(spacing: 10) {
-                Button(installTitle, action: onInstall)
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(installDisabled)
+                Toggle("VPN", isOn: Binding(
+                    get: { toggleIsOn },
+                    set: onToggle
+                ))
+                .toggleStyle(.switch)
+                .tint(theme.primary)
+                .disabled(toggleDisabled)
+
+                Spacer()
+
+                TunnelStatusBadge(status: status)
+
+                Button(action: onSync) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(IconSecondaryButtonStyle())
+                .disabled(syncDisabled)
+                .accessibilityLabel("Sync \(option.client.displayName)")
+
+                Button(action: onDetails) {
+                    Image(systemName: "ellipsis")
+                }
+                .buttonStyle(IconSecondaryButtonStyle())
+                .accessibilityLabel("Show \(option.client.displayName) details")
 
                 Button(role: .destructive, action: onDelete) {
-                    Label("Delete", systemImage: "trash")
+                    Image(systemName: "trash")
                 }
-                .buttonStyle(DangerButtonStyle())
+                .buttonStyle(IconDangerButtonStyle())
                 .disabled(deleteDisabled)
+                .accessibilityLabel("Delete \(option.client.displayName)")
             }
         }
         .padding(12)
@@ -1326,6 +1456,34 @@ private struct IconNavButtonStyle: ButtonStyle {
             .frame(width: 38, height: 38)
             .background(configuration.isPressed ? theme.navButtonHover : theme.navButton)
             .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IconSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(width: 38, height: 38)
+            .background(isEnabled ? (configuration.isPressed ? theme.insetStrongHover : theme.insetStrong) : theme.disabled)
+            .foregroundStyle(isEnabled ? theme.contentSecondary : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IconDangerButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(width: 38, height: 38)
+            .background(isEnabled ? (configuration.isPressed ? theme.dangerButtonHover : theme.dangerButton) : theme.disabled)
+            .foregroundStyle(isEnabled ? theme.content : theme.contentDisabled)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

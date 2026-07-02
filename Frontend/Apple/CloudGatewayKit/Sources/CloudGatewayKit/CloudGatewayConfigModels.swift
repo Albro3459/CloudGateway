@@ -79,6 +79,8 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
     public let status: CloudGatewayClientStatus
     public let wireGuardConfig: String?
     public let updatedAt: Date?
+    public let ownerUid: String?
+    public let ownerEmail: String?
 
     public init(
         clientId: String,
@@ -86,7 +88,9 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
         regionId: String,
         status: CloudGatewayClientStatus,
         wireGuardConfig: String?,
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil,
+        ownerUid: String? = nil,
+        ownerEmail: String? = nil
     ) {
         self.clientId = clientId
         self.clientName = clientName
@@ -94,6 +98,8 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
         self.status = status
         self.wireGuardConfig = wireGuardConfig
         self.updatedAt = updatedAt
+        self.ownerUid = ownerUid
+        self.ownerEmail = ownerEmail
     }
 
     public var displayName: String {
