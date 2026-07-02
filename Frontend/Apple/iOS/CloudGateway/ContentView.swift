@@ -4,268 +4,381 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
+    @Environment(\.cloudGatewayTheme) private var theme
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if viewModel.isSignedIn {
-                    accountSection
-                    regionsSection
-                    createSection
-                    configsSection
-                    selectedConfigSection
-                    tunnelSection
-                } else {
-                    signInSection
-                    tunnelSection
-                }
+        ZStack {
+            theme.page.ignoresSafeArea()
 
-                if let staleText = viewModel.staleText {
-                    Section("Remote State") {
-                        Text(staleText)
-                            .foregroundStyle(.orange)
-                    }
-                }
+            if viewModel.isSignedIn {
+                signedInDashboard
+            } else {
+                signedOutView
+            }
 
-                if let errorText = viewModel.errorText {
-                    Section("Error") {
-                        Text(errorText)
-                            .foregroundStyle(.red)
-                    }
+            if viewModel.isWorking {
+                workingOverlay
+            }
+        }
+        .foregroundStyle(theme.content)
+        .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
+            Button("Delete", role: .destructive) {
+                Task {
+                    await viewModel.deleteSelectedClient()
                 }
             }
-            .navigationTitle("CloudGateway")
-            .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
-                Button("Delete", role: .destructive) {
-                    Task {
-                        await viewModel.deleteSelectedClient()
-                    }
-                }
-                Button("Cancel", role: .cancel) {
-                    clientPendingDelete = nil
-                }
-            } message: {
-                if let clientPendingDelete {
-                    Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional WireGuard peer and the local VPN profile if this config is installed.")
-                }
+            Button("Cancel", role: .cancel) {
+                clientPendingDelete = nil
+            }
+        } message: {
+            if let clientPendingDelete {
+                Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional WireGuard peer and the local VPN profile if this config is installed.")
             }
         }
     }
 
-    private var signInSection: some View {
-        Section("Sign In") {
-            TextField("Email", text: $viewModel.email)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.emailAddress)
-                .autocorrectionDisabled()
+    private var signedInDashboard: some View {
+        VStack(spacing: 0) {
+            signedInNav
 
-            SecureField("Password", text: $viewModel.password)
+            ScrollView {
+                VStack(spacing: 16) {
+                    messages
 
-            Button("Sign In") {
-                Task {
-                    await viewModel.signIn()
+                    if viewModel.isAdmin {
+                        adminPanel
+                    }
+
+                    regionsPanel
+                    createPanel
+                    clientsPanel
+                    tunnelPanel
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
+            }
+            .refreshable {
+                await viewModel.refresh()
+            }
+        }
+    }
+
+    private var signedInNav: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CloudGateway")
+                    .font(.headline)
+                    .foregroundStyle(theme.content)
+                if let signedInEmail = viewModel.signedInEmail {
+                    Text(signedInEmail)
+                        .font(.caption)
+                        .foregroundStyle(theme.contentSecondary)
+                        .lineLimit(1)
                 }
             }
+
+            Spacer()
+
+            Button {
+                Task {
+                    await viewModel.refresh()
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(IconNavButtonStyle())
+            .disabled(viewModel.isWorking)
+            .accessibilityLabel("Refresh")
+
+            Button("Logout") {
+                Task {
+                    await viewModel.signOut()
+                }
+            }
+            .buttonStyle(NavTextButtonStyle())
             .disabled(viewModel.isWorking)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(theme.nav)
     }
 
-    private var accountSection: some View {
-        Section("Account") {
-            if let signedInEmail = viewModel.signedInEmail {
-                LabeledContent("Email", value: signedInEmail)
-            }
-            if let role = viewModel.role {
-                LabeledContent("Role", value: role)
-            }
-            if let lastRefreshText = viewModel.lastRefreshText {
-                LabeledContent("Configs", value: lastRefreshText)
-            }
-            if let lastSyncText = viewModel.lastSyncText {
-                LabeledContent("Last Sync", value: lastSyncText)
-            }
-
+    private var signedOutView: some View {
+        VStack(spacing: 0) {
             HStack {
-                Button("Refresh") {
-                    Task {
-                        await viewModel.refresh()
-                    }
-                }
-                .disabled(viewModel.isWorking)
-
-                Button("Sign Out") {
-                    Task {
-                        await viewModel.signOut()
-                    }
-                }
-                .disabled(viewModel.isWorking)
+                Text("CloudGateway")
+                    .font(.headline)
+                    .foregroundStyle(theme.content)
+                Spacer()
             }
-            .buttonStyle(.borderless)
-        }
-    }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(theme.nav)
 
-    private var regionsSection: some View {
-        Section("Regions") {
-            if viewModel.regions.isEmpty {
-                Text("No enabled regions are available.")
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("Region", selection: $viewModel.selectedRegionId) {
-                    ForEach(viewModel.regions, id: \.regionId) { region in
-                        Text(region.displayName).tag(Optional(region.regionId))
-                    }
-                }
+            ScrollView {
+                VStack(spacing: 16) {
+                    messages
 
-                if let region = viewModel.selectedRegion {
-                    LabeledContent("Selected", value: region.regionId)
-                    if let capacity = region.capacity {
-                        LabeledContent("Capacity", value: capacity.displayText)
-                            .foregroundStyle(capacity.isAtCapacity ? .red : .primary)
-                    } else {
-                        LabeledContent("Capacity", value: "Loading")
-                    }
-                    if region.capacity?.isAtCapacity == true {
-                        Text("This region is currently full. Choose another region before creating a config.")
-                            .foregroundStyle(.red)
-                    }
-                    if viewModel.role == "admin" {
-                        Button("Sync Selected Region") {
-                            Task {
-                                await viewModel.syncSelectedRegion()
+                    ThemedPanel {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Login")
+                                .font(.title2.bold())
+                                .foregroundStyle(theme.content)
+
+                            ThemedTextField(
+                                title: "Email",
+                                placeholder: "Enter your email",
+                                text: $viewModel.email,
+                                keyboardType: .emailAddress
+                            )
+
+                            ThemedSecureField(
+                                title: "Password",
+                                placeholder: "Enter your password",
+                                text: $viewModel.password
+                            )
+
+                            Button("Login") {
+                                Task {
+                                    await viewModel.signIn()
+                                }
                             }
-                        }
-                        .disabled(!viewModel.canSyncSelectedRegion)
-                    }
-                }
-            }
-        }
-    }
-
-    private var createSection: some View {
-        Section("Create Config") {
-            TextField("Name", text: $viewModel.newClientName)
-                .textInputAutocapitalization(.words)
-
-            Button("Create In Selected Region") {
-                Task {
-                    await viewModel.createClient()
-                }
-            }
-            .disabled(viewModel.createDisabled)
-        }
-    }
-
-    private var configsSection: some View {
-        Section("Owned Configs") {
-            if viewModel.filteredClientOptions.isEmpty {
-                Text("No configs found in this region.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(viewModel.filteredClientOptions) { option in
-                    Button {
-                        viewModel.selectedClientId = option.client.clientId
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.client.displayName)
-                                    .font(.headline)
-                                Text(option.regionDisplayName)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                Text(statusText(for: option.client.status))
-                                    .font(.caption)
-                                    .foregroundStyle(statusColor(for: option.client.status))
-                            }
-                            Spacer()
-                            if viewModel.selectedClientId == option.client.clientId {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.blue)
-                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(viewModel.isWorking)
                         }
                     }
-                    .buttonStyle(.plain)
+
+                    Text(versionText)
+                        .font(.caption)
+                        .foregroundStyle(theme.contentFaint)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var messages: some View {
+        if let errorText = viewModel.errorText {
+            MessageBanner(
+                text: errorText,
+                style: .error,
+                onDismiss: viewModel.dismissMessages
+            )
+        } else if let successText = viewModel.successText {
+            MessageBanner(
+                text: successText,
+                style: .success,
+                onDismiss: viewModel.dismissMessages
+            )
+        }
+
+        if let staleText = viewModel.staleText {
+            MessageBanner(
+                text: staleText,
+                style: .warning,
+                onDismiss: nil
+            )
+        }
+    }
+
+    private var adminPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(
+                    title: "Admin",
+                    subtitle: "Sync the selected region's live peers with Firebase."
+                )
+
+                Button {
+                    Task {
+                        await viewModel.syncSelectedRegion()
+                    }
+                } label: {
+                    Label("Sync Selected Region", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(!viewModel.canSyncSelectedRegion)
+
+                if let lastSyncText = viewModel.lastSyncText {
+                    Text(lastSyncText)
+                        .font(.caption)
+                        .foregroundStyle(theme.contentMuted)
                 }
             }
         }
     }
 
-    private var selectedConfigSection: some View {
-        Section("Selected Config") {
-            if let option = viewModel.selectedClientOption {
-                LabeledContent("Name", value: option.client.displayName)
-                LabeledContent("Region", value: option.regionDisplayName)
-                LabeledContent("Status", value: statusText(for: option.client.status))
+    private var regionsPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "Regions",
+                    subtitle: "Choose where new VPN clients are created."
+                )
 
-                if let installStateLabel = viewModel.installStateLabel(for: option) {
-                    LabeledContent("Local", value: installStateLabel)
-                }
+                if viewModel.regions.isEmpty {
+                    Text("No enabled regions are available.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.contentMuted)
+                } else {
+                    FlowLayout(spacing: 10) {
+                        ForEach(viewModel.regions, id: \.regionId) { region in
+                            RegionButton(
+                                region: region,
+                                isSelected: region.regionId == viewModel.selectedRegionId
+                            ) {
+                                viewModel.selectedRegionId = region.regionId
+                            }
+                        }
+                    }
 
-                Button(viewModel.installButtonTitle(for: option)) {
-                    Task {
-                        await viewModel.installSelectedClient()
+                    if let selectedRegion = viewModel.selectedRegion {
+                        RegionCapacityNote(region: selectedRegion)
                     }
                 }
-                .disabled(viewModel.installDisabled)
-
-                Button("Delete Config", role: .destructive) {
-                    clientPendingDelete = option
-                }
-                .disabled(viewModel.deleteDisabled)
-            } else {
-                Text("Choose a config to view details and actions.")
-                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var tunnelSection: some View {
-        Section("Tunnel") {
-            Text(viewModel.statusText)
-                .foregroundStyle(statusColor)
+    private var createPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "Create Client",
+                    subtitle: "Create a WireGuard config in the selected region."
+                )
 
-            if let cachedSnapshot = viewModel.cachedSnapshot {
-                LabeledContent("Installed", value: cachedSnapshot.clientDisplayName)
-                LabeledContent("Region", value: cachedSnapshot.regionDisplayName)
-            }
+                ThemedTextField(
+                    title: "Client display name",
+                    placeholder: "Optional",
+                    text: $viewModel.newClientName,
+                    keyboardType: .default
+                )
 
-            HStack {
-                Button("Start") {
+                Button {
                     Task {
-                        await viewModel.startTunnel()
+                        await viewModel.createClient()
                     }
+                } label: {
+                    Label("Create Client", systemImage: "plus")
                 }
-                .disabled(viewModel.startDisabled)
-
-                Button("Stop") {
-                    Task {
-                        await viewModel.stopTunnel()
-                    }
-                }
-                .disabled(viewModel.isWorking || viewModel.tunnelStatus == nil || viewModel.tunnelStatus == .disconnected || viewModel.tunnelStatus == .disconnecting)
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(viewModel.createDisabled)
             }
-            .buttonStyle(.borderless)
-
-            Button("Remove VPN", role: .destructive) {
-                Task {
-                    await viewModel.removeTunnel()
-                }
-            }
-            .disabled(viewModel.isWorking || viewModel.tunnelStatus == nil)
         }
     }
 
-    private var statusColor: Color {
-        switch viewModel.tunnelStatus {
-        case .connected:
-            .green
-        case .connecting, .reasserting, .disconnecting:
-            .orange
-        case .invalid:
-            .red
-        case .disconnected:
-            .secondary
-        case nil:
-            .secondary
+    private var clientsPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "VPN Clients",
+                    subtitle: viewModel.isAdmin ? "Showing clients visible to your account." : "Install, update, or remove your clients."
+                )
+
+                if viewModel.filteredClientOptions.isEmpty {
+                    EmptyState(
+                        title: "No clients in this region",
+                        message: "Create a client to install a VPN profile on this device."
+                    )
+                } else {
+                    VStack(spacing: 10) {
+                        ForEach(viewModel.filteredClientOptions) { option in
+                            ClientRow(
+                                option: option,
+                                isSelected: viewModel.selectedClientId == option.client.clientId,
+                                installState: viewModel.installStateLabel(for: option),
+                                installTitle: viewModel.installButtonTitle(for: option),
+                                installDisabled: viewModel.selectedClientId == option.client.clientId ? viewModel.installDisabled : !option.client.hasUsableConfig,
+                                onSelect: {
+                                    viewModel.selectedClientId = option.client.clientId
+                                },
+                                onInstall: {
+                                    viewModel.selectedClientId = option.client.clientId
+                                    Task {
+                                        await viewModel.install(option)
+                                    }
+                                },
+                                onDelete: {
+                                    viewModel.selectedClientId = option.client.clientId
+                                    clientPendingDelete = option
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var tunnelPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(
+                    title: "Installed VPN",
+                    subtitle: "Manage the local VPN profile on this device."
+                )
+
+                HStack(spacing: 10) {
+                    TunnelStatusBadge(status: viewModel.tunnelStatus)
+                    Text(viewModel.statusText)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.contentSecondary)
+                    Spacer()
+                }
+
+                if let cachedSnapshot = viewModel.cachedSnapshot {
+                    VStack(alignment: .leading, spacing: 6) {
+                        DetailLine(label: "Installed", value: cachedSnapshot.clientDisplayName)
+                        DetailLine(label: "Region", value: cachedSnapshot.regionDisplayName)
+                    }
+                } else {
+                    EmptyState(
+                        title: "No VPN profile installed",
+                        message: "Install an active client to create the local VPN profile."
+                    )
+                }
+
+                HStack(spacing: 10) {
+                    Button("Start") {
+                        Task {
+                            await viewModel.startTunnel()
+                        }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(viewModel.startDisabled)
+
+                    Button("Stop") {
+                        Task {
+                            await viewModel.stopTunnel()
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(viewModel.stopDisabled)
+                }
+
+                Button(role: .destructive) {
+                    Task {
+                        await viewModel.removeTunnel()
+                    }
+                } label: {
+                    Label("Remove VPN", systemImage: "trash")
+                }
+                .buttonStyle(DangerButtonStyle())
+                .disabled(viewModel.removeTunnelDisabled)
+            }
+        }
+    }
+
+    private var workingOverlay: some View {
+        ZStack {
+            theme.scrim.opacity(0.48).ignoresSafeArea()
+            ProgressView()
+                .progressViewStyle(.circular)
+                .tint(theme.content)
+                .scaleEffect(1.3)
         }
     }
 
@@ -280,7 +393,239 @@ struct ContentView: View {
         )
     }
 
-    private func statusText(for status: CloudGatewayClientStatus) -> String {
+    private var versionText: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return "v\(version ?? "1.0")"
+    }
+}
+
+private struct ThemedPanel<Content: View>: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(theme.edgeFaint, lineWidth: 1)
+            }
+    }
+}
+
+private struct SectionHeader: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(theme.content)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(theme.contentMuted)
+        }
+    }
+}
+
+private struct ThemedTextField: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+    let keyboardType: UIKeyboardType
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(theme.contentSecondary)
+            TextField(placeholder, text: $text)
+                .textInputAutocapitalization(keyboardType == .emailAddress ? .never : .words)
+                .keyboardType(keyboardType)
+                .autocorrectionDisabled(keyboardType == .emailAddress)
+                .padding(12)
+                .background(theme.inset)
+                .foregroundStyle(theme.content)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(theme.edge, lineWidth: 1)
+                }
+        }
+    }
+}
+
+private struct ThemedSecureField: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(theme.contentSecondary)
+            SecureField(placeholder, text: $text)
+                .padding(12)
+                .background(theme.inset)
+                .foregroundStyle(theme.content)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(theme.edge, lineWidth: 1)
+                }
+        }
+    }
+}
+
+private struct RegionButton: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let region: CloudGatewayRegion
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(region.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isSelected ? theme.accent : theme.contentSecondary)
+                Text(region.capacity?.displayText ?? "Capacity unavailable")
+                    .font(.caption)
+                    .foregroundStyle(capacityColor)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(isSelected ? theme.primarySoft : theme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? theme.primary : theme.edgeSubtle, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var capacityColor: Color {
+        guard let capacity = region.capacity, capacity.isKnown, !capacity.isAtCapacity else {
+            return theme.dangerContent
+        }
+        return theme.contentMuted
+    }
+}
+
+private struct RegionCapacityNote: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let region: CloudGatewayRegion
+
+    var body: some View {
+        if let capacity = region.capacity, capacity.isKnown {
+            if capacity.isAtCapacity {
+                Text("\(region.displayName) is currently full. Choose another region before creating a client.")
+                    .font(.subheadline)
+                    .foregroundStyle(theme.dangerContent)
+            }
+        } else {
+            Text("Capacity for \(region.displayName) is unavailable. Try again in a moment.")
+                .font(.subheadline)
+                .foregroundStyle(theme.dangerContent)
+        }
+    }
+}
+
+private struct ClientRow: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let option: CloudGatewayClientOption
+    let isSelected: Bool
+    let installState: String?
+    let installTitle: String
+    let installDisabled: Bool
+    let onSelect: () -> Void
+    let onInstall: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: onSelect) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(option.client.displayName)
+                            .font(.headline)
+                            .foregroundStyle(theme.content)
+                        Text(option.regionDisplayName)
+                            .font(.subheadline)
+                            .foregroundStyle(theme.contentMuted)
+                        Text(option.client.clientId)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(theme.contentFaint)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 6) {
+                        StatusBadge(status: option.client.status)
+                        if let installState {
+                            Text(installState)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(theme.accentStrong)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 10) {
+                Button(installTitle, action: onInstall)
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(installDisabled)
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(DangerButtonStyle())
+                .disabled(option.client.status == .removed)
+            }
+        }
+        .padding(12)
+        .background(isSelected ? theme.inset : theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isSelected ? theme.primarySoftEdge : theme.edgeFaint, lineWidth: 1)
+        }
+    }
+}
+
+private struct StatusBadge: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let status: CloudGatewayClientStatus
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(backgroundColor)
+            .foregroundStyle(foregroundColor)
+            .clipShape(Capsule())
+            .overlay {
+                Capsule().stroke(borderColor, lineWidth: 1)
+            }
+    }
+
+    private var title: String {
         switch status {
         case .creating:
             "Creating"
@@ -293,20 +638,326 @@ struct ContentView: View {
         }
     }
 
-    private func statusColor(for status: CloudGatewayClientStatus) -> Color {
+    private var backgroundColor: Color {
         switch status {
         case .active:
-            .green
+            theme.successSoft
         case .creating:
-            .orange
+            theme.warningSoft
         case .failed:
-            .red
+            theme.dangerSoft
         case .removed:
-            .secondary
+            theme.neutralStrong
         }
+    }
+
+    private var foregroundColor: Color {
+        switch status {
+        case .active:
+            theme.successStrong
+        case .creating:
+            theme.warningStrong
+        case .failed:
+            theme.dangerStrong
+        case .removed:
+            theme.content
+        }
+    }
+
+    private var borderColor: Color {
+        switch status {
+        case .active:
+            theme.successSoftEdge
+        case .creating:
+            theme.warningSoftEdge
+        case .failed:
+            theme.dangerSoftEdge
+        case .removed:
+            theme.neutralStrong
+        }
+    }
+}
+
+private struct TunnelStatusBadge: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let status: GatewayTunnelStatus?
+
+    var body: some View {
+        Circle()
+            .fill(statusColor)
+            .frame(width: 10, height: 10)
+            .accessibilityHidden(true)
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .connected:
+            theme.successStrong
+        case .connecting, .reasserting, .disconnecting:
+            theme.warningStrong
+        case .invalid:
+            theme.dangerContent
+        case .disconnected, nil:
+            theme.contentFaint
+        }
+    }
+}
+
+private struct DetailLine: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(theme.contentFaint)
+            Spacer()
+            Text(value)
+                .font(.subheadline)
+                .foregroundStyle(theme.contentSecondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+private struct EmptyState: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.contentSecondary)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(theme.contentMuted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(theme.inset)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private enum MessageBannerStyle {
+    case error
+    case success
+    case warning
+}
+
+private struct MessageBanner: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let text: String
+    let style: MessageBannerStyle
+    let onDismiss: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(foregroundColor)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(foregroundColor)
+                .accessibilityLabel("Dismiss message")
+            }
+        }
+        .padding(12)
+        .background(backgroundColor)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(borderColor, lineWidth: 1)
+        }
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .error:
+            theme.danger
+        case .success:
+            theme.success
+        case .warning:
+            theme.warningSoft
+        }
+    }
+
+    private var foregroundColor: Color {
+        switch style {
+        case .error, .success:
+            theme.content
+        case .warning:
+            theme.warningStrong
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .error:
+            theme.dangerSoftEdge
+        case .success:
+            theme.successSoftEdge
+        case .warning:
+            theme.warningSoftEdge
+        }
+    }
+}
+
+private struct FlowLayout: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? 0
+        let rows = rows(in: maxWidth, subviews: subviews)
+        let height = rows.reduce(CGFloat.zero) { result, row in
+            result + row.height
+        } + CGFloat(max(rows.count - 1, 0)) * spacing
+        return CGSize(width: maxWidth, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let rows = rows(in: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for row in rows {
+            var x = bounds.minX
+            for item in row.items {
+                subviews[item.index].place(
+                    at: CGPoint(x: x, y: y),
+                    proposal: ProposedViewSize(item.size)
+                )
+                x += item.size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private func rows(in maxWidth: CGFloat, subviews: Subviews) -> [Row] {
+        guard maxWidth > 0 else {
+            return []
+        }
+
+        var rows = [Row]()
+        var current = Row()
+
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let nextWidth = current.width == 0 ? size.width : current.width + spacing + size.width
+            if nextWidth > maxWidth && !current.items.isEmpty {
+                rows.append(current)
+                current = Row()
+            }
+            current.items.append(RowItem(index: index, size: size))
+            current.width = current.width == 0 ? size.width : current.width + spacing + size.width
+            current.height = max(current.height, size.height)
+        }
+
+        if !current.items.isEmpty {
+            rows.append(current)
+        }
+
+        return rows
+    }
+
+    private struct Row {
+        var items = [RowItem]()
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private struct RowItem {
+        let index: Int
+        let size: CGSize
+    }
+}
+
+private struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isEnabled ? (configuration.isPressed ? theme.primaryHover : theme.primary) : theme.disabled)
+            .foregroundStyle(isEnabled ? theme.content : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct SecondaryButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isEnabled ? (configuration.isPressed ? theme.insetStrongHover : theme.insetStrong) : theme.disabled)
+            .foregroundStyle(isEnabled ? theme.contentSecondary : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct DangerButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isEnabled ? (configuration.isPressed ? theme.dangerButtonHover : theme.dangerButton) : theme.disabled)
+            .foregroundStyle(isEnabled ? theme.content : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct NavTextButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(configuration.isPressed ? theme.navButtonHover : theme.navButton)
+            .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct IconNavButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .frame(width: 38, height: 38)
+            .background(configuration.isPressed ? theme.navButtonHover : theme.navButton)
+            .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
 #Preview {
     ContentView()
+        .environment(\.cloudGatewayTheme, CloudGatewayTheme())
+        .preferredColorScheme(.dark)
 }

@@ -19,6 +19,8 @@ struct CloudGatewayApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.cloudGatewayTheme, CloudGatewayTheme())
+                .preferredColorScheme(.dark)
         }
     }
 }

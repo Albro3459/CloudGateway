@@ -16,6 +16,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var tunnelStatus: GatewayTunnelStatus?
     @Published private(set) var isWorking = false
     @Published private(set) var errorText: String?
+    @Published private(set) var successText: String?
     @Published private(set) var staleText: String?
     @Published private(set) var lastRefreshText: String?
     @Published private(set) var lastSyncText: String?
@@ -57,6 +58,10 @@ final class CloudGatewayViewModel: ObservableObject {
         role == "admin" && selectedRegion != nil && !isWorking
     }
 
+    var isAdmin: Bool {
+        role == "admin"
+    }
+
     var createDisabled: Bool {
         isWorking || selectedRegion == nil || selectedRegion?.capacity?.isAtCapacity == true
     }
@@ -75,6 +80,17 @@ final class CloudGatewayViewModel: ObservableObject {
             || tunnelStatus == .connected
             || tunnelStatus == .connecting
             || remoteInvalidInstalledConfig
+    }
+
+    var stopDisabled: Bool {
+        isWorking
+            || tunnelStatus == nil
+            || tunnelStatus == .disconnected
+            || tunnelStatus == .disconnecting
+    }
+
+    var removeTunnelDisabled: Bool {
+        isWorking || tunnelStatus == nil
     }
 
     init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
@@ -142,6 +158,7 @@ final class CloudGatewayViewModel: ObservableObject {
             let response = try await service.syncRegion(regionId: regionId, idToken: token)
             lastSyncText = "\(response.regionId): +\(response.added) ~\(response.updated) -\(response.removed)"
             try await loadRemoteState(for: user)
+            successText = "Synced \(response.regionId)."
         }
     }
 
@@ -162,6 +179,7 @@ final class CloudGatewayViewModel: ObservableObject {
             newClientName = ""
             selectedClientId = nil
             try await loadRemoteState(for: user, existingClients: [created])
+            successText = "\(created.displayName) was created."
         }
     }
 
@@ -186,6 +204,7 @@ final class CloudGatewayViewModel: ObservableObject {
                 regionId: response.regionId
             ))
             try await loadRemoteState(for: user)
+            successText = "\(selectedClientOption.client.displayName) was deleted."
         }
     }
 
@@ -200,25 +219,34 @@ final class CloudGatewayViewModel: ObservableObject {
     func install(_ option: CloudGatewayClientOption) async {
         await run {
             apply(try await configManager.install(option))
+            successText = "\(option.client.displayName) is installed."
         }
     }
 
     func startTunnel() async {
         await run {
             apply(try await configManager.startTunnel())
+            successText = "VPN started."
         }
     }
 
     func stopTunnel() async {
         await run {
             apply(try await configManager.stopTunnel())
+            successText = "VPN stopped."
         }
     }
 
     func removeTunnel() async {
         await run {
             apply(try await configManager.removeTunnel())
+            successText = "VPN removed."
         }
+    }
+
+    func dismissMessages() {
+        errorText = nil
+        successText = nil
     }
 
     func installStateLabel(for option: CloudGatewayClientOption) -> String? {
@@ -318,6 +346,7 @@ final class CloudGatewayViewModel: ObservableObject {
         lastRefreshText = nil
         lastSyncText = nil
         remoteInvalidInstalledConfig = false
+        successText = nil
         selectedRegionId = nil
         selectedClientId = nil
         newClientName = ""
@@ -362,6 +391,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private func run(_ operation: () async throws -> Void) async {
         isWorking = true
         errorText = nil
+        successText = nil
         defer {
             isWorking = false
         }

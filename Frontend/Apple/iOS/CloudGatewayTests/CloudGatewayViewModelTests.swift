@@ -143,6 +143,26 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // The created client is merged in ahead of the (here empty) fetched list, so it
         // must remain visible after the reload — guards mergeClients' existing-override.
         XCTAssertTrue(viewModel.filteredClientOptions.contains { $0.client.clientId == "created-1" })
+        XCTAssertEqual(viewModel.successText, "Laptop was created.")
+    }
+
+    func testDismissMessagesClearsErrorAndSuccess() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        await viewModel.createClient()
+        XCTAssertNotNil(viewModel.successText)
+
+        service.createClientError = CloudGatewayAppError.invalidAPIResponse
+        await viewModel.createClient()
+        XCTAssertNotNil(viewModel.errorText)
+
+        viewModel.dismissMessages()
+
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertNil(viewModel.successText)
     }
 
     // MARK: - Role resolution
