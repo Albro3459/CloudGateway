@@ -24,25 +24,24 @@ service cloud.firestore {
       return isUserOwner(userId) || isAdmin();
     }
 
+    // Clients are read-only; every mutation goes through the regional API
+    // (Admin SDK, which bypasses these rules). No client write is permitted.
     match /Roles/{roleId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
     }
 
     match /UserRoles/{userId} {
       allow get: if isOwnerOrAdmin(userId);
       allow list: if isAdmin();
-      allow create, update, delete: if isAdmin();
     }
 
     match /Regions/{regionId} {
       allow get, list: if isUser() && (resource.data.enabled == true || isAdmin());
-      allow create, update, delete: if isAdmin();
     }
 
     match /Users/{userId} {
       allow get: if isOwnerOrAdmin(userId);
       allow list: if isAdmin();
-      allow create, update, delete: if isAdmin();
     }
 
     match /{path=**}/Instances/{instanceId} {

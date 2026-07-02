@@ -7,7 +7,7 @@
 #   ./scripts/test.sh api        # API only
 #   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
 #   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
-#   ./scripts/test.sh web infra  # any combination of: api web infra apple
+#   ./scripts/test.sh web infra  # any combination of: api web infra apple firebase
 #
 # One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
@@ -86,6 +86,20 @@ test_web() {
   run_check "Web Jest" env CI=true npm run test -- --watchAll=false --runInBand
   run_check "Web TypeScript" npx tsc --noEmit
   run_check "Web production build" npm run build
+}
+
+test_firebase() {
+  cd "$ROOT/Backend/Firebase" || return 1
+
+  if [[ ! -d node_modules ]]; then
+    echo "Installing Firebase rules-test dependencies"
+    run_check "Firebase dependency install" npm install || return 1
+  fi
+
+  # emulators:exec boots the Firestore emulator, runs the rules tests, and tears
+  # it down. A demo- project keeps it fully offline (no credentials).
+  run_check "Firestore rules tests" \
+    firebase emulators:exec --only firestore --project demo-cloudgateway "npm test"
 }
 
 test_apple() {
@@ -193,7 +207,7 @@ for arg in "$@"; do
 done
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(api web infra)
+  targets=(api web infra firebase)
 fi
 
 for target in "${targets[@]}"; do
@@ -202,8 +216,9 @@ for target in "${targets[@]}"; do
     web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
     apple) run_step "Apple tests + no-device iOS build" test_apple ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
+    firebase) run_step "Firestore rules tests (emulator)" test_firebase ;;
     *)
-      echo "Unknown target: $target (expected: api, web, apple, infra; optional flag: --signed)" >&2
+      echo "Unknown target: $target (expected: api, web, apple, infra, firebase; optional flag: --signed)" >&2
       exit 2
       ;;
   esac
