@@ -63,7 +63,7 @@ Enforced by [firestore.rules](firestore.rules):
 * Users can read their own role assignment. Role defaults are admin-only.
 * Admins can read all user, role default, role assignment, and client documents.
 * Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
-* Admins can write `Regions`, `Users`, `UserRoles`, and `Roles` documents from the frontend where existing admin UI needs it, but not client documents.
+* Frontend clients cannot write `Regions`, `Users`, `UserRoles`, `Roles`, or client documents directly. Admin and operational mutation goes through trusted backend/Admin SDK paths.
 
 ## Limits
 

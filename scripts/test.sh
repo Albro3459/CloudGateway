@@ -96,10 +96,15 @@ test_firebase() {
     run_check "Firebase dependency install" npm install || return 1
   fi
 
+  run_firestore_rules_tests() {
+    env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only firestore --project demo-cloudgateway "npm test" 2> >(
+      grep -Ev "^(lsof: WARNING: can't stat\\(\\)|      Output information may be incomplete\\.|      assuming \"dev=)" >&2
+    )
+  }
+
   # emulators:exec boots the Firestore emulator, runs the rules tests, and tears
   # it down. A demo- project keeps it fully offline (no credentials).
-  run_check "Firestore rules tests" \
-    firebase emulators:exec --only firestore --project demo-cloudgateway "npm test"
+  run_check "Firestore rules tests" run_firestore_rules_tests
 }
 
 test_apple() {

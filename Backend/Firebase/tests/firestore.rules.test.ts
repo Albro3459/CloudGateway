@@ -73,13 +73,20 @@ describe("reads stay allowed for the clients that use them", () => {
     await assertSucceeds(
       getDocs(query(collectionGroup(authed("user1"), "Instances"), where("ownerUid", "==", "user1"))),
     );
+    await assertFails(
+      getDocs(query(collectionGroup(authed("user1"), "Instances"), where("ownerUid", "==", "other"))),
+    );
+    await assertFails(getDocs(collectionGroup(authed("user1"), "Instances")));
     await assertSucceeds(getDocs(collectionGroup(authed("admin1"), "Instances")));
   });
 
   it("regions: provisioned sees enabled; disabled is admin-only; unauth and unprovisioned denied", async () => {
     await assertSucceeds(getDoc(doc(authed("user1"), "Regions/us-1")));
+    await assertSucceeds(getDocs(query(collection(authed("user1"), "Regions"), where("enabled", "==", true))));
     await assertFails(getDoc(doc(authed("user1"), "Regions/us-off")));
+    await assertFails(getDocs(collection(authed("user1"), "Regions")));
     await assertSucceeds(getDoc(doc(authed("admin1"), "Regions/us-off")));
+    await assertSucceeds(getDocs(collection(authed("admin1"), "Regions")));
     await assertFails(getDoc(doc(unauthed(), "Regions/us-1")));
     await assertFails(getDoc(doc(authed("nouser"), "Regions/us-1")));
   });
