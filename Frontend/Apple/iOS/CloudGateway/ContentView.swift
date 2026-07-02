@@ -1,5 +1,6 @@
 import AuthenticationServices
 import CloudGatewayKit
+import GoogleSignInSwift
 import SwiftUI
 
 struct ContentView: View {
@@ -301,14 +302,12 @@ struct ContentView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                                 .disabled(viewModel.isWorking)
 
-                                Button {
+                                GoogleSignInButton {
                                     Task {
                                         await viewModel.signInWithGoogle()
                                     }
-                                } label: {
-                                    Label("Continue with Google", systemImage: "g.circle")
                                 }
-                                .buttonStyle(SecondaryButtonStyle())
+                                .frame(height: 44)
                                 .disabled(viewModel.isWorking)
 
                                 Button {
