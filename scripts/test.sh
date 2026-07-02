@@ -3,7 +3,8 @@
 # Runs every local test/validation suite for the repo.
 #
 # Usage:
-#   ./scripts/test.sh            # run everything
+#   ./scripts/test.sh            # run everything (apple unsigned)
+#   ./scripts/test.sh --signed   # run everything with a signed apple build
 #   ./scripts/test.sh api        # API only
 #   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
 #   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
@@ -212,7 +213,9 @@ for arg in "$@"; do
 done
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(api web infra firebase)
+  # apple runs last (slowest) and unsigned by default; pass --signed for a signed
+  # apple build. Non-macOS/CI runners should pass explicit targets instead.
+  targets=(api web infra firebase apple)
 fi
 
 for target in "${targets[@]}"; do

@@ -15,6 +15,8 @@ Expected local and deployment tooling for this repo.
   * Use `npm install` from `Frontend/Web/` to refresh `package-lock.json`.
 * Java `21` or newer for `Backend/Firebase/` Firestore emulator rules tests.
   * `firebase-tools` no longer supports Java versions before `21`; use Homebrew `openjdk@21` on local ARM macOS.
+* Go `1.26.4` for the iOS `WireGuardGoBridgeiOS` external build target.
+  * WireGuard's `Sources/WireGuardKitGo/go.mod` declares a floor of `go 1.17`; use Homebrew `go` on local ARM macOS so Xcode can find it at `/opt/homebrew/bin/go`.
 * Terraform `1.6` or newer for `Infrastructure/OCI/terraform`.
   * The Terraform code uses standard provider and template features and does not pin a CLI patch version.
   * Run Terraform from `Infrastructure/OCI/terraform`, not the repo root.
@@ -49,4 +51,5 @@ The deployed API runs in a host-created Python virtual environment at `/opt/clou
 * Python package floor: [Backend/API/pyproject.toml](../Backend/API/pyproject.toml)
 * Frontend dependencies and lockfile: [Frontend/Web/package.json](../Frontend/Web/package.json), [Frontend/Web/package-lock.json](../Frontend/Web/package-lock.json)
 * Firebase rules-test dependencies: [Backend/Firebase/package.json](../Backend/Firebase/package.json)
+* iOS WireGuard bridge Go floor: `Sources/WireGuardKitGo/go.mod` in the pinned `wireguard-apple` SwiftPM checkout.
 * OCI host package and pinned runtime inputs: [Infrastructure/OCI/host/bootstrap.sh](../Infrastructure/OCI/host/bootstrap.sh), [Infrastructure/OCI/terraform/cloudgateway.tf](../Infrastructure/OCI/terraform/cloudgateway.tf), [Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
