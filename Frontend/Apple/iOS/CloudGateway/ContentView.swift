@@ -536,6 +536,7 @@ struct ContentView: View {
                                 isSelected: viewModel.selectedClientId == option.client.clientId,
                                 installState: viewModel.installStateLabel(for: option),
                                 installTitle: viewModel.installButtonTitle(for: option),
+                                tunnelStatus: viewModel.tunnelStatusLabel(for: option),
                                 installDisabled: viewModel.selectedClientId == option.client.clientId ? viewModel.installDisabled : !option.client.hasUsableConfig,
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
                                 onSelect: {
@@ -563,8 +564,8 @@ struct ContentView: View {
         ThemedPanel {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
-                    title: "Installed VPN",
-                    subtitle: "Manage the local VPN profile on this device."
+                    title: "Selected VPN",
+                    subtitle: "Manage the selected local VPN profile on this device."
                 )
 
                 HStack(spacing: 10) {
@@ -575,15 +576,15 @@ struct ContentView: View {
                     Spacer()
                 }
 
-                if let cachedSnapshot = viewModel.visibleCachedSnapshot {
+                if let installedSnapshot = viewModel.visibleInstalledSnapshot {
                     VStack(alignment: .leading, spacing: 6) {
-                        DetailLine(label: "Installed", value: cachedSnapshot.clientDisplayName)
-                        DetailLine(label: "Region", value: cachedSnapshot.regionDisplayName)
+                        DetailLine(label: "Installed", value: installedSnapshot.clientDisplayName)
+                        DetailLine(label: "Region", value: installedSnapshot.regionDisplayName)
                     }
                 } else {
                     EmptyState(
-                        title: "No VPN profile installed",
-                        message: "Install an active client to create the local VPN profile."
+                        title: "No selected VPN profile",
+                        message: "Choose an installed client to manage its local VPN profile."
                     )
                 }
 
@@ -916,6 +917,7 @@ private struct ClientRow: View {
     let isSelected: Bool
     let installState: String?
     let installTitle: String
+    let tunnelStatus: String?
     let installDisabled: Bool
     let deleteDisabled: Bool
     let onSelect: () -> Void
@@ -947,6 +949,11 @@ private struct ClientRow: View {
                             Text(installState)
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(theme.accentStrong)
+                        }
+                        if let tunnelStatus {
+                            Text(tunnelStatus)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(theme.contentMuted)
                         }
                     }
                 }

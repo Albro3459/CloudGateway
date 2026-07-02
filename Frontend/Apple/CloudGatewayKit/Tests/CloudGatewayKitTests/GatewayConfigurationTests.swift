@@ -67,6 +67,7 @@ private func sampleConfig(
     """)
     let tunnel = GatewayTunnelConfiguration(
         identifier: "mvp0",
+        displayName: "Phone",
         wireGuardConfig: wireGuardConfig
     )
 

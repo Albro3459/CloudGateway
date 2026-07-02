@@ -168,6 +168,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
     public func tunnelConfiguration() throws -> GatewayTunnelConfiguration {
         GatewayTunnelConfiguration(
             identifier: clientId,
+            displayName: clientDisplayName,
             wireGuardConfig: try GatewayWireGuardConfig(wireGuardConfig)
         )
     }

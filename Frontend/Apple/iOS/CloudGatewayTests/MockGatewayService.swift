@@ -238,4 +238,20 @@ enum TestFixtures {
             wireGuardConfig: usableConfig
         )
     }
+
+    static func snapshot(
+        _ id: String,
+        regionId: String
+    ) -> CloudGatewayConfigSnapshot {
+        CloudGatewayConfigSnapshot(
+            clientId: id,
+            regionId: regionId,
+            clientName: id,
+            regionDisplayName: regionId,
+            status: .active,
+            wireGuardConfig: usableConfig,
+            readAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+    }
 }

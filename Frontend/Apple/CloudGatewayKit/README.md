@@ -9,8 +9,8 @@ Current shared responsibilities:
 * `GatewayVPNManager` owns install/update/remove/start/stop/status around `NETunnelProviderManager`.
 * `GatewayWireGuardConfig` validates raw WireGuard config text before install.
 * `CloudGatewayRegion`, `CloudGatewayRegionCapacity`, `CloudGatewayClient`, and `CloudGatewayConfigSelection` provide Firebase/API-derived sorting, filtering, capacity display state, all-owned config options, and installable config options without importing Firebase.
-* `CloudGatewayConfigCache` stores the last installed config snapshot in the app group so the local tunnel remains usable when Firestore/API is temporarily unavailable.
-* `CloudGatewayConfigManager` owns user-selected install orchestration, local/remote reconciliation, cache update ordering, stale state, and start/stop/remove decisions through protocol-backed tunnel and cache dependencies. It can also remove the local installed tunnel/cache when the app successfully deletes the matching remote config.
+* `CloudGatewayConfigCache` stores installed config snapshots in the app group so local tunnels remain usable when Firestore/API is temporarily unavailable.
+* `CloudGatewayConfigManager` owns user-selected install orchestration, local/remote reconciliation, cache update ordering, per-config stale state, and start/stop/remove decisions through protocol-backed tunnel and cache dependencies. It can also remove the matching local installed tunnel/cache when the app successfully deletes a remote config.
 
 ## Firebase Boundary
 

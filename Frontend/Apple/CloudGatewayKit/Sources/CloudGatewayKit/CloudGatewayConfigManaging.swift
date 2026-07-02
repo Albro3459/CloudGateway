@@ -1,17 +1,17 @@
 import Foundation
 
 public protocol CloudGatewayTunnelManaging: Sendable {
-    func installedStatus() async throws -> GatewayTunnelStatus
+    func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws
-    func startTunnel() async throws
-    func stopTunnel() async throws
-    func removeTunnel() async throws
+    func startTunnel(identifier: String) async throws
+    func stopTunnel(identifier: String) async throws
+    func removeTunnel(identifier: String) async throws
 }
 
 public protocol CloudGatewayConfigCaching: Sendable {
-    func load() async throws -> CloudGatewayConfigSnapshot?
+    func load() async throws -> [CloudGatewayConfigSnapshot]
     func save(_ snapshot: CloudGatewayConfigSnapshot) async throws
-    func clear() async throws
+    func clear(identifier: String) async throws
 }
 
 public enum CloudGatewayConfigInstallState: Equatable, Sendable {
@@ -23,42 +23,61 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
     public var regions: [CloudGatewayRegion]
     public var clientOptions: [CloudGatewayClientOption]
     public var configOptions: [CloudGatewayClientOption]
-    public var cachedSnapshot: CloudGatewayConfigSnapshot?
-    public var tunnelStatus: GatewayTunnelStatus?
-    public var staleText: String?
+    public var installedSnapshots: [CloudGatewayConfigSnapshot]
+    public var tunnelStatuses: [String: GatewayTunnelStatus]
+    public var staleTexts: [String: String]
     public var lastRefreshDate: Date?
-    public var remoteInvalidInstalledConfig: Bool
+    public var remoteInvalidInstalledConfigIds: Set<String>
 
     public init(
         regions: [CloudGatewayRegion] = [],
         clientOptions: [CloudGatewayClientOption] = [],
         configOptions: [CloudGatewayClientOption] = [],
-        cachedSnapshot: CloudGatewayConfigSnapshot? = nil,
-        tunnelStatus: GatewayTunnelStatus? = nil,
-        staleText: String? = nil,
+        installedSnapshots: [CloudGatewayConfigSnapshot] = [],
+        tunnelStatuses: [String: GatewayTunnelStatus] = [:],
+        staleTexts: [String: String] = [:],
         lastRefreshDate: Date? = nil,
-        remoteInvalidInstalledConfig: Bool = false
+        remoteInvalidInstalledConfigIds: Set<String> = []
     ) {
         self.regions = regions
         self.clientOptions = clientOptions
         self.configOptions = configOptions
-        self.cachedSnapshot = cachedSnapshot
-        self.tunnelStatus = tunnelStatus
-        self.staleText = staleText
+        self.installedSnapshots = installedSnapshots
+        self.tunnelStatuses = tunnelStatuses
+        self.staleTexts = staleTexts
         self.lastRefreshDate = lastRefreshDate
-        self.remoteInvalidInstalledConfig = remoteInvalidInstalledConfig
+        self.remoteInvalidInstalledConfigIds = remoteInvalidInstalledConfigIds
     }
 
     public func installState(for option: CloudGatewayClientOption) -> CloudGatewayConfigInstallState? {
-        guard let cachedSnapshot,
-              cachedSnapshot.clientId == option.client.clientId,
-              cachedSnapshot.regionId == option.client.regionId else {
+        guard let installedSnapshot = installedSnapshot(
+            clientId: option.client.clientId,
+            regionId: option.client.regionId
+        ) else {
             return nil
         }
-        if CloudGatewayConfigSelection.configMatches(cachedSnapshot, option: option) {
+        if CloudGatewayConfigSelection.configMatches(installedSnapshot, option: option) {
             return .installed
         }
         return .updateAvailable
+    }
+
+    public func installedSnapshot(clientId: String, regionId: String? = nil) -> CloudGatewayConfigSnapshot? {
+        installedSnapshots.first { snapshot in
+            snapshot.clientId == clientId && (regionId == nil || snapshot.regionId == regionId)
+        }
+    }
+
+    public func tunnelStatus(for clientId: String) -> GatewayTunnelStatus? {
+        tunnelStatuses[clientId]
+    }
+
+    public func staleText(for clientId: String) -> String? {
+        staleTexts[clientId]
+    }
+
+    public func remoteInvalidInstalledConfig(for clientId: String) -> Bool {
+        remoteInvalidInstalledConfigIds.contains(clientId)
     }
 }
 

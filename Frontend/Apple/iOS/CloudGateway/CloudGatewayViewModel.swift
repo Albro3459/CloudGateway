@@ -19,8 +19,8 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var regions = [CloudGatewayRegion]()
     @Published private(set) var clientOptions = [CloudGatewayClientOption]()
     @Published private(set) var configOptions = [CloudGatewayClientOption]()
-    @Published private(set) var cachedSnapshot: CloudGatewayConfigSnapshot?
-    @Published private(set) var tunnelStatus: GatewayTunnelStatus?
+    @Published private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
+    @Published private(set) var tunnelStatuses = [String: GatewayTunnelStatus]()
     @Published private(set) var isWorking = false
     @Published private(set) var errorText: String?
     @Published private(set) var successText: String?
@@ -29,7 +29,11 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var lastSyncText: String?
     @Published private(set) var remoteInvalidInstalledConfig = false
     @Published var selectedRegionId: String?
-    @Published var selectedClientId: String?
+    @Published var selectedClientId: String? {
+        didSet {
+            syncSelectedConfigPresentation()
+        }
+    }
     @Published var newClientName = ""
     @Published var newAccessEmail = ""
 
@@ -47,12 +51,12 @@ final class CloudGatewayViewModel: ObservableObject {
         visibleTunnelStatus?.displayName ?? "Not installed"
     }
 
-    var visibleCachedSnapshot: CloudGatewayConfigSnapshot? {
-        isSignedIn ? cachedSnapshot : nil
+    var visibleInstalledSnapshot: CloudGatewayConfigSnapshot? {
+        isSignedIn ? selectedInstalledSnapshot : nil
     }
 
     var visibleTunnelStatus: GatewayTunnelStatus? {
-        isSignedIn ? tunnelStatus : nil
+        isSignedIn ? selectedTunnelStatus : nil
     }
 
     var selectedRegion: CloudGatewayRegion? {
@@ -69,6 +73,20 @@ final class CloudGatewayViewModel: ObservableObject {
 
     var selectedConfigOption: CloudGatewayClientOption? {
         CloudGatewayConfigSelection.usableSelection(selectedClientOption)
+    }
+
+    var selectedInstalledSnapshot: CloudGatewayConfigSnapshot? {
+        guard let selectedClientId else {
+            return nil
+        }
+        return configState.installedSnapshot(clientId: selectedClientId)
+    }
+
+    var selectedTunnelStatus: GatewayTunnelStatus? {
+        guard let selectedClientId else {
+            return nil
+        }
+        return configState.tunnelStatus(for: selectedClientId)
     }
 
     var canSyncSelectedRegion: Bool {
@@ -105,6 +123,7 @@ final class CloudGatewayViewModel: ObservableObject {
     var startDisabled: Bool {
         isWorking
             || !isSignedIn
+            || selectedClientId == nil
             || visibleTunnelStatus == nil
             || visibleTunnelStatus == .connected
             || visibleTunnelStatus == .connecting
@@ -114,13 +133,14 @@ final class CloudGatewayViewModel: ObservableObject {
     var stopDisabled: Bool {
         isWorking
             || !isSignedIn
+            || selectedClientId == nil
             || visibleTunnelStatus == nil
             || visibleTunnelStatus == .disconnected
             || visibleTunnelStatus == .disconnecting
     }
 
     var removeTunnelDisabled: Bool {
-        isWorking || visibleTunnelStatus == nil
+        isWorking || selectedClientId == nil || visibleTunnelStatus == nil
     }
 
     init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
@@ -332,23 +352,36 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func startTunnel() async {
         await run {
-            apply(try await configManager.startTunnel())
+            guard let selectedClientId else {
+                throw CloudGatewayAppError.accessDenied("Choose an installed config to start.")
+            }
+            apply(try await configManager.startTunnel(identifier: selectedClientId))
             successText = "VPN started."
         }
     }
 
     func stopTunnel() async {
         await run {
-            apply(try await configManager.stopTunnel())
+            guard let selectedClientId else {
+                throw CloudGatewayAppError.accessDenied("Choose an installed config to stop.")
+            }
+            apply(try await configManager.stopTunnel(identifier: selectedClientId))
             successText = "VPN stopped."
         }
     }
 
     func removeTunnel() async {
         await run {
-            apply(try await configManager.removeTunnel())
+            guard let selectedClientId else {
+                throw CloudGatewayAppError.accessDenied("Choose an installed config to remove.")
+            }
+            apply(try await configManager.removeTunnel(identifier: selectedClientId))
             successText = "VPN removed."
         }
+    }
+
+    func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
+        configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
 
     func dismissMessages() {
@@ -484,20 +517,32 @@ final class CloudGatewayViewModel: ObservableObject {
         regions = state.regions
         clientOptions = state.clientOptions
         configOptions = state.configOptions
-        cachedSnapshot = state.cachedSnapshot
-        tunnelStatus = state.tunnelStatus
-        staleText = state.staleText
-        remoteInvalidInstalledConfig = state.remoteInvalidInstalledConfig
+        installedSnapshots = state.installedSnapshots
+        tunnelStatuses = state.tunnelStatuses
+        syncSelectedConfigPresentation()
         if let lastRefreshDate = state.lastRefreshDate {
             lastRefreshText = "Updated \(lastRefreshDate.formatted(date: .omitted, time: .shortened))"
         }
     }
 
     private func applyLocal(_ state: CloudGatewayConfigManagerState) {
-        configState.cachedSnapshot = state.cachedSnapshot
-        configState.tunnelStatus = state.tunnelStatus
-        cachedSnapshot = state.cachedSnapshot
-        tunnelStatus = state.tunnelStatus
+        configState.installedSnapshots = state.installedSnapshots
+        configState.tunnelStatuses = state.tunnelStatuses
+        configState.staleTexts = state.staleTexts
+        configState.remoteInvalidInstalledConfigIds = state.remoteInvalidInstalledConfigIds
+        installedSnapshots = state.installedSnapshots
+        tunnelStatuses = state.tunnelStatuses
+        syncSelectedConfigPresentation()
+    }
+
+    private func syncSelectedConfigPresentation() {
+        guard let selectedClientId else {
+            staleText = nil
+            remoteInvalidInstalledConfig = false
+            return
+        }
+        staleText = configState.staleText(for: selectedClientId)
+        remoteInvalidInstalledConfig = configState.remoteInvalidInstalledConfig(for: selectedClientId)
     }
 
     private func ensureSelectedRegion() {
@@ -508,11 +553,16 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func pruneSelectedClient() {
-        selectedClientId = CloudGatewayConfigSelection.prunedClientSelection(
+        if let selectedClientId,
+           configState.installedSnapshot(clientId: selectedClientId) != nil {
+            return
+        }
+        let prunedSelection = CloudGatewayConfigSelection.prunedClientSelection(
             current: selectedClientId,
             regionId: selectedRegionId,
             options: clientOptions
         )
+        selectedClientId = prunedSelection ?? installedSnapshots.first?.clientId
     }
 
     private var selectedRegionAllowsCreate: Bool {

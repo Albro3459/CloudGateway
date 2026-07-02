@@ -13,6 +13,20 @@ final class CloudGatewayViewModelTests: XCTestCase {
         )
     }
 
+    private func makeViewModel(
+        _ service: MockGatewayService,
+        installedSnapshots: [CloudGatewayConfigSnapshot],
+        tunnelStatus: GatewayTunnelStatus
+    ) -> CloudGatewayViewModel {
+        CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(status: tunnelStatus),
+                cache: FakeConfigCache(snapshots: installedSnapshots)
+            )
+        )
+    }
+
     private func signedInService() -> MockGatewayService {
         let service = MockGatewayService()
         service.currentUser = AuthenticatedUser(uid: "u1", email: "a@b.com")
@@ -69,19 +83,20 @@ final class CloudGatewayViewModelTests: XCTestCase {
             XCTFail("Expected an active signed-in config option.")
             return
         }
+        viewModel.selectedClientId = option.client.clientId
         await viewModel.install(option)
 
         XCTAssertEqual(viewModel.appMode, .signedIn)
-        XCTAssertNotNil(viewModel.cachedSnapshot)
-        XCTAssertNotNil(viewModel.visibleCachedSnapshot)
+        XCTAssertFalse(viewModel.installedSnapshots.isEmpty)
+        XCTAssertNotNil(viewModel.visibleInstalledSnapshot)
         XCTAssertNotNil(viewModel.visibleTunnelStatus)
 
         await viewModel.signOut()
 
         XCTAssertEqual(viewModel.appMode, .guest)
         XCTAssertFalse(viewModel.isSignedIn)
-        XCTAssertNotNil(viewModel.cachedSnapshot)
-        XCTAssertNil(viewModel.visibleCachedSnapshot)
+        XCTAssertFalse(viewModel.installedSnapshots.isEmpty)
+        XCTAssertNil(viewModel.visibleInstalledSnapshot)
         XCTAssertNil(viewModel.visibleTunnelStatus)
         XCTAssertTrue(viewModel.startDisabled)
         XCTAssertTrue(viewModel.stopDisabled)
@@ -388,6 +403,26 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.selectedClientId)
         XCTAssertNil(viewModel.selectedClientOption)
+    }
+
+    func testInstalledMissingRemoteClientRemainsManageableAndCannotStart() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = []
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.selectedClientId, "c1")
+        XCTAssertNil(viewModel.selectedClientOption)
+        XCTAssertEqual(viewModel.visibleInstalledSnapshot?.clientId, "c1")
+        XCTAssertTrue(viewModel.startDisabled)
+        XCTAssertFalse(viewModel.removeTunnelDisabled)
+        XCTAssertNotNil(viewModel.staleText)
     }
 
     // MARK: - Create flow

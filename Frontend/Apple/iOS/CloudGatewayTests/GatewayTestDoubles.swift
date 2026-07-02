@@ -5,52 +5,54 @@ import Foundation
 /// default so `CloudGatewayConfigManager.refreshStatus()` maps it to a nil status.
 actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var status: GatewayTunnelStatus?
+    private var statuses = [String: GatewayTunnelStatus]()
 
     init(status: GatewayTunnelStatus? = nil) {
         self.status = status
     }
 
-    func installedStatus() async throws -> GatewayTunnelStatus {
-        guard let status else {
+    func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
+        guard let status = statuses[identifier] ?? status else {
             throw GatewayVPNError.missingInstalledTunnel
         }
         return status
     }
 
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
-        status = .disconnected
+        statuses[tunnel.identifier] = .disconnected
     }
 
-    func startTunnel() async throws {
-        status = .connected
+    func startTunnel(identifier: String) async throws {
+        statuses[identifier] = .connected
     }
 
-    func stopTunnel() async throws {
-        status = .disconnected
+    func stopTunnel(identifier: String) async throws {
+        statuses[identifier] = .disconnected
     }
 
-    func removeTunnel() async throws {
-        status = nil
+    func removeTunnel(identifier: String) async throws {
+        statuses[identifier] = nil
     }
 }
 
 /// In-memory config cache for view-model tests.
 actor FakeConfigCache: CloudGatewayConfigCaching {
-    private var snapshot: CloudGatewayConfigSnapshot?
+    private var snapshots: [CloudGatewayConfigSnapshot]
 
-    init(snapshot: CloudGatewayConfigSnapshot? = nil) {
-        self.snapshot = snapshot
+    init(snapshots: [CloudGatewayConfigSnapshot] = []) {
+        self.snapshots = snapshots
     }
 
-    func load() async throws -> CloudGatewayConfigSnapshot? {
-        snapshot
+    func load() async throws -> [CloudGatewayConfigSnapshot] {
+        snapshots
     }
 
     func save(_ snapshot: CloudGatewayConfigSnapshot) async throws {
-        self.snapshot = snapshot
+        snapshots.removeAll { $0.clientId == snapshot.clientId }
+        snapshots.append(snapshot)
     }
 
-    func clear() async throws {
-        snapshot = nil
+    func clear(identifier: String) async throws {
+        snapshots.removeAll { $0.clientId == identifier }
     }
 }
