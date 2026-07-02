@@ -55,6 +55,7 @@ struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
     let updated: Int
     let removed: Int
     let noChanges: Bool
+    let log: String
 }
 
 struct CloudGatewayGrantAccessResponse: Decodable, Equatable {

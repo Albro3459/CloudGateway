@@ -199,7 +199,8 @@ final class MockGatewayService: CloudGatewayServicing {
             added: 1,
             updated: 0,
             removed: 0,
-            noChanges: false
+            noChanges: false,
+            log: "CloudGateway peer sync audit log\nregion: \(regionId)\nsummary: added=1 updated=0 removed=0"
         )
     }
 

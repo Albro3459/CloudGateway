@@ -15,6 +15,9 @@ struct CloudGatewaySyncResult: Identifiable, Equatable {
     let updated: Int
     let removed: Int
     let noChanges: Bool
+    // Full peer-sync audit log from the API (AdminSyncResponse.log), same text
+    // the web surfaces: title, region, syncedAt, summary, and per-removed-peer detail.
+    let log: String
 
     var id: String {
         "\(regionId)-\(syncedAt)"
@@ -27,15 +30,7 @@ struct CloudGatewaySyncResult: Identifiable, Equatable {
     }
 
     var logText: String {
-        """
-        CloudGateway sync result
-        Region: \(regionId)
-        Synced at: \(syncedAt)
-        Added: \(added)
-        Updated: \(updated)
-        Removed: \(removed)
-        No changes: \(noChanges ? "yes" : "no")
-        """
+        log
     }
 }
 
@@ -308,7 +303,8 @@ final class CloudGatewayViewModel: ObservableObject {
                 added: response.added,
                 updated: response.updated,
                 removed: response.removed,
-                noChanges: response.noChanges
+                noChanges: response.noChanges,
+                log: response.log
             )
             syncResult = result
             lastSyncText = result.summary
@@ -415,20 +411,60 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func sync(_ option: CloudGatewayClientOption) async {
         await run {
-            guard let user = service.currentUser else {
-                throw CloudGatewayAppError.missingCurrentUser
+            let name = try await pullFreshAndInstall(option)
+            successText = "\(name) is synced."
+        }
+    }
+
+    // Install button for a not-yet-installed client: pull the latest config from
+    // Firebase, then install, so a stale cached config is never installed.
+    func installFromCloud(_ option: CloudGatewayClientOption) async {
+        await run {
+            let name = try await pullFreshAndInstall(option)
+            successText = "\(name) is installed."
+        }
+    }
+
+    private func pullFreshAndInstall(_ option: CloudGatewayClientOption) async throws -> String {
+        guard let user = service.currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        try await loadRemoteState(for: user)
+        guard let freshOption = clientOptions.first(where: {
+            $0.client.clientId == option.client.clientId
+                && $0.client.regionId == option.client.regionId
+                && $0.client.hasUsableConfig
+        }) else {
+            throw CloudGatewayAppError.accessDenied("This VPN client is not ready to install.")
+        }
+        selectedClientId = freshOption.client.clientId
+        apply(try await configManager.install(freshOption))
+        return freshOption.client.displayName
+    }
+
+    // The client whose tunnel is actually established (connected/reasserting), so
+    // the switch prompt only offers to "turn off" a VPN that is really on - not one
+    // that is merely mid-connect.
+    var activeTunnelClient: CloudGatewayClientOption? {
+        clientOptions.first { option in
+            switch configState.tunnelStatus(for: option.client.clientId) {
+            case .connected, .reasserting:
+                return true
+            case .connecting, .disconnecting, .disconnected, .invalid, nil:
+                return false
             }
-            try await loadRemoteState(for: user)
-            guard let freshOption = clientOptions.first(where: {
-                $0.client.clientId == option.client.clientId
-                    && $0.client.regionId == option.client.regionId
-                    && $0.client.hasUsableConfig
-            }) else {
-                throw CloudGatewayAppError.accessDenied("This VPN client is not ready to sync.")
+        }
+    }
+
+    // Turn off the currently active tunnel (if different) and start this one.
+    func switchTunnel(to option: CloudGatewayClientOption) async {
+        await run {
+            if let active = activeTunnelClient, active.client.clientId != option.client.clientId {
+                apply(try await configManager.stopTunnel(identifier: active.client.clientId))
             }
-            selectedClientId = freshOption.client.clientId
-            apply(try await configManager.install(freshOption))
-            successText = "\(freshOption.client.displayName) is synced."
+            selectedClientId = option.client.clientId
+            apply(try await configManager.startTunnel(identifier: option.client.clientId))
+            successText = "VPN switched to \(option.client.displayName)."
         }
     }
 
@@ -485,6 +521,10 @@ final class CloudGatewayViewModel: ObservableObject {
         successText = nil
     }
 
+    func dismissStale() {
+        staleText = nil
+    }
+
     func dismissSyncResult() {
         syncResult = nil
     }
@@ -506,6 +546,10 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func syncDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || !option.client.hasUsableConfig
+    }
+
+    func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
+        configState.installState(for: option) != nil
     }
 
     func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {

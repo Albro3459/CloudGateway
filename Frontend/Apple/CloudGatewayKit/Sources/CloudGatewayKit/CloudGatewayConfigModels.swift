@@ -370,6 +370,13 @@ public enum CloudGatewayConfigSelection {
             return regionNameComparison == .orderedAscending
         }
 
+        // Group by owner email so an admin's multi-user list is ordered by user;
+        // a no-op for normal users, whose clients share (or lack) one owner email.
+        let ownerEmailComparison = (lhs.client.ownerEmail ?? "").localizedCaseInsensitiveCompare(rhs.client.ownerEmail ?? "")
+        if ownerEmailComparison != .orderedSame {
+            return ownerEmailComparison == .orderedAscending
+        }
+
         let clientNameComparison = lhs.client.displayName.localizedCaseInsensitiveCompare(rhs.client.displayName)
         if clientNameComparison != .orderedSame {
             return clientNameComparison == .orderedAscending

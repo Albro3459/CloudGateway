@@ -6,6 +6,9 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
+    @State private var clientPendingActivate: CloudGatewayClientOption?
+    @State private var switchFromClient: CloudGatewayClientOption?
+    @State private var toggleResetID = 0
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var isShowingLogin = false
     @State private var isShowingAbout = false
@@ -64,6 +67,20 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("We'll email a password reset link to the address entered above.")
+        }
+        .alert("Switch VPN?", isPresented: switchConfirmPresented) {
+            Button("Switch") {
+                if let option = clientPendingActivate {
+                    Task {
+                        await viewModel.switchTunnel(to: option)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let active = switchFromClient, let pending = clientPendingActivate {
+                Text("Turn off \(active.client.displayName) (\(active.regionDisplayName)) and start \(pending.client.displayName)?")
+            }
         }
         .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
             Button("Delete", role: .destructive) {
@@ -361,7 +378,7 @@ struct ContentView: View {
                 MessageBanner(
                     text: staleText,
                     style: .warning,
-                    onDismiss: nil
+                    onDismiss: viewModel.dismissStale
                 )
             }
 
@@ -497,7 +514,7 @@ struct ContentView: View {
                     subtitle: "Sign in before creating a VPN config."
                 )
 
-                HStack(spacing: 10) {
+                VStack(spacing: 10) {
                     Button("Sign in") {
                         isShowingLogin = true
                     }
@@ -561,30 +578,43 @@ struct ContentView: View {
                                 option: option,
                                 isSelected: viewModel.selectedClientId == option.client.clientId,
                                 showsOwnerEmail: viewModel.isAdmin,
+                                isInstalled: viewModel.isInstalled(option),
                                 installState: viewModel.installStateLabel(for: option),
                                 status: viewModel.tunnelStatus(for: option),
                                 tunnelStatus: viewModel.tunnelStatusLabel(for: option),
                                 toggleIsOn: viewModel.toggleIsOn(for: option),
                                 toggleDisabled: viewModel.toggleDisabled(for: option),
+                                toggleResetID: toggleResetID,
                                 syncDisabled: viewModel.syncDisabled(for: option),
+                                installDisabled: viewModel.syncDisabled(for: option),
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
                                 onSelect: {
                                     viewModel.selectedClientId = option.client.clientId
                                 },
                                 onToggle: { isOn in
                                     viewModel.selectedClientId = option.client.clientId
-                                    Task {
-                                        if isOn {
-                                            await viewModel.startTunnel(for: option)
+                                    if isOn {
+                                        if let active = viewModel.activeTunnelClient,
+                                           active.client.clientId != option.client.clientId {
+                                            switchFromClient = active
+                                            clientPendingActivate = option
                                         } else {
-                                            await viewModel.stopTunnel(for: option)
+                                            Task { await viewModel.startTunnel(for: option) }
                                         }
+                                    } else {
+                                        Task { await viewModel.stopTunnel(for: option) }
                                     }
                                 },
                                 onSync: {
                                     viewModel.selectedClientId = option.client.clientId
                                     Task {
                                         await viewModel.sync(option)
+                                    }
+                                },
+                                onInstall: {
+                                    viewModel.selectedClientId = option.client.clientId
+                                    Task {
+                                        await viewModel.installFromCloud(option)
                                     }
                                 },
                                 onDelete: {
@@ -618,6 +648,21 @@ struct ContentView: View {
             set: { isPresented in
                 if !isPresented {
                     clientPendingDelete = nil
+                }
+            }
+        )
+    }
+
+    private var switchConfirmPresented: Binding<Bool> {
+        Binding(
+            get: { clientPendingActivate != nil },
+            set: { isPresented in
+                if !isPresented {
+                    clientPendingActivate = nil
+                    switchFromClient = nil
+                    // Force the row toggles to re-read their derived state so a
+                    // cancelled switch doesn't leave a toggle stuck visually on.
+                    toggleResetID += 1
                 }
             }
         )
@@ -745,7 +790,9 @@ private struct AboutView: View {
                                         .foregroundStyle(theme.contentSecondary)
                                     HStack(spacing: 14) {
                                         Link("GitHub", destination: URL(string: "https://github.com/Albro3459/CloudGateway/")!)
+                                            .foregroundStyle(theme.accent)
                                         Link("LinkedIn", destination: URL(string: "https://www.linkedin.com/in/brodsky-alex22/")!)
+                                            .foregroundStyle(theme.accent)
                                         Button("Email") {
                                             isShowingEmail = true
                                         }
@@ -867,10 +914,21 @@ private struct SyncResultView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         DetailLine(label: "Region", value: result.regionId)
-                        DetailLine(label: "Added", value: "\(result.added)")
-                        DetailLine(label: "Updated", value: "\(result.updated)")
-                        DetailLine(label: "Removed", value: "\(result.removed)")
+                        DetailLine(label: "Synced at", value: result.syncedAt)
+                        DetailLine(label: "Summary", value: "added=\(result.added) updated=\(result.updated) removed=\(result.removed)")
                     }
+
+                    ScrollView {
+                        Text(result.log)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(theme.contentSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .padding(10)
+                    .background(theme.inset)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     ShareLink(item: result.logText) {
                         Label("Download Logs", systemImage: "square.and.arrow.down")
@@ -880,7 +938,7 @@ private struct SyncResultView: View {
             }
             .padding(16)
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -1018,16 +1076,20 @@ private struct ClientRow: View {
     let option: CloudGatewayClientOption
     let isSelected: Bool
     let showsOwnerEmail: Bool
+    let isInstalled: Bool
     let installState: String?
     let status: GatewayTunnelStatus?
     let tunnelStatus: String?
     let toggleIsOn: Bool
     let toggleDisabled: Bool
+    let toggleResetID: Int
     let syncDisabled: Bool
+    let installDisabled: Bool
     let deleteDisabled: Bool
     let onSelect: () -> Void
     let onToggle: (Bool) -> Void
     let onSync: () -> Void
+    let onInstall: () -> Void
     let onDelete: () -> Void
     let onDetails: () -> Void
 
@@ -1068,24 +1130,31 @@ private struct ClientRow: View {
             .onLongPressGesture(perform: onDetails)
 
             HStack(spacing: 10) {
-                Toggle("VPN", isOn: Binding(
-                    get: { toggleIsOn },
-                    set: onToggle
-                ))
-                .toggleStyle(.switch)
-                .tint(theme.primary)
-                .disabled(toggleDisabled)
+                if isInstalled {
+                    Toggle("VPN", isOn: Binding(
+                        get: { toggleIsOn },
+                        set: onToggle
+                    ))
+                    .toggleStyle(.switch)
+                    .tint(theme.primary)
+                    .disabled(toggleDisabled)
+                    .id(toggleResetID)
 
-                Spacer()
+                    Spacer()
 
-                TunnelStatusBadge(status: status)
+                    TunnelStatusBadge(status: status)
 
-                Button(action: onSync) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
+                    Button(action: onSync) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(IconSecondaryButtonStyle())
+                    .disabled(syncDisabled)
+                    .accessibilityLabel("Sync \(option.client.displayName)")
+                } else {
+                    Button("Install", action: onInstall)
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(installDisabled)
                 }
-                .buttonStyle(IconSecondaryButtonStyle())
-                .disabled(syncDisabled)
-                .accessibilityLabel("Sync \(option.client.displayName)")
 
                 Button(action: onDetails) {
                     Image(systemName: "ellipsis")
@@ -1221,6 +1290,7 @@ private struct DetailLine: View {
                 .font(.subheadline)
                 .foregroundStyle(theme.contentSecondary)
                 .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
         }
     }
 }

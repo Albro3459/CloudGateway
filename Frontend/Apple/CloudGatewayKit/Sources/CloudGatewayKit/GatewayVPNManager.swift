@@ -42,6 +42,14 @@ public final class GatewayVPNManager {
 
     public func startTunnel(identifier: String) async throws {
         let manager = try await installedManager(for: identifier)
+        // iOS refuses to start a manager that is not currently enabled (another
+        // profile may hold the enabled slot). Re-enable and reload so the session
+        // is ready, instead of requiring a manual sync/re-install first.
+        if !manager.isEnabled {
+            manager.isEnabled = true
+            try await manager.saveToPreferences()
+        }
+        try await manager.loadFromPreferences()
         guard let session = manager.connection as? NETunnelProviderSession else {
             throw GatewayVPNError.missingTunnelSession
         }
