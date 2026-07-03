@@ -95,7 +95,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 }
 ```
 
-- `clientName` is optional. Blank or missing values use a simple server default.
+- `clientName` is required and must be non-blank.
 - Response `200`:
 
 ```json
@@ -208,6 +208,9 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "log": "CloudGateway peer sync audit log\nregion: ...\n"
 }
 ```
+
+- `log` is an admin audit artifact. It can include user emails, client names,
+  client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 
 - `log` is a plaintext audit report (no ANSI/color) listing each added/updated/removed peer:
   added/updated peers include the owning `clientId`/`email`, removed peers (host peers with no

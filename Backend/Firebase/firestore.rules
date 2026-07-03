@@ -9,7 +9,10 @@ service cloud.firestore {
     }
 
     function isUser() {
-      return isAuth() && exists(/databases/$(database)/documents/UserRoles/$(request.auth.uid));
+      return isAuth()
+        && exists(/databases/$(database)/documents/UserRoles/$(request.auth.uid))
+        && exists(/databases/$(database)/documents/Users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.disabled != true;
     }
 
     function isAdmin() {

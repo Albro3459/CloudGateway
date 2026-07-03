@@ -29,7 +29,10 @@ DELETE https://<regionId>.gocloudlaunch.com/api/clients/{clientId}
 POST   https://<regionId>.gocloudlaunch.com/api/admin/sync
 ```
 
-`POST /admin/sync` is shown only for admins. The UI displays sync counts, not the raw audit log.
+`POST /admin/sync` is shown only for admins. The UI displays the sync counts
+and can show/share the full peer audit log. Treat that log as admin-only
+operational data: it can include user emails, client names, client IDs, public
+keys, tunnel IPs, statuses, and removed-peer details.
 
 Firebase packages are linked to the app target only:
 

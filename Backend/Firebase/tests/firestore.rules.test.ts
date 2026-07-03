@@ -33,17 +33,21 @@ beforeAll(async () => {
     firestore: { rules: readFileSync("firestore.rules", "utf8") },
   });
 
-  // Seed with rules bypassed. isUser()/isAdmin() resolve off UserRoles docs.
+  // Seed with rules bypassed. isUser()/isAdmin() resolve off UserRoles plus enabled Users docs.
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
     await setDoc(doc(db, "UserRoles/user1"), { roleId: "user" });
     await setDoc(doc(db, "UserRoles/admin1"), { roleId: "admin" });
-    await setDoc(doc(db, "Users/user1"), { email: "user1@example.com" });
+    await setDoc(doc(db, "UserRoles/disabled1"), { roleId: "user" });
+    await setDoc(doc(db, "Users/user1"), { email: "user1@example.com", disabled: false });
+    await setDoc(doc(db, "Users/admin1"), { email: "admin1@example.com", disabled: false });
+    await setDoc(doc(db, "Users/disabled1"), { email: "disabled1@example.com", disabled: true });
     await setDoc(doc(db, "Roles/admin"), { label: "Admin" });
     await setDoc(doc(db, "Regions/us-1"), { enabled: true, displayName: "US 1", displayOrder: 1 });
     await setDoc(doc(db, "Regions/us-off"), { enabled: false, displayName: "Off", displayOrder: 2 });
     await setDoc(doc(db, "Regions/us-1/Instances/inst1"), { ownerUid: "user1" });
     await setDoc(doc(db, "Regions/us-1/Instances/inst2"), { ownerUid: "other" });
+    await setDoc(doc(db, "Regions/us-1/Instances/disabled-inst"), { ownerUid: "disabled1" });
   });
 });
 
@@ -89,6 +93,16 @@ describe("reads stay allowed for the clients that use them", () => {
     await assertSucceeds(getDocs(collection(authed("admin1"), "Regions")));
     await assertFails(getDoc(doc(unauthed(), "Regions/us-1")));
     await assertFails(getDoc(doc(authed("nouser"), "Regions/us-1")));
+  });
+
+  it("disabled provisioned users cannot read user-scoped data", async () => {
+    await assertFails(getDoc(doc(authed("disabled1"), "UserRoles/disabled1")));
+    await assertFails(getDoc(doc(authed("disabled1"), "Users/disabled1")));
+    await assertFails(getDoc(doc(authed("disabled1"), "Regions/us-1")));
+    await assertFails(getDoc(doc(authed("disabled1"), "Regions/us-1/Instances/disabled-inst")));
+    await assertFails(
+      getDocs(query(collectionGroup(authed("disabled1"), "Instances"), where("ownerUid", "==", "disabled1"))),
+    );
   });
 });
 

@@ -40,13 +40,13 @@ Role documents are defaults keyed by role name:
 * `Roles/admin.defaultPerRegionClientLimit`: default per-region client limit for admins. A
   `null` value means no per-user limit; regional `capacityLimit` still applies.
 
-User role assignment documents are the Firestore rules authorization anchor. Each
-`UserRoles/{uid}` document has `roleId: "user" | "admin"` and optional
+User role assignment documents provide role and entitlement data for provisioned
+users. Each `UserRoles/{uid}` document has `roleId: "user" | "admin"` and optional
 `perRegionClientLimit`. The override uses the same semantics as role defaults: `null`
 and missing mean "use the role default," while `0` is a real override that allows zero
-clients per region. `UserRoles` is writable only by admins or the API. Keeping assignment
-and entitlement overrides separate from `Users/{uid}` avoids making normal user profile
-data part of the rules bootstrap path.
+clients per region. Firestore rules require both this role assignment and a matching
+`Users/{uid}` document whose `disabled` field is not `true`. `UserRoles` is writable
+only by admins or the API.
 
 ## Enums
 
