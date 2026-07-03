@@ -471,7 +471,7 @@ struct ContentView: View {
                     }
 
                     if viewModel.isSignedIn, let selectedRegion = viewModel.selectedRegion {
-                        RegionCapacityNote(region: selectedRegion)
+                        RegionCapacityNote(region: selectedRegion, isLoading: viewModel.isWorking)
                     }
                 }
             }
@@ -1055,6 +1055,7 @@ private struct DividerLine: View {
 private struct RegionCapacityNote: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let region: CloudGatewayRegion
+    let isLoading: Bool
 
     var body: some View {
         if let capacity = region.capacity, capacity.isKnown {
@@ -1063,6 +1064,12 @@ private struct RegionCapacityNote: View {
                     .font(.subheadline)
                     .foregroundStyle(theme.dangerContent)
             }
+        } else if isLoading {
+            // Capacity is still being fetched during load; don't alarm the user
+            // with an "unavailable" warning until the load actually finishes.
+            Text("Checking capacity for \(region.displayName)...")
+                .font(.subheadline)
+                .foregroundStyle(theme.contentMuted)
         } else {
             Text("Capacity for \(region.displayName) is unavailable. Try again in a moment.")
                 .font(.subheadline)
