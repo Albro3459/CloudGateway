@@ -8,6 +8,7 @@ Implementation order:
    - Keep only config identifiers, display metadata, and a config hash/staleness marker in local cache and provider preferences.
    - Update `CloudGatewayConfigManager`, `CloudGatewayConfigCache`, `GatewayProviderConfiguration`, and `PacketTunnelProvider`.
    - Add migration/cleanup for existing cached `installed-configs.json` entries and installed tunnel preferences.
+   - Implementation notes: [Apple Config Secret Storage](apple-config-secret-storage.md).
 
 2. [ ] Document the Apple config-storage design.
    - Record where the full config is allowed to live.

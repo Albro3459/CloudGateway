@@ -11,4 +11,5 @@ Planning notes for upcoming CloudGateway work.
   * [Apple MVP 3 iOS UI build](apple-mvp-3-ui.md): full SwiftUI rebuild - theme, pages/components, services & state, local storage, auth, and guest flow.
   * [Apple MVP 3 sign in with Apple and Google](apple-mvp-3-providers.md): the deferred providers, wired last.
 * [Apple app UX polish and VPN profile follow-up](apple-app-polish.md): post-MVP iOS polish checklist for required display names, per-client VPN controls, admin visibility, loading/refresh behavior, details modals, and sync results.
+* [Apple config secret storage](apple-config-secret-storage.md): shared Keychain design for WireGuard configs, reconnect tradeoffs, migration, and future macOS reuse.
 * [WireGuard Apple fork plan](wireguard-apple-fork.md): CloudGateway fork setup, Xcode 26 patch branch, and verification steps.
