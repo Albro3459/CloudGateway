@@ -382,12 +382,6 @@ struct ContentView: View {
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(!viewModel.canSyncSelectedRegion)
-
-                    if let lastSyncText = viewModel.lastSyncText {
-                        Text(lastSyncText)
-                            .font(.caption)
-                            .foregroundStyle(theme.contentMuted)
-                    }
                 }
 
                 VStack(alignment: .leading, spacing: 10) {

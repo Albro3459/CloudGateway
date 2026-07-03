@@ -52,7 +52,6 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var successText: String?
     @Published private(set) var staleText: String?
     @Published private(set) var lastRefreshText: String?
-    @Published private(set) var lastSyncText: String?
     @Published private(set) var syncResult: CloudGatewaySyncResult?
     @Published private(set) var remoteInvalidInstalledConfig = false
     @Published var selectedRegionId: String?
@@ -307,7 +306,6 @@ final class CloudGatewayViewModel: ObservableObject {
                 log: response.log
             )
             syncResult = result
-            lastSyncText = result.summary
             try await loadRemoteState(for: user)
             successText = "Synced \(response.regionId)."
         }
@@ -664,7 +662,6 @@ final class CloudGatewayViewModel: ObservableObject {
         configOptions = []
         staleText = nil
         lastRefreshText = nil
-        lastSyncText = nil
         syncResult = nil
         remoteInvalidInstalledConfig = false
         successText = nil

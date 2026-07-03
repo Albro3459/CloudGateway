@@ -244,7 +244,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.syncSelectedRegion()
 
         XCTAssertEqual(service.syncRegionCallCount, 1)
-        XCTAssertEqual(viewModel.lastSyncText, "us-sanjose-1: +1 ~0 -0")
+        XCTAssertEqual(viewModel.syncResult?.summary, "us-sanjose-1: +1 ~0 -0")
         XCTAssertEqual(viewModel.syncResult?.regionId, "us-sanjose-1")
         // logText now surfaces the API's peer-sync audit log verbatim.
         XCTAssertTrue(viewModel.syncResult?.logText.contains("CloudGateway peer sync audit log") == true)
