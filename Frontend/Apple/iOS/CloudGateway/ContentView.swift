@@ -357,19 +357,11 @@ struct ContentView: View {
                 )
             }
 
-            if let staleText = viewModel.staleText {
-                MessageBanner(
-                    text: staleText,
-                    style: .warning,
-                    onDismiss: viewModel.dismissStale
-                )
-            }
-
             Spacer()
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
-        .allowsHitTesting(viewModel.errorText != nil || viewModel.successText != nil || viewModel.staleText != nil)
+        .allowsHitTesting(viewModel.errorText != nil || viewModel.successText != nil)
     }
 
     private var adminPanel: some View {
@@ -565,6 +557,7 @@ struct ContentView: View {
                                 installState: viewModel.installStateLabel(for: option),
                                 status: viewModel.tunnelStatus(for: option),
                                 tunnelStatus: viewModel.tunnelStatusLabel(for: option),
+                                staleText: viewModel.staleText(for: option),
                                 toggleIsOn: viewModel.toggleIsOn(for: option),
                                 toggleDisabled: viewModel.toggleDisabled(for: option),
                                 syncDisabled: viewModel.syncDisabled(for: option),
@@ -1053,6 +1046,7 @@ private struct ClientRow: View {
     let installState: String?
     let status: GatewayTunnelStatus?
     let tunnelStatus: String?
+    let staleText: String?
     let toggleIsOn: Bool
     let toggleDisabled: Bool
     let syncDisabled: Bool
@@ -1099,7 +1093,7 @@ private struct ClientRow: View {
                 }
             }
             .buttonStyle(.plain)
-            .onLongPressGesture(perform: onDetails)
+            .simultaneousGesture(LongPressGesture().onEnded { _ in onDetails() })
 
             HStack(spacing: 10) {
                 if isInstalled {
@@ -1139,6 +1133,20 @@ private struct ClientRow: View {
                 .buttonStyle(IconDangerButtonStyle())
                 .disabled(deleteDisabled)
                 .accessibilityLabel("Delete \(option.client.displayName)")
+            }
+
+            if let staleText {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .imageScale(.small)
+                        .accessibilityHidden(true)
+                    Text(staleText)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(theme.warningStrong)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Warning: \(staleText)")
             }
         }
         .padding(12)

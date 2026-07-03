@@ -516,13 +516,13 @@ final class CloudGatewayViewModel: ObservableObject {
         configState.tunnelStatus(for: option.client.clientId)
     }
 
+    func staleText(for option: CloudGatewayClientOption) -> String? {
+        configState.staleText(for: option.client.clientId)
+    }
+
     func dismissMessages() {
         errorText = nil
         successText = nil
-    }
-
-    func dismissStale() {
-        staleText = nil
     }
 
     func dismissSyncResult() {
