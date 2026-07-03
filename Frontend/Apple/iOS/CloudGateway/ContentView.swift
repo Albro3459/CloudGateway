@@ -6,9 +6,6 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
     @State private var clientPendingDelete: CloudGatewayClientOption?
-    @State private var clientPendingActivate: CloudGatewayClientOption?
-    @State private var switchFromClient: CloudGatewayClientOption?
-    @State private var toggleResetID = 0
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var isShowingLogin = false
     @State private var isShowingAbout = false
@@ -67,20 +64,6 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("We'll email a password reset link to the address entered above.")
-        }
-        .alert("Switch VPN?", isPresented: switchConfirmPresented) {
-            Button("Switch") {
-                if let option = clientPendingActivate {
-                    Task {
-                        await viewModel.switchTunnel(to: option)
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if let active = switchFromClient, let pending = clientPendingActivate {
-                Text("Turn off \(active.client.displayName) (\(active.regionDisplayName)) and start \(pending.client.displayName)?")
-            }
         }
         .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
             Button("Delete", role: .destructive) {
@@ -584,7 +567,6 @@ struct ContentView: View {
                                 tunnelStatus: viewModel.tunnelStatusLabel(for: option),
                                 toggleIsOn: viewModel.toggleIsOn(for: option),
                                 toggleDisabled: viewModel.toggleDisabled(for: option),
-                                toggleResetID: toggleResetID,
                                 syncDisabled: viewModel.syncDisabled(for: option),
                                 installDisabled: viewModel.syncDisabled(for: option),
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
@@ -596,8 +578,7 @@ struct ContentView: View {
                                     if isOn {
                                         if let active = viewModel.activeTunnelClient,
                                            active.client.clientId != option.client.clientId {
-                                            switchFromClient = active
-                                            clientPendingActivate = option
+                                            Task { await viewModel.switchTunnel(to: option) }
                                         } else {
                                             Task { await viewModel.startTunnel(for: option) }
                                         }
@@ -648,21 +629,6 @@ struct ContentView: View {
             set: { isPresented in
                 if !isPresented {
                     clientPendingDelete = nil
-                }
-            }
-        )
-    }
-
-    private var switchConfirmPresented: Binding<Bool> {
-        Binding(
-            get: { clientPendingActivate != nil },
-            set: { isPresented in
-                if !isPresented {
-                    clientPendingActivate = nil
-                    switchFromClient = nil
-                    // Force the row toggles to re-read their derived state so a
-                    // cancelled switch doesn't leave a toggle stuck visually on.
-                    toggleResetID += 1
                 }
             }
         )
@@ -1089,7 +1055,6 @@ private struct ClientRow: View {
     let tunnelStatus: String?
     let toggleIsOn: Bool
     let toggleDisabled: Bool
-    let toggleResetID: Int
     let syncDisabled: Bool
     let installDisabled: Bool
     let deleteDisabled: Bool
@@ -1145,7 +1110,6 @@ private struct ClientRow: View {
                     .toggleStyle(.switch)
                     .tint(theme.primary)
                     .disabled(toggleDisabled)
-                    .id(toggleResetID)
 
                     Spacer()
 
