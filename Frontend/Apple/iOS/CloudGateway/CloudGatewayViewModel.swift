@@ -527,7 +527,7 @@ final class CloudGatewayViewModel: ObservableObject {
     func installStateLabel(for option: CloudGatewayClientOption) -> String? {
         switch configState.installState(for: option) {
         case .installed:
-            return "Installed"
+            return nil
         case .updateAvailable:
             return "Update Available"
         case nil:
