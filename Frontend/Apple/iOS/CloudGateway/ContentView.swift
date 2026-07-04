@@ -1001,6 +1001,7 @@ private struct ThemedTextField: View {
 
 private struct ThemedSecureField: View {
     @Environment(\.cloudGatewayTheme) private var theme
+    @State private var isRevealingPassword = false
     let title: String
     let placeholder: String
     @Binding var text: String
@@ -1010,7 +1011,20 @@ private struct ThemedSecureField: View {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(theme.contentSecondary)
-            SecureField(placeholder, text: $text)
+
+            HStack(spacing: 10) {
+                passwordField
+
+                Button {
+                    isRevealingPassword.toggle()
+                } label: {
+                    Image(systemName: isRevealingPassword ? "eye.slash" : "eye")
+                        .imageScale(.medium)
+                        .foregroundStyle(theme.contentMuted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isRevealingPassword ? "Hide password" : "Show password")
+            }
                 .padding(12)
                 .background(theme.inset)
                 .foregroundStyle(theme.content)
@@ -1019,6 +1033,17 @@ private struct ThemedSecureField: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(theme.edge, lineWidth: 1)
                 }
+        }
+    }
+
+    @ViewBuilder
+    private var passwordField: some View {
+        if isRevealingPassword {
+            TextField(placeholder, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        } else {
+            SecureField(placeholder, text: $text)
         }
     }
 }

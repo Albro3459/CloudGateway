@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
+import { Eye, EyeOff } from "lucide-react";
 import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
 import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
@@ -13,6 +14,7 @@ const Login: React.FC = () => {
     
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState<React.ReactNode>();
     const [success, setSuccess] = useState<string | null>();
     const manualSignInRef = useRef(false);
@@ -228,16 +230,26 @@ const Login: React.FC = () => {
 
                 <div className="mb-4">
                     <label className="block text-content-secondary font-medium mb-2">Password</label>
-                    <input
-                        id="password"
-                        name="password"
-                        type="password"
-                        autoComplete="current-password"
-                        className="w-full p-3 border border-edge bg-inset text-content rounded-lg focus:ring-2 focus:ring-focus focus:outline-none"
-                        placeholder="Enter your password"
-                        value={password}
-                        onChange={(x) => setPassword(x.target.value)}
-                    />
+                    <div className="relative">
+                        <input
+                            id="password"
+                            name="password"
+                            type={showPassword ? "text" : "password"}
+                            autoComplete="current-password"
+                            className="w-full rounded-lg border border-edge bg-inset p-3 pr-12 text-content focus:outline-none focus:ring-2 focus:ring-focus"
+                            placeholder="Enter your password"
+                            value={password}
+                            onChange={(x) => setPassword(x.target.value)}
+                        />
+                        <button
+                            type="button"
+                            aria-label={showPassword ? "Hide password" : "Show password"}
+                            onClick={() => setShowPassword((visible) => !visible)}
+                            className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-content-muted transition hover:text-content-secondary"
+                        >
+                            {showPassword ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
+                        </button>
+                    </div>
                 </div>
 
                 <button
