@@ -15,15 +15,29 @@ extension CloudGatewayViewModel {
             appGroupIdentifier: "group.com.gocloudlaunch.gateway",
             appBundleIdentifier: "com.gocloudlaunch.gateway",
             providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
-            tunnelDisplayName: "CloudGateway"
+            tunnelDisplayName: "CloudGateway",
+            keychainAccessGroupIdentifier: Self.cloudGatewayKeychainAccessGroup()
         )
         self.init(
             service: CloudGatewayFirebaseService(),
             configManager: CloudGatewayConfigManager(
                 tunnelManager: GatewayVPNManager(platform: platform),
-                cache: CloudGatewayConfigCache(platform: platform)
+                cache: CloudGatewayConfigCache(platform: platform),
+                secretStore: GatewayKeychainConfigSecretStore(
+                    accessGroup: platform.keychainAccessGroupIdentifier
+                ),
+                configSecretServiceName: platform.configSecretServiceName
             )
         )
+    }
+
+    private static func cloudGatewayKeychainAccessGroup() -> String? {
+        guard let accessGroup = Bundle.main.object(forInfoDictionaryKey: "CGKeychainAccessGroup") as? String,
+              !accessGroup.isEmpty,
+              !accessGroup.contains("$") else {
+            return "CRQWDQ7QQR.com.gocloudlaunch.gateway"
+        }
+        return accessGroup
     }
 }
 

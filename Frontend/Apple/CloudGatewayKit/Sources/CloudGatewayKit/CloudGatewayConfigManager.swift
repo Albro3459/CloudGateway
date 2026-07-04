@@ -3,6 +3,8 @@ import Foundation
 public actor CloudGatewayConfigManager {
     private let tunnelManager: CloudGatewayTunnelManaging
     private let cache: CloudGatewayConfigCaching
+    private let secretStore: CloudGatewayConfigSecretStoring
+    private let configSecretServiceName: String
     private let now: @Sendable () -> Date
 
     public private(set) var state: CloudGatewayConfigManagerState
@@ -10,17 +12,21 @@ public actor CloudGatewayConfigManager {
     public init(
         tunnelManager: CloudGatewayTunnelManaging,
         cache: CloudGatewayConfigCaching,
+        secretStore: CloudGatewayConfigSecretStoring,
+        configSecretServiceName: String = "com.gocloudlaunch.gateway.wireguard-config",
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.tunnelManager = tunnelManager
         self.cache = cache
+        self.secretStore = secretStore
+        self.configSecretServiceName = configSecretServiceName
         self.now = now
         state = CloudGatewayConfigManagerState()
     }
 
     @discardableResult
     public func loadLocalState() async throws -> CloudGatewayConfigManagerState {
-        state.installedSnapshots = try await cache.load()
+        state.installedSnapshots = try await migratedLocalSnapshots()
         return try await refreshStatus()
     }
 
@@ -38,7 +44,7 @@ public actor CloudGatewayConfigManager {
             clients: clients,
             regions: state.regions
         )
-        state.installedSnapshots = try await cache.load()
+        state.installedSnapshots = try await migratedLocalSnapshots()
         updateStaleState()
         state.lastRefreshDate = now()
         return try await refreshStatus()
@@ -68,9 +74,24 @@ public actor CloudGatewayConfigManager {
 
     @discardableResult
     public func install(_ option: CloudGatewayClientOption) async throws -> CloudGatewayConfigManagerState {
-        let snapshot = try CloudGatewayConfigSelection.snapshot(from: option, readAt: now())
-        try await tunnelManager.installTunnel(snapshot.tunnelConfiguration())
+        let oldReference = state.installedSnapshot(clientId: option.client.clientId)?.secretReference
+        let wireGuardConfig = try CloudGatewayConfigSelection.wireGuardConfig(from: option)
+        let snapshot = try CloudGatewayConfigSelection.snapshot(
+            from: option,
+            readAt: now(),
+            serviceName: configSecretServiceName
+        )
+        do {
+            try secretStore.saveConfig(wireGuardConfig, for: snapshot.secretReference)
+            try await tunnelManager.installTunnel(snapshot.tunnelConfiguration())
+        } catch {
+            try? secretStore.deleteConfig(for: snapshot.secretReference)
+            throw error
+        }
         try await cache.save(snapshot)
+        if let oldReference, oldReference != snapshot.secretReference {
+            try? secretStore.deleteConfig(for: oldReference)
+        }
         replaceInstalledSnapshot(snapshot)
         state.staleTexts[snapshot.clientId] = nil
         state.remoteInvalidInstalledConfigIds.remove(snapshot.clientId)
@@ -94,8 +115,12 @@ public actor CloudGatewayConfigManager {
 
     @discardableResult
     public func removeTunnel(identifier: String) async throws -> CloudGatewayConfigManagerState {
+        let secretReference = state.installedSnapshot(clientId: identifier)?.secretReference
         try await tunnelManager.removeTunnel(identifier: identifier)
         try await cache.clear(identifier: identifier)
+        if let secretReference {
+            try secretStore.deleteConfig(for: secretReference)
+        }
         state.installedSnapshots.removeAll { $0.clientId == identifier }
         state.tunnelStatuses[identifier] = nil
         state.staleTexts[identifier] = nil
@@ -119,6 +144,46 @@ public actor CloudGatewayConfigManager {
 
     public func installState(for option: CloudGatewayClientOption) -> CloudGatewayConfigInstallState? {
         state.installState(for: option)
+    }
+
+    private func migratedLocalSnapshots() async throws -> [CloudGatewayConfigSnapshot] {
+        try await tunnelManager.removeLegacyPlaintextTunnelConfigurations()
+        var snapshots = try await cache.load()
+        var migrated = [CloudGatewayConfigSnapshot]()
+        for snapshot in snapshots {
+            guard let legacyConfig = snapshot.legacyWireGuardConfig else {
+                migrated.append(snapshot)
+                continue
+            }
+            let wireGuardConfig = try GatewayWireGuardConfig(legacyConfig)
+            let configHash = GatewayConfigHash.make(for: wireGuardConfig)
+            let migratedSnapshot = CloudGatewayConfigSnapshot(
+                clientId: snapshot.clientId,
+                regionId: snapshot.regionId,
+                clientName: snapshot.clientName,
+                regionDisplayName: snapshot.regionDisplayName,
+                status: snapshot.status,
+                configHash: configHash,
+                secretReference: GatewayConfigSecretReference.make(
+                    clientId: snapshot.clientId,
+                    configHash: configHash,
+                    service: configSecretServiceName
+                ),
+                readAt: snapshot.readAt,
+                updatedAt: snapshot.updatedAt
+            )
+            do {
+                try secretStore.saveConfig(wireGuardConfig, for: migratedSnapshot.secretReference)
+                try await tunnelManager.installTunnel(migratedSnapshot.tunnelConfiguration())
+                try await cache.save(migratedSnapshot)
+            } catch {
+                try? secretStore.deleteConfig(for: migratedSnapshot.secretReference)
+                throw error
+            }
+            migrated.append(migratedSnapshot)
+        }
+        snapshots = migrated
+        return snapshots
     }
 
     private func updateStaleState() {

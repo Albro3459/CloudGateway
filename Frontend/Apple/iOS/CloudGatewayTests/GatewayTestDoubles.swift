@@ -22,6 +22,8 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
         statuses[tunnel.identifier] = .disconnected
     }
 
+    func removeLegacyPlaintextTunnelConfigurations() async throws {}
+
     func startTunnel(identifier: String) async throws {
         statuses[identifier] = .connected
     }
@@ -54,5 +56,24 @@ actor FakeConfigCache: CloudGatewayConfigCaching {
 
     func clear(identifier: String) async throws {
         snapshots.removeAll { $0.clientId == identifier }
+    }
+}
+
+final class FakeConfigSecretStore: CloudGatewayConfigSecretStoring, @unchecked Sendable {
+    private var configs = [GatewayConfigSecretReference: GatewayWireGuardConfig]()
+
+    func saveConfig(_ config: GatewayWireGuardConfig, for reference: GatewayConfigSecretReference) throws {
+        configs[reference] = config
+    }
+
+    func loadConfig(for reference: GatewayConfigSecretReference) throws -> GatewayWireGuardConfig {
+        guard let config = configs[reference] else {
+            throw GatewayVPNError.keychainReadFailed(-25300)
+        }
+        return config
+    }
+
+    func deleteConfig(for reference: GatewayConfigSecretReference) throws {
+        configs[reference] = nil
     }
 }

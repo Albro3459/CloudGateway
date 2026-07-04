@@ -1,15 +1,18 @@
 public struct GatewayTunnelConfiguration: Equatable, Sendable {
     public let identifier: String
     public let displayName: String
-    public let wireGuardConfig: GatewayWireGuardConfig
+    public let configHash: String
+    public let secretReference: GatewayConfigSecretReference
 
     public init(
         identifier: String = "default",
         displayName: String,
-        wireGuardConfig: GatewayWireGuardConfig
+        configHash: String,
+        secretReference: GatewayConfigSecretReference
     ) {
         self.identifier = identifier
         self.displayName = displayName
-        self.wireGuardConfig = wireGuardConfig
+        self.configHash = configHash
+        self.secretReference = secretReference
     }
 }

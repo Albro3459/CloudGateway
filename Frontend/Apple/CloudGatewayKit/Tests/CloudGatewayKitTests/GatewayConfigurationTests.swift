@@ -65,10 +65,17 @@ private func sampleConfig(
     [Peer]
     PublicKey = \(publicKey)
     """)
+    let configHash = GatewayConfigHash.make(for: wireGuardConfig)
+    let secretReference = GatewayConfigSecretReference.make(
+        clientId: "mvp0",
+        configHash: configHash,
+        service: platform.configSecretServiceName
+    )
     let tunnel = GatewayTunnelConfiguration(
         identifier: "mvp0",
         displayName: "Phone",
-        wireGuardConfig: wireGuardConfig
+        configHash: configHash,
+        secretReference: secretReference
     )
 
     let providerConfiguration = GatewayProviderConfiguration(
@@ -79,7 +86,45 @@ private func sampleConfig(
     #expect(providerConfiguration.values[GatewayProviderConfigurationKey.appBundleIdentifier] == "com.gocloudlaunch.gateway")
     #expect(providerConfiguration.values[GatewayProviderConfigurationKey.appGroupIdentifier] == "group.com.gocloudlaunch.gateway")
     #expect(providerConfiguration.values[GatewayProviderConfigurationKey.tunnelIdentifier] == "mvp0")
-    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.wireGuardConfig] == wireGuardConfig.rawValue)
+    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.configHash] == configHash)
+    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.keychainService] == platform.configSecretServiceName)
+    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.keychainAccount] == secretReference.account)
+    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.keychainAccessGroup] == nil)
+}
+
+@Test func providerConfigurationCarriesExplicitKeychainAccessGroup() throws {
+    let platform = GatewayPlatformConfiguration(
+        appGroupIdentifier: "group.com.gocloudlaunch.gateway",
+        appBundleIdentifier: "com.gocloudlaunch.gateway",
+        providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
+        tunnelDisplayName: "CloudGateway",
+        keychainAccessGroupIdentifier: "TEAMID.com.gocloudlaunch.gateway"
+    )
+    let wireGuardConfig = try GatewayWireGuardConfig("""
+    [Interface]
+    PrivateKey = \(privateKey)
+
+    [Peer]
+    PublicKey = \(publicKey)
+    """)
+    let configHash = GatewayConfigHash.make(for: wireGuardConfig)
+    let tunnel = GatewayTunnelConfiguration(
+        identifier: "mvp0",
+        displayName: "Phone",
+        configHash: configHash,
+        secretReference: GatewayConfigSecretReference.make(
+            clientId: "mvp0",
+            configHash: configHash,
+            service: platform.configSecretServiceName
+        )
+    )
+
+    let providerConfiguration = GatewayProviderConfiguration(
+        platform: platform,
+        tunnel: tunnel
+    )
+
+    #expect(providerConfiguration.values[GatewayProviderConfigurationKey.keychainAccessGroup] == "TEAMID.com.gocloudlaunch.gateway")
 }
 
 @Test func parserAcceptsCloudGatewayConfigShape() throws {

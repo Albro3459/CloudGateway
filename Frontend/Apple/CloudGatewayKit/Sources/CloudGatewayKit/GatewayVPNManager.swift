@@ -35,6 +35,23 @@ public final class GatewayVPNManager {
         try await manager.loadFromPreferences()
     }
 
+    public func removeLegacyPlaintextTunnelConfigurations() async throws {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        for manager in managers {
+            guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol,
+                  protocolConfiguration.providerBundleIdentifier == platform.providerBundleIdentifier,
+                  var providerConfiguration = protocolConfiguration.providerConfiguration,
+                  providerConfiguration[GatewayProviderConfigurationKey.legacyWireGuardConfig] != nil else {
+                continue
+            }
+            providerConfiguration[GatewayProviderConfigurationKey.legacyWireGuardConfig] = nil
+            protocolConfiguration.providerConfiguration = providerConfiguration
+            manager.protocolConfiguration = protocolConfiguration
+            try await manager.saveToPreferences()
+            try await manager.loadFromPreferences()
+        }
+    }
+
     public func removeTunnel(identifier: String) async throws {
         let manager = try await installedManager(for: identifier)
         try await manager.removeFromPreferences()

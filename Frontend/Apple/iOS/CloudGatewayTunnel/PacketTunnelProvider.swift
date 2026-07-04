@@ -50,10 +50,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func makeTunnelConfiguration() throws -> TunnelConfiguration {
         guard let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
-              let wireGuardConfig = providerConfiguration[GatewayProviderConfigurationKey.wireGuardConfig] as? String else {
-            throw GatewayVPNError.missingWireGuardConfiguration
+              let keychainService = providerConfiguration[GatewayProviderConfigurationKey.keychainService] as? String,
+              let keychainAccount = providerConfiguration[GatewayProviderConfigurationKey.keychainAccount] as? String else {
+            throw GatewayVPNError.missingConfigSecretReference
         }
 
+        let secretStore = GatewayKeychainConfigSecretStore(
+            accessGroup: providerConfiguration[GatewayProviderConfigurationKey.keychainAccessGroup] as? String
+        )
+        let secretReference = GatewayConfigSecretReference(
+            service: keychainService,
+            account: keychainAccount
+        )
+        let wireGuardConfig = try secretStore.loadConfig(for: secretReference).rawValue
         let tunnelName = protocolConfiguration.serverAddress ?? "CloudGateway"
         return try GatewayWireGuardConfigParser.parse(wireGuardConfig, named: tunnelName).wireGuardTunnelConfiguration()
     }

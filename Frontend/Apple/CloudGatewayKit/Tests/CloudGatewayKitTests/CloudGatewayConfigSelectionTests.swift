@@ -160,7 +160,7 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 }
 
 @Test func cachedSnapshotDoesNotSelectRemoteConfigAutomatically() throws {
-    let cached = CloudGatewayConfigSnapshot(
+    let cached = try CloudGatewayConfigSnapshot(
         clientId: "old-client",
         regionId: "us-sanjose-1",
         clientName: "Old",
@@ -273,7 +273,7 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 }
 
 @Test func configMatchesRequiresSameClientRegionAndConfig() throws {
-    let snapshot = CloudGatewayConfigSnapshot(
+    let snapshot = try CloudGatewayConfigSnapshot(
         clientId: "client-1",
         regionId: "us-sanjose-1",
         clientName: "Phone",

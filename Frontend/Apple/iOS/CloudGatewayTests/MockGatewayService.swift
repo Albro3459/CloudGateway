@@ -261,7 +261,7 @@ enum TestFixtures {
         _ id: String,
         regionId: String
     ) -> CloudGatewayConfigSnapshot {
-        CloudGatewayConfigSnapshot(
+        try! CloudGatewayConfigSnapshot(
             clientId: id,
             regionId: regionId,
             clientName: id,

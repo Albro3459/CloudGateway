@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import CloudGatewayKit
 
@@ -12,12 +13,13 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 
 private enum ManagerTestError: Error {
     case installFailed
+    case cacheSaveFailed
 }
 
 @Test func managerApplyRemoteStateDoesNotPreselectConfig() async throws {
     let tunnelManager = RecordingTunnelManager()
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     let state = try await manager.applyRemoteState(
         regions: [region()],
@@ -33,7 +35,7 @@ private enum ManagerTestError: Error {
 @Test func managerApplyRemoteStateKeepsRegionsAndAllOwnedClients() async throws {
     let tunnelManager = RecordingTunnelManager()
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     let state = try await manager.applyRemoteState(
         regions: [region()],
@@ -57,7 +59,7 @@ private enum ManagerTestError: Error {
 @Test func managerInstallSavesCacheAfterTunnelInstallSucceeds() async throws {
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(
+    let manager = makeManager(
         tunnelManager: tunnelManager,
         cache: cache,
         now: { Date(timeIntervalSince1970: 100) }
@@ -76,7 +78,7 @@ private enum ManagerTestError: Error {
 @Test func managerInstallsMultipleClientsAsDistinctLocalProfiles() async throws {
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     _ = try await manager.install(CloudGatewayClientOption(client: client(id: "client-1", clientName: "Phone"), region: region()))
     let state = try await manager.install(CloudGatewayClientOption(client: client(id: "client-2", clientName: "Laptop"), region: region()))
@@ -91,7 +93,7 @@ private enum ManagerTestError: Error {
 @Test func managerInstallingUpdateRewritesOnlyMatchingProfileAndCanChangeDisplayName() async throws {
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     _ = try await manager.install(CloudGatewayClientOption(client: client(id: "client-1", clientName: "Phone"), region: region()))
     _ = try await manager.install(CloudGatewayClientOption(client: client(id: "client-2", clientName: "Laptop"), region: region()))
@@ -110,7 +112,8 @@ private enum ManagerTestError: Error {
 @Test func managerDoesNotSaveCacheWhenTunnelInstallFails() async throws {
     let tunnelManager = RecordingTunnelManager(installError: ManagerTestError.installFailed)
     let cache = MemoryConfigCache()
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let secretStore = MemoryConfigSecretStore()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
     let option = CloudGatewayClientOption(client: client(id: "client-1"), region: region())
 
     await #expect(throws: ManagerTestError.installFailed) {
@@ -118,13 +121,31 @@ private enum ManagerTestError: Error {
     }
 
     #expect(await cache.savedSnapshots().isEmpty)
+    #expect(secretStore.savedReferences().count == 1)
+    #expect(secretStore.deletedReferences().count == 1)
+}
+
+@Test func managerKeepsSecretWhenCacheSaveFailsAfterTunnelInstall() async throws {
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let cache = MemoryConfigCache(saveError: ManagerTestError.cacheSaveFailed)
+    let secretStore = MemoryConfigSecretStore()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+    let option = CloudGatewayClientOption(client: client(id: "client-1"), region: region())
+
+    await #expect(throws: ManagerTestError.cacheSaveFailed) {
+        try await manager.install(option)
+    }
+
+    #expect(await tunnelManager.installedIdentifiers() == ["client-1"])
+    #expect(secretStore.savedReferences().count == 1)
+    #expect(secretStore.deletedReferences().isEmpty)
 }
 
 @Test func managerMarksMissingRemoteInstalledConfigInvalidAndBlocksStart() async throws {
     let snapshot = cachedSnapshot(clientId: "missing")
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache(snapshots: [snapshot])
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     let state = try await manager.applyRemoteState(
         regions: [region()],
@@ -139,11 +160,46 @@ private enum ManagerTestError: Error {
     #expect(await tunnelManager.startCount() == 0)
 }
 
+@Test func managerMigratesLegacyCachedConfigIntoSecretStore() async throws {
+    let legacySnapshot = legacyCachedSnapshot(clientId: "client-1")
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let cache = MemoryConfigCache(snapshots: [legacySnapshot])
+    let secretStore = MemoryConfigSecretStore()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+
+    let state = try await manager.loadLocalState()
+
+    let migratedSnapshot = try #require(state.installedSnapshot(clientId: "client-1"))
+    let expectedConfig = try GatewayWireGuardConfig(managerConfig)
+    #expect(migratedSnapshot.legacyWireGuardConfig == nil)
+    #expect(migratedSnapshot.configHash == GatewayConfigHash.make(for: expectedConfig))
+    #expect(secretStore.savedReferences() == [migratedSnapshot.secretReference])
+    #expect(try secretStore.loadConfig(for: migratedSnapshot.secretReference).rawValue == managerConfig)
+    #expect(await tunnelManager.installedIdentifiers() == ["client-1"])
+    #expect(await cache.savedSnapshots().map(\.secretReference) == [migratedSnapshot.secretReference])
+    #expect(await cache.savedSnapshots().allSatisfy { $0.legacyWireGuardConfig == nil })
+}
+
+@Test func managerScrubsProviderOnlyLegacyPlaintextConfig() async throws {
+    let tunnelManager = RecordingTunnelManager(
+        status: .disconnected,
+        legacyPlaintextTunnelIdentifiers: ["client-1"]
+    )
+    let cache = MemoryConfigCache()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
+
+    let state = try await manager.loadLocalState()
+
+    #expect(state.installedSnapshots.isEmpty)
+    #expect(await tunnelManager.legacyPlaintextTunnelIdentifiers().isEmpty)
+    #expect(await tunnelManager.legacyPlaintextScrubCount() == 1)
+}
+
 @Test func managerShowsUpdateAvailableForChangedRemoteConfig() async throws {
     let snapshot = cachedSnapshot(clientId: "client-1")
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache(snapshots: [snapshot])
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
 
     let state = try await manager.applyRemoteState(
         regions: [region()],
@@ -161,7 +217,7 @@ private enum ManagerTestError: Error {
         cachedSnapshot(clientId: "client-1"),
         cachedSnapshot(clientId: "client-2"),
     ])
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
     _ = try await manager.loadLocalState()
 
     var state = try await manager.removeInstalledConfigIfMatches(
@@ -189,7 +245,7 @@ private enum ManagerTestError: Error {
         cachedSnapshot(clientId: "client-1"),
         cachedSnapshot(clientId: "client-2"),
     ])
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
     _ = try await manager.loadLocalState()
 
     let state = try await manager.removeTunnel(identifier: "client-1")
@@ -208,7 +264,7 @@ private enum ManagerTestError: Error {
         cachedSnapshot(clientId: "client-1"),
         cachedSnapshot(clientId: "client-2"),
     ])
-    let manager = CloudGatewayConfigManager(tunnelManager: tunnelManager, cache: cache)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
     _ = try await manager.loadLocalState()
 
     var state = try await manager.startTunnel(identifier: "client-2")
@@ -246,7 +302,7 @@ private func client(
 }
 
 private func cachedSnapshot(clientId: String) -> CloudGatewayConfigSnapshot {
-    CloudGatewayConfigSnapshot(
+    try! CloudGatewayConfigSnapshot(
         clientId: clientId,
         regionId: "us-sanjose-1",
         clientName: "Phone",
@@ -258,10 +314,44 @@ private func cachedSnapshot(clientId: String) -> CloudGatewayConfigSnapshot {
     )
 }
 
+private func legacyCachedSnapshot(clientId: String) -> CloudGatewayConfigSnapshot {
+    CloudGatewayConfigSnapshot(
+        clientId: clientId,
+        regionId: "us-sanjose-1",
+        clientName: "Phone",
+        regionDisplayName: "San Jose",
+        status: .active,
+        configHash: "legacy-placeholder",
+        secretReference: GatewayConfigSecretReference(
+            service: "legacy-service",
+            account: "legacy-account"
+        ),
+        legacyWireGuardConfig: managerConfig,
+        readAt: Date(timeIntervalSince1970: 25),
+        updatedAt: Date(timeIntervalSince1970: 50)
+    )
+}
+
+private func makeManager(
+    tunnelManager: RecordingTunnelManager,
+    cache: MemoryConfigCache,
+    secretStore: MemoryConfigSecretStore = MemoryConfigSecretStore(),
+    now: @escaping @Sendable () -> Date = Date.init
+) -> CloudGatewayConfigManager {
+    CloudGatewayConfigManager(
+        tunnelManager: tunnelManager,
+        cache: cache,
+        secretStore: secretStore,
+        now: now
+    )
+}
+
 private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
     private var status: GatewayTunnelStatus?
     private let installError: (any Error)?
     private var installedTunnels = [String: GatewayTunnelConfiguration]()
+    private var legacyPlaintextTunnels: Set<String>
+    private var legacyPlaintextScrubs = 0
     private var statuses = [String: GatewayTunnelStatus]()
     private var starts = [String]()
     private var stops = [String]()
@@ -269,10 +359,12 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
 
     init(
         status: GatewayTunnelStatus? = nil,
-        installError: (any Error)? = nil
+        installError: (any Error)? = nil,
+        legacyPlaintextTunnelIdentifiers: Set<String> = []
     ) {
         self.status = status
         self.installError = installError
+        self.legacyPlaintextTunnels = legacyPlaintextTunnelIdentifiers
     }
 
     func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
@@ -288,6 +380,12 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
         }
         installedTunnels[tunnel.identifier] = tunnel
         statuses[tunnel.identifier] = .disconnected
+        legacyPlaintextTunnels.remove(tunnel.identifier)
+    }
+
+    func removeLegacyPlaintextTunnelConfigurations() async throws {
+        legacyPlaintextScrubs += legacyPlaintextTunnels.count
+        legacyPlaintextTunnels.removeAll()
     }
 
     func startTunnel(identifier: String) async throws {
@@ -312,6 +410,14 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
 
     func installedDisplayNames() -> [String] {
         installedTunnels.values.sorted { $0.identifier < $1.identifier }.map(\.displayName)
+    }
+
+    func legacyPlaintextTunnelIdentifiers() -> [String] {
+        legacyPlaintextTunnels.sorted()
+    }
+
+    func legacyPlaintextScrubCount() -> Int {
+        legacyPlaintextScrubs
     }
 
     func startCount() -> Int {
@@ -339,9 +445,14 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
     private var snapshots: [CloudGatewayConfigSnapshot]
     private var saved = [CloudGatewayConfigSnapshot]()
     private var clears = 0
+    private let saveError: (any Error)?
 
-    init(snapshots: [CloudGatewayConfigSnapshot] = []) {
+    init(
+        snapshots: [CloudGatewayConfigSnapshot] = [],
+        saveError: (any Error)? = nil
+    ) {
         self.snapshots = snapshots
+        self.saveError = saveError
     }
 
     func load() async throws -> [CloudGatewayConfigSnapshot] {
@@ -349,6 +460,9 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
     }
 
     func save(_ snapshot: CloudGatewayConfigSnapshot) async throws {
+        if let saveError {
+            throw saveError
+        }
         snapshots.removeAll { $0.clientId == snapshot.clientId }
         snapshots.append(snapshot)
         saved.append(snapshot)
@@ -365,5 +479,36 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
 
     func clearCount() -> Int {
         clears
+    }
+}
+
+private final class MemoryConfigSecretStore: CloudGatewayConfigSecretStoring, @unchecked Sendable {
+    private var configs = [GatewayConfigSecretReference: GatewayWireGuardConfig]()
+    private var saved = [GatewayConfigSecretReference]()
+    private var deleted = [GatewayConfigSecretReference]()
+
+    func saveConfig(_ config: GatewayWireGuardConfig, for reference: GatewayConfigSecretReference) throws {
+        configs[reference] = config
+        saved.append(reference)
+    }
+
+    func loadConfig(for reference: GatewayConfigSecretReference) throws -> GatewayWireGuardConfig {
+        guard let config = configs[reference] else {
+            throw GatewayVPNError.keychainReadFailed(errSecItemNotFound)
+        }
+        return config
+    }
+
+    func deleteConfig(for reference: GatewayConfigSecretReference) throws {
+        configs[reference] = nil
+        deleted.append(reference)
+    }
+
+    func savedReferences() -> [GatewayConfigSecretReference] {
+        saved
+    }
+
+    func deletedReferences() -> [GatewayConfigSecretReference] {
+        deleted
     }
 }

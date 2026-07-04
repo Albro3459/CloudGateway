@@ -8,7 +8,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: FakeTunnelManager(),
-                cache: FakeConfigCache()
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
             )
         )
     }
@@ -22,7 +23,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: FakeTunnelManager(status: tunnelStatus),
-                cache: FakeConfigCache(snapshots: installedSnapshots)
+                cache: FakeConfigCache(snapshots: installedSnapshots),
+                secretStore: FakeConfigSecretStore()
             )
         )
     }

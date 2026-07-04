@@ -9,7 +9,7 @@ Goal: make the full WireGuard config, including the private key and optional pre
 Use a shared Keychain access group for the iOS app and packet tunnel extension. Store each full WireGuard config as a generic password item with:
 
 * `kSecClassGenericPassword`
-* `kSecAttrAccessGroup`: shared CloudGateway Keychain access group, present in both app and tunnel extension entitlements
+* `kSecAttrAccessGroup`: explicitly set to the shared CloudGateway Keychain access group resolved from an app build setting that mirrors the signed `keychain-access-groups` entitlement, with a current-team fallback instead of a nil/default-access-group fallback, then copied into provider configuration for the packet tunnel
 * `kSecAttrAccessible`: `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
 * `kSecAttrSynchronizable`: omitted/false
 * `kSecAttrService`: a CloudGateway-specific service name, for example `com.gocloudlaunch.gateway.wireguard-config`
@@ -78,6 +78,7 @@ Allowed in app-group cache and provider preferences:
 * tunnel identifier/client ID
 * Keychain service name
 * Keychain account/reference
+* Keychain access group
 * config hash/version marker
 
 ## Implementation Notes
@@ -138,6 +139,7 @@ Migration path:
 3. Write a new metadata-only snapshot with `configHash` and `secretReference`.
 4. Re-save the matching `NETunnelProviderManager` with metadata-only provider configuration.
 5. Rewrite `installed-configs.json` without raw config values.
+6. Also enumerate CloudGateway `NETunnelProviderManager` preferences and remove any legacy `wireGuardConfig` provider-configuration value even when there is no matching app-group cache entry to migrate.
 
 Keep the migration idempotent. If a Keychain item already exists and matches the hash, treat it as success.
 
@@ -165,6 +167,8 @@ Add Keychain Sharing to:
 
 Use one Team ID-prefixed access group value for the app/extension pair. Keep the existing App Group entitlement for shared nonsecret metadata and any other file coordination.
 
+Keep the shared Keychain access group value explicit in production wiring. The app should resolve the build-expanded access group string, pass it into `CloudGatewayKit`, and copy it into provider configuration so the packet tunnel extension opens the exact same Keychain item. Do not rely on default access-group ordering.
+
 ## Validation
 
 Docs-only changes need manual review. Implementation should be validated with:
@@ -178,4 +182,3 @@ Docs-only changes need manual review. Implementation should be validated with:
   * lock device, lose/restore network
   * Airplane Mode on/off
   * reboot, try VPN before first unlock if possible, then unlock and retry
-
