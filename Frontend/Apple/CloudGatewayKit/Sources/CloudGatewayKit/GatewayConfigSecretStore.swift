@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 import Security
 
+public enum GatewayConfigSecretDefaults {
+    public static let serviceName = "com.gocloudlaunch.gateway.wireguard-config"
+}
+
 public struct GatewayConfigSecretReference: Codable, Equatable, Hashable, Sendable {
     public let service: String
     public let account: String

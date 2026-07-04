@@ -141,7 +141,6 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
     public let status: CloudGatewayClientStatus
     public let configHash: String
     public let secretReference: GatewayConfigSecretReference
-    public let legacyWireGuardConfig: String?
     public let readAt: Date
     public let updatedAt: Date?
 
@@ -153,7 +152,6 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         status: CloudGatewayClientStatus,
         configHash: String,
         secretReference: GatewayConfigSecretReference,
-        legacyWireGuardConfig: String? = nil,
         readAt: Date,
         updatedAt: Date?
     ) {
@@ -164,7 +162,6 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         self.status = status
         self.configHash = configHash
         self.secretReference = secretReference
-        self.legacyWireGuardConfig = legacyWireGuardConfig
         self.readAt = readAt
         self.updatedAt = updatedAt
     }
@@ -178,7 +175,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         wireGuardConfig: String,
         readAt: Date,
         updatedAt: Date?,
-        serviceName: String = "com.gocloudlaunch.gateway.wireguard-config"
+        serviceName: String = GatewayConfigSecretDefaults.serviceName
     ) throws {
         let config = try GatewayWireGuardConfig(wireGuardConfig)
         let configHash = GatewayConfigHash.make(for: config)
@@ -214,61 +211,6 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
             configHash: configHash,
             secretReference: secretReference
         )
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case clientId
-        case regionId
-        case clientName
-        case regionDisplayName
-        case status
-        case configHash
-        case secretReference
-        case wireGuardConfig
-        case readAt
-        case updatedAt
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        clientId = try container.decode(String.self, forKey: .clientId)
-        regionId = try container.decode(String.self, forKey: .regionId)
-        clientName = try container.decodeIfPresent(String.self, forKey: .clientName)
-        regionDisplayName = try container.decode(String.self, forKey: .regionDisplayName)
-        status = try container.decode(CloudGatewayClientStatus.self, forKey: .status)
-        readAt = try container.decode(Date.self, forKey: .readAt)
-        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
-        legacyWireGuardConfig = try container.decodeIfPresent(String.self, forKey: .wireGuardConfig)
-
-        if let configHash = try container.decodeIfPresent(String.self, forKey: .configHash),
-           let secretReference = try container.decodeIfPresent(GatewayConfigSecretReference.self, forKey: .secretReference) {
-            self.configHash = configHash
-            self.secretReference = secretReference
-        } else if let legacyWireGuardConfig {
-            let config = try GatewayWireGuardConfig(legacyWireGuardConfig)
-            let configHash = GatewayConfigHash.make(for: config)
-            self.configHash = configHash
-            self.secretReference = GatewayConfigSecretReference.make(
-                clientId: clientId,
-                configHash: configHash,
-                service: "com.gocloudlaunch.gateway.wireguard-config"
-            )
-        } else {
-            throw GatewayVPNError.missingConfigSecretReference
-        }
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(clientId, forKey: .clientId)
-        try container.encode(regionId, forKey: .regionId)
-        try container.encodeIfPresent(clientName, forKey: .clientName)
-        try container.encode(regionDisplayName, forKey: .regionDisplayName)
-        try container.encode(status, forKey: .status)
-        try container.encode(configHash, forKey: .configHash)
-        try container.encode(secretReference, forKey: .secretReference)
-        try container.encode(readAt, forKey: .readAt)
-        try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
     }
 }
 
@@ -399,7 +341,7 @@ public enum CloudGatewayConfigSelection {
     public static func snapshot(
         from option: CloudGatewayClientOption,
         readAt: Date = Date(),
-        serviceName: String = "com.gocloudlaunch.gateway.wireguard-config"
+        serviceName: String = GatewayConfigSecretDefaults.serviceName
     ) throws -> CloudGatewayConfigSnapshot {
         let wireGuardConfig = try wireGuardConfig(from: option)
         let configHash = GatewayConfigHash.make(for: wireGuardConfig)

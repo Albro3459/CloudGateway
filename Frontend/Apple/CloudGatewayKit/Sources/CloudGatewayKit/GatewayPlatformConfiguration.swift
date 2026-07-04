@@ -12,7 +12,7 @@ public struct GatewayPlatformConfiguration: Equatable, Sendable {
         providerBundleIdentifier: String,
         tunnelDisplayName: String,
         keychainAccessGroupIdentifier: String? = nil,
-        configSecretServiceName: String = "com.gocloudlaunch.gateway.wireguard-config"
+        configSecretServiceName: String = GatewayConfigSecretDefaults.serviceName
     ) {
         self.appGroupIdentifier = appGroupIdentifier
         self.appBundleIdentifier = appBundleIdentifier

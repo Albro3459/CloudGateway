@@ -130,20 +130,11 @@ If Keychain read fails because the device is before first unlock, return a clear
 
 ## Migration
 
-Existing installs may have raw configs in both `installed-configs.json` and provider preferences.
+None. The MVP ships as a hard cutoff with no support for pre-Keychain installs.
 
-Migration path:
+There is no migration of legacy `wireGuardConfig` values out of `installed-configs.json` or provider preferences, and no scrubbing of plaintext from existing `NETunnelProviderManager` preferences. Any tunnel installed by a pre-cutoff build is unsupported: the packet tunnel reads only the Keychain reference, so such a tunnel fails to start with `missingConfigSecretReference` until the user reinstalls the config from remote state.
 
-1. On app launch/local-state load, read existing snapshots.
-2. For each snapshot with `wireGuardConfig`, validate and store it in Keychain.
-3. Write a new metadata-only snapshot with `configHash` and `secretReference`.
-4. Re-save the matching `NETunnelProviderManager` with metadata-only provider configuration.
-5. Rewrite `installed-configs.json` without raw config values.
-6. Also enumerate CloudGateway `NETunnelProviderManager` preferences and remove any legacy `wireGuardConfig` provider-configuration value even when there is no matching app-group cache entry to migrate.
-
-Keep the migration idempotent. If a Keychain item already exists and matches the hash, treat it as success.
-
-If migration cannot read or validate the old config, mark that installed config as needing reinstall from remote state rather than preserving plaintext fallback behavior.
+Because the rollout is a complete rollout (delete-and-reinstall), a fresh install has no old app-group cache, no orphaned Keychain item, and no stale plaintext provider config, so no compatibility code is needed.
 
 ## macOS Forward Compatibility
 

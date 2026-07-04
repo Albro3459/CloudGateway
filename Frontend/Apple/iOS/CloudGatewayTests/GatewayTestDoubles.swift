@@ -22,8 +22,6 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
         statuses[tunnel.identifier] = .disconnected
     }
 
-    func removeLegacyPlaintextTunnelConfigurations() async throws {}
-
     func startTunnel(identifier: String) async throws {
         statuses[identifier] = .connected
     }

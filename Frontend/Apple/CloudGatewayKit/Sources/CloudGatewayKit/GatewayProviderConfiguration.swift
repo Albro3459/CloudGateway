@@ -6,7 +6,6 @@ public enum GatewayProviderConfigurationKey {
     public static let keychainService = "keychainService"
     public static let keychainAccount = "keychainAccount"
     public static let keychainAccessGroup = "keychainAccessGroup"
-    public static let legacyWireGuardConfig = "wireGuardConfig"
 }
 
 public struct GatewayProviderConfiguration: Equatable, Sendable {
