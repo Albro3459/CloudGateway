@@ -70,7 +70,6 @@ final class CloudGatewayViewModel: ObservableObject {
     private let configManager: CloudGatewayConfigManager
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
-    private var isSigningOut = false
 
     var isSignedIn: Bool {
         appMode == .signedIn
@@ -252,8 +251,6 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     func signOut() async {
-        isSigningOut = true
-        defer { isSigningOut = false }
         await run {
             try service.signOut()
             try await loadGuestState()
@@ -441,11 +438,14 @@ final class CloudGatewayViewModel: ObservableObject {
     // the switch prompt only offers to "turn off" a VPN that is really on - not one
     // that is merely mid-connect.
     var activeTunnelClient: CloudGatewayClientOption? {
+        // Mirror toggleIsOn's "on" set so a client that is still connecting is
+        // treated as the active tunnel to switch away from, not left running
+        // alongside a newly started one on this single-tunnel provider.
         clientOptions.first { option in
             switch configState.tunnelStatus(for: option.client.clientId) {
-            case .connected, .reasserting:
+            case .connected, .connecting, .reasserting:
                 return true
-            case .connecting, .disconnecting, .disconnected, .invalid, nil:
+            case .disconnecting, .disconnected, .invalid, nil:
                 return false
             }
         }
@@ -577,13 +577,17 @@ final class CloudGatewayViewModel: ObservableObject {
             if !isWorking && configOptions.isEmpty {
                 await refresh()
             }
+        } else if appMode == .guest {
+            // A sign-out path (manual sign-out or a forced sign-out after a
+            // failed load) already dropped us to guest and loaded guest state,
+            // so this listener callback is redundant. appMode flips to .guest
+            // synchronously at the start of every guest load, so this also
+            // covers the callback that fires while that load is still in flight.
         } else if isWorking {
-            // Session ended mid-operation: drop to guest but keep regions loaded
-            // so the guest dashboard isn't left empty until a manual refresh.
-            // signOut() already drives this transition, so skip the redundant load.
-            if !isSigningOut {
-                try? await loadGuestState()
-            }
+            // Session ended mid-operation from outside our sign-out paths: drop
+            // to guest directly (not via refresh) so we don't nest another
+            // working run while one is already active.
+            try? await loadGuestState()
         } else {
             await refresh()
         }
@@ -631,13 +635,13 @@ final class CloudGatewayViewModel: ObservableObject {
         } catch let loadError as CloudGatewayAppError {
             if signOutOnAnyFailure || shouldSignOut(after: loadError) {
                 try? service.signOut()
-                clearRemoteState()
+                await dropToGuest()
             }
             throw loadError
         } catch {
             if signOutOnAnyFailure {
                 try? service.signOut()
-                clearRemoteState()
+                await dropToGuest()
             }
             throw error
         }
@@ -668,6 +672,15 @@ final class CloudGatewayViewModel: ObservableObject {
         selectedRegionId = nil
         selectedClientId = nil
         newClientName = ""
+    }
+
+    // Drop to guest and populate it directly rather than depending on the
+    // auth-state listener firing. clearRemoteState (inside loadGuestState) flips
+    // appMode to .guest synchronously and the region fetch fills the guest
+    // dashboard, so it isn't left empty after a forced sign-out. Any failure here
+    // is secondary to the sign-out error the caller is already surfacing.
+    private func dropToGuest() async {
+        try? await loadGuestState()
     }
 
     private func loadGuestState() async throws {

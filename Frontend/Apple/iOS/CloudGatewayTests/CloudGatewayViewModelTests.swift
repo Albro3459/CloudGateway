@@ -284,6 +284,10 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.signOutCallCount, 1)
         XCTAssertFalse(viewModel.isSignedIn)
         XCTAssertNotNil(viewModel.errorText)
+        // The forced sign-out populates guest state directly (the auth listener is
+        // not relied on), so the guest dashboard is not left empty.
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
     }
 
     func testRefreshKeepsSessionOnTransientAPIError() async {
@@ -352,6 +356,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.appMode, .guest)
         XCTAssertFalse(viewModel.isSignedIn)
         XCTAssertNotNil(viewModel.errorText)
+        // Guest state is populated by the forced sign-out itself, not by a later
+        // auth-state callback, so the dashboard shows regions immediately.
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
     }
 
     func testGoogleSignInSwallowsCancellation() async {
@@ -489,6 +496,23 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.startDisabled)
         XCTAssertFalse(viewModel.removeTunnelDisabled)
         XCTAssertNotNil(viewModel.staleText)
+    }
+
+    func testConnectingClientCountsAsActiveTunnel() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connecting
+        )
+
+        await viewModel.refresh()
+
+        // A still-connecting client must be treated as the active tunnel so that
+        // switching to another client stops it first on this single-tunnel provider.
+        XCTAssertEqual(viewModel.activeTunnelClient?.client.clientId, "c1")
     }
 
     // MARK: - Create flow

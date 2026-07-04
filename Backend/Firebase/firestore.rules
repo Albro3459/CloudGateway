@@ -12,7 +12,7 @@ service cloud.firestore {
       return isAuth()
         && exists(/databases/$(database)/documents/UserRoles/$(request.auth.uid))
         && exists(/databases/$(database)/documents/Users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.disabled != true;
+        && get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.get('disabled', false) != true;
     }
 
     function isAdmin() {

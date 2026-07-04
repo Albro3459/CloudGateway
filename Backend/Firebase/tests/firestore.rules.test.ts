@@ -39,15 +39,20 @@ beforeAll(async () => {
     await setDoc(doc(db, "UserRoles/user1"), { roleId: "user" });
     await setDoc(doc(db, "UserRoles/admin1"), { roleId: "admin" });
     await setDoc(doc(db, "UserRoles/disabled1"), { roleId: "user" });
+    await setDoc(doc(db, "UserRoles/nofield1"), { roleId: "user" });
     await setDoc(doc(db, "Users/user1"), { email: "user1@example.com", disabled: false });
     await setDoc(doc(db, "Users/admin1"), { email: "admin1@example.com", disabled: false });
     await setDoc(doc(db, "Users/disabled1"), { email: "disabled1@example.com", disabled: true });
+    // A provisioned user whose Users doc predates the disabled field: absent must
+    // read as "not disabled" so isUser() stays true.
+    await setDoc(doc(db, "Users/nofield1"), { email: "nofield1@example.com" });
     await setDoc(doc(db, "Roles/admin"), { label: "Admin" });
     await setDoc(doc(db, "Regions/us-1"), { enabled: true, displayName: "US 1", displayOrder: 1 });
     await setDoc(doc(db, "Regions/us-off"), { enabled: false, displayName: "Off", displayOrder: 2 });
     await setDoc(doc(db, "Regions/us-1/Instances/inst1"), { ownerUid: "user1" });
     await setDoc(doc(db, "Regions/us-1/Instances/inst2"), { ownerUid: "other" });
     await setDoc(doc(db, "Regions/us-1/Instances/disabled-inst"), { ownerUid: "disabled1" });
+    await setDoc(doc(db, "Regions/us-1/Instances/nofield-inst"), { ownerUid: "nofield1" });
   });
 });
 
@@ -93,6 +98,16 @@ describe("reads stay allowed for the clients that use them", () => {
     await assertSucceeds(getDocs(collection(authed("admin1"), "Regions")));
     await assertFails(getDoc(doc(unauthed(), "Regions/us-1")));
     await assertFails(getDoc(doc(authed("nouser"), "Regions/us-1")));
+  });
+
+  it("provisioned users with no disabled field are treated as enabled", async () => {
+    await assertSucceeds(getDoc(doc(authed("nofield1"), "UserRoles/nofield1")));
+    await assertSucceeds(getDoc(doc(authed("nofield1"), "Users/nofield1")));
+    await assertSucceeds(getDoc(doc(authed("nofield1"), "Regions/us-1")));
+    await assertSucceeds(getDoc(doc(authed("nofield1"), "Regions/us-1/Instances/nofield-inst")));
+    await assertSucceeds(
+      getDocs(query(collectionGroup(authed("nofield1"), "Instances"), where("ownerUid", "==", "nofield1"))),
+    );
   });
 
   it("disabled provisioned users cannot read user-scoped data", async () => {
