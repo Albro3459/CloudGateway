@@ -1,6 +1,5 @@
 import AuthenticationServices
 import CloudGatewayKit
-import GoogleSignInSwift
 import SwiftUI
 import UIKit
 
@@ -303,12 +302,11 @@ struct ContentView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                                 .disabled(viewModel.isWorking)
 
-                                GoogleSignInButton {
+                                CustomGoogleSignInButton {
                                     Task {
                                         await viewModel.signInWithGoogle()
                                     }
                                 }
-                                .frame(height: 44)
                                 .disabled(viewModel.isWorking)
 
                                 Button {
@@ -1260,6 +1258,46 @@ private struct StatusBadge: View {
         case .removed:
             theme.neutralStrong
         }
+    }
+}
+
+private struct CustomGoogleSignInButton: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text("G")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
+
+                Text("Continue with Google")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isEnabled ? theme.content : theme.contentDisabled)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(WebGoogleButtonStyle())
+        .accessibilityLabel("Sign in with Google")
+    }
+}
+
+private struct WebGoogleButtonStyle: ButtonStyle {
+    @Environment(\.cloudGatewayTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(isEnabled ? (configuration.isPressed ? theme.insetStrong : theme.inset) : theme.disabled)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(theme.edge, lineWidth: 1)
+            }
     }
 }
 
