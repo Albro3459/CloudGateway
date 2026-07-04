@@ -27,10 +27,18 @@ public final class GatewayVPNManager {
     }
 
     public func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
-        let manager = try await installedManagerOrNew(for: tunnel.identifier)
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        let manager = managers.first { matches($0, identifier: tunnel.identifier) } ?? NETunnelProviderManager()
         manager.localizedDescription = tunnel.displayName
         manager.protocolConfiguration = makeProtocolConfiguration(for: tunnel)
-        manager.isEnabled = true
+        let activeTunnelIdentifiers = Set(managers.compactMap { other -> String? in
+            guard isActive(other.connection.status) else { return nil }
+            return tunnelIdentifier(of: other)
+        })
+        manager.isEnabled = GatewayInstallEnablePolicy.shouldEnableOnInstall(
+            installing: tunnel.identifier,
+            activeTunnelIdentifiers: activeTunnelIdentifiers
+        )
         try await manager.saveToPreferences()
         try await manager.loadFromPreferences()
     }
@@ -63,23 +71,35 @@ public final class GatewayVPNManager {
 
     public func installedManager(for identifier: String) async throws -> NETunnelProviderManager {
         let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-        guard let manager = managers.first(where: { manager in
-            guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol else {
-                return false
-            }
-            return protocolConfiguration.providerBundleIdentifier == platform.providerBundleIdentifier
-                && protocolConfiguration.providerConfiguration?[GatewayProviderConfigurationKey.tunnelIdentifier] as? String == identifier
-        }) else {
+        guard let manager = managers.first(where: { matches($0, identifier: identifier) }) else {
             throw GatewayVPNError.missingInstalledTunnel
         }
         return manager
     }
 
-    private func installedManagerOrNew(for identifier: String) async throws -> NETunnelProviderManager {
-        do {
-            return try await installedManager(for: identifier)
-        } catch GatewayVPNError.missingInstalledTunnel {
-            return NETunnelProviderManager()
+    private func matches(_ manager: NETunnelProviderManager, identifier: String) -> Bool {
+        guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol,
+              protocolConfiguration.providerBundleIdentifier == platform.providerBundleIdentifier else {
+            return false
+        }
+        return tunnelIdentifier(of: manager) == identifier
+    }
+
+    private func tunnelIdentifier(of manager: NETunnelProviderManager) -> String? {
+        guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+            return nil
+        }
+        return protocolConfiguration.providerConfiguration?[GatewayProviderConfigurationKey.tunnelIdentifier] as? String
+    }
+
+    private func isActive(_ status: NEVPNStatus) -> Bool {
+        switch status {
+        case .connecting, .connected, .reasserting:
+            return true
+        case .disconnecting, .disconnected, .invalid:
+            return false
+        @unknown default:
+            return false
         }
     }
 }
