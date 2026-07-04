@@ -791,13 +791,13 @@ private extension GatewayTunnelStatus {
         case .disconnected:
             "Disconnected"
         case .connecting:
-            "Connecting"
+            "Connected"
         case .connected:
             "Connected"
         case .reasserting:
             "Reasserting"
         case .disconnecting:
-            "Disconnecting"
+            "Disconnected"
         }
     }
 }
