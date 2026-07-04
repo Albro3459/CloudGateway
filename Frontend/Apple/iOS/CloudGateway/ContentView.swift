@@ -2,6 +2,7 @@ import AuthenticationServices
 import CloudGatewayKit
 import GoogleSignInSwift
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @StateObject private var viewModel = CloudGatewayViewModel()
@@ -819,6 +820,7 @@ private struct EmailContactView: View {
 private struct ClientDetailsView: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let option: CloudGatewayClientOption
+    @State private var didCopy = false
 
     var body: some View {
         ZStack {
@@ -826,17 +828,30 @@ private struct ClientDetailsView: View {
 
             ThemedPanel {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(option.client.displayName)
-                        .font(.title2.bold())
-                        .foregroundStyle(theme.content)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(option.client.displayName)
+                            .font(.title2.bold())
+                            .foregroundStyle(theme.content)
+
+                        Spacer()
+
+                        Button(action: copyAllDetails) {
+                            Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                        }
+                        .buttonStyle(IconSecondaryButtonStyle())
+                        .accessibilityLabel("Copy details")
+                    }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        DetailLine(label: "VPN id", value: option.client.clientId)
-                        DetailLine(label: "Region id", value: option.client.regionId)
-                        DetailLine(label: "Connection URL", value: endpoint)
-                        DetailLine(label: "Owner email", value: option.client.ownerEmail ?? "Unknown")
+                        DetailLine(label: "VPN id", value: option.client.clientId, selectable: false)
+                        DetailLine(label: "Region id", value: option.client.regionId, selectable: false)
+                        DetailLine(label: "Connection URL", value: endpoint, selectable: false)
+                        DetailLine(label: "Owner email", value: option.client.ownerEmail ?? "Unknown", selectable: false)
                     }
                 }
+                // Hold anywhere on the card to copy every detail at once.
+                .contentShape(Rectangle())
+                .onLongPressGesture { copyAllDetails() }
             }
             .padding(16)
         }
@@ -850,6 +865,27 @@ private struct ClientDetailsView: View {
             return "Unavailable"
         }
         return endpoint
+    }
+
+    private var detailsText: String {
+        """
+        \(option.client.displayName)
+
+        VPN id: \(option.client.clientId)
+        Region id: \(option.client.regionId)
+        Connection URL: \(endpoint)
+        Owner email: \(option.client.ownerEmail ?? "Unknown")
+        """
+    }
+
+    private func copyAllDetails() {
+        UIPasteboard.general.string = detailsText
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation { didCopy = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation { didCopy = false }
+        }
     }
 }
 
@@ -1271,6 +1307,7 @@ private struct DetailLine: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let label: String
     let value: String
+    var selectable: Bool = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -1278,11 +1315,20 @@ private struct DetailLine: View {
                 .font(.caption)
                 .foregroundStyle(theme.contentFaint)
             Spacer()
-            Text(value)
-                .font(.subheadline)
-                .foregroundStyle(theme.contentSecondary)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
+            valueText
+        }
+    }
+
+    @ViewBuilder
+    private var valueText: some View {
+        let text = Text(value)
+            .font(.subheadline)
+            .foregroundStyle(theme.contentSecondary)
+            .multilineTextAlignment(.trailing)
+        if selectable {
+            text.textSelection(.enabled)
+        } else {
+            text.textSelection(.disabled)
         }
     }
 }
