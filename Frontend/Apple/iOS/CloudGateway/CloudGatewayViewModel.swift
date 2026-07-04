@@ -314,7 +314,6 @@ final class CloudGatewayViewModel: ObservableObject {
             )
             syncResult = result
             try await loadRemoteState(for: user)
-            successText = "Synced \(response.regionId)."
         }
     }
 
