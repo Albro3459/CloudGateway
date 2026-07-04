@@ -1136,7 +1136,6 @@ private struct ClientRow: View {
                 }
             }
             .buttonStyle(.plain)
-            .simultaneousGesture(LongPressGesture().onEnded { _ in onDetails() })
 
             HStack(spacing: 10) {
                 if isInstalled {
@@ -1205,6 +1204,10 @@ private struct ClientRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(isSelected ? theme.primarySoftEdge : theme.edgeFaint, lineWidth: 1)
         }
+        // Hold anywhere on the card - including empty background - to open
+        // details. simultaneousGesture keeps the toggle and buttons tappable.
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .simultaneousGesture(LongPressGesture().onEnded { _ in onDetails() })
     }
 }
 
