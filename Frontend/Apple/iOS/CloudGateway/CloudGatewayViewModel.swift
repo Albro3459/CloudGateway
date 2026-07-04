@@ -413,12 +413,6 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func sync(_ option: CloudGatewayClientOption) async {
-        await run {
-            _ = try await pullFreshAndInstall(option)
-        }
-    }
-
     // Install button for a not-yet-installed client: pull the latest config from
     // Firebase, then install, so a stale cached config is never installed.
     func installFromCloud(_ option: CloudGatewayClientOption) async {
@@ -517,10 +511,6 @@ final class CloudGatewayViewModel: ObservableObject {
         configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
 
-    func tunnelStatus(for option: CloudGatewayClientOption) -> GatewayTunnelStatus? {
-        configState.tunnelStatus(for: option.client.clientId)
-    }
-
     func staleText(for option: CloudGatewayClientOption) -> String? {
         configState.staleText(for: option.client.clientId)
     }
@@ -549,7 +539,7 @@ final class CloudGatewayViewModel: ObservableObject {
         installStateLabel(for: option) == nil ? "Install" : "Install Update"
     }
 
-    func syncDisabled(for option: CloudGatewayClientOption) -> Bool {
+    func installDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || !option.client.hasUsableConfig
     }
 

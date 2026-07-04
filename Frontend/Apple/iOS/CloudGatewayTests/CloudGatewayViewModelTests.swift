@@ -514,7 +514,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.successText, "Laptop was created.")
     }
 
-    func testSyncClientReloadsRemoteStateBeforeInstall() async {
+    func testInstallFromCloudReloadsRemoteStateBeforeInstall() async {
         let service = signedInService()
         service.enabledRegions = [
             TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))
@@ -540,7 +540,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
             )
         ]
 
-        await viewModel.sync(staleOption)
+        await viewModel.installFromCloud(staleOption)
 
         XCTAssertEqual(service.fetchOwnedClientsCallCount, 2)
         XCTAssertEqual(viewModel.installedSnapshots.first?.clientName, "Renamed phone")

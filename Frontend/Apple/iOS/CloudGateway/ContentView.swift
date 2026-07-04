@@ -551,14 +551,12 @@ struct ContentView: View {
                                 showsOwnerEmail: viewModel.isAdmin,
                                 isInstalled: viewModel.isInstalled(option),
                                 installState: viewModel.installStateLabel(for: option),
-                                status: viewModel.tunnelStatus(for: option),
                                 tunnelStatus: viewModel.tunnelStatusLabel(for: option),
                                 staleText: viewModel.staleText(for: option),
                                 toggleIsOn: viewModel.toggleIsOn(for: option),
                                 toggleDisabled: viewModel.toggleDisabled(for: option),
                                 isToggling: viewModel.isToggling(for: option),
-                                syncDisabled: viewModel.syncDisabled(for: option),
-                                installDisabled: viewModel.syncDisabled(for: option),
+                                installDisabled: viewModel.installDisabled(for: option),
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
                                 onSelect: {
                                     viewModel.selectedClientId = option.client.clientId
@@ -574,12 +572,6 @@ struct ContentView: View {
                                         }
                                     } else {
                                         Task { await viewModel.stopTunnel(for: option) }
-                                    }
-                                },
-                                onSync: {
-                                    viewModel.selectedClientId = option.client.clientId
-                                    Task {
-                                        await viewModel.sync(option)
                                     }
                                 },
                                 onInstall: {
@@ -1086,18 +1078,15 @@ private struct ClientRow: View {
     let showsOwnerEmail: Bool
     let isInstalled: Bool
     let installState: String?
-    let status: GatewayTunnelStatus?
     let tunnelStatus: String?
     let staleText: String?
     let toggleIsOn: Bool
     let toggleDisabled: Bool
     let isToggling: Bool
-    let syncDisabled: Bool
     let installDisabled: Bool
     let deleteDisabled: Bool
     let onSelect: () -> Void
     let onToggle: (Bool) -> Void
-    let onSync: () -> Void
     let onInstall: () -> Void
     let onDelete: () -> Void
     let onDetails: () -> Void
@@ -1127,46 +1116,39 @@ private struct ClientRow: View {
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(theme.accentStrong)
                         }
-                        if let tunnelStatus {
-                            Text(tunnelStatus)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(theme.contentMuted)
-                        }
                     }
                 }
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 if isInstalled {
                     Toggle("VPN", isOn: Binding(
                         get: { toggleIsOn },
                         set: onToggle
                     ))
+                    .labelsHidden()
                     .toggleStyle(.switch)
                     .tint(theme.primary)
                     .disabled(toggleDisabled)
-
-                    Spacer()
 
                     if isToggling {
                         ProgressView()
                             .controlSize(.small)
                             .tint(theme.contentMuted)
+                    } else if let tunnelStatus {
+                        Text(tunnelStatus)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(theme.contentSecondary)
                     }
 
-                    TunnelStatusBadge(status: status)
-
-                    Button(action: onSync) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(IconSecondaryButtonStyle())
-                    .disabled(syncDisabled)
-                    .accessibilityLabel("Sync \(option.client.displayName)")
+                    Spacer()
                 } else {
                     Button("Install", action: onInstall)
                         .buttonStyle(SecondaryButtonStyle())
                         .disabled(installDisabled)
+
+                    Spacer()
                 }
 
                 Button(action: onDetails) {
@@ -1277,31 +1259,6 @@ private struct StatusBadge: View {
             theme.dangerSoftEdge
         case .removed:
             theme.neutralStrong
-        }
-    }
-}
-
-private struct TunnelStatusBadge: View {
-    @Environment(\.cloudGatewayTheme) private var theme
-    let status: GatewayTunnelStatus?
-
-    var body: some View {
-        Circle()
-            .fill(statusColor)
-            .frame(width: 10, height: 10)
-            .accessibilityHidden(true)
-    }
-
-    private var statusColor: Color {
-        switch status {
-        case .connected:
-            theme.successStrong
-        case .connecting, .reasserting, .disconnecting:
-            theme.warningStrong
-        case .invalid:
-            theme.dangerContent
-        case .disconnected, nil:
-            theme.contentFaint
         }
     }
 }
