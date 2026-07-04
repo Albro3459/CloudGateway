@@ -261,17 +261,21 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     func refresh() async {
-        await run {
-            if let user = service.currentUser {
-                try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
-            } else {
-                try await loadGuestState()
-            }
-        }
+        await reloadCurrentState(showsWorkingOverlay: true)
     }
 
     func pullToRefresh() async {
-        await run(showsWorkingOverlay: false) {
+        // SwiftUI cancels the .refreshable task when its pull control retracts,
+        // and the early @Published updates in loadRemoteState can trigger that
+        // retraction before the network reload finishes - silently aborting it
+        // (run swallows the CancellationError). Run the reload in an independent
+        // task so it always completes, while still awaiting it to keep the pull
+        // spinner up until the refresh is done.
+        await Task { await self.reloadCurrentState(showsWorkingOverlay: false) }.value
+    }
+
+    private func reloadCurrentState(showsWorkingOverlay: Bool) async {
+        await run(showsWorkingOverlay: showsWorkingOverlay) {
             if let user = service.currentUser {
                 try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
             } else {
