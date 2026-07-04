@@ -69,7 +69,7 @@ private enum ManagerTestError: Error {
     let state = try await manager.install(option)
 
     #expect(await tunnelManager.installedIdentifiers() == ["client-1"])
-    #expect(await tunnelManager.installedDisplayNames() == ["Phone"])
+    #expect(await tunnelManager.installedDisplayNames() == ["San Jose - Phone"])
     #expect(await cache.savedSnapshots().map(\.clientId) == ["client-1"])
     #expect(state.installedSnapshots.map(\.clientId) == ["client-1"])
     #expect(state.tunnelStatus(for: "client-1") == .disconnected)
@@ -84,7 +84,7 @@ private enum ManagerTestError: Error {
     let state = try await manager.install(CloudGatewayClientOption(client: client(id: "client-2", clientName: "Laptop"), region: region()))
 
     #expect(await tunnelManager.installedIdentifiers() == ["client-1", "client-2"])
-    #expect(await tunnelManager.installedDisplayNames() == ["Phone", "Laptop"])
+    #expect(await tunnelManager.installedDisplayNames() == ["San Jose - Phone", "San Jose - Laptop"])
     #expect(state.installedSnapshots.map(\.clientId).sorted() == ["client-1", "client-2"])
     #expect(state.tunnelStatus(for: "client-1") == .disconnected)
     #expect(state.tunnelStatus(for: "client-2") == .disconnected)
@@ -103,7 +103,7 @@ private enum ManagerTestError: Error {
     ))
 
     #expect(await tunnelManager.installedIdentifiers() == ["client-1", "client-2"])
-    #expect(await tunnelManager.installedDisplayNames() == ["Renamed Phone", "Laptop"])
+    #expect(await tunnelManager.installedDisplayNames() == ["San Jose - Renamed Phone", "San Jose - Laptop"])
     #expect(state.installedSnapshots.count == 2)
     #expect(state.installedSnapshot(clientId: "client-1")?.clientDisplayName == "Renamed Phone")
     #expect(state.installedSnapshot(clientId: "client-2")?.clientDisplayName == "Laptop")

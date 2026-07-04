@@ -207,7 +207,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
     public func tunnelConfiguration() throws -> GatewayTunnelConfiguration {
         GatewayTunnelConfiguration(
             identifier: clientId,
-            displayName: clientDisplayName,
+            displayName: "\(regionDisplayName) - \(clientDisplayName)",
             configHash: configHash,
             secretReference: secretReference
         )
