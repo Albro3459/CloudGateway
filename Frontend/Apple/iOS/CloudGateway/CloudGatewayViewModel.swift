@@ -48,6 +48,9 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
     @Published private(set) var tunnelStatuses = [String: GatewayTunnelStatus]()
     @Published private(set) var isWorking = false
+    // Client whose VPN toggle is mid-flight, so its row can show a spinner while
+    // the tunnel starts/stops instead of looking frozen.
+    @Published private(set) var togglingClientId: String?
     @Published private(set) var errorText: String?
     @Published private(set) var successText: String?
     @Published private(set) var staleText: String?
@@ -403,14 +406,12 @@ final class CloudGatewayViewModel: ObservableObject {
     func install(_ option: CloudGatewayClientOption) async {
         await run {
             apply(try await configManager.install(option))
-            successText = "\(option.client.displayName) is installed."
         }
     }
 
     func sync(_ option: CloudGatewayClientOption) async {
         await run {
-            let name = try await pullFreshAndInstall(option)
-            successText = "\(name) is synced."
+            _ = try await pullFreshAndInstall(option)
         }
     }
 
@@ -418,8 +419,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // Firebase, then install, so a stale cached config is never installed.
     func installFromCloud(_ option: CloudGatewayClientOption) async {
         await run {
-            let name = try await pullFreshAndInstall(option)
-            successText = "\(name) is installed."
+            _ = try await pullFreshAndInstall(option)
         }
     }
 
@@ -456,23 +456,25 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // Turn off the currently active tunnel (if different) and start this one.
     func switchTunnel(to option: CloudGatewayClientOption) async {
+        togglingClientId = option.client.clientId
+        defer { togglingClientId = nil }
         await run {
             if let active = activeTunnelClient, active.client.clientId != option.client.clientId {
                 apply(try await configManager.stopTunnel(identifier: active.client.clientId))
             }
             selectedClientId = option.client.clientId
             apply(try await configManager.startTunnel(identifier: option.client.clientId))
-            successText = "VPN switched to \(option.client.displayName)."
         }
     }
 
     func startTunnel() async {
+        togglingClientId = selectedClientId
+        defer { togglingClientId = nil }
         await run {
             guard let selectedClientId else {
                 throw CloudGatewayAppError.accessDenied("Choose an installed config to start.")
             }
             apply(try await configManager.startTunnel(identifier: selectedClientId))
-            successText = "VPN started."
         }
     }
 
@@ -482,12 +484,13 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     func stopTunnel() async {
+        togglingClientId = selectedClientId
+        defer { togglingClientId = nil }
         await run {
             guard let selectedClientId else {
                 throw CloudGatewayAppError.accessDenied("Choose an installed config to stop.")
             }
             apply(try await configManager.stopTunnel(identifier: selectedClientId))
-            successText = "VPN stopped."
         }
     }
 
@@ -567,6 +570,10 @@ final class CloudGatewayViewModel: ObservableObject {
         case .invalid, .disconnected, .disconnecting, nil:
             return false
         }
+    }
+
+    func isToggling(for option: CloudGatewayClientOption) -> Bool {
+        togglingClientId == option.client.clientId
     }
 
     private func handleAuthState(_ user: AuthenticatedUser?) async {

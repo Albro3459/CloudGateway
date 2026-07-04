@@ -378,7 +378,7 @@ struct ContentView: View {
                             await viewModel.syncSelectedRegion()
                         }
                     } label: {
-                        Label("Sync Selected Region", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Sync \(viewModel.selectedRegion?.displayName ?? "Region")", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(!viewModel.canSyncSelectedRegion)
@@ -453,7 +453,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
                     title: "Create VPN Client",
-                    subtitle: "Create a VPN config in the selected region."
+                    subtitle: "Create a VPN config in \(viewModel.selectedRegion?.displayName ?? "the selected region")."
                 )
 
                 ThemedTextField(
@@ -555,6 +555,7 @@ struct ContentView: View {
                                 staleText: viewModel.staleText(for: option),
                                 toggleIsOn: viewModel.toggleIsOn(for: option),
                                 toggleDisabled: viewModel.toggleDisabled(for: option),
+                                isToggling: viewModel.isToggling(for: option),
                                 syncDisabled: viewModel.syncDisabled(for: option),
                                 installDisabled: viewModel.syncDisabled(for: option),
                                 deleteDisabled: viewModel.deleteDisabled(for: option),
@@ -761,7 +762,7 @@ private struct AboutView: View {
                                     .foregroundStyle(theme.contentSecondary)
                                 Text("Each region runs a dedicated FastAPI control plane behind Cloudflare-protected Caddy, with Firebase storing user and client state.")
                                     .foregroundStyle(theme.contentSecondary)
-                                Text("Create a config in the selected region and install it on this device in just a few taps.")
+                                Text("Create a config in your chosen region and install it on this device in just a few taps.")
                                     .foregroundStyle(theme.contentSecondary)
                                 Text("Secure, simple, and instant. Your personal VPN clients, managed on demand.")
                                     .font(.body.weight(.semibold))
@@ -1054,6 +1055,7 @@ private struct ClientRow: View {
     let staleText: String?
     let toggleIsOn: Bool
     let toggleDisabled: Bool
+    let isToggling: Bool
     let syncDisabled: Bool
     let installDisabled: Bool
     let deleteDisabled: Bool
@@ -1111,6 +1113,12 @@ private struct ClientRow: View {
                     .disabled(toggleDisabled)
 
                     Spacer()
+
+                    if isToggling {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(theme.contentMuted)
+                    }
 
                     TunnelStatusBadge(status: status)
 

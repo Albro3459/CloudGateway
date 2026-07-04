@@ -544,7 +544,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertEqual(service.fetchOwnedClientsCallCount, 2)
         XCTAssertEqual(viewModel.installedSnapshots.first?.clientName, "Renamed phone")
-        XCTAssertEqual(viewModel.successText, "Renamed phone is synced.")
+        XCTAssertNil(viewModel.successText)
     }
 
     func testCreateClientRequiresDisplayNameBeforeServiceCall() async {
