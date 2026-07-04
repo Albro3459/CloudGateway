@@ -8,8 +8,10 @@ struct ContentView: View {
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var isShowingLogin = false
+    @State private var hasEnteredGuestDashboard = false
     @State private var isShowingAbout = false
     @State private var isConfirmingReset = false
+    @State private var isShowingCreateRestriction = false
     @State private var appleRawNonce = ""
     @Environment(\.cloudGatewayTheme) private var theme
 
@@ -21,7 +23,7 @@ struct ContentView: View {
             case .loading:
                 loadingView
             case .guest:
-                if isShowingLogin {
+                if isShowingLogin || !hasEnteredGuestDashboard {
                     loginView
                 } else {
                     guestDashboard
@@ -37,9 +39,15 @@ struct ContentView: View {
             topMessages
         }
         .foregroundStyle(theme.content)
-        .onChange(of: viewModel.appMode) { _, mode in
+        .onChange(of: viewModel.appMode) { previousMode, mode in
             if mode == .signedIn {
                 isShowingLogin = false
+                hasEnteredGuestDashboard = false
+                isShowingCreateRestriction = false
+            } else if previousMode == .signedIn, mode == .guest {
+                isShowingLogin = false
+                hasEnteredGuestDashboard = false
+                isShowingCreateRestriction = false
             }
         }
         .sheet(isPresented: $isShowingAbout) {
@@ -53,6 +61,12 @@ struct ContentView: View {
         .sheet(isPresented: syncResultPresented) {
             if let result = viewModel.syncResult {
                 SyncResultView(result: result)
+            }
+        }
+        .sheet(isPresented: $isShowingCreateRestriction) {
+            SignedInRequiredView {
+                isShowingCreateRestriction = false
+                isShowingLogin = true
             }
         }
         .alert("Send password reset email?", isPresented: $isConfirmingReset) {
@@ -102,7 +116,7 @@ struct ContentView: View {
                         adminPanel
                     }
 
-                    createPanel
+                    signedInCreatePanel
                     regionsPanel
                     clientsPanel
                 }
@@ -230,13 +244,15 @@ struct ContentView: View {
     private var loginView: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Button {
-                    isShowingLogin = false
-                } label: {
-                    Image(systemName: "chevron.left")
+                if hasEnteredGuestDashboard {
+                    Button {
+                        isShowingLogin = false
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .buttonStyle(IconNavButtonStyle())
+                    .accessibilityLabel("Back")
                 }
-                .buttonStyle(IconNavButtonStyle())
-                .accessibilityLabel("Back")
 
                 Text("CloudGateway")
                     .font(.headline)
@@ -308,10 +324,13 @@ struct ContentView: View {
                                     }
                                 }
                                 .disabled(viewModel.isWorking)
+                            }
 
+                            VStack(spacing: 10) {
                                 Button {
                                     Task {
                                         await viewModel.continueAsGuest()
+                                        hasEnteredGuestDashboard = true
                                         isShowingLogin = false
                                     }
                                 } label: {
@@ -319,12 +338,12 @@ struct ContentView: View {
                                 }
                                 .buttonStyle(SecondaryButtonStyle())
                                 .disabled(viewModel.isWorking)
+                                
+                                Link(destination: requestAccessURL) {
+                                    Label("Request Access", systemImage: "envelope")
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
                             }
-
-                            Link(destination: requestAccessURL) {
-                                Label("Request Access", systemImage: "envelope")
-                            }
-                            .buttonStyle(SecondaryButtonStyle())
                         }
                     }
 
@@ -447,7 +466,27 @@ struct ContentView: View {
         }
     }
 
-    private var createPanel: some View {
+    private var signedInCreatePanel: some View {
+        createPanel(
+            isCreateDisabled: viewModel.createDisabled,
+            onCreate: {
+                Task {
+                    await viewModel.createClient()
+                }
+            }
+        )
+    }
+
+    private var guestCreatePanel: some View {
+        createPanel(
+            isCreateDisabled: guestCreateDisabled,
+            onCreate: {
+                isShowingCreateRestriction = true
+            }
+        )
+    }
+
+    private func createPanel(isCreateDisabled: Bool, onCreate: @escaping () -> Void) -> some View {
         ThemedPanel {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
@@ -462,38 +501,11 @@ struct ContentView: View {
                     keyboardType: .default
                 )
 
-                Button {
-                    Task {
-                        await viewModel.createClient()
-                    }
-                } label: {
+                Button(action: onCreate) {
                     Label("Create VPN Client", systemImage: "plus")
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(viewModel.createDisabled)
-            }
-        }
-    }
-
-    private var guestCreatePanel: some View {
-        ThemedPanel {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(
-                    title: "Create VPN Client",
-                    subtitle: "Sign in before creating a VPN config."
-                )
-
-                VStack(spacing: 10) {
-                    Button("Sign in") {
-                        isShowingLogin = true
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-
-                    Link(destination: requestAccessURL) {
-                        Label("Request Access", systemImage: "envelope")
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                }
+                .disabled(isCreateDisabled)
             }
         }
     }
@@ -503,18 +515,13 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
                     title: "VPN Clients",
-                    subtitle: "Sign in to see your VPN clients on this device."
+                    subtitle: "Manage your VPN clients."
                 )
 
                 EmptyState(
                     title: "Clients are hidden while signed out",
                     message: "Guest mode only shows available regions."
                 )
-
-                Button("Sign in") {
-                    isShowingLogin = true
-                }
-                .buttonStyle(SecondaryButtonStyle())
             }
         }
     }
@@ -621,6 +628,12 @@ struct ContentView: View {
 
     private var requestAccessURL: URL {
         URL(string: "mailto:Brodsky.Alex22@gmail.com?subject=CloudGateway%20Access%20Request")!
+    }
+
+    private var guestCreateDisabled: Bool {
+        viewModel.isWorking
+            || viewModel.selectedRegion == nil
+            || viewModel.newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var syncResultPresented: Binding<Bool> {
@@ -804,6 +817,41 @@ private struct EmailContactView: View {
             .padding(16)
         }
         .presentationDetents([.height(240)])
+    }
+}
+
+private struct SignedInRequiredView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.cloudGatewayTheme) private var theme
+    let onSignIn: () -> Void
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Sign in required")
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    Text("Creating VPN clients is restricted to signed-in users.")
+                        .foregroundStyle(theme.contentSecondary)
+
+                    Button("Sign in") {
+                        onSignIn()
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+
+                    Button("Not now") {
+                        dismiss()
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.height(280)])
     }
 }
 
@@ -1273,13 +1321,13 @@ private struct CustomGoogleSignInButton: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
 
-                Text("Continue with Google")
+                Text("Sign in with Google")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isEnabled ? theme.content : theme.contentDisabled)
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 9)
         }
         .buttonStyle(WebGoogleButtonStyle())
         .accessibilityLabel("Sign in with Google")
