@@ -432,7 +432,8 @@ struct ContentView: View {
                             RegionButton(
                                 region: region,
                                 isSelected: region.regionId == viewModel.selectedRegionId,
-                                showsCapacity: viewModel.isSignedIn
+                                showsCapacity: viewModel.isSignedIn,
+                                isLoading: viewModel.isWorking
                             ) {
                                 viewModel.selectedRegionId = region.regionId
                             }
@@ -952,6 +953,7 @@ private struct RegionButton: View {
     let region: CloudGatewayRegion
     let isSelected: Bool
     let showsCapacity: Bool
+    let isLoading: Bool
     let action: () -> Void
 
     var body: some View {
@@ -961,7 +963,7 @@ private struct RegionButton: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isSelected ? theme.accent : theme.contentSecondary)
                 if showsCapacity {
-                    Text(region.capacity?.displayText ?? "Capacity unavailable")
+                    Text(capacityText)
                         .font(.caption)
                         .foregroundStyle(capacityColor)
                 }
@@ -978,11 +980,20 @@ private struct RegionButton: View {
         .buttonStyle(.plain)
     }
 
-    private var capacityColor: Color {
-        guard let capacity = region.capacity, capacity.isKnown, !capacity.isAtCapacity else {
-            return theme.dangerContent
+    private var capacityText: String {
+        if let capacity = region.capacity, capacity.isKnown {
+            return capacity.displayText
         }
-        return theme.contentMuted
+        // Capacity is fetched after the region list; stay neutral while it loads
+        // instead of flashing an "unavailable" error.
+        return isLoading ? "Checking capacity..." : "Capacity unavailable"
+    }
+
+    private var capacityColor: Color {
+        if let capacity = region.capacity, capacity.isKnown {
+            return capacity.isAtCapacity ? theme.dangerContent : theme.contentMuted
+        }
+        return isLoading ? theme.contentMuted : theme.dangerContent
     }
 }
 
