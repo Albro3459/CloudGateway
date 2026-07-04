@@ -70,12 +70,15 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let apiOriginHost = "gocloudlaunch.com"
 
     var currentUser: AuthenticatedUser? {
-        Auth.auth().currentUser.map(AuthenticatedUser.init)
+        guard let user = Auth.auth().currentUser else {
+            return nil
+        }
+        return AuthenticatedUser(uid: user.uid, email: user.email)
     }
 
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
         Auth.auth().addStateDidChangeListener { _, user in
-            listener(user.map(AuthenticatedUser.init))
+            listener(user.map { AuthenticatedUser(uid: $0.uid, email: $0.email) })
         }
     }
 
@@ -97,7 +100,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
                     continuation.resume(throwing: CloudGatewayAppError.missingCurrentUser)
                     return
                 }
-                continuation.resume(returning: AuthenticatedUser(user))
+                continuation.resume(returning: AuthenticatedUser(uid: user.uid, email: user.email))
             }
         }
     }
@@ -109,14 +112,14 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             fullName: nil
         )
         let result = try await Auth.auth().signIn(with: credential)
-        return AuthenticatedUser(result.user)
+        return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
     }
 
     func signInWithGoogle() async throws -> AuthenticatedUser {
         let (idToken, accessToken) = try await Self.presentGoogleSignIn(clientID: googleClientID())
         let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
         let result = try await Auth.auth().signIn(with: credential)
-        return AuthenticatedUser(result.user)
+        return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
     }
 
     private func googleClientID() throws -> String {
@@ -484,12 +487,6 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         } catch {
             throw CloudGatewayAppError.invalidAPIResponse
         }
-    }
-}
-
-private extension AuthenticatedUser {
-    init(_ user: User) {
-        self.init(uid: user.uid, email: user.email)
     }
 }
 

@@ -69,7 +69,7 @@ struct CloudGatewayGrantAccessResponse: Decodable, Equatable {
 protocol CloudGatewayServicing {
     var currentUser: AuthenticatedUser? { get }
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any
-    func removeAuthStateListener(_ token: Any)
+    nonisolated func removeAuthStateListener(_ token: Any)
     func signIn(email: String, password: String) async throws -> AuthenticatedUser
     func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func signInWithGoogle() async throws -> AuthenticatedUser
