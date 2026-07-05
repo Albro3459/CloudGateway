@@ -48,10 +48,11 @@ Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receiv
 
 Firestore resolves to a binary distribution by default when Xcode evaluates the Firebase Swift package. App Store Connect may reject that archive with missing dSYM warnings for `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`.
 
-For App Store archives, build Firestore from source so Xcode emits the needed symbols into the archive:
+For CLI App Store archives, build Firestore from source in isolated SwiftPM and DerivedData directories. The `CLOUDGATEWAY_SOURCE_PACKAGES_DIR` value lets the WireGuard legacy target find the same SwiftPM checkout root:
 
 ```sh
-FIREBASE_SOURCE_FIRESTORE=1 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release archive
+mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
+FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
 ```
 
 When archiving from Xcode, quit Xcode and reopen the project with:

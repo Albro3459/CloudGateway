@@ -170,7 +170,7 @@
 /* Begin PBXLegacyTarget section */
 		ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */ = {
 			isa = PBXLegacyTarget;
-			buildArgumentsString = "-c \"cd \\\"$${BUILD_DIR%Build/*}SourcePackages/checkouts/wireguard-apple/Sources/WireGuardKitGo\\\" && exec /usr/bin/make \\\"$ACTION\\\"\"";
+			buildArgumentsString = "-c \"for root in \\\"$${CLOUDGATEWAY_SOURCE_PACKAGES_DIR:-}\\\" \\\"$${BUILD_DIR%Build/*}SourcePackages\\\"; do if [ -n \\\"$${root}\\\" ] && [ -d \\\"$${root}/checkouts/wireguard-apple/Sources/WireGuardKitGo\\\" ]; then cd \\\"$${root}/checkouts/wireguard-apple/Sources/WireGuardKitGo\\\" && exec /usr/bin/make \\\"$${ACTION:-build}\\\"; fi; done; echo \\\"WireGuardKitGo checkout not found\\\" >&2; exit 1\"";
 			buildConfigurationList = ABCDEF000000000000000012 /* Build configuration list for PBXLegacyTarget "WireGuardGoBridgeiOS" */;
 			buildPhases = (
 			);
