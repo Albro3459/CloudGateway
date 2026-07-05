@@ -16,6 +16,18 @@ cd Frontend/Web && npm run deploy && cd -
 
 ## Build iOS App Store archive
 
+1. Quit Xcode.
+2. Reopen it with source Firestore:
+
+   ```sh
+   open --env FIREBASE_SOURCE_FIRESTORE=1 Frontend/Apple/iOS/CloudGateway.xcodeproj
+   ```
+
+3. In Xcode, run `Product > Archive`.
+4. Quit and reopen Xcode normally after archiving for faster development device builds.
+
+Fallback CLI archive:
+
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
 FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive

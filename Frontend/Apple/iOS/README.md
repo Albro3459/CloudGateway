@@ -48,17 +48,25 @@ Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receiv
 
 Firestore resolves to a binary distribution by default when Xcode evaluates the Firebase Swift package. App Store Connect may reject that archive with missing dSYM warnings for `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`.
 
-For CLI App Store archives, build Firestore from source in isolated SwiftPM and DerivedData directories. The `CLOUDGATEWAY_SOURCE_PACKAGES_DIR` value lets the WireGuard legacy target find the same SwiftPM checkout root:
+Archive from Xcode with the source Firestore environment:
+
+1. Quit Xcode.
+2. Reopen the project from the repo root:
+
+   ```sh
+   open --env FIREBASE_SOURCE_FIRESTORE=1 Frontend/Apple/iOS/CloudGateway.xcodeproj
+   ```
+
+3. In Xcode, choose `Product > Archive`.
+4. Quit and reopen Xcode normally after archiving for faster development device builds.
+
+The source distribution compiles Firestore, abseil, gRPC, and BoringSSL into the app build instead of embedding those dependencies as separate prebuilt frameworks. The code is still present; the standalone framework folders are not.
+
+If Xcode archiving does not work, use isolated DerivedData and SwiftPM checkout directories. The `CLOUDGATEWAY_SOURCE_PACKAGES_DIR` value lets the WireGuard legacy target find the same SwiftPM checkout root:
 
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
 FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
-```
-
-When archiving from Xcode, quit Xcode and reopen the project with:
-
-```sh
-open --env FIREBASE_SOURCE_FIRESTORE Frontend/Apple/iOS/CloudGateway.xcodeproj
 ```
 
 After archiving, confirm the archive no longer embeds the binary Firestore dependency frameworks under `Products/Applications/CloudGateway.app/Frameworks/`.
@@ -67,7 +75,7 @@ After archiving, confirm the archive no longer embeds the binary Firestore depen
 
 Shared sorting, filtering, reconciliation, selection/merge, and cache behavior are covered by `CloudGatewayKit` tests (run under `swift test`). View-model orchestration (remote-load sequencing, sign-out branching, capacity gating, selection prune) has tests in `CloudGatewayTests/`, wired against a mock `CloudGatewayServicing` so no Firebase or network is involved.
 
-That test target is a host-less logic bundle because the app scheme cannot build for the iOS Simulator — the `CloudGatewayTunnel` extension links WireGuard's device-only `libwg-go.a`. It therefore is not part of the `./scripts/test.sh apple` gate (which stays `swift test` + the unsigned no-device build); see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for the one-time Xcode wiring and the `xcodebuild test` command. The thin `CloudGatewayFirebaseService` URLSession/Firestore adapter remains build-validated only.
+That test target is a host-less logic bundle because the app scheme cannot build for the iOS Simulator - the `CloudGatewayTunnel` extension links WireGuard's device-only `libwg-go.a`. It therefore is not part of the `./scripts/test.sh apple` gate (which stays `swift test` + the unsigned no-device build); see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for the one-time Xcode wiring and the `xcodebuild test` command. The thin `CloudGatewayFirebaseService` URLSession/Firestore adapter remains build-validated only.
 
 Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
 

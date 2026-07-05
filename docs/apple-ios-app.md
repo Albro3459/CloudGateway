@@ -115,7 +115,21 @@ SwiftUI and Firebase code should not perform WireGuardKit mapping directly.
 
 Firestore must use its source SwiftPM distribution for App Store archives. The default binary distribution embeds `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`; App Store Connect then expects dSYMs for those prebuilt frameworks.
 
-Use isolated DerivedData and SwiftPM checkout directories for the archive so Xcode does not mix the normal binary package graph with the source Firestore graph:
+Archive from Xcode with the source Firestore environment:
+
+1. Quit Xcode.
+2. Reopen the project from the repo root:
+
+   ```sh
+   open --env FIREBASE_SOURCE_FIRESTORE=1 Frontend/Apple/iOS/CloudGateway.xcodeproj
+   ```
+
+3. In Xcode, choose `Product > Archive`.
+4. Quit and reopen Xcode normally after archiving for faster development device builds.
+
+The source distribution compiles Firestore, abseil, gRPC, and BoringSSL into the app build instead of embedding those dependencies as separate prebuilt frameworks. The code is still present; the standalone framework folders are not.
+
+If Xcode archiving does not work, use isolated DerivedData and SwiftPM checkout directories so Xcode does not mix the normal binary package graph with the source Firestore graph:
 
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
