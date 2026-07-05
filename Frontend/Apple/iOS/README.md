@@ -44,6 +44,24 @@ Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receiv
 
 `GoogleService-Info.plist` belongs under `CloudGateway/` and must be included in the app bundle only. It contains Firebase app identifiers, not service account credentials.
 
+## App Store Archive Symbols
+
+Firestore resolves to a binary distribution by default when Xcode evaluates the Firebase Swift package. App Store Connect may reject that archive with missing dSYM warnings for `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`.
+
+For App Store archives, build Firestore from source so Xcode emits the needed symbols into the archive:
+
+```sh
+FIREBASE_SOURCE_FIRESTORE=1 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release archive
+```
+
+When archiving from Xcode, quit Xcode and reopen the project with:
+
+```sh
+open --env FIREBASE_SOURCE_FIRESTORE Frontend/Apple/iOS/CloudGateway.xcodeproj
+```
+
+After archiving, confirm the archive no longer embeds the binary Firestore dependency frameworks under `Products/Applications/CloudGateway.app/Frameworks/`.
+
 ## Current Limitations
 
 Shared sorting, filtering, reconciliation, selection/merge, and cache behavior are covered by `CloudGatewayKit` tests (run under `swift test`). View-model orchestration (remote-load sequencing, sign-out branching, capacity gating, selection prune) has tests in `CloudGatewayTests/`, wired against a mock `CloudGatewayServicing` so no Firebase or network is involved.
