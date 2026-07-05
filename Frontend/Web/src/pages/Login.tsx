@@ -289,6 +289,14 @@ const Login: React.FC = () => {
                     >
                     Email me for a test account
                     </a>
+                    <span> | </span>
+                    <button
+                    type="button"
+                    onClick={() => navigate("/privacy")}
+                    className="cursor-pointer text-accent underline hover:text-accent-strong"
+                    >
+                    Privacy
+                    </button>
                 </div>
             </form>
         </div>

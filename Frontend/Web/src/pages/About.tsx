@@ -73,6 +73,14 @@ const About: React.FC = () => {
                         >
                         Email
                     </a>
+                    <span> |   </span>
+                    <button
+                        type="button"
+                        onClick={() => navigate("/privacy")}
+                        className="cursor-pointer text-xs text-accent underline hover:text-accent-strong"
+                        >
+                        Privacy
+                    </button>
                 </div>
                 <p className="text-content-secondary mb-4">
                     Create secure <b>WireGuard VPN</b> clients on shared regional CloudGateway servers,
