@@ -14,6 +14,13 @@ Run the full suite; everything must pass before deploying:
 cd Frontend/Web && npm run deploy && cd -
 ```
 
+## Build iOS App Store archive
+
+```sh
+mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
+FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
+```
+
 ## Deploy regional servers
 
 1. Commit and push all your changes.

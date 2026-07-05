@@ -111,6 +111,19 @@ CloudGateway's own WireGuard boundary is:
 
 SwiftUI and Firebase code should not perform WireGuardKit mapping directly.
 
+## App Store Archive
+
+Firestore must use its source SwiftPM distribution for App Store archives. The default binary distribution embeds `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`; App Store Connect then expects dSYMs for those prebuilt frameworks.
+
+Use isolated DerivedData and SwiftPM checkout directories for the archive so Xcode does not mix the normal binary package graph with the source Firestore graph:
+
+```sh
+mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
+FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
+```
+
+After archiving, `CloudGateway.app` should not contain `FirebaseFirestoreInternal`, `absl`, `grpc`, `grpcpp`, or `openssl_grpc` under `Frameworks/`.
+
 ## Local Storage And Secret Handling
 
 Full WireGuard configs contain private key material and must live only in the shared Keychain.
