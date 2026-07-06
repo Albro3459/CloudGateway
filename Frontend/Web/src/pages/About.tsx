@@ -83,12 +83,12 @@ const About: React.FC = () => {
                     </button>
                 </div>
                 <p className="text-content-secondary mb-4">
-                    Create secure <b>WireGuard VPN</b> clients on shared regional CloudGateway servers,
-                    pre-configured with IPv4, IPv6, and DNS.
+                    Create secure <b>WireGuard VPN</b> clients on shared CloudGateway servers across
+                    multiple regions, ready for both IPv4 and IPv6.
                 </p>
                 <p className="text-content-secondary mb-4">
-                    Each region runs a dedicated FastAPI control plane behind Cloudflare-protected Caddy,
-                    with Firebase storing user and client state.
+                    Every config comes with built-in ad blocking and encrypted DNS to keep your
+                    browsing private.
                 </p>
                 <p className="text-content-secondary mb-4">
                     Generate your VPN configuration instantly, scan a QR code, or download the .conf file for easy setup on 

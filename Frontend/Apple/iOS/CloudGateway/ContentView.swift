@@ -964,19 +964,20 @@ private struct AboutView: View {
                                         }
                                         .buttonStyle(.plain)
                                         .foregroundStyle(theme.accent)
+                                        Link("Privacy", destination: URL(string: "https://gocloudlaunch.com/#/privacy/")!)
+                                            .foregroundStyle(theme.accent)
                                     }
                                     .font(.caption.weight(.semibold))
                                     .tint(theme.accent)
                                 }
 
-                                Text("Create secure VPN clients on shared regional CloudGateway servers, pre-configured with IPv4, IPv6, and DNS.")
+                                Text("Create secure **WireGuard VPN** clients on shared CloudGateway servers across multiple regions, ready for both IPv4 and IPv6.")
                                     .foregroundStyle(theme.contentSecondary)
-                                Text("Each region runs a dedicated FastAPI control plane behind Cloudflare-protected Caddy, with Firebase storing user and client state.")
+                                Text("Every config comes with built-in ad blocking and encrypted DNS to keep your browsing private.")
                                     .foregroundStyle(theme.contentSecondary)
-                                Text("Create a config in your chosen region and install it on this device in just a few taps.")
+                                Text("Create a config in your chosen region and install it on your device in just a few taps.")
                                     .foregroundStyle(theme.contentSecondary)
-                                Text("Secure, simple, and instant. Your personal VPN clients, managed on demand.")
-                                    .font(.body.weight(.semibold))
+                                Text("**Secure, simple, and instant.** Your personal VPN clients, managed on demand.")
                                     .foregroundStyle(theme.content)
                             }
                         }
