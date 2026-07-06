@@ -47,6 +47,9 @@ logger = logging.getLogger("src.routes")
 router = APIRouter()
 T = TypeVar("T")
 RECENT_AUTH_WINDOW = timedelta(minutes=5)
+# Cloudflare's Browser Integrity Check blocks the default urllib UA, so
+# cross-region server-to-server calls must present a non-bot UA to reach origin.
+REGIONAL_API_USER_AGENT = "CloudGateway-API/1.0"
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -650,6 +653,7 @@ def _delete_remote_client(
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": REGIONAL_API_USER_AGENT,
         },
     )
     try:

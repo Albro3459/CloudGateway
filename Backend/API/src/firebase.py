@@ -3,7 +3,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, cast
 
-from google.cloud.firestore_v1.base_document import DocumentSnapshot
+from google.cloud.firestore_v1.base_document import BaseDocumentReference, DocumentSnapshot
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.transforms import Sentinel
 
@@ -325,7 +325,7 @@ class FirestoreRepository(FirebaseRepository):
     def hard_delete_account_documents(self, uid: str) -> None:
         db = self._db()
         try:
-            refs = [
+            refs: list[BaseDocumentReference] = [
                 db.collection("UserRoles").document(uid),
                 db.collection("Users").document(uid),
             ]
