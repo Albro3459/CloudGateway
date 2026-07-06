@@ -14,6 +14,8 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
 private enum ManagerTestError: Error {
     case installFailed
     case cacheSaveFailed
+    case cacheClearFailed
+    case secretDeleteFailed
 }
 
 @Test func managerApplyRemoteStateDoesNotPreselectConfig() async throws {
@@ -174,6 +176,65 @@ private enum ManagerTestError: Error {
     #expect(!state.remoteInvalidInstalledConfig(for: "client-1"))
     #expect(state.staleText(for: "client-1") == "The installed config has changed remotely. Install the update to refresh the local tunnel.")
     #expect(state.installState(for: state.configOptions[0]) == .updateAvailable)
+}
+
+@Test func managerClearsCachedInstallWhenLocalTunnelIsMissing() async throws {
+    let snapshot = cachedSnapshot(clientId: "client-1")
+    let tunnelManager = RecordingTunnelManager()
+    let cache = MemoryConfigCache(snapshots: [snapshot])
+    let secretStore = MemoryConfigSecretStore()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+
+    let state = try await manager.applyRemoteState(
+        regions: [region()],
+        clients: [client(id: "client-1")]
+    )
+
+    #expect(state.installedSnapshots.isEmpty)
+    #expect(state.tunnelStatus(for: "client-1") == nil)
+    #expect(state.installState(for: state.configOptions[0]) == nil)
+    #expect(await cache.clearCount() == 1)
+    #expect(secretStore.deletedReferences() == [snapshot.secretReference])
+}
+
+@Test func managerKeepsCachedInstallWhenMissingTunnelCleanupFails() async throws {
+    let snapshot = cachedSnapshot(clientId: "client-1")
+    let tunnelManager = RecordingTunnelManager()
+    let cache = MemoryConfigCache(
+        snapshots: [snapshot],
+        clearError: ManagerTestError.cacheClearFailed
+    )
+    let secretStore = MemoryConfigSecretStore()
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+
+    await #expect(throws: ManagerTestError.cacheClearFailed) {
+        try await manager.applyRemoteState(
+            regions: [region()],
+            clients: [client(id: "client-1")]
+        )
+    }
+
+    let state = await manager.state
+    #expect(state.installedSnapshots == [snapshot])
+    #expect(state.installState(for: state.configOptions[0]) == .installed)
+    #expect(secretStore.deletedReferences().isEmpty)
+}
+
+@Test func managerClearsCachedInstallWhenMissingTunnelSecretDeleteFails() async throws {
+    let snapshot = cachedSnapshot(clientId: "client-1")
+    let tunnelManager = RecordingTunnelManager()
+    let cache = MemoryConfigCache(snapshots: [snapshot])
+    let secretStore = MemoryConfigSecretStore(deleteError: ManagerTestError.secretDeleteFailed)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+
+    let state = try await manager.applyRemoteState(
+        regions: [region()],
+        clients: [client(id: "client-1")]
+    )
+
+    #expect(state.installedSnapshots.isEmpty)
+    #expect(state.installState(for: state.configOptions[0]) == nil)
+    #expect(await cache.clearCount() == 1)
 }
 
 @Test func managerRemoveInstalledConfigIfMatchesOnlyClearsMatchingLocalTunnel() async throws {
@@ -375,13 +436,16 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
     private var saved = [CloudGatewayConfigSnapshot]()
     private var clears = 0
     private let saveError: (any Error)?
+    private let clearError: (any Error)?
 
     init(
         snapshots: [CloudGatewayConfigSnapshot] = [],
-        saveError: (any Error)? = nil
+        saveError: (any Error)? = nil,
+        clearError: (any Error)? = nil
     ) {
         self.snapshots = snapshots
         self.saveError = saveError
+        self.clearError = clearError
     }
 
     func load() async throws -> [CloudGatewayConfigSnapshot] {
@@ -398,6 +462,9 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
     }
 
     func clear(identifier: String) async throws {
+        if let clearError {
+            throw clearError
+        }
         snapshots.removeAll { $0.clientId == identifier }
         clears += 1
     }
@@ -415,6 +482,11 @@ private final class MemoryConfigSecretStore: CloudGatewayConfigSecretStoring, @u
     private var configs = [GatewayConfigSecretReference: GatewayWireGuardConfig]()
     private var saved = [GatewayConfigSecretReference]()
     private var deleted = [GatewayConfigSecretReference]()
+    private let deleteError: (any Error)?
+
+    init(deleteError: (any Error)? = nil) {
+        self.deleteError = deleteError
+    }
 
     func saveConfig(_ config: GatewayWireGuardConfig, for reference: GatewayConfigSecretReference) throws {
         configs[reference] = config
@@ -429,6 +501,9 @@ private final class MemoryConfigSecretStore: CloudGatewayConfigSecretStoring, @u
     }
 
     func deleteConfig(for reference: GatewayConfigSecretReference) throws {
+        if let deleteError {
+            throw deleteError
+        }
         configs[reference] = nil
         deleted.append(reference)
     }

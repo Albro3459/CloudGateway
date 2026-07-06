@@ -131,12 +131,20 @@ public actor CloudGatewayConfigManager {
     @discardableResult
     public func refreshStatus() async throws -> CloudGatewayConfigManagerState {
         var statuses = [String: GatewayTunnelStatus]()
+        var missingSnapshots = [CloudGatewayConfigSnapshot]()
         for snapshot in state.installedSnapshots {
             do {
                 statuses[snapshot.clientId] = try await tunnelManager.installedStatus(for: snapshot.clientId)
             } catch GatewayVPNError.missingInstalledTunnel {
-                statuses[snapshot.clientId] = nil
+                missingSnapshots.append(snapshot)
             }
+        }
+        for snapshot in missingSnapshots {
+            try await cache.clear(identifier: snapshot.clientId)
+            state.installedSnapshots.removeAll { $0.clientId == snapshot.clientId }
+            state.staleTexts[snapshot.clientId] = nil
+            state.remoteInvalidInstalledConfigIds.remove(snapshot.clientId)
+            try? secretStore.deleteConfig(for: snapshot.secretReference)
         }
         state.tunnelStatuses = statuses
         return state
