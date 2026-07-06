@@ -1559,9 +1559,12 @@ private struct CustomGoogleSignInButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Text("G")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(isEnabled ? theme.accent : theme.contentDisabled)
+                Image("GoogleLogo")
+                    .renderingMode(.original)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 18, height: 18)
+                    .opacity(isEnabled ? 1 : 0.4)
 
                 Text("Sign in with Google")
                     .font(.subheadline.weight(.semibold))
@@ -1569,7 +1572,7 @@ private struct CustomGoogleSignInButton: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.vertical, 12)
         }
         .buttonStyle(WebGoogleButtonStyle())
         .accessibilityLabel("Sign in with Google")
