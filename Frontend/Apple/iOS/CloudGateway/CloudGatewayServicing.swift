@@ -9,6 +9,12 @@ enum CloudGatewayAppError: LocalizedError {
     case accessDenied(String)
     case cancelled
     case appleSignInFailed
+    case requiresRecentLogin
+    case credentialAlreadyInUse
+    case providerAlreadyLinked
+    case invalidEmail
+    case weakPassword
+    case wrongPassword
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +32,18 @@ enum CloudGatewayAppError: LocalizedError {
             "Sign in was cancelled."
         case .appleSignInFailed:
             "Apple sign in failed."
+        case .requiresRecentLogin:
+            "Sign in again before linking another sign-in method."
+        case .credentialAlreadyInUse:
+            "That sign-in method is already used by another CloudGateway account. Sign in with that account directly or contact support."
+        case .providerAlreadyLinked:
+            "That sign-in method is already linked to this account."
+        case .invalidEmail:
+            "Enter a valid email address."
+        case .weakPassword:
+            "Enter a stronger password."
+        case .wrongPassword:
+            "The current password is incorrect."
         }
     }
 }
@@ -79,6 +97,9 @@ protocol CloudGatewayServicing {
     func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func signInWithGoogle() async throws -> AuthenticatedUser
     func providerIds() -> [String]
+    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser
+    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
+    func linkGoogle() async throws -> AuthenticatedUser
     func reauthenticateWithPassword(_ password: String) async throws
     func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws
     func reauthenticateWithGoogle() async throws

@@ -112,6 +112,18 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         ["password"]
     }
 
+    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
+        screenshotUser
+    }
+
+    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        screenshotUser
+    }
+
+    func linkGoogle() async throws -> AuthenticatedUser {
+        screenshotUser
+    }
+
     func reauthenticateWithPassword(_ password: String) async throws {}
 
     func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {}

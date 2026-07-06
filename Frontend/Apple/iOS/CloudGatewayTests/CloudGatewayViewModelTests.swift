@@ -387,6 +387,80 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.errorText)
     }
 
+    // MARK: - Account linking
+
+    func testAccountLinkingShowsOnlyMissingProviders() async {
+        let service = signedInService()
+        service.providerIdsValue = ["google.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.missingLinkProviders, [.password, .apple])
+        XCTAssertTrue(viewModel.canLinkAnotherProvider)
+    }
+
+    func testAccountLinkingHidesWhenAllProvidersLinked() async {
+        let service = signedInService()
+        service.providerIdsValue = ["password", "google.com", "apple.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.missingLinkProviders.isEmpty)
+        XCTAssertFalse(viewModel.canLinkAnotherProvider)
+    }
+
+    func testLinkEmailPasswordTrimsInputsAndKeepsUserSignedIn() async {
+        let service = signedInService()
+        service.providerIdsValue = ["google.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        viewModel.linkEmail = " linked@example.com "
+        viewModel.linkPassword = " password123 "
+        await viewModel.linkEmailPassword()
+
+        XCTAssertEqual(service.linkEmailPasswordCallCount, 1)
+        XCTAssertEqual(service.linkEmail, "linked@example.com")
+        XCTAssertEqual(service.linkPassword, "password123")
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+        XCTAssertEqual(viewModel.successText, "Email and password was linked to your account.")
+        XCTAssertNil(viewModel.errorText)
+    }
+
+    func testLinkProviderAlreadyUsedDoesNotMerge() async {
+        let service = signedInService()
+        service.providerIdsValue = ["google.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        service.linkAppleError = CloudGatewayAppError.credentialAlreadyInUse
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        await viewModel.linkApple(idToken: "tok", rawNonce: "nonce")
+
+        XCTAssertEqual(service.linkAppleCallCount, 1)
+        XCTAssertEqual(viewModel.errorText, CloudGatewayAppError.credentialAlreadyInUse.localizedDescription)
+        XCTAssertNil(viewModel.successText)
+    }
+
+    func testLinkWithGoogleReauthenticatesAndRetriesForRecentLogin() async {
+        let service = signedInService()
+        service.providerIdsValue = ["google.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        service.linkAppleErrors = [CloudGatewayAppError.requiresRecentLogin]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        await viewModel.linkApple(idToken: "tok", rawNonce: "nonce")
+
+        XCTAssertEqual(service.reauthenticateWithGoogleCallCount, 1)
+        XCTAssertEqual(service.linkAppleCallCount, 2)
+    }
+
     // MARK: - Capacity gating
 
     func testCreateDisabledWhenSelectedRegionAtCapacity() async {

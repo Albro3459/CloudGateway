@@ -10,12 +10,18 @@ final class MockGatewayService: CloudGatewayServicing {
     var ownedClients = [CloudGatewayClient]()
     var userRole: String? = "user"
     var accessRole = "user"
+    var providerIdsValue = ["password"]
 
     // Injectable errors.
     var idTokenError: Error?
     var signInError: Error?
     var signInWithAppleError: Error?
     var signInWithGoogleError: Error?
+    var linkEmailPasswordError: Error?
+    var linkAppleError: Error?
+    var linkGoogleError: Error?
+    var linkAppleErrors = [Error]()
+    var linkGoogleErrors = [Error]()
     var sendPasswordResetError: Error?
     var reauthenticateWithPasswordError: Error?
     var reauthenticateWithAppleError: Error?
@@ -35,6 +41,8 @@ final class MockGatewayService: CloudGatewayServicing {
 
     // Captured inputs.
     private(set) var sendPasswordResetEmail: String?
+    private(set) var linkEmail: String?
+    private(set) var linkPassword: String?
     private(set) var reauthenticatePassword: String?
     private(set) var createClientName: String?
     private(set) var deleteClientUserId: String?
@@ -51,6 +59,9 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var signInCallCount = 0
     private(set) var signInWithAppleCallCount = 0
     private(set) var signInWithGoogleCallCount = 0
+    private(set) var linkEmailPasswordCallCount = 0
+    private(set) var linkAppleCallCount = 0
+    private(set) var linkGoogleCallCount = 0
     private(set) var sendPasswordResetCallCount = 0
     private(set) var reauthenticateWithPasswordCallCount = 0
     private(set) var reauthenticateWithAppleCallCount = 0
@@ -101,7 +112,45 @@ final class MockGatewayService: CloudGatewayServicing {
     }
 
     func providerIds() -> [String] {
-        ["password"]
+        providerIdsValue
+    }
+
+    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
+        linkEmailPasswordCallCount += 1
+        linkEmail = email
+        linkPassword = password
+        if let linkEmailPasswordError {
+            throw linkEmailPasswordError
+        }
+        let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: currentUser?.email ?? email)
+        currentUser = user
+        return user
+    }
+
+    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        linkAppleCallCount += 1
+        if !linkAppleErrors.isEmpty {
+            throw linkAppleErrors.removeFirst()
+        }
+        if let linkAppleError {
+            throw linkAppleError
+        }
+        let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: currentUser?.email ?? "apple@example.com")
+        currentUser = user
+        return user
+    }
+
+    func linkGoogle() async throws -> AuthenticatedUser {
+        linkGoogleCallCount += 1
+        if !linkGoogleErrors.isEmpty {
+            throw linkGoogleErrors.removeFirst()
+        }
+        if let linkGoogleError {
+            throw linkGoogleError
+        }
+        let user = AuthenticatedUser(uid: currentUser?.uid ?? "test-uid", email: currentUser?.email ?? "google@example.com")
+        currentUser = user
+        return user
     }
 
     func reauthenticateWithPassword(_ password: String) async throws {

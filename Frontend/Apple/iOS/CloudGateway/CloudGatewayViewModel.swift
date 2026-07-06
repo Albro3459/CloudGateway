@@ -15,6 +15,33 @@ enum CloudGatewayAccountDeleteReauthMethod {
     case unsupported
 }
 
+enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
+    case password
+    case google = "google.com"
+    case apple = "apple.com"
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .password:
+            "Email and password"
+        case .google:
+            "Google"
+        case .apple:
+            "Apple"
+        }
+    }
+}
+
+enum CloudGatewayAccountLinkReauthMethod: Equatable {
+    case none
+    case password
+    case apple
+}
+
 struct CloudGatewaySyncResult: Identifiable, Equatable {
     let regionId: String
     let syncedAt: String
@@ -73,6 +100,12 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published var newClientName = ""
     @Published var newAccessEmail = ""
     @Published var deleteAccountPassword = ""
+    @Published var linkEmail = ""
+    @Published var linkPassword = ""
+    @Published var linkCurrentPassword = ""
+    @Published private(set) var linkedProviderIds = [String]()
+    @Published private(set) var accountLinkReauthMethod: CloudGatewayAccountLinkReauthMethod = .none
+    @Published private(set) var pendingLinkProvider: CloudGatewayAuthProvider?
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
@@ -141,7 +174,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
-        let providerIds = service.providerIds()
+        let providerIds = currentProviderIds
         if providerIds.contains("password") {
             return .password
         }
@@ -156,6 +189,25 @@ final class CloudGatewayViewModel: ObservableObject {
 
     var deleteAccountPasswordRequired: Bool {
         accountDeleteReauthMethod == .password
+    }
+
+    var missingLinkProviders: [CloudGatewayAuthProvider] {
+        CloudGatewayAuthProvider.allCases.filter { !currentProviderIds.contains($0.rawValue) }
+    }
+
+    var canLinkAnotherProvider: Bool {
+        isSignedIn && !missingLinkProviders.isEmpty
+    }
+
+    var linkPasswordDisabled: Bool {
+        isWorking
+            || linkEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || linkPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (accountLinkReauthMethod == .password && linkCurrentPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var currentProviderIds: [String] {
+        linkedProviderIds.isEmpty ? service.providerIds() : linkedProviderIds
     }
 
     var createDisabled: Bool {
@@ -274,6 +326,65 @@ final class CloudGatewayViewModel: ObservableObject {
         await run {
             throw CloudGatewayAppError.appleSignInFailed
         }
+    }
+
+    func linkEmailPassword() async {
+        await linkAccountProvider(.password) {
+            let email = self.linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = self.linkPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard email.contains("@"), email.contains(".") else {
+                throw CloudGatewayAppError.invalidEmail
+            }
+            guard !password.isEmpty else {
+                throw CloudGatewayAppError.accessDenied("Enter a password to link.")
+            }
+            return try await self.service.linkEmailPassword(email: email, password: password)
+        }
+    }
+
+    func linkGoogle() async {
+        await linkAccountProvider(.google) {
+            try await self.service.linkGoogle()
+        }
+    }
+
+    func linkApple(idToken: String, rawNonce: String) async {
+        await linkAccountProvider(.apple) {
+            try await self.service.linkApple(idToken: idToken, rawNonce: rawNonce)
+        }
+    }
+
+    func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
+        guard let pendingLinkProvider else {
+            return
+        }
+        await run {
+            try await service.reauthenticateWithApple(
+                idToken: idToken,
+                rawNonce: rawNonce,
+                authorizationCode: authorizationCode
+            )
+            accountLinkReauthMethod = .none
+            switch pendingLinkProvider {
+            case .password:
+                let email = linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+                let password = linkPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+                _ = try await service.linkEmailPassword(email: email, password: password)
+            case .google:
+                _ = try await service.linkGoogle()
+            case .apple:
+                throw CloudGatewayAppError.providerAlreadyLinked
+            }
+            didLinkProvider(pendingLinkProvider)
+        }
+    }
+
+    func clearAccountLinkState() {
+        linkEmail = ""
+        linkPassword = ""
+        linkCurrentPassword = ""
+        accountLinkReauthMethod = .none
+        pendingLinkProvider = nil
     }
 
     func signOut() async {
@@ -445,6 +556,60 @@ final class CloudGatewayViewModel: ObservableObject {
                 authorizationCode: authorizationCode
             )
         }
+    }
+
+    private func linkAccountProvider(
+        _ provider: CloudGatewayAuthProvider,
+        operation: @escaping () async throws -> AuthenticatedUser
+    ) async {
+        await run {
+            guard service.currentUser != nil else {
+                throw CloudGatewayAppError.missingCurrentUser
+            }
+            if accountLinkReauthMethod == .password {
+                let password = linkCurrentPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !password.isEmpty else {
+                    throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
+                }
+                try await service.reauthenticateWithPassword(password)
+                accountLinkReauthMethod = .none
+            }
+
+            do {
+                _ = try await operation()
+                didLinkProvider(provider)
+            } catch CloudGatewayAppError.requiresRecentLogin {
+                if try await prepareRecentLoginRecovery(for: provider) {
+                    _ = try await operation()
+                    didLinkProvider(provider)
+                }
+            }
+        }
+    }
+
+    private func prepareRecentLoginRecovery(for provider: CloudGatewayAuthProvider) async throws -> Bool {
+        pendingLinkProvider = provider
+        let providerIds = currentProviderIds
+        if providerIds.contains(CloudGatewayAuthProvider.google.rawValue) {
+            try await service.reauthenticateWithGoogle()
+            accountLinkReauthMethod = .none
+            return true
+        }
+        if providerIds.contains(CloudGatewayAuthProvider.password.rawValue) {
+            accountLinkReauthMethod = .password
+            throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
+        }
+        if providerIds.contains(CloudGatewayAuthProvider.apple.rawValue) {
+            accountLinkReauthMethod = .apple
+            throw CloudGatewayAppError.accessDenied("Sign in with Apple again, then try linking once more.")
+        }
+        throw CloudGatewayAppError.requiresRecentLogin
+    }
+
+    private func didLinkProvider(_ provider: CloudGatewayAuthProvider) {
+        refreshLinkedProviderIds()
+        clearAccountLinkState()
+        successText = "\(provider.title) was linked to your account."
     }
 
     private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
@@ -649,6 +814,7 @@ final class CloudGatewayViewModel: ObservableObject {
         if let user {
             signedInEmail = user.email
             signedInUid = user.uid
+            refreshLinkedProviderIds()
             appMode = .signedIn
             if !isWorking && configOptions.isEmpty {
                 await refresh()
@@ -684,6 +850,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
         signedInEmail = user.email
         signedInUid = user.uid
+        refreshLinkedProviderIds()
         appMode = .signedIn
         let token = try await service.idToken()
         let enabledRegions = try await service.fetchRegions()
@@ -727,7 +894,7 @@ final class CloudGatewayViewModel: ObservableObject {
         switch error {
         case .accessDenied(_), .noEnabledRegions:
             return true
-        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed:
+        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed, .requiresRecentLogin, .credentialAlreadyInUse, .providerAlreadyLinked, .invalidEmail, .weakPassword, .wrongPassword:
             return false
         }
     }
@@ -748,6 +915,12 @@ final class CloudGatewayViewModel: ObservableObject {
         selectedRegionId = nil
         selectedClientId = nil
         newClientName = ""
+        clearAccountLinkState()
+        linkedProviderIds = []
+    }
+
+    private func refreshLinkedProviderIds() {
+        linkedProviderIds = service.providerIds()
     }
 
     // Drop to guest and populate it directly rather than depending on the

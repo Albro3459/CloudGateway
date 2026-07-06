@@ -126,6 +126,50 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         Auth.auth().currentUser?.providerData.map(\.providerID) ?? []
     }
 
+    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let credential = EmailAuthProvider.credential(withEmail: email, password: password)
+        do {
+            let result = try await user.link(with: credential)
+            return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
+        } catch {
+            throw Self.mapAuthError(error)
+        }
+    }
+
+    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let credential = OAuthProvider.appleCredential(
+            withIDToken: idToken,
+            rawNonce: rawNonce,
+            fullName: nil
+        )
+        do {
+            let result = try await user.link(with: credential)
+            return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
+        } catch {
+            throw Self.mapAuthError(error)
+        }
+    }
+
+    func linkGoogle() async throws -> AuthenticatedUser {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let (idToken, accessToken) = try await Self.presentGoogleSignIn(clientID: googleClientID())
+        let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
+        do {
+            let result = try await user.link(with: credential)
+            return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
+        } catch {
+            throw Self.mapAuthError(error)
+        }
+    }
+
     func reauthenticateWithPassword(_ password: String) async throws {
         guard let user = Auth.auth().currentUser,
               let email = user.email else {
@@ -156,6 +200,28 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
         _ = try await user.reauthenticate(with: credential)
         try await Self.disconnectGoogle()
+    }
+
+    private static func mapAuthError(_ error: Error) -> Error {
+        guard let code = AuthErrorCode(_bridgedNSError: error as NSError)?.code else {
+            return error
+        }
+        switch code {
+        case .requiresRecentLogin:
+            return CloudGatewayAppError.requiresRecentLogin
+        case .credentialAlreadyInUse, .emailAlreadyInUse:
+            return CloudGatewayAppError.credentialAlreadyInUse
+        case .providerAlreadyLinked:
+            return CloudGatewayAppError.providerAlreadyLinked
+        case .invalidEmail:
+            return CloudGatewayAppError.invalidEmail
+        case .weakPassword:
+            return CloudGatewayAppError.weakPassword
+        case .wrongPassword, .invalidCredential:
+            return CloudGatewayAppError.wrongPassword
+        default:
+            return error
+        }
     }
 
     private static func disconnectGoogle() async throws {

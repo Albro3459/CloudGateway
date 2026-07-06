@@ -11,10 +11,13 @@ struct ContentView: View {
     @State private var hasEnteredGuestDashboard = false
     @State private var isShowingAbout = false
     @State private var isShowingAccount = false
+    @State private var isShowingAccountLinking = false
     @State private var isShowingDeleteAccount = false
     @State private var isConfirmingReset = false
     @State private var isShowingCreateRestriction = false
     @State private var appleRawNonce = ""
+    @State private var linkAccountAppleRawNonce = ""
+    @State private var linkAccountAppleReauthRawNonce = ""
     @State private var deleteAccountAppleRawNonce = ""
     @Environment(\.cloudGatewayTheme) private var theme
 
@@ -61,6 +64,7 @@ struct ContentView: View {
                 hasEnteredGuestDashboard = false
                 isShowingCreateRestriction = false
                 isShowingAccount = false
+                isShowingAccountLinking = false
                 isShowingDeleteAccount = false
             }
         }
@@ -73,16 +77,34 @@ struct ContentView: View {
             AccountView(
                 email: viewModel.signedInEmail,
                 isWorking: viewModel.isWorking,
+                canLinkAnotherProvider: viewModel.canLinkAnotherProvider,
                 onLogout: {
                     isShowingAccount = false
                     Task {
                         await viewModel.signOut()
                     }
                 },
+                onLinkAnotherProvider: {
+                    isShowingAccount = false
+                    presentAccountLinking()
+                },
                 onDelete: {
                     isShowingAccount = false
                     presentDeleteAccount()
                 }
+            )
+        }
+        .sheet(isPresented: $isShowingAccountLinking) {
+            AccountLinkingView(
+                viewModel: viewModel,
+                appleRawNonce: $linkAccountAppleRawNonce,
+                appleReauthRawNonce: $linkAccountAppleReauthRawNonce,
+                onCancel: {
+                    viewModel.clearAccountLinkState()
+                    isShowingAccountLinking = false
+                },
+                onAppleLinkCompletion: handleLinkAccountAppleCompletion,
+                onAppleReauthCompletion: handleLinkAccountAppleReauthCompletion
             )
         }
         .sheet(isPresented: $isShowingDeleteAccount) {
@@ -721,6 +743,70 @@ struct ContentView: View {
         }
     }
 
+    private func presentAccountLinking() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            isShowingAccountLinking = true
+        }
+    }
+
+    private func handleLinkAccountAppleCompletion(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8)
+            else {
+                Task {
+                    await viewModel.reportAppleSignInFailure()
+                }
+                return
+            }
+            Task {
+                await viewModel.linkApple(idToken: idToken, rawNonce: linkAccountAppleRawNonce)
+            }
+        case .failure(let error):
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            Task {
+                await viewModel.reportAppleSignInFailure()
+            }
+        }
+    }
+
+    private func handleLinkAccountAppleReauthCompletion(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8),
+                let authorizationCodeData = credential.authorizationCode,
+                let authorizationCode = String(data: authorizationCodeData, encoding: .utf8)
+            else {
+                Task {
+                    await viewModel.reportAppleSignInFailure()
+                }
+                return
+            }
+            Task {
+                await viewModel.completeAccountLinkAppleReauth(
+                    idToken: idToken,
+                    rawNonce: linkAccountAppleReauthRawNonce,
+                    authorizationCode: authorizationCode
+                )
+            }
+        case .failure(let error):
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            Task {
+                await viewModel.reportAppleSignInFailure()
+            }
+        }
+    }
+
     private func handleDeleteAccountAppleCompletion(_ result: Result<ASAuthorization, Error>) {
         switch result {
         case .success(let authorization):
@@ -796,7 +882,9 @@ private struct AccountView: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let email: String?
     let isWorking: Bool
+    let canLinkAnotherProvider: Bool
     let onLogout: () -> Void
+    let onLinkAnotherProvider: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -824,6 +912,16 @@ private struct AccountView: View {
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(isWorking)
 
+                    if canLinkAnotherProvider {
+                        Button {
+                            onLinkAnotherProvider()
+                        } label: {
+                            Label("Link another sign-in method", systemImage: "link")
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(isWorking)
+                    }
+
                     Button(role: .destructive) {
                         onDelete()
                     } label: {
@@ -835,7 +933,158 @@ private struct AccountView: View {
             }
             .padding(16)
         }
-        .presentationDetents([.height(280)])
+        .presentationDetents([.height(canLinkAnotherProvider ? 340 : 280)])
+    }
+}
+
+private struct AccountLinkingView: View {
+    @ObservedObject var viewModel: CloudGatewayViewModel
+    @Binding var appleRawNonce: String
+    @Binding var appleReauthRawNonce: String
+    let onCancel: () -> Void
+    let onAppleLinkCompletion: (Result<ASAuthorization, Error>) -> Void
+    let onAppleReauthCompletion: (Result<ASAuthorization, Error>) -> Void
+    @Environment(\.cloudGatewayTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ScrollView {
+                ThemedPanel {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Link Sign-In Method")
+                                .font(.title2.bold())
+                                .foregroundStyle(theme.content)
+
+                            Spacer()
+
+                            Button("Done", action: onCancel)
+                                .buttonStyle(NavTextButtonStyle())
+                                .disabled(viewModel.isWorking)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Choose another way to sign in to this same CloudGateway account.")
+                            Text("If the sign-in method is already used by another CloudGateway account, linking will not work.")
+                            Text("Emails do not need to match. Link only methods you control.")
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(theme.contentSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        if viewModel.accountLinkReauthMethod == .password {
+                            ThemedSecureField(
+                                title: "Current password",
+                                placeholder: "Enter your current password",
+                                text: $viewModel.linkCurrentPassword
+                            )
+                        } else if viewModel.accountLinkReauthMethod == .apple {
+                            appleReauthButton
+                        }
+
+                        ForEach(viewModel.missingLinkProviders) { provider in
+                            providerControl(provider)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    @ViewBuilder
+    private func providerControl(_ provider: CloudGatewayAuthProvider) -> some View {
+        switch provider {
+        case .password:
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Email and password", systemImage: "key")
+                    .font(.headline)
+                    .foregroundStyle(theme.content)
+
+                ThemedTextField(
+                    title: "Email",
+                    placeholder: "you@example.com",
+                    text: $viewModel.linkEmail,
+                    keyboardType: .emailAddress
+                )
+
+                ThemedSecureField(
+                    title: "New password",
+                    placeholder: "Create a password",
+                    text: $viewModel.linkPassword
+                )
+
+                Button {
+                    Task {
+                        await viewModel.linkEmailPassword()
+                    }
+                } label: {
+                    Label("Link email and password", systemImage: "link")
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(viewModel.linkPasswordDisabled)
+            }
+            .padding(12)
+            .background(theme.inset)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(theme.edgeSubtle, lineWidth: 1)
+            }
+        case .google:
+            Button {
+                Task {
+                    await viewModel.linkGoogle()
+                }
+            } label: {
+                Label("Link Google", systemImage: "g.circle")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(SecondaryButtonStyle())
+            .disabled(viewModel.isWorking)
+        case .apple:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Do not link an Apple private relay email to a real email identity unless you are comfortable associating them.")
+                    .font(.subheadline)
+                    .foregroundStyle(theme.contentSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                SignInWithAppleButton(.continue) { request in
+                    let nonce = AppleSignInNonce.randomNonceString()
+                    appleRawNonce = nonce
+                    request.nonce = AppleSignInNonce.sha256(nonce)
+                } onCompletion: { result in
+                    onAppleLinkCompletion(result)
+                }
+                .signInWithAppleButtonStyle(.whiteOutline)
+                .frame(height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .disabled(viewModel.isWorking)
+            }
+        }
+    }
+
+    private var appleReauthButton: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Sign in with Apple again to continue linking.")
+                .font(.subheadline)
+                .foregroundStyle(theme.contentSecondary)
+
+            SignInWithAppleButton(.continue) { request in
+                let nonce = AppleSignInNonce.randomNonceString()
+                appleReauthRawNonce = nonce
+                request.nonce = AppleSignInNonce.sha256(nonce)
+            } onCompletion: { result in
+                onAppleReauthCompletion(result)
+            }
+            .signInWithAppleButtonStyle(.whiteOutline)
+            .frame(height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .disabled(viewModel.isWorking)
+        }
     }
 }
 
