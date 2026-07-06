@@ -86,10 +86,6 @@ const CreateUser: React.FC = () => {
                 const result = await createAdminUser({ email: trimmedEmail }, jwtToken, ociRegions);
                 setLoading(false);
                 if (result.success) {
-                    const successText = result.data.alreadyExisted
-                        ? `Existing account granted access: ${trimmedEmail}`
-                        : `User access granted: ${trimmedEmail}`;
-                    setSuccessMessage(successText);
                     setEmail("");
                     navigate("/create-user-success", {
                         replace: true,
