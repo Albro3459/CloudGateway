@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
-import { LogOut, Trash2, UserCircle } from "lucide-react";
+import { KeyRound, Link, LogOut, Trash2, UserCircle } from "lucide-react";
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
 import { createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
 import type { ApiHelperFailure } from "../helpers/APIHelper";
-import { appleProvider, auth, EmailAuthProvider, googleProvider, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
+import { appleProvider, auth, EmailAuthProvider, googleProvider, linkWithCredential, linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
@@ -28,10 +28,19 @@ type Banner = {
 
 const PULL_REFRESH_THRESHOLD = 72;
 const PULL_REFRESH_MAX_DISTANCE = 96;
+const ALL_AUTH_PROVIDER_IDS = ["password", "google.com", "apple.com"] as const;
+
+type AuthProviderId = typeof ALL_AUTH_PROVIDER_IDS[number];
 
 const getEnabledRegions = (regions: Region[] | null) => (
     (regions || []).filter(region => region.enabled !== false)
 );
+
+const getProviderLabel = (providerId: AuthProviderId) => {
+    if (providerId === "password") return "Email and password";
+    if (providerId === "apple.com") return "Apple";
+    return "Google";
+};
 
 const Home: React.FC = () => {
     const navigate = useNavigate();
@@ -42,6 +51,14 @@ const Home: React.FC = () => {
     const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
     const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
     const [deletingAccount, setDeletingAccount] = useState(false);
+    const [linkedProviderIds, setLinkedProviderIds] = useState<string[]>([]);
+    const [linkAccountModalOpen, setLinkAccountModalOpen] = useState(false);
+    const [linkEmail, setLinkEmail] = useState("");
+    const [linkPassword, setLinkPassword] = useState("");
+    const [linkCurrentPassword, setLinkCurrentPassword] = useState("");
+    const [linkingProviderId, setLinkingProviderId] = useState<AuthProviderId | null>(null);
+    const [linkError, setLinkError] = useState<string | null>(null);
+    const [linkRequiresPasswordReauth, setLinkRequiresPasswordReauth] = useState(false);
 
     const [role, setRole] = useState<string | null>(null);
     const [jwtToken, setJwtToken] = useState<string | null>(null);
@@ -87,6 +104,10 @@ const Home: React.FC = () => {
 
     const showBanner = (type: Banner["type"], message: string) => {
         setBanner({ type, message });
+    };
+
+    const refreshLinkedProviderIds = () => {
+        setLinkedProviderIds(auth.currentUser?.providerData?.map(provider => provider.providerId) || []);
     };
 
     const clearSelectedClients = () => {
@@ -227,11 +248,23 @@ const Home: React.FC = () => {
         setDeleteAccountPassword("");
     };
 
-    const currentProviderIds = () => (
-        auth.currentUser?.providerData?.map(provider => provider.providerId) || []
-    );
+    const closeLinkAccountModal = () => {
+        if (linkingProviderId) {
+            return;
+        }
+        setLinkAccountModalOpen(false);
+        setLinkEmail("");
+        setLinkPassword("");
+        setLinkCurrentPassword("");
+        setLinkError(null);
+        setLinkRequiresPasswordReauth(false);
+    };
+
+    const currentProviderIds = () => linkedProviderIds;
 
     const requiresPasswordReauth = currentProviderIds().includes("password");
+    const missingProviderIds = ALL_AUTH_PROVIDER_IDS.filter(providerId => !linkedProviderIds.includes(providerId));
+    const canLinkAnotherProvider = missingProviderIds.length > 0;
 
     const reauthenticateForAccountDeletion = async () => {
         const user = auth.currentUser;
@@ -291,6 +324,143 @@ const Home: React.FC = () => {
             }
         } finally {
             setDeletingAccount(false);
+        }
+    };
+
+    const getLinkErrorMessage = (error: unknown) => {
+        const code = error && typeof error === "object" && "code" in error
+            ? (error as { code?: string }).code
+            : null;
+
+        if (code === "auth/credential-already-in-use" || code === "auth/email-already-in-use") {
+            return "That sign-in method is already used by another CloudGateway account. Sign in with that account directly or contact support.";
+        }
+        if (code === "auth/provider-already-linked") {
+            return "That sign-in method is already linked to this account.";
+        }
+        if (code === "auth/popup-blocked") {
+            return "Allow popups for this site, then try again.";
+        }
+        if (code === "auth/invalid-email") {
+            return "Enter a valid email address.";
+        }
+        if (code === "auth/weak-password") {
+            return "Enter a stronger password.";
+        }
+        if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+            return "The current password is incorrect.";
+        }
+
+        return "Unable to link that sign-in method. Try again or contact support.";
+    };
+
+    const getAuthErrorCode = (error: unknown) => (
+        error && typeof error === "object" && "code" in error
+            ? (error as { code?: string }).code
+            : null
+    );
+
+    const reauthenticateForAccountLinking = async () => {
+        const user = auth.currentUser;
+        if (!user) {
+            throw new Error("No account is signed in");
+        }
+
+        const providers = currentProviderIds();
+        if (providers.includes("google.com")) {
+            await reauthenticateWithPopup(user, googleProvider);
+            return true;
+        }
+
+        if (providers.includes("apple.com")) {
+            await reauthenticateWithPopup(user, appleProvider);
+            return true;
+        }
+
+        if (providers.includes("password")) {
+            const email = user.email;
+            if (!email || !linkCurrentPassword.trim()) {
+                setLinkRequiresPasswordReauth(true);
+                setLinkError("Enter your current password, then try again.");
+                return false;
+            }
+            const credential = EmailAuthProvider.credential(email, linkCurrentPassword);
+            await reauthenticateWithCredential(user, credential);
+            return true;
+        }
+
+        throw new Error("Sign in again before linking another sign-in method");
+    };
+
+    const linkProvider = async (providerId: AuthProviderId) => {
+        const user = auth.currentUser;
+        if (!user) {
+            throw new Error("No account is signed in");
+        }
+
+        if (providerId === "google.com") {
+            await linkWithPopup(user, googleProvider);
+            return;
+        }
+
+        if (providerId === "apple.com") {
+            await linkWithPopup(user, appleProvider);
+            return;
+        }
+
+        if (!linkEmail.trim() || !linkPassword.trim()) {
+            throw new Error("Enter an email address and password to link.");
+        }
+
+        const credential = EmailAuthProvider.credential(linkEmail.trim(), linkPassword);
+        await linkWithCredential(user, credential);
+    };
+
+    const handleLinkProvider = async (providerId: AuthProviderId, retried = false) => {
+        if (linkingProviderId) {
+            return;
+        }
+
+        setLinkingProviderId(providerId);
+        setLinkError(null);
+        try {
+            if (linkRequiresPasswordReauth) {
+                const reauthenticated = await reauthenticateForAccountLinking();
+                if (!reauthenticated) return;
+            }
+
+            await linkProvider(providerId);
+            await auth.currentUser?.reload();
+            refreshLinkedProviderIds();
+            closeLinkAccountModal();
+            showBanner("success", `${getProviderLabel(providerId)} was linked to your account.`);
+        } catch (error) {
+            const code = getAuthErrorCode(error);
+            if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+                return;
+            }
+            if (code === "auth/requires-recent-login" && !retried) {
+                try {
+                    const reauthenticated = await reauthenticateForAccountLinking();
+                    if (reauthenticated) {
+                        setLinkingProviderId(null);
+                        await handleLinkProvider(providerId, true);
+                    }
+                } catch (reauthError) {
+                    const reauthCode = getAuthErrorCode(reauthError);
+                    if (reauthCode !== "auth/popup-closed-by-user" && reauthCode !== "auth/cancelled-popup-request") {
+                        setLinkError(getLinkErrorMessage(reauthError));
+                    }
+                }
+                return;
+            }
+            setLinkError(error instanceof Error && !code ? error.message : getLinkErrorMessage(error));
+            if (code === "auth/provider-already-linked") {
+                await auth.currentUser?.reload();
+                refreshLinkedProviderIds();
+            }
+        } finally {
+            setLinkingProviderId(null);
         }
     };
 
@@ -505,6 +675,7 @@ const Home: React.FC = () => {
         const unsubscribe = onAuthStateChanged(auth, (user) => {
             const fetchUserData = async () => {
                 if (user) {
+                    setLinkedProviderIds(user.providerData?.map(provider => provider.providerId) || []);
                     void fillVPNs(user);
                     const token: string | null = await user.getIdToken();
                     setJwtToken(token);
@@ -583,7 +754,7 @@ const Home: React.FC = () => {
                             <UserCircle size={22} aria-hidden="true" />
                         </button>
                         {accountMenuOpen && (
-                            <div className="absolute right-0 mt-2 w-48 rounded-lg border border-edge bg-card py-2 text-content shadow-lg">
+                            <div className="absolute right-0 mt-2 w-64 rounded-lg border border-edge bg-card py-2 text-content shadow-lg">
                                 <button
                                     type="button"
                                     onClick={async () => {
@@ -595,6 +766,19 @@ const Home: React.FC = () => {
                                     <LogOut size={16} aria-hidden="true" />
                                     Logout
                                 </button>
+                                {canLinkAnotherProvider && (
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setAccountMenuOpen(false);
+                                            setLinkAccountModalOpen(true);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
+                                    >
+                                        <Link size={16} aria-hidden="true" />
+                                        Link another sign-in method
+                                    </button>
+                                )}
                                 <button
                                     type="button"
                                     onClick={() => {
@@ -782,6 +966,130 @@ const Home: React.FC = () => {
                 removing={removeDisabled}
                 activeRegionName={activeRegionName}
             />
+
+            {linkAccountModalOpen && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={closeLinkAccountModal}
+                >
+                    <div
+                        className="relative w-full max-w-lg rounded-lg bg-card p-6 text-left shadow-lg"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            onClick={closeLinkAccountModal}
+                            className="absolute right-3 top-2 text-lg font-bold text-content-muted hover:text-content"
+                            aria-label="Close link sign-in method"
+                            disabled={!!linkingProviderId}
+                        >
+                            x
+                        </button>
+                        <h3 className="mb-3 text-2xl font-semibold text-content">Link Sign-In Method</h3>
+                        <div className="space-y-2 text-sm text-content-secondary">
+                            <p>Choose another way to sign in to this same CloudGateway account.</p>
+                            <p>If the sign-in method is already used by another CloudGateway account, linking will not work.</p>
+                            <p>Emails do not need to match. Link only methods you control.</p>
+                        </div>
+
+                        {linkError && (
+                            <div className="mt-4 rounded-lg bg-danger-soft px-4 py-3 text-sm text-danger-content">
+                                {linkError}
+                            </div>
+                        )}
+
+                        {linkRequiresPasswordReauth && (
+                            <label className="mt-4 block text-sm font-medium text-content-secondary">
+                                Current password
+                                <input
+                                    value={linkCurrentPassword}
+                                    onChange={(event) => setLinkCurrentPassword(event.target.value)}
+                                    type="password"
+                                    autoComplete="current-password"
+                                    className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                    disabled={!!linkingProviderId}
+                                />
+                            </label>
+                        )}
+
+                        <div className="mt-5 space-y-3">
+                            {missingProviderIds.includes("password") && (
+                                <div className="rounded-lg border border-edge-subtle p-4">
+                                    <div className="flex items-start gap-3">
+                                        <KeyRound className="mt-0.5 text-accent" size={18} aria-hidden="true" />
+                                        <div className="min-w-0 flex-1">
+                                            <h4 className="font-medium text-content">Email and password</h4>
+                                            <div className="mt-3 grid gap-3">
+                                                <label className="block text-sm font-medium text-content-secondary">
+                                                    Email
+                                                    <input
+                                                        value={linkEmail}
+                                                        onChange={(event) => setLinkEmail(event.target.value)}
+                                                        type="email"
+                                                        autoComplete="email"
+                                                        className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                                        disabled={!!linkingProviderId}
+                                                    />
+                                                </label>
+                                                <label className="block text-sm font-medium text-content-secondary">
+                                                    New password
+                                                    <input
+                                                        value={linkPassword}
+                                                        onChange={(event) => setLinkPassword(event.target.value)}
+                                                        type="password"
+                                                        autoComplete="new-password"
+                                                        className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                                        disabled={!!linkingProviderId}
+                                                    />
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleLinkProvider("password")}
+                                                    className="w-full cursor-pointer rounded-lg bg-primary p-3 text-sm font-medium text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                                                    disabled={!!linkingProviderId || !linkEmail.trim() || !linkPassword.trim()}
+                                                >
+                                                    {linkingProviderId === "password" ? "Linking..." : "Link email and password"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {missingProviderIds.includes("google.com") && (
+                                <button
+                                    type="button"
+                                    onClick={() => void handleLinkProvider("google.com")}
+                                    className="w-full cursor-pointer rounded-lg border border-edge-subtle p-4 text-left transition hover:bg-inset disabled:cursor-not-allowed disabled:bg-disabled"
+                                    disabled={!!linkingProviderId}
+                                >
+                                    <span className="block font-medium text-content">
+                                        {linkingProviderId === "google.com" ? "Linking Google..." : "Link Google"}
+                                    </span>
+                                    <span className="mt-1 block text-sm text-content-secondary">
+                                        Sign in with Google to add it to this account.
+                                    </span>
+                                </button>
+                            )}
+
+                            {missingProviderIds.includes("apple.com") && (
+                                <button
+                                    type="button"
+                                    onClick={() => void handleLinkProvider("apple.com")}
+                                    className="w-full cursor-pointer rounded-lg border border-edge-subtle p-4 text-left transition hover:bg-inset disabled:cursor-not-allowed disabled:bg-disabled"
+                                    disabled={!!linkingProviderId}
+                                >
+                                    <span className="block font-medium text-content">
+                                        {linkingProviderId === "apple.com" ? "Linking Apple..." : "Link Apple"}
+                                    </span>
+                                    <span className="mt-1 block text-sm text-content-secondary">
+                                        Do not link an Apple private relay email to a real email identity unless you are comfortable associating them.
+                                    </span>
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {configData && (
                 <div

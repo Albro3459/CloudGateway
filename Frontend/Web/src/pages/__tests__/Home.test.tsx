@@ -10,6 +10,7 @@ const mockUser = {
     uid: "user-1",
     email: "user@example.com",
     getIdToken: jest.fn().mockResolvedValue("firebase-token"),
+    reload: jest.fn().mockResolvedValue(undefined),
     providerData: [{ providerId: "google.com" }],
 };
 
@@ -25,6 +26,8 @@ jest.mock("../../firebase", () => ({
     EmailAuthProvider: { credential: jest.fn(() => ({ providerId: "password" })) },
     appleProvider,
     googleProvider,
+    linkWithCredential: jest.fn().mockResolvedValue(undefined),
+    linkWithPopup: jest.fn().mockResolvedValue(undefined),
     reauthenticateWithCredential: jest.fn().mockResolvedValue(undefined),
     reauthenticateWithPopup: jest.fn().mockResolvedValue(undefined),
 }));
@@ -99,6 +102,7 @@ describe("Home pull to refresh", () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockUser.getIdToken.mockResolvedValue("firebase-token");
+        mockUser.reload.mockResolvedValue(undefined);
         const { auth, onAuthStateChanged } = require("../../firebase");
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
         const { getUserRole } = require("../../helpers/usersHelper");
@@ -366,10 +370,150 @@ describe("Home pull to refresh", () => {
     });
 });
 
+describe("Home account linking", () => {
+    const renderHome = async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalled());
+    };
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockUser.getIdToken.mockResolvedValue("firebase-token");
+        mockUser.reload.mockResolvedValue(undefined);
+        mockUser.providerData = [{ providerId: "google.com" }];
+        const { auth, EmailAuthProvider, onAuthStateChanged, linkWithCredential, linkWithPopup, reauthenticateWithCredential, reauthenticateWithPopup } = require("../../firebase");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
+
+        auth.currentUser = mockUser;
+        onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            callback(mockUser);
+            return () => undefined;
+        });
+        getUsersVPNs.mockResolvedValue([]);
+        getUserRole.mockResolvedValue("user");
+        fetchOciRegions.mockResolvedValue(undefined);
+        EmailAuthProvider.credential.mockReturnValue({ providerId: "password" });
+        linkWithCredential.mockResolvedValue(undefined);
+        linkWithPopup.mockResolvedValue(undefined);
+        reauthenticateWithCredential.mockResolvedValue(undefined);
+        reauthenticateWithPopup.mockResolvedValue(undefined);
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{ displayName: "San Jose", regionId: "us-sanjose-1", enabled: true, displayOrder: 1 }],
+            loading: false,
+            error: null,
+        }));
+        Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    });
+
+    it("shows only unlinked sign-in methods", async () => {
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+
+        expect(screen.getByText("Email and password")).toBeTruthy();
+        expect(screen.getByRole("button", { name: /Link Apple/ })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /Link Google/ })).toBeNull();
+    });
+
+    it("hides the menu item when every supported method is linked", async () => {
+        mockUser.providerData = [
+            { providerId: "password" },
+            { providerId: "google.com" },
+            { providerId: "apple.com" },
+        ];
+
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+        expect(screen.queryByRole("button", { name: "Link another sign-in method" })).toBeNull();
+    });
+
+    it("links an email and password credential", async () => {
+        const { EmailAuthProvider, linkWithCredential } = require("../../firebase");
+
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+        fireEvent.change(screen.getByLabelText("Email"), {
+            target: { value: "linked@example.com" },
+        });
+        fireEvent.change(screen.getByLabelText("New password"), {
+            target: { value: "new-password-123" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Link email and password" }));
+
+        await waitFor(() => {
+            expect(EmailAuthProvider.credential).toHaveBeenCalledWith("linked@example.com", "new-password-123");
+            expect(linkWithCredential).toHaveBeenCalledWith(mockUser, { providerId: "password" });
+            expect(screen.getByText("Email and password was linked to your account.")).toBeTruthy();
+        });
+    });
+
+    it("links Google with a popup", async () => {
+        mockUser.providerData = [{ providerId: "password" }];
+        const { linkWithPopup, googleProvider } = require("../../firebase");
+
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+        fireEvent.click(screen.getByRole("button", { name: /Link Google/ }));
+
+        await waitFor(() => {
+            expect(linkWithPopup).toHaveBeenCalledWith(mockUser, googleProvider);
+            expect(screen.getByText("Google was linked to your account.")).toBeTruthy();
+        });
+    });
+
+    it("reauthenticates and retries when linking requires a recent sign-in", async () => {
+        mockUser.providerData = [{ providerId: "apple.com" }];
+        const { appleProvider, googleProvider, linkWithPopup, reauthenticateWithPopup } = require("../../firebase");
+
+        linkWithPopup
+            .mockRejectedValueOnce({ code: "auth/requires-recent-login" })
+            .mockResolvedValueOnce(undefined);
+
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+        fireEvent.click(screen.getByRole("button", { name: /Link Google/ }));
+
+        await waitFor(() => {
+            expect(reauthenticateWithPopup).toHaveBeenCalledWith(mockUser, appleProvider);
+            expect(linkWithPopup).toHaveBeenLastCalledWith(mockUser, googleProvider);
+            expect(linkWithPopup).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    it("shows a no-merge error when the credential is already used", async () => {
+        const { linkWithPopup } = require("../../firebase");
+
+        linkWithPopup.mockRejectedValueOnce({ code: "auth/credential-already-in-use" });
+
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+        fireEvent.click(screen.getByRole("button", { name: /Link Apple/ }));
+
+        expect(await screen.findByText("That sign-in method is already used by another CloudGateway account. Sign in with that account directly or contact support.")).toBeTruthy();
+    });
+});
+
 describe("Home account deletion reauthentication", () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockUser.getIdToken.mockResolvedValue("firebase-token");
+        mockUser.reload.mockResolvedValue(undefined);
         mockUser.providerData = [{ providerId: "google.com" }];
         const { auth, onAuthStateChanged, reauthenticateWithPopup, reauthenticateWithCredential } = require("../../firebase");
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
