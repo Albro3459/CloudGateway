@@ -20,7 +20,7 @@
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
   <img src="https://github.com/user-attachments/assets/fe33a1c2-7c88-4047-8647-7a8fb5b721ac" alt="Dashboard" height="400"/>
-  <img src="https://github.com/user-attachments/assets/4291c823-3608-47d5-aaac-a18efa3d012a" alt="Login" height="400"/>
+  <img src="https://github.com/user-attachments/assets/e8fe3bf2-fe29-4c92-857e-0b30b449dbc2" alt="Login" height="400"/>
 </div>
 
 #### Website
