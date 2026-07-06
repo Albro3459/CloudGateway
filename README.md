@@ -16,18 +16,18 @@
 
 ## Screenshots
 
+#### iOS App
+
+<div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
+  <img src="https://github.com/user-attachments/assets/fe33a1c2-7c88-4047-8647-7a8fb5b721ac" alt="Dashboard" height="400"/>
+  <img src="https://github.com/user-attachments/assets/4291c823-3608-47d5-aaac-a18efa3d012a" alt="Login" height="400"/>
+</div>
+
 #### Website
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
   <img src="https://github.com/user-attachments/assets/13f11324-5489-4f6f-bc54-ba4e18bd1f83" alt="Dashboard" height="400"/>
   <img src="https://github.com/user-attachments/assets/039c0c18-54e3-4c25-aed4-3b86b78e4cb7" alt="Admin Region Sync" height="400"/>
-</div>
-
-#### iOS App
-
-<div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
-  <img src="placeholder" alt="Dashboard" height="400"/>
-  <img src="placeholder" alt="Login" height="400"/>
 </div>
 
 ## Architecture
