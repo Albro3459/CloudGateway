@@ -8,8 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 607A1C1A2FF5498A0001783A /* CloudGatewayKit */; };
-		60C0DE102FF700000089F40B /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 60B438382FF611BE0089F40B /* GoogleSignIn */; };
+		60C0DE102FF700000089F40B /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		ABCDEF000000000000000003 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
@@ -571,7 +571,7 @@
 				CLOUDGATEWAY_KEYCHAIN_ACCESS_GROUP = "$(DEVELOPMENT_TEAM).com.gocloudlaunch.gateway";
 				CODE_SIGN_ENTITLEMENTS = CloudGateway/CloudGateway.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = CRQWDQ7QQR;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -607,7 +607,7 @@
 				CLOUDGATEWAY_KEYCHAIN_ACCESS_GROUP = "$(DEVELOPMENT_TEAM).com.gocloudlaunch.gateway";
 				CODE_SIGN_ENTITLEMENTS = CloudGateway/CloudGateway.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = CRQWDQ7QQR;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
