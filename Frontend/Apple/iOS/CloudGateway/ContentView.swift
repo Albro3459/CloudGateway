@@ -10,9 +10,12 @@ struct ContentView: View {
     @State private var isShowingLogin = false
     @State private var hasEnteredGuestDashboard = false
     @State private var isShowingAbout = false
+    @State private var isShowingAccount = false
+    @State private var isShowingDeleteAccount = false
     @State private var isConfirmingReset = false
     @State private var isShowingCreateRestriction = false
     @State private var appleRawNonce = ""
+    @State private var deleteAccountAppleRawNonce = ""
     @Environment(\.cloudGatewayTheme) private var theme
 
     var body: some View {
@@ -48,12 +51,41 @@ struct ContentView: View {
                 isShowingLogin = false
                 hasEnteredGuestDashboard = false
                 isShowingCreateRestriction = false
+                isShowingAccount = false
+                isShowingDeleteAccount = false
             }
         }
         .sheet(isPresented: $isShowingAbout) {
             AboutView(version: versionText) {
                 isShowingAbout = false
             }
+        }
+        .sheet(isPresented: $isShowingAccount) {
+            AccountView(
+                email: viewModel.signedInEmail,
+                isWorking: viewModel.isWorking,
+                onLogout: {
+                    isShowingAccount = false
+                    Task {
+                        await viewModel.signOut()
+                    }
+                },
+                onDelete: {
+                    isShowingAccount = false
+                    presentDeleteAccount()
+                }
+            )
+        }
+        .sheet(isPresented: $isShowingDeleteAccount) {
+            DeleteAccountView(
+                viewModel: viewModel,
+                appleRawNonce: $deleteAccountAppleRawNonce,
+                onCancel: {
+                    viewModel.deleteAccountPassword = ""
+                    isShowingDeleteAccount = false
+                },
+                onAppleCompletion: handleDeleteAccountAppleCompletion
+            )
         }
         .sheet(item: $clientShowingDetails) { option in
             ClientDetailsView(option: option)
@@ -185,13 +217,14 @@ struct ContentView: View {
             .disabled(viewModel.isWorking)
             .accessibilityLabel("Refresh")
 
-            Button("Logout") {
-                Task {
-                    await viewModel.signOut()
-                }
+            Button {
+                isShowingAccount = true
+            } label: {
+                Image(systemName: "person.circle")
             }
-            .buttonStyle(NavTextButtonStyle())
+            .buttonStyle(IconNavButtonStyle())
             .disabled(viewModel.isWorking)
+            .accessibilityLabel("Account")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -672,6 +705,44 @@ struct ContentView: View {
             }
         }
     }
+
+    private func presentDeleteAccount() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            isShowingDeleteAccount = true
+        }
+    }
+
+    private func handleDeleteAccountAppleCompletion(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8),
+                let authorizationCodeData = credential.authorizationCode,
+                let authorizationCode = String(data: authorizationCodeData, encoding: .utf8)
+            else {
+                Task {
+                    await viewModel.reportAppleSignInFailure()
+                }
+                return
+            }
+            Task {
+                await viewModel.deleteAccountWithApple(
+                    idToken: idToken,
+                    rawNonce: deleteAccountAppleRawNonce,
+                    authorizationCode: authorizationCode
+                )
+            }
+        case .failure(let error):
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            Task {
+                await viewModel.reportAppleSignInFailure()
+            }
+        }
+    }
 }
 
 private struct ThemedPanel<Content: View>: View {
@@ -708,6 +779,142 @@ private struct SectionHeader: View {
             Text(subtitle)
                 .font(.subheadline)
                 .foregroundStyle(theme.contentMuted)
+        }
+    }
+}
+
+private struct AccountView: View {
+    @Environment(\.cloudGatewayTheme) private var theme
+    let email: String?
+    let isWorking: Bool
+    let onLogout: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Account")
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    if let email {
+                        Text(email)
+                            .font(.subheadline)
+                            .foregroundStyle(theme.contentSecondary)
+                            .textSelection(.enabled)
+                    }
+
+                    Button {
+                        onLogout()
+                    } label: {
+                        Label("Logout", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(isWorking)
+
+                    Button(role: .destructive) {
+                        onDelete()
+                    } label: {
+                        Label("Delete Account", systemImage: "trash")
+                    }
+                    .buttonStyle(DangerButtonStyle())
+                    .disabled(isWorking)
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.height(280)])
+    }
+}
+
+private struct DeleteAccountView: View {
+    @ObservedObject var viewModel: CloudGatewayViewModel
+    @Binding var appleRawNonce: String
+    let onCancel: () -> Void
+    let onAppleCompletion: (Result<ASAuthorization, Error>) -> Void
+    @Environment(\.cloudGatewayTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            theme.page.ignoresSafeArea()
+
+            ThemedPanel {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Delete Account?")
+                        .font(.title2.bold())
+                        .foregroundStyle(theme.content)
+
+                    Text("This will permanently delete your CloudGateway account, VPN clients, stored VPN configuration data, and access records. This cannot be undone.")
+                        .foregroundStyle(theme.contentSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    reauthControl
+
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(viewModel.isWorking)
+                }
+            }
+            .padding(16)
+        }
+        .presentationDetents([.height(390)])
+    }
+
+    @ViewBuilder
+    private var reauthControl: some View {
+        switch viewModel.accountDeleteReauthMethod {
+        case .password:
+            VStack(alignment: .leading, spacing: 10) {
+                ThemedSecureField(
+                    title: "Password",
+                    placeholder: "Enter your password",
+                    text: $viewModel.deleteAccountPassword
+                )
+
+                Button(role: .destructive) {
+                    Task {
+                        await viewModel.deleteAccountWithPassword()
+                    }
+                } label: {
+                    Label("Delete Account", systemImage: "trash")
+                }
+                .buttonStyle(DangerButtonStyle())
+                .disabled(
+                    viewModel.isWorking
+                        || viewModel.deleteAccountPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+        case .apple:
+            SignInWithAppleButton(.continue) { request in
+                let nonce = AppleSignInNonce.randomNonceString()
+                appleRawNonce = nonce
+                request.nonce = AppleSignInNonce.sha256(nonce)
+            } onCompletion: { result in
+                onAppleCompletion(result)
+            }
+            .signInWithAppleButtonStyle(.whiteOutline)
+            .frame(height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .disabled(viewModel.isWorking)
+        case .google:
+            Button(role: .destructive) {
+                Task {
+                    await viewModel.deleteAccountWithGoogle()
+                }
+            } label: {
+                Label("Continue with Google", systemImage: "trash")
+            }
+            .buttonStyle(DangerButtonStyle())
+            .disabled(viewModel.isWorking)
+        case .unsupported:
+            Text("Sign in again before deleting this account.")
+                .font(.subheadline)
+                .foregroundStyle(theme.dangerContent)
         }
     }
 }

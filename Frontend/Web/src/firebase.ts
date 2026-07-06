@@ -1,7 +1,10 @@
 import { initializeApp } from "firebase/app";
 import {
+  EmailAuthProvider,
   getAuth,
   GoogleAuthProvider,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -24,10 +27,15 @@ const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
 
 export {
   auth,
+  EmailAuthProvider,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithGoogle,
   signOut,
   onAuthStateChanged,
   getIdToken,
+  GoogleAuthProvider,
+  googleProvider,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
 };

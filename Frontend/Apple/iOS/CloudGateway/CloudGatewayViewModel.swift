@@ -8,6 +8,13 @@ enum CloudGatewayAppMode: Equatable {
     case signedIn
 }
 
+enum CloudGatewayAccountDeleteReauthMethod {
+    case password
+    case apple
+    case google
+    case unsupported
+}
+
 struct CloudGatewaySyncResult: Identifiable, Equatable {
     let regionId: String
     let syncedAt: String
@@ -65,6 +72,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
     @Published var newClientName = ""
     @Published var newAccessEmail = ""
+    @Published var deleteAccountPassword = ""
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
@@ -130,6 +138,24 @@ final class CloudGatewayViewModel: ObservableObject {
 
     var isAdmin: Bool {
         isSignedIn && role == "admin"
+    }
+
+    var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
+        let providerIds = service.providerIds()
+        if providerIds.contains("password") {
+            return .password
+        }
+        if providerIds.contains("apple.com") {
+            return .apple
+        }
+        if providerIds.contains("google.com") {
+            return .google
+        }
+        return .unsupported
+    }
+
+    var deleteAccountPasswordRequired: Bool {
+        accountDeleteReauthMethod == .password
     }
 
     var createDisabled: Bool {
@@ -392,6 +418,56 @@ final class CloudGatewayViewModel: ObservableObject {
             ))
             try await loadRemoteState(for: user)
             successText = "\(selectedClientOption.client.displayName) was deleted."
+        }
+    }
+
+    func deleteAccountWithPassword() async {
+        await deleteAccount {
+            let password = self.deleteAccountPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !password.isEmpty else {
+                throw CloudGatewayAppError.accessDenied("Enter your password to delete your account.")
+            }
+            try await self.service.reauthenticateWithPassword(password)
+        }
+    }
+
+    func deleteAccountWithGoogle() async {
+        await deleteAccount {
+            try await self.service.reauthenticateWithGoogle()
+        }
+    }
+
+    func deleteAccountWithApple(idToken: String, rawNonce: String, authorizationCode: String) async {
+        await deleteAccount {
+            try await self.service.reauthenticateWithApple(
+                idToken: idToken,
+                rawNonce: rawNonce,
+                authorizationCode: authorizationCode
+            )
+        }
+    }
+
+    private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
+        await run {
+            guard service.currentUser != nil else {
+                throw CloudGatewayAppError.missingCurrentUser
+            }
+            try await reauthenticate()
+            let token = try await service.idToken(forceRefresh: true)
+            _ = try await service.deleteAccount(idToken: token)
+            await removeInstalledConfigsAfterAccountDelete()
+            deleteAccountPassword = ""
+            try service.signOut()
+            try await loadGuestState()
+        }
+    }
+
+    private func removeInstalledConfigsAfterAccountDelete() async {
+        for snapshot in installedSnapshots {
+            _ = try? await configManager.removeTunnel(identifier: snapshot.clientId)
+        }
+        if let state = try? await configManager.loadLocalState() {
+            apply(state)
         }
     }
 

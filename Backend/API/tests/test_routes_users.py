@@ -1,9 +1,12 @@
+from src.auth import AuthenticatedUser
 import src.routes as routes
 from src.enums import Role
 from src.errors import FirebaseWriteFailedError
 from src.repository import UserDoc, utc_now
 
+from .conftest import REGION_ID
 from .test_errors import assert_error_shape
+from .test_routes_clients import create_active_client, seed_region
 
 
 class RecordingAccessGrantEmailSender:
@@ -267,3 +270,126 @@ def test_create_user_maps_unexpected_failure_to_internal_error(client, repositor
     assert response.status_code == 500
     assert_error_shape(response.json(), "INTERNAL_ERROR")
     assert email_sender.calls == []
+
+
+def test_delete_account_removes_peer_and_hard_deletes_all_owned_docs(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    creating = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Creating",
+    )
+    failed = repository.mark_client_failed(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=creating.client_id,
+        error_code="TEST",
+        error_message="failed",
+    )
+    removed_seed = repository.reserve_client(
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        region_id=REGION_ID,
+        client_name="Removed",
+    )
+    removed = repository.remove_client_reservation(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=removed_seed.client_id,
+    )
+    other_user_client = repository.reserve_client(
+        owner_uid="user-2",
+        owner_email="user2@example.com",
+        region_id=REGION_ID,
+        client_name="Other",
+    )
+
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "userId": "user-1",
+        "deletedClientCount": 3,
+    }
+    assert active.client_public_key not in wireguard.peers
+    assert wireguard.remove_peer_calls == 1
+    assert repository.get_user("user-1") is None
+    assert repository.get_role("user-1") is None
+    assert repository.deleted_auth_uids == ["user-1"]
+    assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id) is None
+    assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=failed.client_id) is None
+    assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=removed.client_id) is None
+    assert repository.get_client(owner_uid="user-2", region_id=REGION_ID, client_id=other_user_client.client_id) is not None
+
+
+def test_delete_account_rejects_admin_without_deleting_docs(client, repository):
+    repository.users["admin-1"] = UserDoc(
+        uid="admin-1",
+        email="admin@example.com",
+        created_at=utc_now(),
+    )
+
+    response = client.delete("/account", headers=auth_header("admin-token"))
+
+    assert response.status_code == 400
+    assert_error_shape(response.json(), "INVALID_REQUEST")
+    assert repository.get_user("admin-1") is not None
+    assert repository.get_role("admin-1") == Role.ADMIN
+    assert repository.deleted_auth_uids == []
+
+
+def test_delete_account_requires_recent_sign_in(client, repository, token_verifier):
+    token_verifier.users["user-token"] = AuthenticatedUser(
+        uid="user-1",
+        email="user@example.com",
+        auth_time=0,
+    )
+
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 401
+    assert_error_shape(response.json(), "AUTH_REQUIRED")
+    assert repository.get_role("user-1") == Role.USER
+    assert repository.deleted_auth_uids == []
+
+
+def test_delete_account_does_not_delete_docs_when_peer_removal_fails(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    wireguard.fail_remove_count = 1
+
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 500
+    assert_error_shape(response.json(), "WIREGUARD_APPLY_FAILED")
+    assert repository.get_role("user-1") == Role.USER
+    assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id) is not None
+    assert active.client_public_key in wireguard.peers
+    assert repository.deleted_auth_uids == []
+
+
+def test_delete_account_can_retry_auth_delete_after_docs_were_removed(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    repository.delete_auth_user_error = RuntimeError("auth unavailable")
+
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 500
+    assert_error_shape(response.json(), "INTERNAL_ERROR")
+    assert repository.get_user("user-1") is None
+    assert repository.get_role("user-1") is None
+    assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id) is None
+    assert repository.deleted_auth_uids == []
+
+    repository.delete_auth_user_error = None
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "userId": "user-1",
+        "deletedClientCount": 0,
+    }
+    assert repository.deleted_auth_uids == ["user-1"]

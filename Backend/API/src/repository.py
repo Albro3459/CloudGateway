@@ -216,6 +216,10 @@ class FirebaseRepository(ABC):
         """Return clients in one region whose public key is in public_keys."""
 
     @abstractmethod
+    def list_clients_for_owner(self, owner_uid: str) -> list[ClientDoc]:
+        """Return every client document owned by one user across all regions and statuses."""
+
+    @abstractmethod
     def list_admin_emails(self) -> list[str]:
         """Return non-empty admin user emails, de-duplicated case-insensitively."""
 
@@ -234,6 +238,14 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def enable_auth_user(self, uid: str) -> None:
         """Enable a disabled Auth user."""
+
+    @abstractmethod
+    def delete_auth_user(self, uid: str) -> None:
+        """Hard-delete an Auth user if it exists."""
+
+    @abstractmethod
+    def hard_delete_account_documents(self, uid: str) -> None:
+        """Hard-delete the user's Firestore account, role, and owned client documents."""
 
     @abstractmethod
     def reserve_client(

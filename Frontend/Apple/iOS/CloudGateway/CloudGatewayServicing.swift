@@ -48,6 +48,11 @@ struct CloudGatewayDeleteClientResponse: Decodable, Equatable {
     let status: CloudGatewayClientStatus
 }
 
+struct CloudGatewayDeleteAccountResponse: Decodable, Equatable {
+    let userId: String
+    let deletedClientCount: Int
+}
+
 struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
     let regionId: String
     let syncedAt: String
@@ -73,9 +78,13 @@ protocol CloudGatewayServicing {
     func signIn(email: String, password: String) async throws -> AuthenticatedUser
     func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func signInWithGoogle() async throws -> AuthenticatedUser
+    func providerIds() -> [String]
+    func reauthenticateWithPassword(_ password: String) async throws
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws
+    func reauthenticateWithGoogle() async throws
     func sendPasswordReset(email: String) async throws
     func signOut() throws
-    func idToken() async throws -> String
+    func idToken(forceRefresh: Bool) async throws -> String
     func fetchUserRole(uid: String) async throws -> String?
     func fetchRegions() async throws -> [CloudGatewayRegion]
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck
@@ -84,6 +93,13 @@ protocol CloudGatewayServicing {
     func fetchAllClients() async throws -> [CloudGatewayClient]
     func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse
+    func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse
+}
+
+extension CloudGatewayServicing {
+    func idToken() async throws -> String {
+        try await idToken(forceRefresh: false)
+    }
 }

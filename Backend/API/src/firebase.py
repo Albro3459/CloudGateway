@@ -90,6 +90,7 @@ class FirebaseTokenVerifier(TokenVerifier):
         return AuthenticatedUser(
             uid=uid,
             email=decoded.get("email"),
+            auth_time=decoded.get("auth_time"),
         )
 
 
@@ -196,6 +197,21 @@ class FirestoreRepository(FirebaseRepository):
             predicate=lambda client: client.client_public_key in public_keys,
         )
 
+    def list_clients_for_owner(self, owner_uid: str) -> list[ClientDoc]:
+        snapshots = (
+            self._db()
+            .collection_group("Instances")
+            .where(filter=FieldFilter("ownerUid", "==", owner_uid))
+            .stream()
+        )
+        clients: list[ClientDoc] = []
+        for raw_snapshot in snapshots:
+            snapshot = _sync_snapshot(raw_snapshot)
+            client = _client_from_snapshot(snapshot, snapshot.id)
+            if client is not None and client.owner_uid == owner_uid:
+                clients.append(client)
+        return clients
+
     def list_admin_emails(self) -> list[str]:
         snapshots = (
             self._db()
@@ -292,6 +308,39 @@ class FirestoreRepository(FirebaseRepository):
         _firebase_app(self._settings)
         try:
             auth.update_user(uid, disabled=False)
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+    def delete_auth_user(self, uid: str) -> None:
+        from firebase_admin import auth
+
+        _firebase_app(self._settings)
+        try:
+            auth.delete_user(uid)
+        except Exception as exc:
+            if _exception_is_named(exc, "UserNotFoundError"):
+                return
+            raise FirebaseWriteFailedError() from exc
+
+    def hard_delete_account_documents(self, uid: str) -> None:
+        db = self._db()
+        try:
+            refs = [
+                db.collection("UserRoles").document(uid),
+                db.collection("Users").document(uid),
+            ]
+            snapshots = (
+                db.collection_group("Instances")
+                .where(filter=FieldFilter("ownerUid", "==", uid))
+                .stream()
+            )
+            refs.extend(_sync_snapshot(snapshot).reference for snapshot in snapshots)
+
+            for index in range(0, len(refs), 500):
+                batch = db.batch()
+                for ref in refs[index : index + 500]:
+                    batch.delete(ref)
+                batch.commit()
         except Exception as exc:
             raise FirebaseWriteFailedError() from exc
 
@@ -735,6 +784,15 @@ def _user_from_data(data: dict[str, Any], uid: str) -> UserDoc:
         created_at=data.get("createdAt"),
         disabled=bool(data.get("disabled", False)),
     )
+
+
+def _client_from_snapshot(snapshot: DocumentSnapshot, client_id: str) -> ClientDoc | None:
+    if not snapshot.exists:
+        return None
+    try:
+        return _client_from_data(snapshot.to_dict() or {}, client_id)
+    except (TypeError, ValueError):
+        return None
 
 
 def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> ClientDoc:

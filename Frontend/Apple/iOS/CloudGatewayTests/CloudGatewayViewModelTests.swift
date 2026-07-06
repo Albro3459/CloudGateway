@@ -624,6 +624,24 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.deleteDisabled(for: option))
     }
 
+    func testDeleteAccountReauthenticatesAndForcesFreshToken() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        viewModel.deleteAccountPassword = " password "
+
+        await viewModel.deleteAccountWithPassword()
+
+        XCTAssertEqual(service.reauthenticateWithPasswordCallCount, 1)
+        XCTAssertEqual(service.reauthenticatePassword, "password")
+        XCTAssertEqual(service.idTokenForceRefreshValues, [true])
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(viewModel.deleteAccountPassword, "")
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertFalse(viewModel.isSignedIn)
+    }
+
     // MARK: - Role resolution
 
     func testRoleFallsBackToAccessRoleWhenFirestoreRoleUnavailable() async {

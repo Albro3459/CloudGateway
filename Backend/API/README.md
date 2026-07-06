@@ -20,7 +20,7 @@ Dashboard
       -> local WireGuard commands
 ```
 
-Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/users`, and `/auth/check-access`.
+Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/account`, `/users`, and `/auth/check-access`.
 
 ## Runtime Model
 
@@ -103,6 +103,7 @@ All request/response JSON uses camelCase.
 * `GET /capacity`: returns local regional capacity, counting `creating` plus `active` client docs.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
+* `DELETE /account`: deletes the authenticated user's account and associated client documents after removing any live regional peers.
 * `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
 
 For the full route, URL, and error contract, see [docs/api-contract.md](../../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Backend/Firebase/README.md](../Firebase/README.md).

@@ -66,6 +66,11 @@ class DeleteClientResponse(ApiModel):
     status: ClientStatus
 
 
+class DeleteAccountResponse(ApiModel):
+    user_id: str
+    deleted_client_count: int
+
+
 class CreateUserRequest(ApiModel):
     model_config = ConfigDict(
         alias_generator=to_camel,

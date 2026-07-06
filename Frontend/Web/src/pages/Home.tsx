@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
+import { LogOut, Trash2, UserCircle } from "lucide-react";
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
-import { createClient, deleteClient } from "../helpers/APIHelper";
+import { createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
 import type { ApiHelperFailure } from "../helpers/APIHelper";
-import { auth, onAuthStateChanged } from "../firebase";
+import { auth, EmailAuthProvider, googleProvider, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
@@ -37,6 +38,10 @@ const Home: React.FC = () => {
 
     const [loading, setLoading] = useState(false);
     const [banner, setBanner] = useState<Banner | null>(null);
+    const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+    const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
+    const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
+    const [deletingAccount, setDeletingAccount] = useState(false);
 
     const [role, setRole] = useState<string | null>(null);
     const [jwtToken, setJwtToken] = useState<string | null>(null);
@@ -211,6 +216,76 @@ const Home: React.FC = () => {
     const handleSyncRegions = () => {
         if (role === "admin") {
             navigate("/sync-regions");
+        }
+    };
+
+    const closeDeleteAccountModal = () => {
+        if (deletingAccount) {
+            return;
+        }
+        setDeleteAccountModalOpen(false);
+        setDeleteAccountPassword("");
+    };
+
+    const currentProviderIds = () => (
+        auth.currentUser?.providerData?.map(provider => provider.providerId) || []
+    );
+
+    const requiresPasswordReauth = currentProviderIds().includes("password");
+
+    const reauthenticateForAccountDeletion = async () => {
+        const user = auth.currentUser;
+        if (!user) {
+            throw new Error("No account is signed in");
+        }
+
+        const providers = currentProviderIds();
+        if (providers.includes("password")) {
+            const email = user.email;
+            if (!email || !deleteAccountPassword.trim()) {
+                throw new Error("Enter your password to delete your account");
+            }
+            const credential = EmailAuthProvider.credential(email, deleteAccountPassword);
+            await reauthenticateWithCredential(user, credential);
+            return;
+        }
+
+        if (providers.includes("google.com")) {
+            await reauthenticateWithPopup(user, googleProvider);
+            return;
+        }
+
+        throw new Error("Sign in again before deleting this account");
+    };
+
+    const handleDeleteAccount = async () => {
+        const user = auth.currentUser;
+        if (!user) {
+            showBanner("error", "No account is signed in");
+            return;
+        }
+
+        setDeletingAccount(true);
+        setBanner(null);
+        try {
+            await reauthenticateForAccountDeletion();
+            const token = await user.getIdToken(true);
+            const response = await deleteAccount(token);
+            if (!response.success) {
+                showBanner("error", response.error || "Unable to delete account");
+                return;
+            }
+            closeDeleteAccountModal();
+            await logout(navigate);
+        } catch (error) {
+            const code = error && typeof error === "object" && "code" in error
+                ? (error as { code?: string }).code
+                : null;
+            if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
+                showBanner("error", error instanceof Error ? error.message : "Unable to delete account");
+            }
+        } finally {
+            setDeletingAccount(false);
         }
     };
 
@@ -492,12 +567,43 @@ const Home: React.FC = () => {
                 <h1 className="text-xl font-semibold">CloudGateway</h1>
                 <div className="absolute right-6 flex items-center gap-3">
                     <ThemeToggle />
-                    <button
-                        onClick={async () => await logout(navigate)}
-                        className="cursor-pointer rounded-lg bg-nav-btn px-4 py-2 text-accent transition hover:bg-nav-btn-hover"
-                    >
-                        Logout
-                    </button>
+                    <div className="relative">
+                        <button
+                            type="button"
+                            onClick={() => setAccountMenuOpen(open => !open)}
+                            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-nav-btn text-accent transition hover:bg-nav-btn-hover"
+                            aria-label="Account"
+                            aria-expanded={accountMenuOpen}
+                        >
+                            <UserCircle size={22} aria-hidden="true" />
+                        </button>
+                        {accountMenuOpen && (
+                            <div className="absolute right-0 mt-2 w-48 rounded-lg border border-edge bg-card py-2 text-content shadow-lg">
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        setAccountMenuOpen(false);
+                                        await logout(navigate);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
+                                >
+                                    <LogOut size={16} aria-hidden="true" />
+                                    Logout
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setAccountMenuOpen(false);
+                                        setDeleteAccountModalOpen(true);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-danger-content transition hover:bg-danger-soft"
+                                >
+                                    <Trash2 size={16} aria-hidden="true" />
+                                    Delete Account
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </nav>
 
@@ -717,6 +823,62 @@ const Home: React.FC = () => {
                                 className="flex-1 cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
                             >
                                 Download Config
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {deleteAccountModalOpen && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={closeDeleteAccountModal}
+                >
+                    <div
+                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-left shadow-lg"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            onClick={closeDeleteAccountModal}
+                            className="absolute right-3 top-2 text-lg font-bold text-content-muted hover:text-content"
+                            aria-label="Close delete account"
+                            disabled={deletingAccount}
+                        >
+                            x
+                        </button>
+                        <h3 className="mb-3 text-2xl font-semibold text-content">Delete Account?</h3>
+                        <p className="text-sm text-content-secondary">
+                            This will permanently delete your CloudGateway account, VPN clients, stored VPN configuration data, and access records. This cannot be undone.
+                        </p>
+                        {requiresPasswordReauth && (
+                            <label className="mt-4 block text-sm font-medium text-content-secondary">
+                                Password
+                                <input
+                                    value={deleteAccountPassword}
+                                    onChange={(event) => setDeleteAccountPassword(event.target.value)}
+                                    type="password"
+                                    autoComplete="current-password"
+                                    className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                    disabled={deletingAccount}
+                                />
+                            </label>
+                        )}
+                        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                            <button
+                                type="button"
+                                onClick={closeDeleteAccountModal}
+                                className="flex-1 cursor-pointer rounded-lg bg-inset-strong p-3 text-content-secondary transition hover:bg-inset-strong-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                                disabled={deletingAccount}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleDeleteAccount}
+                                className="flex-1 cursor-pointer rounded-lg bg-danger p-3 text-white transition hover:bg-danger-strong disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                                disabled={deletingAccount || (requiresPasswordReauth && !deleteAccountPassword.trim())}
+                            >
+                                {deletingAccount ? "Deleting..." : "Delete Account"}
                             </button>
                         </div>
                     </div>

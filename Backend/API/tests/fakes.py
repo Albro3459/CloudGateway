@@ -149,10 +149,13 @@ class FakeRepository(FirebaseRepository):
         self.clients: dict[tuple[str, str, str], ClientDoc] = {}
         self.disabled_auth_uids: set[str] = set()
         self.revoked_auth_uids: list[str] = []
+        self.deleted_auth_uids: list[str] = []
         self.created_user_count = 0
         self.mark_client_active_error: Exception | None = None
         self.create_user_error: Exception | None = None
         self.delete_client_error: Exception | None = None
+        self.hard_delete_account_error: Exception | None = None
+        self.delete_auth_user_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
@@ -210,6 +213,13 @@ class FakeRepository(FirebaseRepository):
             if client.region_id == region_id and client.client_public_key in public_keys
         ]
 
+    def list_clients_for_owner(self, owner_uid: str) -> list[ClientDoc]:
+        return [
+            client
+            for client in self.clients.values()
+            if client.owner_uid == owner_uid
+        ]
+
     def list_admin_emails(self) -> list[str]:
         emails: list[str] = []
         seen: set[str] = set()
@@ -262,6 +272,22 @@ class FakeRepository(FirebaseRepository):
 
     def enable_auth_user(self, uid: str) -> None:
         self.disabled_auth_uids.discard(uid)
+
+    def delete_auth_user(self, uid: str) -> None:
+        if self.delete_auth_user_error is not None:
+            raise self.delete_auth_user_error
+        self.deleted_auth_uids.append(uid)
+        self.disabled_auth_uids.discard(uid)
+
+    def hard_delete_account_documents(self, uid: str) -> None:
+        if self.hard_delete_account_error is not None:
+            raise self.hard_delete_account_error
+        self.roles.pop(uid, None)
+        self.per_region_client_limits.pop(uid, None)
+        self.users.pop(uid, None)
+        for key, client in list(self.clients.items()):
+            if client.owner_uid == uid:
+                del self.clients[key]
 
     def reserve_client(
         self,

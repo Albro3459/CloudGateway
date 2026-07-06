@@ -55,6 +55,11 @@ export type DeleteClientResponse = {
     status: string;
 };
 
+export type DeleteAccountResponse = {
+    userId: string;
+    deletedClientCount: number;
+};
+
 export type CreateUserRequest = {
     email: string;
 };
@@ -289,6 +294,16 @@ export const deleteClient = (
         });
     }
 };
+
+export const deleteAccount = (
+    token: string,
+): Promise<ApiHelperResult<DeleteAccountResponse>> => (
+    sendJsonRequest<DeleteAccountResponse>(
+        buildApexApiEndpoint("account"),
+        token,
+        "DELETE",
+    )
+);
 
 export const createAdminUser = (
     request: CreateUserRequest,

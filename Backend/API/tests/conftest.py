@@ -1,4 +1,5 @@
 from typing import Any
+from time import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,10 +45,12 @@ def token_verifier() -> FakeTokenVerifier:
     verifier.users["user-token"] = AuthenticatedUser(
         uid="user-1",
         email="user@example.com",
+        auth_time=int(time()),
     )
     verifier.users["admin-token"] = AuthenticatedUser(
         uid="admin-1",
         email="admin@example.com",
+        auth_time=int(time()),
     )
     return verifier
 

@@ -1,15 +1,23 @@
 import logging
+import json
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Annotated, TypeVar
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request as URLRequest
+from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, Path, Request
 
-from .auth import AuthenticatedUser, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
+from .auth import AuthenticatedUser, bearer_token, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
 from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
 from .errors import (
     ApiError,
+    AuthRequiredError,
     ClientNotFoundError,
     FirebaseWriteFailedError,
+    InvalidRequestError,
     InternalError,
     WireGuardApplyFailedError,
 )
@@ -23,6 +31,7 @@ from .models import (
     CreateClientResponse,
     CreateUserRequest,
     CreateUserResponse,
+    DeleteAccountResponse,
     DeleteClientRequest,
     DeleteClientResponse,
     HealthResponse,
@@ -30,13 +39,14 @@ from .models import (
     RegionsResponse,
 )
 from .notifications import create_ses_client, send_access_grant_email
-from .repository import ClientDoc, ensure_delete_allowed, ensure_local_region, require_region, utc_now
+from .repository import ClientDoc, FirebaseRepository, ensure_delete_allowed, ensure_local_region, require_region, utc_now
 from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
 
 logger = logging.getLogger("src.routes")
 router = APIRouter()
 T = TypeVar("T")
+RECENT_AUTH_WINDOW = timedelta(minutes=5)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -346,6 +356,74 @@ def delete_client(
     )
 
 
+@router.delete("/account", response_model=DeleteAccountResponse)
+def delete_account(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeleteAccountResponse:
+    repository = request.app.state.repository
+    wireguard: WireGuardManager = request.app.state.wireguard
+    settings = request.app.state.settings
+    request_id = request.state.request_id
+    token = bearer_token(request)
+    clients = []
+
+    log_event(
+        logger,
+        Event.ACCOUNT_DELETE_STARTED,
+        request_id=request_id,
+        user_id=user.uid,
+        user_email=user.email,
+    )
+    try:
+        _ensure_recent_auth(user)
+        _ensure_account_delete_allowed(repository, user.uid)
+
+        clients = repository.list_clients_for_owner(user.uid)
+        _remove_account_peers(
+            clients=clients,
+            user=user,
+            token=token,
+            local_region_id=settings.region_id,
+            api_hostname=settings.api_hostname,
+            wireguard=wireguard,
+            request_id=request_id,
+        )
+        repository.hard_delete_account_documents(user.uid)
+        repository.delete_auth_user(user.uid)
+    except ApiError:
+        log_event(
+            logger,
+            Event.ACCOUNT_DELETE_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            user_id=user.uid,
+        )
+        raise
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.ACCOUNT_DELETE_FAILED,
+            level=logging.ERROR,
+            request_id=request_id,
+            user_id=user.uid,
+            error_code=ErrorCode.INTERNAL_ERROR.value,
+        )
+        raise InternalError() from exc
+
+    log_event(
+        logger,
+        Event.ACCOUNT_DELETE_COMPLETED,
+        request_id=request_id,
+        user_id=user.uid,
+        deleted_client_count=len(clients),
+    )
+    return DeleteAccountResponse(
+        user_id=user.uid,
+        deleted_client_count=len(clients),
+    )
+
+
 @router.post("/users", response_model=CreateUserResponse)
 def create_user(
     request: Request,
@@ -503,6 +581,100 @@ def _create_client_response(client: ClientDoc) -> CreateClientResponse:
 def _ensure_client_matches_request(*, client: ClientDoc, owner_uid: str, region_id: str, client_id: str) -> None:
     if client.owner_uid != owner_uid or client.region_id != region_id or client.client_id != client_id:
         raise ClientNotFoundError()
+
+
+def _ensure_recent_auth(user: AuthenticatedUser) -> None:
+    authenticated_at = user.authenticated_at
+    now = utc_now()
+    if authenticated_at is None or authenticated_at > now + timedelta(minutes=1) or now - authenticated_at > RECENT_AUTH_WINDOW:
+        raise AuthRequiredError("Sign in again before deleting this account.")
+
+
+def _ensure_account_delete_allowed(repository: FirebaseRepository, uid: str) -> None:
+    role = repository.get_role(uid)
+    if role == Role.USER:
+        return
+    if role is None and repository.get_user(uid) is None:
+        return
+    raise InvalidRequestError("Account deletion is not available for this account.")
+
+
+def _remove_account_peers(
+    *,
+    clients: list[ClientDoc],
+    user: AuthenticatedUser,
+    token: str,
+    local_region_id: str,
+    api_hostname: str,
+    wireguard: WireGuardManager,
+    request_id: str,
+) -> None:
+    local_clients = [
+        client for client in clients
+        if client.region_id == local_region_id and client.client_public_key
+    ]
+    remote_clients = [
+        client for client in clients
+        if client.region_id != local_region_id and client.client_public_key
+    ]
+
+    if local_clients:
+        with wireguard.lock():
+            for client in local_clients:
+                _run_wireguard_operation(
+                    lambda client=client: wireguard.remove_peer(public_key=client.client_public_key),
+                    request_id=request_id,
+                    client_id=client.client_id,
+                    region_id=client.region_id,
+                    operation="remove_peer",
+                )
+
+    for client in remote_clients:
+        _delete_remote_client(client=client, user=user, token=token, api_hostname=api_hostname)
+
+
+def _delete_remote_client(
+    *,
+    client: ClientDoc,
+    user: AuthenticatedUser,
+    token: str,
+    api_hostname: str,
+) -> None:
+    url = _regional_api_url(client.region_id, f"clients/{quote(client.client_id, safe='')}", api_hostname)
+    body = json.dumps({"userId": user.uid, "regionId": client.region_id}).encode("utf-8")
+    regional_request = URLRequest(
+        url,
+        data=body,
+        method="DELETE",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(regional_request, timeout=10) as response:
+            if response.status < 200 or response.status >= 300:
+                raise WireGuardApplyFailedError("Failed to remove regional VPN configuration.")
+    except HTTPError as exc:
+        raise WireGuardApplyFailedError("Failed to remove regional VPN configuration.") from exc
+    except URLError as exc:
+        raise WireGuardApplyFailedError("Failed to reach regional VPN configuration service.", transient=True) from exc
+
+
+def _regional_api_url(region_id: str, path: str, api_hostname: str) -> str:
+    origin_host = _origin_host(api_hostname)
+    api_path = path.strip("/")
+    return f"https://{region_id}.{origin_host}/api/{api_path}"
+
+
+def _origin_host(api_hostname: str) -> str:
+    hostname = api_hostname.strip().lower()
+    if hostname.startswith("api."):
+        return hostname.removeprefix("api.")
+    if hostname.count(".") >= 2:
+        return hostname.split(".", 1)[1]
+    return "gocloudlaunch.com"
 
 
 def _notify_user_access_granted(

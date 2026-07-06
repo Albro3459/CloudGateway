@@ -62,6 +62,7 @@ Global/read traffic uses the apex API:
 ```text
 GET  https://api.gocloudlaunch.com/api/regions
 POST https://api.gocloudlaunch.com/api/auth/check-access
+DELETE https://api.gocloudlaunch.com/api/account
 ```
 
 Region-specific actions use the selected region host:

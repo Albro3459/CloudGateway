@@ -17,12 +17,16 @@ final class MockGatewayService: CloudGatewayServicing {
     var signInWithAppleError: Error?
     var signInWithGoogleError: Error?
     var sendPasswordResetError: Error?
+    var reauthenticateWithPasswordError: Error?
+    var reauthenticateWithAppleError: Error?
+    var reauthenticateWithGoogleError: Error?
     var fetchRegionsError: Error?
     var checkAccessError: Error?
     var fetchUserRoleError: Error?
     var fetchOwnedClientsError: Error?
     var createClientError: Error?
     var deleteClientError: Error?
+    var deleteAccountError: Error?
     var syncRegionError: Error?
     var grantAccessError: Error?
 
@@ -31,6 +35,7 @@ final class MockGatewayService: CloudGatewayServicing {
 
     // Captured inputs.
     private(set) var sendPasswordResetEmail: String?
+    private(set) var reauthenticatePassword: String?
     private(set) var createClientName: String?
     private(set) var deleteClientUserId: String?
     private(set) var grantAccessEmail: String?
@@ -47,9 +52,14 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var signInWithAppleCallCount = 0
     private(set) var signInWithGoogleCallCount = 0
     private(set) var sendPasswordResetCallCount = 0
+    private(set) var reauthenticateWithPasswordCallCount = 0
+    private(set) var reauthenticateWithAppleCallCount = 0
+    private(set) var reauthenticateWithGoogleCallCount = 0
+    private(set) var idTokenForceRefreshValues: [Bool] = []
     private(set) var signOutCallCount = 0
     private(set) var createClientCallCount = 0
     private(set) var deleteClientCallCount = 0
+    private(set) var deleteAccountCallCount = 0
     private(set) var syncRegionCallCount = 0
     private(set) var grantAccessCallCount = 0
 
@@ -90,6 +100,32 @@ final class MockGatewayService: CloudGatewayServicing {
         return user
     }
 
+    func providerIds() -> [String] {
+        ["password"]
+    }
+
+    func reauthenticateWithPassword(_ password: String) async throws {
+        reauthenticateWithPasswordCallCount += 1
+        reauthenticatePassword = password
+        if let reauthenticateWithPasswordError {
+            throw reauthenticateWithPasswordError
+        }
+    }
+
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {
+        reauthenticateWithAppleCallCount += 1
+        if let reauthenticateWithAppleError {
+            throw reauthenticateWithAppleError
+        }
+    }
+
+    func reauthenticateWithGoogle() async throws {
+        reauthenticateWithGoogleCallCount += 1
+        if let reauthenticateWithGoogleError {
+            throw reauthenticateWithGoogleError
+        }
+    }
+
     func sendPasswordReset(email: String) async throws {
         sendPasswordResetCallCount += 1
         sendPasswordResetEmail = email
@@ -103,7 +139,8 @@ final class MockGatewayService: CloudGatewayServicing {
         currentUser = nil
     }
 
-    func idToken() async throws -> String {
+    func idToken(forceRefresh: Bool) async throws -> String {
+        idTokenForceRefreshValues.append(forceRefresh)
         if let idTokenError {
             throw idTokenError
         }
@@ -185,6 +222,18 @@ final class MockGatewayService: CloudGatewayServicing {
             clientId: clientId,
             regionId: regionId,
             status: .removed
+        )
+    }
+
+    func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
+        deleteAccountCallCount += 1
+        if let deleteAccountError {
+            throw deleteAccountError
+        }
+        currentUser = nil
+        return CloudGatewayDeleteAccountResponse(
+            userId: "test-uid",
+            deletedClientCount: ownedClients.count
         )
     }
 

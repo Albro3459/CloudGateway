@@ -153,7 +153,8 @@ const PrivacyPolicy: React.FC = () => {
                     <h3 className="mb-3 text-2xl font-semibold">Data Retention And Deletion</h3>
                     <p className="text-content-secondary">
                         CloudGateway retains account and service data for as long as needed to provide and administer the
-                        service. You may request account deletion by contacting{" "}
+                        service. You may delete your account from the account menu in the CloudGateway app or web
+                        dashboard. You may also request account deletion by contacting{" "}
                         <a href={`mailto:${SUPPORT_EMAIL}`} className="text-accent underline hover:text-accent-strong">
                             {SUPPORT_EMAIL}
                         </a>

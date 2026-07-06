@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import Depends, Request
 
@@ -16,6 +17,16 @@ USER_NOT_PROVISIONED_DISABLED_MESSAGE = (
 class AuthenticatedUser:
     uid: str
     email: str | None = None
+    auth_time: int | None = None
+
+    @property
+    def authenticated_at(self) -> datetime | None:
+        if self.auth_time is None:
+            return None
+        try:
+            return datetime.fromtimestamp(self.auth_time, tz=timezone.utc)
+        except (OSError, OverflowError, TypeError, ValueError):
+            return None
 
 
 class TokenVerifier(ABC):

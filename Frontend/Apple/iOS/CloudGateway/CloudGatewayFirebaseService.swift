@@ -122,6 +122,54 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return AuthenticatedUser(uid: result.user.uid, email: result.user.email)
     }
 
+    func providerIds() -> [String] {
+        Auth.auth().currentUser?.providerData.map(\.providerID) ?? []
+    }
+
+    func reauthenticateWithPassword(_ password: String) async throws {
+        guard let user = Auth.auth().currentUser,
+              let email = user.email else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let credential = EmailAuthProvider.credential(withEmail: email, password: password)
+        _ = try await user.reauthenticate(with: credential)
+    }
+
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let credential = OAuthProvider.appleCredential(
+            withIDToken: idToken,
+            rawNonce: rawNonce,
+            fullName: nil
+        )
+        _ = try await user.reauthenticate(with: credential)
+        try await Auth.auth().revokeToken(withAuthorizationCode: authorizationCode)
+    }
+
+    func reauthenticateWithGoogle() async throws {
+        guard let user = Auth.auth().currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        let (idToken, accessToken) = try await Self.presentGoogleSignIn(clientID: googleClientID())
+        let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
+        _ = try await user.reauthenticate(with: credential)
+        try await Self.disconnectGoogle()
+    }
+
+    private static func disconnectGoogle() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            GIDSignIn.sharedInstance.disconnect { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume()
+            }
+        }
+    }
+
     private func googleClientID() throws -> String {
         guard let clientID = FirebaseApp.app()?.options.clientID else {
             throw CloudGatewayAppError.invalidAPIResponse
@@ -174,12 +222,12 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         try Auth.auth().signOut()
     }
 
-    func idToken() async throws -> String {
+    func idToken(forceRefresh: Bool) async throws -> String {
         guard let user = Auth.auth().currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
         return try await withCheckedThrowingContinuation { continuation in
-            user.getIDToken { token, error in
+            user.getIDTokenForcingRefresh(forceRefresh) { token, error in
                 if let error {
                     continuation.resume(throwing: error)
                     return
@@ -296,6 +344,14 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             method: "DELETE",
             idToken: idToken,
             body: DeleteClientRequest(userId: userId, regionId: regionId)
+        )
+    }
+
+    func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
+        try await sendJSONRequest(
+            url: apexAPIURL(path: "account"),
+            method: "DELETE",
+            idToken: idToken
         )
     }
 

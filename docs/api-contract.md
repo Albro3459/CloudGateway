@@ -24,7 +24,8 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API
   calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and API URLs are derived
   from `window.location.origin`.
-- The apex API host serves global/read traffic: `GET /regions` and `POST /auth/check-access`.
+- The apex API host serves global/account traffic: `GET /regions`, `POST /auth/check-access`,
+  and `DELETE /account`.
 - Native Apple clients use the same production regional hostname shape with origin
   `gocloudlaunch.com`, and use `api.gocloudlaunch.com` for apex calls. Capacity, create,
   delete, and sync calls use the selected or target config region.
@@ -151,6 +152,21 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "clientId": "6f77fd32-ecf5-4dd7-9d96-6bb84de92df1",
   "regionId": "us-sanjose-1",
   "status": "removed"
+}
+```
+
+### `DELETE /account`
+
+- Apex. Requires Firebase bearer auth from a recent sign-in.
+- Removes any live regional peers for the authenticated user, then hard-deletes the user's
+  owned client docs, account doc, role doc, and Firebase Auth user.
+- Request body: none.
+- Response `200`:
+
+```json
+{
+  "userId": "firebase-uid",
+  "deletedClientCount": 3
 }
 ```
 
