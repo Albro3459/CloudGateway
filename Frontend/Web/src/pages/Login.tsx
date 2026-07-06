@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { Eye, EyeOff } from "lucide-react";
-import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
+import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithApple, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
 import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -28,6 +28,27 @@ const Login: React.FC = () => {
     const getDisabledAccountMessage = () => <DisabledAccountMessage />;
 
     const getNoRegionsMessage = () => <NoRegionsMessage />;
+
+    const getAppleSignInError = (err: unknown) => {
+        const code = err && typeof err === "object" && "code" in err
+            ? (err as { code?: string }).code
+            : null;
+
+        if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+            return null;
+        }
+        if (code === "auth/unauthorized-domain") {
+            return "This domain is not authorized for Apple sign-in.";
+        }
+        if (code === "auth/account-exists-with-different-credential") {
+            return "An account already exists for this email. Sign in with email and password first.";
+        }
+        if (code === "auth/user-disabled") {
+            return getDisabledAccountMessage();
+        }
+
+        return "Unable to sign in with Apple.";
+    };
 
     const getGoogleSignInError = (err: unknown) => {
         const code = err && typeof err === "object" && "code" in err
@@ -123,6 +144,24 @@ const Login: React.FC = () => {
             await navigateProvisionedUser(result.user, true);
         } catch (err) {
             const message = getGoogleSignInError(err);
+            if (message) {
+                setError(message);
+            }
+        } finally {
+            manualSignInRef.current = false;
+        }
+    };
+
+    const handleAppleLogin = async () => {
+        setError(null);
+        setSuccess(null);
+        manualSignInRef.current = true;
+
+        try {
+            const result = await signInWithApple();
+            await navigateProvisionedUser(result.user, true);
+        } catch (err) {
+            const message = getAppleSignInError(err);
             if (message) {
                 setError(message);
             }
@@ -267,11 +306,20 @@ const Login: React.FC = () => {
 
                 <button
                     type="button"
+                    onClick={handleAppleLogin}
+                    className="mt-3 flex w-full cursor-pointer items-center justify-center gap-3 rounded-lg border border-edge bg-inset p-3 text-content transition hover:bg-inset-strong"
+                >
+                    <span className="text-lg font-semibold text-accent"></span>
+                    Sign in with Apple
+                </button>
+
+                <button
+                    type="button"
                     onClick={handleGoogleLogin}
                     className="flex w-full cursor-pointer items-center justify-center gap-3 rounded-lg border border-edge bg-inset p-3 text-content transition hover:bg-inset-strong"
                 >
                     <span className="text-lg font-semibold text-accent">G</span>
-                    Continue with Google
+                    Sign in with Google
                 </button>
 
                 <div className="ps-2 mt-2 text-xs">

@@ -10,7 +10,11 @@ const mockUser = {
     uid: "user-1",
     email: "user@example.com",
     getIdToken: jest.fn().mockResolvedValue("firebase-token"),
+    providerData: [{ providerId: "google.com" }],
 };
+
+const appleProvider = { providerId: "apple.com" };
+const googleProvider = { providerId: "google.com" };
 
 jest.mock("../../firebase", () => ({
     auth: { currentUser: mockUser },
@@ -18,11 +22,17 @@ jest.mock("../../firebase", () => ({
         callback(mockUser);
         return () => undefined;
     }),
+    EmailAuthProvider: { credential: jest.fn(() => ({ providerId: "password" })) },
+    appleProvider,
+    googleProvider,
+    reauthenticateWithCredential: jest.fn().mockResolvedValue(undefined),
+    reauthenticateWithPopup: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock("../../helpers/APIHelper", () => ({
     createClient: jest.fn(),
     deleteClient: jest.fn(),
+    deleteAccount: jest.fn(),
 }));
 
 jest.mock("../../helpers/firebaseDbHelper", () => ({
@@ -353,5 +363,77 @@ describe("Home pull to refresh", () => {
         expect(screen.queryByText("Release to refresh")).toBeNull();
         expect(getUsersVPNs).toHaveBeenCalledTimes(1);
         expect(fetchOciRegions).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("Home account deletion reauthentication", () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockUser.getIdToken.mockResolvedValue("firebase-token");
+        mockUser.providerData = [{ providerId: "google.com" }];
+        const { auth, onAuthStateChanged, reauthenticateWithPopup, reauthenticateWithCredential } = require("../../firebase");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+        const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
+
+        auth.currentUser = mockUser;
+        onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            callback(mockUser);
+            return () => undefined;
+        });
+        getUsersVPNs.mockResolvedValue([]);
+        getUserRole.mockResolvedValue("user");
+        fetchOciRegions.mockResolvedValue(undefined);
+        reauthenticateWithPopup.mockResolvedValue(undefined);
+        reauthenticateWithCredential.mockResolvedValue(undefined);
+        deleteAccount.mockResolvedValue({ success: true });
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{ displayName: "San Jose", regionId: "us-sanjose-1", enabled: true, displayOrder: 1 }],
+            loading: false,
+            error: null,
+        }));
+        Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    });
+
+    const openDeleteModalAndConfirm = async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalled());
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete Account" }));
+    };
+
+    it("reauthenticates Apple users with the Apple provider before deleting", async () => {
+        mockUser.providerData = [{ providerId: "apple.com" }];
+        const { reauthenticateWithPopup, appleProvider } = require("../../firebase");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+        const { logout } = require("../../helpers/firebaseDbHelper");
+
+        await openDeleteModalAndConfirm();
+
+        await waitFor(() => {
+            expect(reauthenticateWithPopup).toHaveBeenCalledWith(mockUser, appleProvider);
+            expect(deleteAccount).toHaveBeenCalledWith("firebase-token");
+            expect(logout).toHaveBeenCalled();
+        });
+    });
+
+    it("reauthenticates Google users with the Google provider before deleting", async () => {
+        mockUser.providerData = [{ providerId: "google.com" }];
+        const { reauthenticateWithPopup, appleProvider, googleProvider } = require("../../firebase");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+
+        await openDeleteModalAndConfirm();
+
+        await waitFor(() => {
+            expect(reauthenticateWithPopup).toHaveBeenCalledWith(mockUser, googleProvider);
+            expect(deleteAccount).toHaveBeenCalledWith("firebase-token");
+        });
+        expect(reauthenticateWithPopup).not.toHaveBeenCalledWith(mockUser, appleProvider);
     });
 });

@@ -7,7 +7,7 @@ import packageJson from "../../package.json";
 
 import { createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
 import type { ApiHelperFailure } from "../helpers/APIHelper";
-import { auth, EmailAuthProvider, googleProvider, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
+import { appleProvider, auth, EmailAuthProvider, googleProvider, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
@@ -250,6 +250,11 @@ const Home: React.FC = () => {
             return;
         }
 
+        if (providers.includes("apple.com")) {
+            await reauthenticateWithPopup(user, appleProvider);
+            return;
+        }
+        
         if (providers.includes("google.com")) {
             await reauthenticateWithPopup(user, googleProvider);
             return;
