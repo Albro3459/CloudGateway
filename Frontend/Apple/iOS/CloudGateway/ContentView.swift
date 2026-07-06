@@ -4,7 +4,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    @StateObject private var viewModel = CloudGatewayViewModel()
+    @StateObject private var viewModel: CloudGatewayViewModel
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var isShowingLogin = false
@@ -17,6 +17,15 @@ struct ContentView: View {
     @State private var appleRawNonce = ""
     @State private var deleteAccountAppleRawNonce = ""
     @Environment(\.cloudGatewayTheme) private var theme
+
+    @MainActor
+    init() {
+        _viewModel = StateObject(wrappedValue: CloudGatewayViewModel())
+    }
+
+    init(viewModel: CloudGatewayViewModel) {
+        _viewModel = StateObject(wrappedValue: viewModel)
+    }
 
     var body: some View {
         ZStack {
@@ -1589,21 +1598,35 @@ private struct DetailLine: View {
     var selectable: Bool = true
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(theme.contentFaint)
-            Spacer()
-            valueText
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline) {
+                labelText
+                Spacer()
+                valueText(alignment: .trailing, wraps: false)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                labelText
+                valueText(alignment: .trailing, wraps: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
     }
 
+    private var labelText: some View {
+        Text(label)
+            .font(.caption)
+            .foregroundStyle(theme.contentFaint)
+    }
+
     @ViewBuilder
-    private var valueText: some View {
+    private func valueText(alignment: TextAlignment, wraps: Bool) -> some View {
         let text = Text(value)
             .font(.subheadline)
             .foregroundStyle(theme.contentSecondary)
-            .multilineTextAlignment(.trailing)
+            .multilineTextAlignment(alignment)
+            .lineLimit(wraps ? nil : 1)
+            .fixedSize(horizontal: !wraps, vertical: true)
         if selectable {
             text.textSelection(.enabled)
         } else {

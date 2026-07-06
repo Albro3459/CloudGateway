@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = 607A1C1A2FF5498A0001783A /* CloudGatewayKit */; };
+		60C0DE102FF700000089F40B /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
 		60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 60B438382FF611BE0089F40B /* GoogleSignIn */; };
 		ABCDEF000000000000000001 /* CloudGatewayTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000018 /* CloudGatewayKit */; };
@@ -53,6 +54,7 @@
 /* Begin PBXFileReference section */
 		605109692FF35D5F002E2D4C /* CloudGateway.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudGateway.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		607A1C082FF548230001783A /* CloudGatewayTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudGatewayTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		60C0DE112FF700000089F40B /* CloudGatewayScreenshots.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudGatewayScreenshots.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CloudGatewayTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		ABCDEF000000000000000029 /* CloudGatewayTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CloudGatewayTunnel.entitlements; sourceTree = "<group>"; };
 		ABCDEF000000000000000030 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -75,6 +77,18 @@
 			);
 			target = 605109682FF35D5F002E2D4C /* CloudGateway */;
 		};
+		60C0DE122FF700000089F40B /* Exceptions for "CloudGateway" folder in "CloudGatewayScreenshots" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AppleSignInNonce.swift,
+				Assets.xcassets,
+				CloudGatewayServicing.swift,
+				CloudGatewayTheme.swift,
+				CloudGatewayViewModel.swift,
+				ContentView.swift,
+			);
+			target = 60C0DE172FF700000089F40B /* CloudGatewayScreenshots */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -83,6 +97,7 @@
 			exceptions = (
 				60B4383D2FF6A0480089F40B /* Exceptions for "CloudGateway" folder in "CloudGateway" target */,
 				607A1C1E2FF54A3F0001783A /* Exceptions for "CloudGateway" folder in "CloudGatewayTests" target */,
+				60C0DE122FF700000089F40B /* Exceptions for "CloudGateway" folder in "CloudGatewayScreenshots" target */,
 			);
 			path = CloudGateway;
 			sourceTree = "<group>";
@@ -90,6 +105,11 @@
 		607A1C092FF548230001783A /* CloudGatewayTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = CloudGatewayTests;
+			sourceTree = "<group>";
+		};
+		60C0DE132FF700000089F40B /* CloudGatewayScreenshots */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CloudGatewayScreenshots;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -115,6 +135,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		60C0DE142FF700000089F40B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				60C0DE102FF700000089F40B /* CloudGatewayKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ABCDEF000000000000000010 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -133,6 +161,7 @@
 				6051096B2FF35D5F002E2D4C /* CloudGateway */,
 				ABCDEF000000000000000009 /* CloudGatewayTunnel */,
 				607A1C092FF548230001783A /* CloudGatewayTests */,
+				60C0DE132FF700000089F40B /* CloudGatewayScreenshots */,
 				607A1C192FF5498A0001783A /* Frameworks */,
 				6051096A2FF35D5F002E2D4C /* Products */,
 			);
@@ -144,6 +173,7 @@
 				605109692FF35D5F002E2D4C /* CloudGateway.app */,
 				ABCDEF000000000000000008 /* CloudGatewayTunnel.appex */,
 				607A1C082FF548230001783A /* CloudGatewayTests.xctest */,
+				60C0DE112FF700000089F40B /* CloudGatewayScreenshots.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -237,6 +267,29 @@
 			productReference = 607A1C082FF548230001783A /* CloudGatewayTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		60C0DE172FF700000089F40B /* CloudGatewayScreenshots */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 60C0DE182FF700000089F40B /* Build configuration list for PBXNativeTarget "CloudGatewayScreenshots" */;
+			buildPhases = (
+				60C0DE152FF700000089F40B /* Sources */,
+				60C0DE142FF700000089F40B /* Frameworks */,
+				60C0DE162FF700000089F40B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				60C0DE132FF700000089F40B /* CloudGatewayScreenshots */,
+			);
+			name = CloudGatewayScreenshots;
+			packageProductDependencies = (
+				ABCDEF000000000000000018 /* CloudGatewayKit */,
+			);
+			productName = CloudGatewayScreenshots;
+			productReference = 60C0DE112FF700000089F40B /* CloudGatewayScreenshots.app */;
+			productType = "com.apple.product-type.application";
+		};
 		ABCDEF000000000000000013 /* CloudGatewayTunnel */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = ABCDEF000000000000000014 /* Build configuration list for PBXNativeTarget "CloudGatewayTunnel" */;
@@ -275,6 +328,9 @@
 					607A1C072FF548230001783A = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					60C0DE172FF700000089F40B = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					ABCDEF000000000000000013 = {
 						CreatedOnToolsVersion = 26.5;
 					};
@@ -304,6 +360,7 @@
 				ABCDEF000000000000000013 /* CloudGatewayTunnel */,
 				ABCDEF000000000000000011 /* WireGuardGoBridgeiOS */,
 				607A1C072FF548230001783A /* CloudGatewayTests */,
+				60C0DE172FF700000089F40B /* CloudGatewayScreenshots */,
 			);
 		};
 /* End PBXProject section */
@@ -317,6 +374,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		607A1C062FF548230001783A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		60C0DE162FF700000089F40B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -341,6 +405,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		607A1C042FF548230001783A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		60C0DE152FF700000089F40B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -612,6 +683,78 @@
 			};
 			name = Release;
 		};
+		60C0DE192FF700000089F40B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "CloudGateway Screenshots";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.gateway.screenshots;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG APPSTORE_SCREENSHOTS $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		60C0DE1A2FF700000089F40B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "CloudGateway Screenshots";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.gateway.screenshots;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "APPSTORE_SCREENSHOTS $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		ABCDEF000000000000000023 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -700,6 +843,15 @@
 			buildConfigurations = (
 				607A1C0F2FF548230001783A /* Debug */,
 				607A1C102FF548230001783A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		60C0DE182FF700000089F40B /* Build configuration list for PBXNativeTarget "CloudGatewayScreenshots" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				60C0DE192FF700000089F40B /* Debug */,
+				60C0DE1A2FF700000089F40B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
