@@ -111,6 +111,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private let configManager: CloudGatewayConfigManager
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
+    private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
 
     var isSignedIn: Bool {
         appMode == .signedIn
@@ -1035,6 +1036,11 @@ final class CloudGatewayViewModel: ObservableObject {
         } catch is CancellationError {
         } catch CloudGatewayAppError.cancelled {
         } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
+        } catch GatewayVPNError.missingInstalledTunnel {
+            errorText = Self.missingInstalledTunnelMessage
+            if let state = try? await configManager.loadLocalState() {
+                apply(state)
+            }
         } catch {
             errorText = error.localizedDescription
             if isSignedIn {

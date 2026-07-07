@@ -620,6 +620,162 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.staleText)
     }
 
+    func testStartTunnelMissingFromSettingsShowsRefreshGuidanceAndClearsCardWarning() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.disconnected, for: "c1")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let option = viewModel.filteredClientOptions.first else {
+            XCTFail("Expected an installed client option.")
+            return
+        }
+        XCTAssertTrue(viewModel.isInstalled(option))
+
+        await tunnelManager.setStatus(nil, for: "c1")
+        await tunnelManager.setStartError(GatewayVPNError.missingInstalledTunnel)
+        await viewModel.startTunnel(for: option)
+
+        XCTAssertEqual(
+            viewModel.errorText,
+            "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
+        )
+        XCTAssertFalse(viewModel.isInstalled(option))
+        XCTAssertNil(viewModel.staleText(for: option))
+    }
+
+    func testStopTunnelMissingFromSettingsShowsRefreshGuidanceAndClearsCardWarning() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "c1")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let option = viewModel.filteredClientOptions.first else {
+            XCTFail("Expected an installed client option.")
+            return
+        }
+        XCTAssertTrue(viewModel.isInstalled(option))
+
+        await tunnelManager.setStatus(nil, for: "c1")
+        await tunnelManager.setStopError(GatewayVPNError.missingInstalledTunnel)
+        await viewModel.stopTunnel(for: option)
+
+        XCTAssertEqual(
+            viewModel.errorText,
+            "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
+        )
+        XCTAssertFalse(viewModel.isInstalled(option))
+        XCTAssertNil(viewModel.staleText(for: option))
+    }
+
+    func testSwitchTunnelMissingActiveTunnelFromSettingsShowsRefreshGuidanceAndClearsCardWarning() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [
+            TestFixtures.client("c1", regionId: "us-sanjose-1"),
+            TestFixtures.client("c2", regionId: "us-sanjose-1"),
+        ]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "c1")
+        await tunnelManager.setStatus(.disconnected, for: "c2")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("c1", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("c2", regionId: "us-sanjose-1"),
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let activeOption = viewModel.filteredClientOptions.first(where: { $0.client.clientId == "c1" }),
+              let nextOption = viewModel.filteredClientOptions.first(where: { $0.client.clientId == "c2" }) else {
+            XCTFail("Expected installed client options.")
+            return
+        }
+        XCTAssertTrue(viewModel.isInstalled(activeOption))
+        XCTAssertTrue(viewModel.isInstalled(nextOption))
+
+        await tunnelManager.setStatus(nil, for: "c1")
+        await tunnelManager.setStopError(GatewayVPNError.missingInstalledTunnel)
+        await viewModel.switchTunnel(to: nextOption)
+
+        XCTAssertEqual(
+            viewModel.errorText,
+            "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
+        )
+        XCTAssertFalse(viewModel.isInstalled(activeOption))
+        XCTAssertTrue(viewModel.isInstalled(nextOption))
+        XCTAssertNil(viewModel.staleText(for: activeOption))
+    }
+
+    func testSwitchTunnelMissingTargetTunnelFromSettingsShowsRefreshGuidanceAndClearsCardWarning() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [
+            TestFixtures.client("c1", regionId: "us-sanjose-1"),
+            TestFixtures.client("c2", regionId: "us-sanjose-1"),
+        ]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "c1")
+        await tunnelManager.setStatus(.disconnected, for: "c2")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("c1", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("c2", regionId: "us-sanjose-1"),
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let activeOption = viewModel.filteredClientOptions.first(where: { $0.client.clientId == "c1" }),
+              let nextOption = viewModel.filteredClientOptions.first(where: { $0.client.clientId == "c2" }) else {
+            XCTFail("Expected installed client options.")
+            return
+        }
+        XCTAssertTrue(viewModel.isInstalled(activeOption))
+        XCTAssertTrue(viewModel.isInstalled(nextOption))
+
+        await tunnelManager.setStatus(nil, for: "c2")
+        await tunnelManager.setStartError(GatewayVPNError.missingInstalledTunnel)
+        await viewModel.switchTunnel(to: nextOption)
+
+        XCTAssertEqual(
+            viewModel.errorText,
+            "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
+        )
+        XCTAssertTrue(viewModel.isInstalled(activeOption))
+        XCTAssertFalse(viewModel.isInstalled(nextOption))
+        XCTAssertNil(viewModel.staleText(for: nextOption))
+    }
+
     func testConnectingClientCountsAsActiveTunnel() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
@@ -655,7 +811,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.newClientName, "")
         XCTAssertNil(viewModel.errorText)
         // The created client is merged in ahead of the (here empty) fetched list, so it
-        // must remain visible after the reload — guards mergeClients' existing-override.
+        // must remain visible after the reload - guards mergeClients' existing-override.
         XCTAssertTrue(viewModel.filteredClientOptions.contains { $0.client.clientId == "created-1" })
         XCTAssertEqual(viewModel.successText, "Laptop was created.")
     }
