@@ -105,6 +105,54 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.removeTunnelDisabled)
     }
 
+    func testSignInMapsRawFirebaseCredentialErrorsToGenericMessage() async {
+        XCTAssertEqual(
+            CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)?.localizedDescription,
+            "Invalid email or password."
+        )
+
+        let service = MockGatewayService()
+        service.signInError = CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)
+        let viewModel = makeViewModel(service)
+        viewModel.email = "user@example.com"
+        viewModel.password = "wrong-password"
+
+        await viewModel.signIn()
+
+        XCTAssertEqual(service.signInCallCount, 1)
+        XCTAssertEqual(viewModel.errorText, "Invalid email or password.")
+    }
+
+    func testSignInPreservesUnknownSignInErrors() async {
+        let service = MockGatewayService()
+        service.signInError = NSError(
+            domain: "CloudGatewayTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Network unavailable."]
+        )
+        let viewModel = makeViewModel(service)
+        viewModel.email = "user@example.com"
+        viewModel.password = "password"
+
+        await viewModel.signIn()
+
+        XCTAssertEqual(service.signInCallCount, 1)
+        XCTAssertEqual(viewModel.errorText, "Network unavailable.")
+    }
+
+    func testSignInPreservesDisabledAccountMessage() async {
+        let service = MockGatewayService()
+        service.signInError = CloudGatewayAppError.accessDenied("This account has been disabled. Contact support.")
+        let viewModel = makeViewModel(service)
+        viewModel.email = "user@example.com"
+        viewModel.password = "password"
+
+        await viewModel.signIn()
+
+        XCTAssertEqual(service.signInCallCount, 1)
+        XCTAssertEqual(viewModel.errorText, "This account has been disabled. Contact support.")
+    }
+
     // MARK: - Reset password
 
     func testResetPasswordSendsEmailForValidAddress() async {

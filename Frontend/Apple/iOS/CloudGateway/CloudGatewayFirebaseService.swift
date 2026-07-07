@@ -203,7 +203,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     private static func mapAuthError(_ error: Error) -> Error {
-        guard let code = AuthErrorCode(_bridgedNSError: error as NSError)?.code else {
+        guard let code = authErrorCode(for: error) else {
             return error
         }
         switch code {
@@ -225,19 +225,15 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     private static func mapSignInAuthError(_ error: Error) -> Error {
-        guard let code = AuthErrorCode(_bridgedNSError: error as NSError)?.code else {
+        guard let code = authErrorCode(for: error) else {
             return error
         }
-        switch code {
-        case .invalidEmail:
-            return CloudGatewayAppError.invalidEmail
-        case .wrongPassword, .invalidCredential, .userNotFound:
-            return CloudGatewayAppError.invalidSignInCredentials
-        case .userDisabled:
-            return CloudGatewayAppError.accessDenied("This account has been disabled. Contact support.")
-        default:
-            return error
-        }
+        return CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: code.rawValue) ?? error
+    }
+
+    private static func authErrorCode(for error: Error) -> AuthErrorCode? {
+        let nsError = error as NSError
+        return AuthErrorCode(_bridgedNSError: nsError)?.code ?? AuthErrorCode(rawValue: nsError.code)
     }
 
     private static func disconnectGoogle() async throws {
