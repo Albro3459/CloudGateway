@@ -992,7 +992,33 @@ private struct AccountLinkingView: View {
                 .padding(16)
             }
         }
-        .presentationDetents([.large])
+        .presentationDetents([.height(sheetHeight)])
+    }
+
+    private var sheetHeight: CGFloat {
+        var height: CGFloat = 250
+
+        switch viewModel.accountLinkReauthMethod {
+        case .password:
+            height += 94
+        case .apple:
+            height += 96
+        case .none:
+            break
+        }
+
+        for provider in viewModel.missingLinkProviders {
+            switch provider {
+            case .password:
+                height += 236
+            case .google:
+                height += 60
+            case .apple:
+                height += 118
+            }
+        }
+
+        return min(height, UIScreen.main.bounds.height * 0.82)
     }
 
     @ViewBuilder
