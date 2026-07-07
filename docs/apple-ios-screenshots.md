@@ -21,7 +21,7 @@ DERIVED_DATA=/private/tmp/CloudGatewayScreenshotsDerivedData
 xcodebuild \
   -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
   -scheme CloudGatewayScreenshots \
-  -destination "platform=iOS Simulator,name=${SIMULATOR_DEVICE},OS=26.5" \
+  -destination "platform=iOS Simulator,name=${SIMULATOR_DEVICE},OS=26.0" \
   -derivedDataPath "$DERIVED_DATA" \
   CODE_SIGNING_ALLOWED=NO \
   build
