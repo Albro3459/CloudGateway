@@ -966,9 +966,8 @@ private struct AccountLinkingView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Choose another way to sign in to this same CloudGateway account.")
-                            Text("If the sign-in method is already used by another CloudGateway account, linking will not work.")
-                            Text("Emails do not need to match. Link only methods you control.")
+                            Text("Choose a provider to link to your CloudGateway account.")
+                            Text("The provider account you link to cannot have an existing CloudGateway account.")
                         }
                         .font(.subheadline)
                         .foregroundStyle(theme.contentSecondary)
@@ -1014,7 +1013,7 @@ private struct AccountLinkingView: View {
             case .google:
                 height += 60
             case .apple:
-                height += 118
+                height += 60
             }
         }
 
@@ -1068,24 +1067,17 @@ private struct AccountLinkingView: View {
             }
             .disabled(viewModel.isWorking)
         case .apple:
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Do not link an Apple private relay email to a real email identity unless you are comfortable associating them.")
-                    .font(.subheadline)
-                    .foregroundStyle(theme.contentSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                SignInWithAppleButton(.continue) { request in
-                    let nonce = AppleSignInNonce.randomNonceString()
-                    appleRawNonce = nonce
-                    request.nonce = AppleSignInNonce.sha256(nonce)
-                } onCompletion: { result in
-                    onAppleLinkCompletion(result)
-                }
-                .signInWithAppleButtonStyle(.whiteOutline)
-                .frame(height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .disabled(viewModel.isWorking)
+            SignInWithAppleButton(.continue) { request in
+                let nonce = AppleSignInNonce.randomNonceString()
+                appleRawNonce = nonce
+                request.nonce = AppleSignInNonce.sha256(nonce)
+            } onCompletion: { result in
+                onAppleLinkCompletion(result)
             }
+            .signInWithAppleButtonStyle(.whiteOutline)
+            .frame(height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .disabled(viewModel.isWorking)
         }
     }
 

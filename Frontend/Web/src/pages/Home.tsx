@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
-import { KeyRound, Link, LogOut, Trash2, UserCircle } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Link, LogOut, Trash2, UserCircle } from "lucide-react";
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
@@ -55,6 +55,7 @@ const Home: React.FC = () => {
     const [linkAccountModalOpen, setLinkAccountModalOpen] = useState(false);
     const [linkEmail, setLinkEmail] = useState("");
     const [linkPassword, setLinkPassword] = useState("");
+    const [showLinkPassword, setShowLinkPassword] = useState(false);
     const [linkCurrentPassword, setLinkCurrentPassword] = useState("");
     const [linkingProviderId, setLinkingProviderId] = useState<AuthProviderId | null>(null);
     const [linkError, setLinkError] = useState<string | null>(null);
@@ -255,6 +256,7 @@ const Home: React.FC = () => {
         setLinkAccountModalOpen(false);
         setLinkEmail("");
         setLinkPassword("");
+        setShowLinkPassword(false);
         setLinkCurrentPassword("");
         setLinkError(null);
         setLinkRequiresPasswordReauth(false);
@@ -986,9 +988,8 @@ const Home: React.FC = () => {
                         </button>
                         <h3 className="mb-3 text-2xl font-semibold text-content">Link Sign-In Method</h3>
                         <div className="space-y-2 text-sm text-content-secondary">
-                            <p>Choose another way to sign in to this same CloudGateway account.</p>
-                            <p>If the sign-in method is already used by another CloudGateway account, linking will not work.</p>
-                            <p>Emails do not need to match. Link only methods you control.</p>
+                            <p>Choose a provider to link to your CloudGateway account.</p>
+                            <p>The provider account you link to cannot have an existing CloudGateway account.</p>
                         </div>
 
                         {linkError && (
@@ -1014,7 +1015,7 @@ const Home: React.FC = () => {
                         <div className="mt-5 space-y-3">
                             {missingProviderIds.includes("password") && (
                                 <div className="rounded-lg border border-edge-subtle p-4">
-                                    <div className="flex items-start gap-3">
+                                    <div className="flex items-start gap-3 pr-8">
                                         <KeyRound className="mt-0.5 text-accent" size={18} aria-hidden="true" />
                                         <div className="min-w-0 flex-1">
                                             <h4 className="font-medium text-content">Email and password</h4>
@@ -1032,14 +1033,25 @@ const Home: React.FC = () => {
                                                 </label>
                                                 <label className="block text-sm font-medium text-content-secondary">
                                                     New password
-                                                    <input
-                                                        value={linkPassword}
-                                                        onChange={(event) => setLinkPassword(event.target.value)}
-                                                        type="password"
-                                                        autoComplete="new-password"
-                                                        className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
-                                                        disabled={!!linkingProviderId}
-                                                    />
+                                                    <div className="relative mt-1">
+                                                        <input
+                                                            value={linkPassword}
+                                                            onChange={(event) => setLinkPassword(event.target.value)}
+                                                            type={showLinkPassword ? "text" : "password"}
+                                                            autoComplete="new-password"
+                                                            className="w-full rounded-lg border border-edge bg-inset p-3 pr-12 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                                            disabled={!!linkingProviderId}
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            aria-label={showLinkPassword ? "Hide password" : "Show password"}
+                                                            onClick={() => setShowLinkPassword((visible) => !visible)}
+                                                            className="absolute inset-y-0 right-0 flex w-12 items-center justify-center text-content-muted transition hover:text-content-secondary disabled:cursor-not-allowed disabled:text-content-disabled"
+                                                            disabled={!!linkingProviderId}
+                                                        >
+                                                            {showLinkPassword ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
+                                                        </button>
+                                                    </div>
                                                 </label>
                                                 <button
                                                     type="button"
@@ -1068,7 +1080,7 @@ const Home: React.FC = () => {
                                         <path fill="#FBBC05" d="M11.69 28.18c-.44-1.32-.69-2.73-.69-4.18s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24s.85 6.91 2.34 9.88l7.35-5.7z" />
                                         <path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z" />
                                     </svg>
-                                    Sign in with Google
+                                    {linkingProviderId === "google.com" ? "Linking..." : "Link Google"}
                                 </button>
                             )}
 
@@ -1082,7 +1094,7 @@ const Home: React.FC = () => {
                                     <svg viewBox="0 0 384 512" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 fill-current">
                                         <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z" />
                                     </svg>
-                                    Sign in with Apple
+                                    {linkingProviderId === "apple.com" ? "Linking..." : "Link Apple"}
                                 </button>
                             )}
                         </div>
