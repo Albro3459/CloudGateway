@@ -1035,15 +1035,11 @@ private struct AccountLinkingView: View {
                     .stroke(theme.edgeSubtle, lineWidth: 1)
             }
         case .google:
-            Button {
+            CustomGoogleSignInButton {
                 Task {
                     await viewModel.linkGoogle()
                 }
-            } label: {
-                Label("Link Google", systemImage: "g.circle")
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(SecondaryButtonStyle())
             .disabled(viewModel.isWorking)
         case .apple:
             VStack(alignment: .leading, spacing: 10) {
