@@ -14,6 +14,7 @@ enum CloudGatewayAppError: LocalizedError {
     case providerAlreadyLinked
     case invalidEmail
     case weakPassword
+    case invalidSignInCredentials
     case wrongPassword
 
     var errorDescription: String? {
@@ -42,6 +43,8 @@ enum CloudGatewayAppError: LocalizedError {
             "Enter a valid email address."
         case .weakPassword:
             "Enter a stronger password."
+        case .invalidSignInCredentials:
+            "Invalid email or password."
         case .wrongPassword:
             "The current password is incorrect."
         }

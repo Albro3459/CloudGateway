@@ -93,7 +93,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         try await withCheckedThrowingContinuation { continuation in
             Auth.auth().signIn(withEmail: email, password: password) { result, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: Self.mapSignInAuthError(error))
                     return
                 }
                 guard let user = result?.user else {
@@ -219,6 +219,22 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             return CloudGatewayAppError.weakPassword
         case .wrongPassword, .invalidCredential:
             return CloudGatewayAppError.wrongPassword
+        default:
+            return error
+        }
+    }
+
+    private static func mapSignInAuthError(_ error: Error) -> Error {
+        guard let code = AuthErrorCode(_bridgedNSError: error as NSError)?.code else {
+            return error
+        }
+        switch code {
+        case .invalidEmail:
+            return CloudGatewayAppError.invalidEmail
+        case .wrongPassword, .invalidCredential, .userNotFound:
+            return CloudGatewayAppError.invalidSignInCredentials
+        case .userDisabled:
+            return CloudGatewayAppError.accessDenied("This account has been disabled. Contact support.")
         default:
             return error
         }

@@ -894,7 +894,7 @@ final class CloudGatewayViewModel: ObservableObject {
         switch error {
         case .accessDenied(_), .noEnabledRegions:
             return true
-        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed, .requiresRecentLogin, .credentialAlreadyInUse, .providerAlreadyLinked, .invalidEmail, .weakPassword, .wrongPassword:
+        case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed, .requiresRecentLogin, .credentialAlreadyInUse, .providerAlreadyLinked, .invalidEmail, .weakPassword, .invalidSignInCredentials, .wrongPassword:
             return false
         }
     }
