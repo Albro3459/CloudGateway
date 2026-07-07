@@ -30,14 +30,14 @@ public enum GatewayWireGuardConfigParser {
         case noInterface
         case multipleInterfaces
         case interfaceHasNoPrivateKey
-        case interfaceHasInvalidPrivateKey(String)
+        case interfaceHasInvalidPrivateKey
         case interfaceHasInvalidListenPort(String)
         case interfaceHasInvalidAddress(String)
         case interfaceHasInvalidDNS(String)
         case interfaceHasInvalidMTU(String)
         case peerHasNoPublicKey
         case peerHasInvalidPublicKey(String)
-        case peerHasInvalidPreSharedKey(String)
+        case peerHasInvalidPreSharedKey
         case peerHasInvalidAllowedIP(String)
         case peerHasInvalidEndpoint(String)
         case peerHasInvalidPersistentKeepAlive(String)
@@ -70,7 +70,7 @@ public enum GatewayWireGuardConfigParser {
             } else if !parsedLine.value.isEmpty,
                       parsedLine.value != "[interface]",
                       parsedLine.value != "[peer]" {
-                throw ParseError.invalidLine(String(line))
+                throw ParseError.invalidLine(redactedLine(String(line)))
             }
 
             if isLastLine || parsedLine.value == "[interface]" || parsedLine.value == "[peer]" {
@@ -149,7 +149,7 @@ public enum GatewayWireGuardConfigParser {
                 throw ParseError.unrecognizedPeerKey(keyValue.0)
             }
         case .none:
-            throw ParseError.invalidLine("\(keyValue.0) = \(value)")
+            throw ParseError.invalidLine(redactedKeyValue(key: keyValue.0, value: value))
         }
 
         if let existingValue = attributes[key] {
@@ -167,7 +167,7 @@ public enum GatewayWireGuardConfigParser {
             throw ParseError.interfaceHasNoPrivateKey
         }
         guard isValidWireGuardKey(privateKeyString) else {
-            throw ParseError.interfaceHasInvalidPrivateKey(privateKeyString)
+            throw ParseError.interfaceHasInvalidPrivateKey
         }
 
         var interface = GatewayParsedWireGuardInterface(privateKey: privateKeyString)
@@ -216,7 +216,7 @@ public enum GatewayWireGuardConfigParser {
         var peer = GatewayParsedWireGuardPeer(publicKey: publicKeyString)
         if let preSharedKeyString = attributes["presharedkey"] {
             guard isValidWireGuardKey(preSharedKeyString) else {
-                throw ParseError.peerHasInvalidPreSharedKey(preSharedKeyString)
+                throw ParseError.peerHasInvalidPreSharedKey
             }
             peer.preSharedKey = preSharedKeyString
         }
@@ -248,6 +248,27 @@ public enum GatewayWireGuardConfigParser {
             return false
         }
         return data.count == 32
+    }
+
+    private static func redactedKeyValue(key: String, value: String) -> String {
+        switch key.lowercased() {
+        case "privatekey", "presharedkey":
+            return "\(key) = <redacted>"
+        default:
+            return "\(key) = \(value)"
+        }
+    }
+
+    private static func redactedLine(_ line: String) -> String {
+        let lowercasedLine = line.lowercased()
+        guard lowercasedLine.contains("privatekey") || lowercasedLine.contains("presharedkey") else {
+            return line
+        }
+        guard let separator = line.firstIndex(of: "=") else {
+            return "<redacted key line>"
+        }
+        let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(key) = <redacted>"
     }
 
     private static func isValidIPAddressRange(_ value: String) -> Bool {

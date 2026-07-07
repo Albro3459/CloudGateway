@@ -85,7 +85,9 @@ public actor CloudGatewayConfigManager {
             try secretStore.saveConfig(wireGuardConfig, for: snapshot.secretReference)
             try await tunnelManager.installTunnel(snapshot.tunnelConfiguration())
         } catch {
-            try? secretStore.deleteConfig(for: snapshot.secretReference)
+            if oldReference != snapshot.secretReference {
+                try? secretStore.deleteConfig(for: snapshot.secretReference)
+            }
             throw error
         }
         try await cache.save(snapshot)
@@ -130,12 +132,11 @@ public actor CloudGatewayConfigManager {
 
     @discardableResult
     public func refreshStatus() async throws -> CloudGatewayConfigManagerState {
-        var statuses = [String: GatewayTunnelStatus]()
+        let identifiers = state.installedSnapshots.map(\.clientId)
+        let statuses = try await tunnelManager.installedStatuses(for: identifiers)
         var missingSnapshots = [CloudGatewayConfigSnapshot]()
         for snapshot in state.installedSnapshots {
-            do {
-                statuses[snapshot.clientId] = try await tunnelManager.installedStatus(for: snapshot.clientId)
-            } catch GatewayVPNError.missingInstalledTunnel {
+            if statuses[snapshot.clientId] == nil {
                 missingSnapshots.append(snapshot)
             }
         }

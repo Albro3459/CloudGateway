@@ -11,12 +11,13 @@ extension CloudGatewayViewModel {
     /// packet-tunnel VPN manager and on-disk cache. Kept out of the Firebase-free core
     /// so the view model can be unit-tested against a mock service.
     convenience init() {
+        let keychainAccessGroupIdentifier = Self.cloudGatewayKeychainAccessGroup()
         let platform = GatewayPlatformConfiguration(
             appGroupIdentifier: "group.com.gocloudlaunch.gateway",
             appBundleIdentifier: "com.gocloudlaunch.gateway",
             providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
             tunnelDisplayName: "CloudGateway",
-            keychainAccessGroupIdentifier: Self.cloudGatewayKeychainAccessGroup()
+            keychainAccessGroupIdentifier: keychainAccessGroupIdentifier
         )
         self.init(
             service: CloudGatewayFirebaseService(),
@@ -31,13 +32,14 @@ extension CloudGatewayViewModel {
         )
     }
 
-    private static func cloudGatewayKeychainAccessGroup() -> String? {
-        guard let accessGroup = Bundle.main.object(forInfoDictionaryKey: "CGKeychainAccessGroup") as? String,
-              !accessGroup.isEmpty,
-              !accessGroup.contains("$") else {
-            return "CRQWDQ7QQR.com.gocloudlaunch.gateway"
+    private static func cloudGatewayKeychainAccessGroup() -> String {
+        do {
+            return try CloudGatewayRuntimeConfiguration.keychainAccessGroup(
+                Bundle.main.object(forInfoDictionaryKey: "CGKeychainAccessGroup")
+            )
+        } catch {
+            preconditionFailure(error.localizedDescription)
         }
-        return accessGroup
     }
 }
 
@@ -329,7 +331,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func fetchRegions() async throws -> [CloudGatewayRegion] {
         let response: CloudGatewayRegionsResponse = try await sendUnauthenticatedRequest(
-            url: apexAPIURL(path: "regions"),
+            url: try apexAPIURL(path: "regions"),
             method: "GET"
         )
         let regions: [CloudGatewayRegion] = response.regions.compactMap { region in
@@ -369,7 +371,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
         _ = regions
         let response: CloudGatewayAccessCheck = try await sendJSONRequest(
-            url: apexAPIURL(path: "auth/check-access"),
+            url: try apexAPIURL(path: "auth/check-access"),
             method: "POST",
             idToken: idToken,
             body: EmptyRequest()
@@ -379,7 +381,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func fetchCapacity(regionId: String, idToken: String) async throws -> CloudGatewayCapacityResponse {
         try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "capacity"),
+            url: try regionalAPIURL(regionId: regionId, path: "capacity"),
             method: "GET",
             idToken: idToken
         )
@@ -391,7 +393,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         idToken: String
     ) async throws -> CloudGatewayClient {
         let response: CloudGatewayCreateClientResponse = try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "clients"),
+            url: try regionalAPIURL(regionId: regionId, path: "clients"),
             method: "POST",
             idToken: idToken,
             body: CreateClientRequest(
@@ -418,7 +420,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         idToken: String
     ) async throws -> CloudGatewayDeleteClientResponse {
         try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "clients/\(clientId)"),
+            url: try regionalAPIURL(regionId: regionId, path: "clients/\(clientId)"),
             method: "DELETE",
             idToken: idToken,
             body: DeleteClientRequest(userId: userId, regionId: regionId)
@@ -427,7 +429,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
         try await sendJSONRequest(
-            url: apexAPIURL(path: "account"),
+            url: try apexAPIURL(path: "account"),
             method: "DELETE",
             idToken: idToken
         )
@@ -435,7 +437,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
         try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "admin/sync"),
+            url: try regionalAPIURL(regionId: regionId, path: "admin/sync"),
             method: "POST",
             idToken: idToken,
             body: SyncRegionRequest(regionId: regionId)
@@ -444,7 +446,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
 
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse {
         try await sendJSONRequest(
-            url: regionalAPIURL(regionId: regionId, path: "users"),
+            url: try regionalAPIURL(regionId: regionId, path: "users"),
             method: "POST",
             idToken: idToken,
             body: GrantAccessRequest(email: email)
@@ -557,20 +559,12 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return value as? Date
     }
 
-    private func apexAPIURL(path: String) -> URL {
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "api.\(apiOriginHost)"
-        components.path = "/api/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
-        return components.url!
+    private func apexAPIURL(path: String) throws -> URL {
+        try CloudGatewayAPIURLBuilder.apexAPIURL(originHost: apiOriginHost, path: path)
     }
 
-    private func regionalAPIURL(regionId: String, path: String) -> URL {
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "\(regionId).\(apiOriginHost)"
-        components.path = "/api/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
-        return components.url!
+    private func regionalAPIURL(regionId: String, path: String) throws -> URL {
+        try CloudGatewayAPIURLBuilder.regionalAPIURL(originHost: apiOriginHost, regionId: regionId, path: path)
     }
 
     private func sendJSONRequest<Response: Decodable, Body: Encodable>(

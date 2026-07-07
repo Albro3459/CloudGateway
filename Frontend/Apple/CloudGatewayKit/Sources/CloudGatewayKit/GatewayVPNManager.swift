@@ -22,8 +22,26 @@ public final class GatewayVPNManager {
     }
 
     public func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
-        let manager = try await installedManager(for: identifier)
-        return GatewayTunnelStatus(manager.connection.status)
+        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
+            throw GatewayVPNError.missingInstalledTunnel
+        }
+        return status
+    }
+
+    public func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
+        let identifiers = Set(identifiers)
+        guard !identifiers.isEmpty else {
+            return [:]
+        }
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        return managers.reduce(into: [String: GatewayTunnelStatus]()) { statuses, manager in
+            guard let identifier = tunnelIdentifier(of: manager),
+                  identifiers.contains(identifier),
+                  matches(manager, identifier: identifier) else {
+                return
+            }
+            statuses[identifier] = GatewayTunnelStatus(manager.connection.status)
+        }
     }
 
     public func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {

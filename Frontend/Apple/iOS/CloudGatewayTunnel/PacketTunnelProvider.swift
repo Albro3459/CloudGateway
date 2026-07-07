@@ -81,7 +81,7 @@ private extension GatewayParsedWireGuardConfig {
 private extension GatewayParsedWireGuardInterface {
     func wireGuardInterfaceConfiguration() throws -> InterfaceConfiguration {
         guard let privateKey = PrivateKey(base64Key: privateKey) else {
-            throw GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey(self.privateKey)
+            throw GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey
         }
 
         var configuration = InterfaceConfiguration(privateKey: privateKey)
@@ -113,7 +113,7 @@ private extension GatewayParsedWireGuardPeer {
         var configuration = PeerConfiguration(publicKey: publicKey)
         if let preSharedKey {
             guard let wireGuardPreSharedKey = PreSharedKey(base64Key: preSharedKey) else {
-                throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidPreSharedKey(preSharedKey)
+                throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidPreSharedKey
             }
             configuration.preSharedKey = wireGuardPreSharedKey
         }

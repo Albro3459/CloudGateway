@@ -66,6 +66,66 @@ enum CloudGatewayFirebaseAuthErrorCode {
     }
 }
 
+enum CloudGatewayRuntimeConfiguration {
+    enum Error: LocalizedError, Equatable {
+        case missingKeychainAccessGroup
+
+        var errorDescription: String? {
+            switch self {
+            case .missingKeychainAccessGroup:
+                "CloudGateway keychain access group is missing or unresolved."
+            }
+        }
+    }
+
+    static func keychainAccessGroup(_ value: Any?) throws -> String {
+        guard let accessGroup = value as? String else {
+            throw Error.missingKeychainAccessGroup
+        }
+        let trimmedAccessGroup = accessGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAccessGroup.isEmpty,
+              !trimmedAccessGroup.contains("$") else {
+            throw Error.missingKeychainAccessGroup
+        }
+        return trimmedAccessGroup
+    }
+}
+
+enum CloudGatewayAPIURLBuilder {
+    static func apexAPIURL(originHost: String, path: String) throws -> URL {
+        try apiURL(host: "api.\(originHost)", path: path)
+    }
+
+    static func regionalAPIURL(originHost: String, regionId: String, path: String) throws -> URL {
+        try apiURL(host: "\(normalizedRegionId(regionId)).\(originHost)", path: path)
+    }
+
+    private static func normalizedRegionId(_ regionId: String) throws -> String {
+        var normalizedRegionId = regionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedRegionId.hasPrefix("www.") {
+            normalizedRegionId.removeFirst(4)
+        }
+        guard normalizedRegionId.range(
+            of: #"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"#,
+            options: .regularExpression
+        ) != nil else {
+            throw CloudGatewayAppError.invalidAPIResponse
+        }
+        return normalizedRegionId
+    }
+
+    private static func apiURL(host: String, path: String) throws -> URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.path = "/api/\(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
+        guard let url = components.url else {
+            throw CloudGatewayAppError.invalidAPIResponse
+        }
+        return url
+    }
+}
+
 struct AuthenticatedUser: Equatable, Sendable {
     let uid: String
     let email: String?

@@ -947,4 +947,97 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.role, "user")
         XCTAssertFalse(viewModel.canSyncSelectedRegion)
     }
+
+    // MARK: - Runtime configuration
+
+    func testKeychainAccessGroupResolverAcceptsExpandedValue() throws {
+        let accessGroup = try CloudGatewayRuntimeConfiguration.keychainAccessGroup(
+            "CRQWDQ7QQR.com.gocloudlaunch.gateway"
+        )
+
+        XCTAssertEqual(accessGroup, "CRQWDQ7QQR.com.gocloudlaunch.gateway")
+    }
+
+    func testKeychainAccessGroupResolverRejectsMissingEmptyAndUnexpandedValues() {
+        XCTAssertThrowsError(try CloudGatewayRuntimeConfiguration.keychainAccessGroup(nil))
+        XCTAssertThrowsError(try CloudGatewayRuntimeConfiguration.keychainAccessGroup(""))
+        XCTAssertThrowsError(try CloudGatewayRuntimeConfiguration.keychainAccessGroup("$(CLOUDGATEWAY_KEYCHAIN_ACCESS_GROUP)"))
+    }
+
+    func testRegionalAPIURLBuilderNormalizesAndRejectsInvalidRegionIds() throws {
+        let url = try CloudGatewayAPIURLBuilder.regionalAPIURL(
+            originHost: "gocloudlaunch.com",
+            regionId: " WWW.US-SANJOSE-1 ",
+            path: "/clients/"
+        )
+
+        XCTAssertEqual(url.absoluteString, "https://us-sanjose-1.gocloudlaunch.com/api/clients")
+        XCTAssertThrowsError(try CloudGatewayAPIURLBuilder.regionalAPIURL(
+            originHost: "gocloudlaunch.com",
+            regionId: "us east",
+            path: "clients"
+        ))
+        XCTAssertThrowsError(try CloudGatewayAPIURLBuilder.regionalAPIURL(
+            originHost: "gocloudlaunch.com",
+            regionId: "a/b",
+            path: "clients"
+        ))
+        XCTAssertThrowsError(try CloudGatewayAPIURLBuilder.regionalAPIURL(
+            originHost: "gocloudlaunch.com",
+            regionId: "us-sanjose-1.gocloudlaunch.com",
+            path: "clients"
+        ))
+    }
+
+    // MARK: - Remote warning scope
+
+    func testLocalTunnelFailureDoesNotMarkInstalledConfigStale() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.disconnected, for: "c1")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let option = viewModel.filteredClientOptions.first else {
+            XCTFail("Expected an installed client option.")
+            return
+        }
+
+        await tunnelManager.setStartError(CloudGatewayAppError.accessDenied("Local VPN failure."))
+        await viewModel.startTunnel(for: option)
+
+        XCTAssertEqual(viewModel.errorText, "Local VPN failure.")
+        XCTAssertNil(viewModel.staleText(for: option))
+    }
+
+    func testRemoteRefreshFailureMarksInstalledConfigStale() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+
+        await viewModel.refresh()
+        guard let option = viewModel.filteredClientOptions.first else {
+            XCTFail("Expected an installed client option.")
+            return
+        }
+
+        service.fetchRegionsError = CloudGatewayAppError.invalidAPIResponse
+        await viewModel.refresh()
+
+        XCTAssertNotNil(viewModel.staleText(for: option))
+    }
 }

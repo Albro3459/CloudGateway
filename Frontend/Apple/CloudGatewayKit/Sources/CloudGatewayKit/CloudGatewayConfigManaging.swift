@@ -2,6 +2,7 @@ import Foundation
 
 public protocol CloudGatewayTunnelManaging: Sendable {
     func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus
+    func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus]
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws
     func startTunnel(identifier: String) async throws
     func stopTunnel(identifier: String) async throws

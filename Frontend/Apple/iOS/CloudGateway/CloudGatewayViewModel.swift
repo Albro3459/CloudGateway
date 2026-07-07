@@ -412,7 +412,14 @@ final class CloudGatewayViewModel: ObservableObject {
     private func reloadCurrentState(showsWorkingOverlay: Bool) async {
         await run(showsWorkingOverlay: showsWorkingOverlay) {
             if let user = service.currentUser {
-                try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+                do {
+                    try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+                } catch {
+                    if isSignedIn {
+                        apply(await configManager.markRemoteRefreshUnavailable())
+                    }
+                    throw error
+                }
             } else {
                 try await loadGuestState()
             }
@@ -448,7 +455,7 @@ final class CloudGatewayViewModel: ObservableObject {
                 log: response.log
             )
             syncResult = result
-            try await loadRemoteState(for: user)
+            try await loadRemoteStateMarkingUnavailable(for: user)
         }
     }
 
@@ -503,7 +510,7 @@ final class CloudGatewayViewModel: ObservableObject {
             )
             newClientName = ""
             selectedClientId = nil
-            try await loadRemoteState(for: user, existingClients: [created])
+            try await loadRemoteStateMarkingUnavailable(for: user, existingClients: [created])
             successText = "\(created.displayName) was created."
         }
     }
@@ -528,7 +535,7 @@ final class CloudGatewayViewModel: ObservableObject {
                 clientId: response.clientId,
                 regionId: response.regionId
             ))
-            try await loadRemoteState(for: user)
+            try await loadRemoteStateMarkingUnavailable(for: user)
             successText = "\(selectedClientOption.client.displayName) was deleted."
         }
     }
@@ -663,7 +670,7 @@ final class CloudGatewayViewModel: ObservableObject {
         guard let user = service.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
-        try await loadRemoteState(for: user)
+        try await loadRemoteStateMarkingUnavailable(for: user)
         guard let freshOption = clientOptions.first(where: {
             $0.client.clientId == option.client.clientId
                 && $0.client.regionId == option.client.regionId
@@ -846,6 +853,20 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func loadRemoteState(for user: AuthenticatedUser) async throws {
         try await loadRemoteState(for: user, existingClients: [])
+    }
+
+    private func loadRemoteStateMarkingUnavailable(
+        for user: AuthenticatedUser,
+        existingClients: [CloudGatewayClient] = []
+    ) async throws {
+        do {
+            try await loadRemoteState(for: user, existingClients: existingClients)
+        } catch {
+            if isSignedIn {
+                apply(await configManager.markRemoteRefreshUnavailable())
+            }
+            throw error
+        }
     }
 
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
@@ -1043,9 +1064,6 @@ final class CloudGatewayViewModel: ObservableObject {
             }
         } catch {
             errorText = error.localizedDescription
-            if isSignedIn {
-                apply(await configManager.markRemoteRefreshUnavailable())
-            }
         }
     }
 }

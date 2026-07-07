@@ -127,6 +127,34 @@ private enum ManagerTestError: Error {
     #expect(secretStore.deletedReferences().count == 1)
 }
 
+@Test func managerDoesNotDeleteExistingSecretWhenSameConfigReinstallFails() async throws {
+    let cache = MemoryConfigCache()
+    let secretStore = MemoryConfigSecretStore()
+    let option = CloudGatewayClientOption(client: client(id: "client-1"), region: region())
+    let installedManager = makeManager(
+        tunnelManager: RecordingTunnelManager(status: .disconnected),
+        cache: cache,
+        secretStore: secretStore
+    )
+    let installedState = try await installedManager.install(option)
+    let installedReference = try #require(installedState.installedSnapshot(clientId: "client-1")?.secretReference)
+
+    let failingManager = makeManager(
+        tunnelManager: RecordingTunnelManager(status: .disconnected, installError: ManagerTestError.installFailed),
+        cache: cache,
+        secretStore: secretStore
+    )
+    _ = try await failingManager.loadLocalState()
+
+    await #expect(throws: ManagerTestError.installFailed) {
+        try await failingManager.install(option)
+    }
+
+    #expect(secretStore.savedReferences().last == installedReference)
+    #expect(secretStore.deletedReferences().isEmpty)
+    #expect(try secretStore.loadConfig(for: installedReference).rawValue == managerConfig)
+}
+
 @Test func managerKeepsSecretWhenCacheSaveFailsAfterTunnelInstall() async throws {
     let tunnelManager = RecordingTunnelManager(status: .disconnected)
     let cache = MemoryConfigCache(saveError: ManagerTestError.cacheSaveFailed)
@@ -141,6 +169,22 @@ private enum ManagerTestError: Error {
     #expect(await tunnelManager.installedIdentifiers() == ["client-1"])
     #expect(secretStore.savedReferences().count == 1)
     #expect(secretStore.deletedReferences().isEmpty)
+}
+
+@Test func managerRefreshesInstalledStatusesInOneBatch() async throws {
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let cache = MemoryConfigCache(snapshots: [
+        cachedSnapshot(clientId: "client-1"),
+        cachedSnapshot(clientId: "client-2"),
+    ])
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache)
+
+    let state = try await manager.loadLocalState()
+
+    #expect(state.tunnelStatus(for: "client-1") == .disconnected)
+    #expect(state.tunnelStatus(for: "client-2") == .disconnected)
+    #expect(await tunnelManager.statusRequestCount() == 1)
+    #expect(await tunnelManager.statusRequestIdentifiers() == [["client-1", "client-2"]])
 }
 
 @Test func managerMarksMissingRemoteInstalledConfigInvalidAndBlocksStart() async throws {
@@ -359,6 +403,7 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
     private let installError: (any Error)?
     private var installedTunnels = [String: GatewayTunnelConfiguration]()
     private var statuses = [String: GatewayTunnelStatus]()
+    private var statusRequests = [[String]]()
     private var starts = [String]()
     private var stops = [String]()
     private var removes = [String]()
@@ -372,10 +417,19 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
-        guard let status = statuses[identifier] ?? status else {
+        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
             throw GatewayVPNError.missingInstalledTunnel
         }
         return status
+    }
+
+    func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
+        statusRequests.append(identifiers)
+        return identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
+            if let status = statuses[identifier] ?? status {
+                result[identifier] = status
+            }
+        }
     }
 
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
@@ -408,6 +462,14 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
 
     func installedDisplayNames() -> [String] {
         installedTunnels.values.sorted { $0.identifier < $1.identifier }.map(\.displayName)
+    }
+
+    func statusRequestCount() -> Int {
+        statusRequests.count
+    }
+
+    func statusRequestIdentifiers() -> [[String]] {
+        statusRequests
     }
 
     func startCount() -> Int {

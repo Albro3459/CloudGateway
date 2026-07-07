@@ -207,8 +207,20 @@ private func sampleConfig(
 }
 
 @Test func parserRejectsInvalidPrivateKey() {
-    #expect(throws: GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey("not-a-key")) {
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey) {
         try GatewayWireGuardConfigParser.parse(sampleConfig().replacingOccurrences(of: privateKey, with: "not-a-key"))
+    }
+}
+
+@Test func parserRejectsInvalidPreSharedKeyWithoutExposingKeyMaterial() {
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.peerHasInvalidPreSharedKey) {
+        try GatewayWireGuardConfigParser.parse(sampleConfig(peer: "PreSharedKey = not-a-key"))
+    }
+}
+
+@Test func parserRedactsSensitiveKeyMaterialFromInvalidLineErrors() {
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.invalidLine("PrivateKey = <redacted>")) {
+        try GatewayWireGuardConfigParser.parse("PrivateKey = not-a-key")
     }
 }
 
