@@ -252,6 +252,35 @@ public enum CloudGatewayConfigSelection {
         return options.filter { $0.client.regionId == regionId }
     }
 
+    // Build display rows from locally cached install snapshots, for when the
+    // remote client list is unavailable (e.g. offline). Keeps an installed - and
+    // possibly connected - tunnel visible and controllable. The WireGuard config
+    // itself lives in the keychain, not the snapshot, so `wireGuardConfig` is nil
+    // here; these rows drive the tunnel toggle, not (re)installation.
+    public static func offlineClientOptions(
+        from snapshots: [CloudGatewayConfigSnapshot]
+    ) -> [CloudGatewayClientOption] {
+        snapshots
+            .map { snapshot in
+                CloudGatewayClientOption(
+                    client: CloudGatewayClient(
+                        clientId: snapshot.clientId,
+                        clientName: snapshot.clientName,
+                        regionId: snapshot.regionId,
+                        status: snapshot.status,
+                        wireGuardConfig: nil,
+                        updatedAt: snapshot.updatedAt
+                    ),
+                    region: CloudGatewayRegion(
+                        regionId: snapshot.regionId,
+                        displayName: snapshot.regionDisplayName,
+                        enabled: true
+                    )
+                )
+            }
+            .sorted(by: compareOptions)
+    }
+
     public static func mergeClients(
         existing: [CloudGatewayClient],
         fetched: [CloudGatewayClient]

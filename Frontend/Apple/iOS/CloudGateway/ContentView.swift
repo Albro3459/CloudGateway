@@ -606,14 +606,14 @@ struct ContentView: View {
                             .font(.subheadline)
                             .foregroundStyle(theme.contentMuted)
                     }
-                } else if viewModel.filteredClientOptions.isEmpty {
+                } else if viewModel.displayedClientOptions.isEmpty {
                     EmptyState(
                         title: "No clients in this region",
                         message: "Create a client to install a VPN profile on this device."
                     )
                 } else {
                     VStack(spacing: 10) {
-                        ForEach(viewModel.filteredClientOptions) { option in
+                        ForEach(viewModel.displayedClientOptions) { option in
                             ClientRow(
                                 option: option,
                                 isSelected: viewModel.selectedClientId == option.client.clientId,

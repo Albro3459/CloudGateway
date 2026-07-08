@@ -137,6 +137,23 @@ final class CloudGatewayViewModel: ObservableObject {
         CloudGatewayConfigSelection.clientOptions(in: selectedRegionId, options: clientOptions)
     }
 
+    // Rows to render for the selected region. Adds locally cached installed
+    // configs that the remote list does not cover - e.g. an installed (possibly
+    // connected) tunnel on an offline cold launch - so a running VPN stays
+    // visible and can be toggled off without connectivity. Cached rows are
+    // region-filtered like the remote ones, so they never leak across regions.
+    var displayedClientOptions: [CloudGatewayClientOption] {
+        let options = filteredClientOptions
+        guard isSignedIn else {
+            return options
+        }
+        let representedIds = Set(options.map(\.client.clientId))
+        let cachedOnly = CloudGatewayConfigSelection.offlineClientOptions(from: installedSnapshots)
+            .filter { !representedIds.contains($0.client.clientId) }
+        let cachedInRegion = CloudGatewayConfigSelection.clientOptions(in: selectedRegionId, options: cachedOnly)
+        return cachedInRegion.isEmpty ? options : options + cachedInRegion
+    }
+
     var selectedClientOption: CloudGatewayClientOption? {
         CloudGatewayConfigSelection.selectedOption(clientId: selectedClientId, in: filteredClientOptions)
     }
@@ -416,7 +433,7 @@ final class CloudGatewayViewModel: ObservableObject {
                     try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
                 } catch {
                     if isSignedIn {
-                        apply(await configManager.markRemoteRefreshUnavailable())
+                        await applyRemoteRefreshUnavailable()
                     }
                     throw error
                 }
@@ -863,10 +880,18 @@ final class CloudGatewayViewModel: ObservableObject {
             try await loadRemoteState(for: user, existingClients: existingClients)
         } catch {
             if isSignedIn {
-                apply(await configManager.markRemoteRefreshUnavailable())
+                await applyRemoteRefreshUnavailable()
             }
             throw error
         }
+    }
+
+    // A remote refresh failed (offline, API error, cold launch with no network).
+    // Reload the local cache first so installed configs stay visible and
+    // controllable, then flag them as stale/offline.
+    private func applyRemoteRefreshUnavailable() async {
+        _ = try? await configManager.loadLocalState()
+        apply(await configManager.markRemoteRefreshUnavailable())
     }
 
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {

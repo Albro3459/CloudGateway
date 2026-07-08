@@ -57,6 +57,12 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
         ) else {
             return nil
         }
+        // No remote config to diff against (e.g. an offline cached row whose
+        // config lives only in the keychain): treat the snapshot as current
+        // rather than flagging a spurious update.
+        guard option.client.hasUsableConfig else {
+            return .installed
+        }
         if CloudGatewayConfigSelection.configMatches(installedSnapshot, option: option) {
             return .installed
         }

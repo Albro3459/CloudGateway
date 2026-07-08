@@ -1040,4 +1040,59 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertNotNil(viewModel.staleText(for: option))
     }
+
+    func testOfflineColdLaunchSurfacesCachedInstalledConfigAsToggleableRow() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        // No prior successful load: the remote list is never populated.
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connected
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+        // The remote client list is empty offline, but the cached install still shows.
+        XCTAssertTrue(viewModel.filteredClientOptions.isEmpty)
+        guard let row = viewModel.displayedClientOptions.first(where: { $0.client.clientId == "c1" }) else {
+            XCTFail("Expected the cached installed config to surface as a row.")
+            return
+        }
+        XCTAssertEqual(viewModel.displayedClientOptions.count, 1)
+        XCTAssertNil(row.client.wireGuardConfig)
+        XCTAssertTrue(viewModel.isInstalled(row))
+        // Not a spurious "Update Available" for a config we cannot diff offline.
+        XCTAssertNil(viewModel.installStateLabel(for: row))
+        // The running tunnel is visible and controllable without connectivity.
+        XCTAssertTrue(viewModel.toggleIsOn(for: row))
+        XCTAssertFalse(viewModel.toggleDisabled(for: row))
+
+        await viewModel.stopTunnel(for: row)
+
+        XCTAssertFalse(viewModel.toggleIsOn(for: row))
+        XCTAssertTrue(viewModel.displayedClientOptions.contains { $0.client.clientId == "c1" })
+    }
+
+    func testCachedInstalledConfigDoesNotLeakIntoOtherRegions() async {
+        let service = signedInService()
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", displayOrder: 10),
+            TestFixtures.region("us-ashburn-1", displayOrder: 20),
+        ]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+
+        await viewModel.refresh()
+        // Switch to a region that holds none of the user's clients.
+        viewModel.selectedRegionId = "us-ashburn-1"
+
+        XCTAssertTrue(viewModel.displayedClientOptions.isEmpty)
+    }
 }

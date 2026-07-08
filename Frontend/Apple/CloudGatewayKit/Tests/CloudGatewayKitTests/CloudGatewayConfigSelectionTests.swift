@@ -307,3 +307,61 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(CloudGatewayConfigSelection.configMatches(snapshot, option: matchingOption))
     #expect(!CloudGatewayConfigSelection.configMatches(snapshot, option: changedOption))
 }
+
+@Test func offlineClientOptionsBuildRegionScopedRowsFromSnapshots() throws {
+    func snapshot(
+        clientId: String,
+        clientName: String,
+        regionId: String,
+        regionDisplayName: String
+    ) throws -> CloudGatewayConfigSnapshot {
+        try CloudGatewayConfigSnapshot(
+            clientId: clientId,
+            regionId: regionId,
+            clientName: clientName,
+            regionDisplayName: regionDisplayName,
+            status: .active,
+            wireGuardConfig: usableConfig,
+            readAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+    }
+
+    let snapshots = [
+        try snapshot(clientId: "b", clientName: "Zulu", regionId: "us-sanjose-1", regionDisplayName: "San Jose"),
+        try snapshot(clientId: "a", clientName: "Alpha", regionId: "us-sanjose-1", regionDisplayName: "San Jose"),
+        try snapshot(clientId: "c", clientName: "Laptop", regionId: "us-ashburn-1", regionDisplayName: "Ashburn"),
+    ]
+
+    let options = CloudGatewayConfigSelection.offlineClientOptions(from: snapshots)
+
+    // Sorted by region name (Ashburn < San Jose) then client display name.
+    #expect(options.map(\.client.clientId) == ["c", "a", "b"])
+    // The WireGuard config lives in the keychain, never in the offline row.
+    #expect(options.allSatisfy { $0.client.wireGuardConfig == nil })
+    // Region display name comes from the snapshot, not just the id.
+    #expect(options.first?.regionDisplayName == "Ashburn")
+    #expect(options.first?.client.status == .active)
+    #expect(options.first?.client.updatedAt == Date(timeIntervalSince1970: 200))
+    // Region-filtering keeps offline rows scoped like remote ones.
+    #expect(CloudGatewayConfigSelection.clientOptions(in: "us-sanjose-1", options: options).map(\.client.clientId) == ["a", "b"])
+}
+
+@Test func installStateTreatsCachedRowWithoutConfigAsInstalled() throws {
+    let snapshot = try CloudGatewayConfigSnapshot(
+        clientId: "client-1",
+        regionId: "us-sanjose-1",
+        clientName: "Phone",
+        regionDisplayName: "San Jose",
+        status: .active,
+        wireGuardConfig: usableConfig,
+        readAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 100)
+    )
+    let state = CloudGatewayConfigManagerState(installedSnapshots: [snapshot])
+    let offlineOption = CloudGatewayConfigSelection.offlineClientOptions(from: [snapshot])[0]
+
+    // No remote config to diff against -> installed, not a spurious "update available".
+    #expect(offlineOption.client.wireGuardConfig == nil)
+    #expect(state.installState(for: offlineOption) == .installed)
+}
