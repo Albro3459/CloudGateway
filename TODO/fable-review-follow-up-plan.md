@@ -1,117 +1,218 @@
-# Apple Review Follow-up Plan
+# Fable Review Follow-Up Plan
 
-Scope: `apple` branch, focused on the iOS app, CloudGatewayKit, packet tunnel extension, and the one backend account-deletion item surfaced during the review.
+Plan to resolve the Fable code review of the `apple` PR (`743e500..HEAD`).
+Decisions below reflect the maintainer's chosen approach for each finding.
+Items marked **Ignore** are intentionally not being changed and are recorded so
+they are not re-raised.
 
-## Decision Summary
+---
 
-| # | Decision | Priority | Notes |
-|---|---|---:|---|
-| 1 | Fix | High | Rollback can delete the keychain secret used by the currently installed tunnel. |
-| 2 | Fix | High | Parser and tunnel conversion errors can expose WireGuard key material. |
-| 3 | Fix | Low | Malformed remote `regionId` can crash URL construction; fix defensively even though repro has been elusive. |
-| 4 | Ignore | None | Showing connecting as connected is intentional to match Apple's immediate Control Center behavior. |
-| 5 | Ignore for now | None | Backend origin fallback is acceptable while there is only one environment. |
-| 6 | Fix loud failure | Medium | The hardcoded access group is correct, but missing/unexpanded configuration should fail loudly. |
-| 7 | Ignore | None | Not valid. Swift 5 flattens `try?` optionals, and tests cover the fallback. |
-| 8 | Fix | Medium | Generic error handling marks remote refresh unavailable after unrelated local failures. |
-| 9 | Ignore | None | With 1-3 regions, parallelizing capacity fetches is likely premature. |
-| 10 | Fix | Medium | One NetworkExtension preferences load should be enough for status refresh. |
+## Cross-cutting: auth provider ordering standard
 
-## Planned Work
+Apply everywhere before the individual fixes so the UI is consistent.
 
-### 1. Protect Existing Keychain Secrets During Install Rollback
+- **Login and linking a new provider** - always order providers:
+  1. Email & password
+  2. Apple
+  3. Google
+- **Reauthentication (delete account / recent-login recovery)** - email & password
+  goes **last** when other providers are linked, for convenience:
+  1. Apple
+  2. Google
+  3. Email & password
 
-Problem: `CloudGatewayConfigManager.install()` saves the config secret before installing the tunnel. If `installTunnel` fails and the new snapshot uses the same `secretReference` as the existing installed snapshot, the catch block deletes that shared secret. The old tunnel preference may still point at the same keychain account, so the next packet tunnel start can fail with keychain item not found.
+Audit and normalize ordering in:
+- iOS: `Frontend/Apple/iOS/CloudGateway/ContentView.swift` (login screen, account-link
+  sheet, reauth prompts) and any provider list in `CloudGatewayViewModel.swift`.
+- Web: `Frontend/Web/src/pages/Login.tsx`, the account-link sheet and the
+  reauth branch in `Frontend/Web/src/pages/Home.tsx`.
 
-Answer to the open question: in this failure case, the new install does not complete. The issue is that the existing install can remain present while its keychain secret has been removed.
+---
 
-Plan:
-- In the rollback path, only delete `snapshot.secretReference` when it differs from `oldReference`.
-- Add/update a CloudGatewayKit test for failed reinstall of an unchanged config.
-- Keep the existing success-path cleanup of old changed secrets.
+## Medium
 
-### 2. Redact WireGuard Key Material From Errors
+### 1. Account-linking reauth must not revoke Apple/Google grants (iOS)
+**Decision:** Works today (user just re-links on next sign-in) but we should not
+revoke a grant merely to link a new provider.
 
-Problem: `GatewayWireGuardConfigParser.ParseError` stores raw invalid private keys and pre-shared keys in associated values. `PacketTunnelProvider.startTunnel` passes thrown errors to NetworkExtension, so stringified errors may reach system logs.
+**Approach:** Split the reauth methods into two variants:
+- Deletion variant - keeps `Auth.auth().revokeToken(withAuthorizationCode:)`
+  (Apple) and `GIDSignIn.disconnect()` (Google). Used only by account deletion.
+- Plain reauth variant - performs `user.reauthenticate(with:)` only, no revoke /
+  disconnect. Used by the account-linking recovery flow.
 
-Plan:
-- Change key-related parse errors so they do not carry raw private key or pre-shared key values.
-- Keep non-secret validation context where useful, such as field names or redacted reason labels.
-- Update tests that currently assert exact raw key values in thrown errors.
-- Check packet tunnel conversion errors too, especially private key and pre-shared key branches.
+**Files:**
+- `Frontend/Apple/iOS/CloudGateway/CloudGatewayFirebaseService.swift:184-205`
+  (`reauthenticateWithApple`, `reauthenticateWithGoogle`) - add non-revoking
+  variants (or a `revoke: Bool` parameter, default false).
+- `CloudGatewayViewModel.swift:358-381` (`completeAccountLinkAppleReauth`) and
+  `:598-615` (Google link recovery) - call the plain reauth variant.
+- Leave `deleteAccount*` paths (`:543-565`) on the revoking variant.
 
-### 3. Harden Regional URL Construction
+### 2. Delete confirmation must delete the intended client only (iOS)
+**Decision:** Great catch - delete exactly the client named in the alert.
 
-Problem: `regionalAPIURL(regionId:path:)` force unwraps `components.url` after building the host from API/Firestore-derived `regionId`. A malformed value can crash.
+**Approach:** The confirm handler currently calls `deleteSelectedClient()`, which
+resolves `selectedClientOption` at confirm time and can drift after a background
+refresh prunes/moves the selection. Delete `clientPendingDelete` directly.
 
-Plan:
-- Validate and normalize the remote-derived region identifier before URL construction.
-- Strip an accidental `www.` prefix if it ever appears; that should not be coming from the API, but it is harmless to normalize before validation.
-- Prefer explicit host construction from the expected production shape, such as `<regionId>.gocloudlaunch.com`, after validating `regionId`.
-- Do not route regional API requests to `wg.<regionId>.gocloudlaunch.com`.
-- Make URL creation throwing or otherwise surface a normal app error instead of force-unwrapping.
-- Keep this low priority, but fix it defensively.
+**Files:**
+- `Frontend/Apple/iOS/CloudGateway/ContentView.swift:145-158` - pass the captured
+  `clientPendingDelete` into the delete call.
+- `CloudGatewayViewModel.swift:518-541` - add/repurpose a
+  `deleteClient(_ option:)` that takes the explicit option instead of reading
+  `selectedClientOption`.
 
-### 4. Keep Connecting Display Behavior
+### 3. Offline cold launch must surface cached, installed VPNs (iOS)
+**Decision:** Show cached configs when offline and allow toggling them; bypass the
+Firestore pull when there is no connectivity.
 
-Decision: no change. The app intentionally treats `.connecting` as visually on/connected because Apple Control Center flips immediately and NetworkExtension status updates are coarse.
+**Approach:** Client rows render only from `filteredClientOptions`, which is
+populated by `applyRemoteState` after a successful network load. When the remote
+fetch fails, fall back to rendering rows from the cached
+`installedSnapshots`/tunnel statuses so an installed (possibly connected) tunnel
+stays visible and controllable (start/stop). Reconcile with remote once
+connectivity returns.
 
-### 5. Leave Backend Origin Fallback Alone For Now
+**Files:**
+- `Frontend/Apple/iOS/CloudGateway/CloudGatewayViewModel.swift:846-852`
+  (`loadLocalState`/`applyLocal`) - expose installed snapshots as toggleable rows.
+- `ContentView.swift:609-661` (`clientsPanel`) - render a snapshot-backed row set
+  when `filteredClientOptions` is empty but snapshots exist; keep the VPN toggle
+  wired to the tunnel manager (which is local/offline-capable).
+- Ensure `markRemoteRefreshUnavailable` stale text attaches to rows that actually
+  render.
 
-Decision: no change while CloudGateway has only one environment.
+### 4. Account-deletion race can orphan a live WireGuard peer (API)
+**Decision:** Accept the race. Do **not** delete the `UserRoles` doc first and do
+**not** add fencing. The only way to trigger it is a user racing their *own*
+account deletion from a second device/browser in a sub-second window; the cost is
+a single orphaned peer that the next `cloudgateway-sync-peers` reconciles. Not
+worth the complexity.
 
-Note: if staging or production-like parallel environments are introduced later, revisit `_origin_host()` before sharing bearer tokens across regional API calls.
+**Why not "delete role first" (rejected):** deleting `UserRoles` first breaks the
+flow under the current code:
+- `check_access` (which the client calls right after login/reload) runs
+  `require_role_or_disable_unprovisioned` (`auth.py:51-57`); with the role gone it
+  calls `disable_auth_user` -> `revoke_refresh_tokens` (`firebase.py:295-301`),
+  disabling the account and revoking tokens.
+- Token verification uses `verify_id_token(check_revoked=True)` (`firebase.py:84`),
+  so once revoked the user's still-unexpired ID token is rejected too - including a
+  retry of `DELETE /account`.
+- `_ensure_account_delete_allowed` (`routes.py:596-602`) only allows an
+  unprovisioned retry when `role is None` **and** the `Users` doc is also gone;
+  mid-deletion the `Users` doc still exists, so a retry raises "not available".
 
-### 6. Fail Loudly On Missing Keychain Access-group Configuration
+Making role-first safe would require relaxing `_ensure_account_delete_allowed` for
+an in-progress state, stopping `check_access` from disabling/revoking during a
+deletion, and surviving `check_revoked` - too much for the race it closes.
 
-Problem: `cloudGatewayKeychainAccessGroup()` falls back to `CRQWDQ7QQR.com.gocloudlaunch.gateway` when `CGKeychainAccessGroup` is missing, empty, or unexpanded. That can hide a signing/build-setting problem and cause keychain entitlement failures later.
+**Approach:** No code change to the fencing. Add a short code comment at
+`delete_account` noting the accepted race and that `cloudgateway-sync-peers`
+reconciles any orphaned peer. (Optional: leave the ordering as-is; snapshot ->
+remove peers -> hard delete.)
 
-Clarification: `CRQWDQ7QQR.com.gocloudlaunch.gateway` is the correct production access group. The issue is not the value itself; the issue is silently using it when the Info.plist/build setting is missing or failed to expand.
+**Files:**
+- `Backend/API/src/routes.py:374-395` (`delete_account`) - comment only.
 
-Plan:
-- Confirm how `$(CLOUDGATEWAY_KEYCHAIN_ACCESS_GROUP)` resolves for app and tunnel targets under normal local builds.
-- Make missing, empty, or unexpanded access-group configuration fail loudly instead of silently falling back.
-- Keep app and tunnel entitlements aligned with the runtime provider configuration.
+### 5. Region unreachable must not permanently wedge deletion (API)
+**Decision:** Distinguish a genuinely unreachable server (DNS/connection error)
+from a Cloudflare challenge / auth failure. On unreachable, still remove/mark the
+client in Firestore so a later peer-sync (when the host returns) reconciles the
+peer. Challenge/auth failures should still abort so we do not lose the peer
+silently.
 
-### 7. Ignore Role Nested Optional Finding
+**Approach:**
+- In `_remove_account_peers`, classify the failure:
+  - Connection refused / DNS resolution failure / timeout (host truly
+    unreachable) -> proceed to write the terminal/REMOVED state (or delete the doc)
+    for that client and continue the deletion. Peer reconciliation happens on the
+    next `cloudgateway-sync-peers` when the host is back.
+  - Cloudflare challenge / HTTP auth error -> abort as today (do not assume the
+    peer is gone).
 
-Decision: no change. The claim depends on old Swift behavior. This project uses Swift 5 mode, where `try?` flattens optional results, so:
+**Files:**
+- `Backend/API/src/routes.py:635-666` (`_remove_account_peers`,
+  `_delete_remote_client`) - branch on the URL/HTTP error type.
+- Confirm the sync path removes peers whose docs are terminal/absent.
 
-```swift
-role = (try? await service.fetchUserRole(uid: user.uid)) ?? access.role
-```
+### 6. Delete-account errors must be visible and human-readable (Web)
+**Decision:** Handle these errors properly.
 
-falls back to `access.role` when the Firestore role read succeeds with nil.
+**Approach:**
+- Add an inline error region inside the delete-account modal (mirror the link
+  sheet's `linkError`) so the message is not painted behind the modal overlay.
+- Map Firebase error codes to friendly copy (reuse/extend the link flow's
+  `getLinkErrorMessage`) instead of showing raw `error.message`.
 
-### 8. Narrow Remote-refresh-unavailable Warnings
+**Files:**
+- `Frontend/Web/src/pages/Home.tsx:812` (banner), `:1156-1188` (modal),
+  `:320-326` (error handling) - render error inside the modal; add code mapping.
 
-Problem: `run()` calls `markRemoteRefreshUnavailable()` for any signed-in error. That stamps installed configs with an offline/stale warning even after unrelated failures such as local VPN start refusal, grant-access validation, or install validation.
+---
 
-Plan:
-- Only mark remote refresh unavailable for failures from refresh/load-remote-state paths or network/API refresh failures.
-- Keep local VPN failures focused on the local error message.
-- Add/update ViewModel tests for a non-refresh failure not stamping stale warning text.
+## Low - to fix
 
-### 9. Do Not Parallelize Region Capacity Fetches Now
+### iOS / CloudGatewayKit
+- **PacketTunnelProvider `handleAppMessage` returns the private key.** It is dead
+  code (nothing calls `sendProviderMessage`). Remove the override. If it is ever
+  reintroduced for runtime stats, strip `PrivateKey`/`PresharedKey` lines first.
+  `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift:35-48`.
+- **Role fallback double-optional.** `(try? await fetchUserRole(...)) ?? access.role`
+  is `String??`; a missing `UserRoles` doc yields `.some(nil)` and drops the
+  `access.role` fallback. Flatten so a missing doc still falls back to the
+  check-access role. `CloudGatewayViewModel.swift:883`.
+- **Password trimming - remove it everywhere.** Never trim a user's password, on
+  sign-in, sign-up, or link, on **web or iOS**. Trim email only.
+  - iOS: `CloudGatewayViewModel.swift:289` (sign-in, already raw - verify),
+    `:335-342` (`linkEmailPassword`), `:545-549`, `:578-582` (reauth) - stop
+    trimming password.
+  - Web: audit `Login.tsx` / `CreateUser.tsx` / `Home.tsx` link+reauth for any
+    password `.trim()` and remove.
+- **`clearRemoteState` leaves the password populated.** Clear `password` on
+  sign-out; leave `email`. `CloudGatewayViewModel.swift:924-942`.
+- **`clientId` interpolated into the API path.** Handle the unvalidated path
+  segment: validate `clientId` against a safe charset (parity with region-id
+  validation) before building the path, or switch to the Firestore doc ID.
+  `CloudGatewayServicing.swift:117-126`, `CloudGatewayFirebaseService.swift:423`.
+- **Parser: trailing `[Peer]` header.** Error on a `[Peer]` section with no
+  public key that appears as the final line, instead of silently dropping it.
+  `GatewayWireGuardConfigParser.swift:76`.
+- **Parser: allow prefix-less addresses.** Accept `Address`/`AllowedIPs` values
+  without a `/prefix` as implicit `/32` (IPv4) / `/128` (IPv6).
+  `GatewayWireGuardConfigParser.swift:274-286`.
+- **`cache.save` failure after tunnel install.** If `cache.save` throws after the
+  profile + keychain secret are written, the app shows the config as not
+  installed. Surface an error telling the user the install partially completed and
+  to refresh/reinstall (which reconciles), rather than failing silently. Keep the
+  installed profile. `CloudGatewayConfigManager.swift:93`.
+- **(Optional, only if quick) Per-region capacity fetched serially.** 1-3 regions
+  today, so low impact. If trivial, parallelize with `withTaskGroup`.
+  `CloudGatewayFirebaseService.swift:351-369`.
 
-Decision: no change. There will only be 1-3 regions, so parallelizing this path is not worth the complexity unless real latency data says otherwise.
+### Web
+- **Account dropdown never closes on outside click / Escape.** Add outside-click
+  and Escape handling to close the menu. `Home.tsx:748-797`.
+- **`account-exists-with-different-credential` copy.** Remove the misleading
+  "Sign in with email and password first." sentence from both the Apple and
+  Google handlers. `Login.tsx:43-45, 64-66`.
+- **Reauth provider ordering (see standard above).** When multiple providers are
+  linked, offer reauth as Apple -> Google -> Email & password (email last).
+  `Home.tsx:277-285, 1177-1188`.
 
-### 10. Batch NetworkExtension Preference Loads For Status Refresh
+---
 
-Problem: `refreshStatus()` calls `installedStatus(for:)` for each installed snapshot, and each status call runs `NETunnelProviderManager.loadAllFromPreferences()`. With multiple installed configs, one refresh does K preference loads.
+## Low - intentionally not changing (Ignore)
 
-Answer to the open question: yes, one load is the optimal direction. Load all managers once, then match every installed snapshot against that in-memory list.
-
-Plan:
-- Add a tunnel-manager API that returns statuses for multiple identifiers from one preferences load, or add an internal helper on `GatewayVPNManager` that batches lookup.
-- Keep single-identifier APIs where they are useful for start/stop/remove.
-- Add/update tests to verify refresh asks for statuses in one batched operation.
-
-## Suggested Order
-
-1. Fix key leakage.
-2. Fix keychain rollback deletion.
-3. Fix bogus stale warnings.
-4. Batch status preference loads.
-5. Investigate keychain access-group fallback.
-6. Harden malformed region URL construction.
+- **Status label `.connecting -> "Connected"` / `.disconnecting -> "Disconnected"`**
+  - intentional and correct. Apple's tunnel state callbacks are delayed and
+  inconsistent; Control Center updates optimistically and immediately, so we
+  match that behavior. `CloudGatewayViewModel.swift:1071-1087`.
+- **`_origin_host` hardcoded fallback domain** - single environment; not an issue.
+  `routes.py:675-681`.
+- **Validate `region_id` before cross-region call** - no injection risk; a bad
+  value only produces an unresolved-host error. `routes.py:646`.
+- **`ACCOUNT_DELETE_STARTED` logs email** - acceptable, keep. `routes.py:374-380`.
+- **Cache headers on `/regions`** - unnecessary. `routes.py:60-71`.
+- **`api.gocloudlaunch.com` hardcoded in Caddy template** - fine, keep.
+  `Infrastructure/OCI/host/Caddyfile.template:6`.
