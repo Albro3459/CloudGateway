@@ -28,7 +28,8 @@ type Banner = {
 
 const PULL_REFRESH_THRESHOLD = 72;
 const PULL_REFRESH_MAX_DISTANCE = 96;
-const ALL_AUTH_PROVIDER_IDS = ["password", "google.com", "apple.com"] as const;
+// Link order per the provider-ordering standard: email & password, Apple, Google.
+const ALL_AUTH_PROVIDER_IDS = ["password", "apple.com", "google.com"] as const;
 
 type AuthProviderId = typeof ALL_AUTH_PROVIDER_IDS[number];
 
@@ -50,6 +51,7 @@ const Home: React.FC = () => {
     const [accountMenuOpen, setAccountMenuOpen] = useState(false);
     const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
     const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
+    const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
     const [deletingAccount, setDeletingAccount] = useState(false);
     const [linkedProviderIds, setLinkedProviderIds] = useState<string[]>([]);
     const [linkAccountModalOpen, setLinkAccountModalOpen] = useState(false);
@@ -85,6 +87,7 @@ const Home: React.FC = () => {
     const [pullDistance, setPullDistance] = useState(0);
     const [pullRefreshing, setPullRefreshing] = useState(false);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const accountMenuRef = useRef<HTMLDivElement | null>(null);
     const sessionRemovedClientKeys = useRef<Set<string>>(new Set());
     const pullStartY = useRef<number | null>(null);
     const activePullPointerId = useRef<number | null>(null);
@@ -247,6 +250,7 @@ const Home: React.FC = () => {
         }
         setDeleteAccountModalOpen(false);
         setDeleteAccountPassword("");
+        setDeleteAccountError(null);
     };
 
     const closeLinkAccountModal = () => {
@@ -264,7 +268,12 @@ const Home: React.FC = () => {
 
     const currentProviderIds = () => linkedProviderIds;
 
-    const requiresPasswordReauth = currentProviderIds().includes("password");
+    // Password reauth is the fallback only when neither Apple nor Google is
+    // linked, matching the reauth-ordering standard (email & password last).
+    const requiresPasswordReauth =
+        !currentProviderIds().includes("apple.com")
+        && !currentProviderIds().includes("google.com")
+        && currentProviderIds().includes("password");
     const missingProviderIds = ALL_AUTH_PROVIDER_IDS.filter(providerId => !linkedProviderIds.includes(providerId));
     const canLinkAnotherProvider = missingProviderIds.length > 0;
 
@@ -274,24 +283,26 @@ const Home: React.FC = () => {
             throw new Error("No account is signed in");
         }
 
+        // Reauth order per the standard: Apple, then Google, then email &
+        // password last (for convenience when other providers are linked).
         const providers = currentProviderIds();
-        if (providers.includes("password")) {
-            const email = user.email;
-            if (!email || !deleteAccountPassword.trim()) {
-                throw new Error("Enter your password to delete your account");
-            }
-            const credential = EmailAuthProvider.credential(email, deleteAccountPassword);
-            await reauthenticateWithCredential(user, credential);
-            return;
-        }
-
         if (providers.includes("apple.com")) {
             await reauthenticateWithPopup(user, appleProvider);
             return;
         }
-        
+
         if (providers.includes("google.com")) {
             await reauthenticateWithPopup(user, googleProvider);
+            return;
+        }
+
+        if (providers.includes("password")) {
+            const email = user.email;
+            if (!email || !deleteAccountPassword) {
+                throw new Error("Enter your password to delete your account");
+            }
+            const credential = EmailAuthProvider.credential(email, deleteAccountPassword);
+            await reauthenticateWithCredential(user, credential);
             return;
         }
 
@@ -301,32 +312,52 @@ const Home: React.FC = () => {
     const handleDeleteAccount = async () => {
         const user = auth.currentUser;
         if (!user) {
-            showBanner("error", "No account is signed in");
+            setDeleteAccountError("No account is signed in.");
             return;
         }
 
         setDeletingAccount(true);
-        setBanner(null);
+        setDeleteAccountError(null);
         try {
             await reauthenticateForAccountDeletion();
             const token = await user.getIdToken(true);
             const response = await deleteAccount(token);
             if (!response.success) {
-                showBanner("error", response.error || "Unable to delete account");
+                setDeleteAccountError(response.error || "Unable to delete account.");
                 return;
             }
             closeDeleteAccountModal();
             await logout(navigate);
         } catch (error) {
-            const code = error && typeof error === "object" && "code" in error
-                ? (error as { code?: string }).code
-                : null;
+            const code = getAuthErrorCode(error);
             if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
-                showBanner("error", error instanceof Error ? error.message : "Unable to delete account");
+                setDeleteAccountError(getDeleteAccountErrorMessage(error));
             }
         } finally {
             setDeletingAccount(false);
         }
+    };
+
+    const getDeleteAccountErrorMessage = (error: unknown) => {
+        const code = getAuthErrorCode(error);
+
+        if (code === "auth/wrong-password" || code === "auth/invalid-credential") {
+            return "That password is incorrect.";
+        }
+        if (code === "auth/requires-recent-login") {
+            return "Please sign in again, then retry deleting your account.";
+        }
+        if (code === "auth/popup-blocked") {
+            return "Allow popups for this site, then try again.";
+        }
+        if (code === "auth/too-many-requests") {
+            return "Too many attempts. Wait a moment and try again.";
+        }
+        if (code === "auth/network-request-failed") {
+            return "Network error. Check your connection and try again.";
+        }
+
+        return "Unable to delete your account. Try again or contact support.";
     };
 
     const getLinkErrorMessage = (error: unknown) => {
@@ -368,20 +399,21 @@ const Home: React.FC = () => {
             throw new Error("No account is signed in");
         }
 
+        // Reauth order per the standard: Apple, then Google, then password last.
         const providers = currentProviderIds();
-        if (providers.includes("google.com")) {
-            await reauthenticateWithPopup(user, googleProvider);
-            return true;
-        }
-
         if (providers.includes("apple.com")) {
             await reauthenticateWithPopup(user, appleProvider);
             return true;
         }
 
+        if (providers.includes("google.com")) {
+            await reauthenticateWithPopup(user, googleProvider);
+            return true;
+        }
+
         if (providers.includes("password")) {
             const email = user.email;
-            if (!email || !linkCurrentPassword.trim()) {
+            if (!email || !linkCurrentPassword) {
                 setLinkRequiresPasswordReauth(true);
                 setLinkError("Enter your current password, then try again.");
                 return false;
@@ -410,7 +442,7 @@ const Home: React.FC = () => {
             return;
         }
 
-        if (!linkEmail.trim() || !linkPassword.trim()) {
+        if (!linkEmail.trim() || !linkPassword) {
             throw new Error("Enter an email address and password to link.");
         }
 
@@ -723,6 +755,29 @@ const Home: React.FC = () => {
         });
     }, [activeRegionEntries]);
 
+    // Close the account menu on an outside click or Escape.
+    useEffect(() => {
+        if (!accountMenuOpen) return;
+
+        const handlePointerDown = (event: MouseEvent) => {
+            if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) {
+                setAccountMenuOpen(false);
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                setAccountMenuOpen(false);
+            }
+        };
+
+        document.addEventListener("mousedown", handlePointerDown);
+        document.addEventListener("keydown", handleKeyDown);
+        return () => {
+            document.removeEventListener("mousedown", handlePointerDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [accountMenuOpen]);
+
     const createDisabled = !clientName.trim() || !activeRegionId || !selectedRegion || selectedRegionCreationBlocked || regionsLoading || VPNTableEntries === null || loading;
     const removeDisabled = loading || regionsLoading;
 
@@ -745,7 +800,7 @@ const Home: React.FC = () => {
                 <h1 className="text-xl font-semibold">CloudGateway</h1>
                 <div className="absolute right-6 flex items-center gap-3">
                     <ThemeToggle />
-                    <div className="relative">
+                    <div className="relative" ref={accountMenuRef}>
                         <button
                             type="button"
                             onClick={() => setAccountMenuOpen(open => !open)}
@@ -1057,7 +1112,7 @@ const Home: React.FC = () => {
                                                     type="button"
                                                     onClick={() => void handleLinkProvider("password")}
                                                     className="w-full cursor-pointer rounded-lg bg-primary p-3 text-sm font-medium text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
-                                                    disabled={!!linkingProviderId || !linkEmail.trim() || !linkPassword.trim()}
+                                                    disabled={!!linkingProviderId || !linkEmail.trim() || !linkPassword}
                                                 >
                                                     {linkingProviderId === "password" ? "Linking..." : "Link email and password"}
                                                 </button>
@@ -1065,6 +1120,20 @@ const Home: React.FC = () => {
                                         </div>
                                     </div>
                                 </div>
+                            )}
+
+                            {missingProviderIds.includes("apple.com") && (
+                                <button
+                                    type="button"
+                                    onClick={() => void handleLinkProvider("apple.com")}
+                                    className="flex w-full cursor-pointer items-center justify-center gap-3 rounded-lg border border-edge bg-inset p-3 text-content transition hover:bg-inset-strong disabled:cursor-not-allowed disabled:opacity-60"
+                                    disabled={!!linkingProviderId}
+                                >
+                                    <svg viewBox="0 0 384 512" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 fill-current">
+                                        <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z" />
+                                    </svg>
+                                    {linkingProviderId === "apple.com" ? "Linking..." : "Link Apple"}
+                                </button>
                             )}
 
                             {missingProviderIds.includes("google.com") && (
@@ -1081,20 +1150,6 @@ const Home: React.FC = () => {
                                         <path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z" />
                                     </svg>
                                     {linkingProviderId === "google.com" ? "Linking..." : "Link Google"}
-                                </button>
-                            )}
-
-                            {missingProviderIds.includes("apple.com") && (
-                                <button
-                                    type="button"
-                                    onClick={() => void handleLinkProvider("apple.com")}
-                                    className="flex w-full cursor-pointer items-center justify-center gap-3 rounded-lg border border-edge bg-inset p-3 text-content transition hover:bg-inset-strong disabled:cursor-not-allowed disabled:opacity-60"
-                                    disabled={!!linkingProviderId}
-                                >
-                                    <svg viewBox="0 0 384 512" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 fill-current">
-                                        <path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z" />
-                                    </svg>
-                                    {linkingProviderId === "apple.com" ? "Linking..." : "Link Apple"}
                                 </button>
                             )}
                         </div>
@@ -1187,6 +1242,11 @@ const Home: React.FC = () => {
                                 />
                             </label>
                         )}
+                        {deleteAccountError && (
+                            <div className="mt-4 rounded-lg bg-danger-soft px-4 py-3 text-sm text-danger-content">
+                                {deleteAccountError}
+                            </div>
+                        )}
                         <div className="mt-5 flex flex-col gap-3 sm:flex-row">
                             <button
                                 type="button"
@@ -1200,7 +1260,7 @@ const Home: React.FC = () => {
                                 type="button"
                                 onClick={handleDeleteAccount}
                                 className="flex-1 cursor-pointer rounded-lg bg-danger p-3 text-white transition hover:bg-danger-strong disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
-                                disabled={deletingAccount || (requiresPasswordReauth && !deleteAccountPassword.trim())}
+                                disabled={deletingAccount || (requiresPasswordReauth && !deleteAccountPassword)}
                             >
                                 {deletingAccount ? "Deleting..." : "Delete Account"}
                             </button>

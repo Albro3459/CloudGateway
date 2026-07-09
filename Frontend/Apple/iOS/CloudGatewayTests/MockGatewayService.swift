@@ -46,6 +46,7 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var reauthenticatePassword: String?
     private(set) var createClientName: String?
     private(set) var deleteClientUserId: String?
+    private(set) var deleteClientClientId: String?
     private(set) var grantAccessEmail: String?
     private(set) var grantAccessRegionId: String?
 
@@ -66,6 +67,8 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var reauthenticateWithPasswordCallCount = 0
     private(set) var reauthenticateWithAppleCallCount = 0
     private(set) var reauthenticateWithGoogleCallCount = 0
+    private(set) var reauthenticateWithAppleRevokeValues: [Bool] = []
+    private(set) var reauthenticateWithGoogleRevokeValues: [Bool] = []
     private(set) var idTokenForceRefreshValues: [Bool] = []
     private(set) var signOutCallCount = 0
     private(set) var createClientCallCount = 0
@@ -161,15 +164,17 @@ final class MockGatewayService: CloudGatewayServicing {
         }
     }
 
-    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
         reauthenticateWithAppleCallCount += 1
+        reauthenticateWithAppleRevokeValues.append(revoke)
         if let reauthenticateWithAppleError {
             throw reauthenticateWithAppleError
         }
     }
 
-    func reauthenticateWithGoogle() async throws {
+    func reauthenticateWithGoogle(revoke: Bool) async throws {
         reauthenticateWithGoogleCallCount += 1
+        reauthenticateWithGoogleRevokeValues.append(revoke)
         if let reauthenticateWithGoogleError {
             throw reauthenticateWithGoogleError
         }
@@ -263,6 +268,7 @@ final class MockGatewayService: CloudGatewayServicing {
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse {
         deleteClientCallCount += 1
         deleteClientUserId = userId
+        deleteClientClientId = clientId
         if let deleteClientError {
             throw deleteClientError
         }

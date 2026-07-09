@@ -91,6 +91,10 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var lastRefreshText: String?
     @Published private(set) var syncResult: CloudGatewaySyncResult?
     @Published private(set) var remoteInvalidInstalledConfig = false
+    // True when the last remote refresh failed (offline / API error). Gates the
+    // cached-row fallback so a client removed remotely while online does not
+    // linger as a ghost row.
+    @Published private(set) var remoteRefreshUnavailable = false
     @Published var selectedRegionId: String?
     @Published var selectedClientId: String? {
         didSet {
@@ -144,7 +148,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // region-filtered like the remote ones, so they never leak across regions.
     var displayedClientOptions: [CloudGatewayClientOption] {
         let options = filteredClientOptions
-        guard isSignedIn else {
+        guard isSignedIn, remoteRefreshUnavailable else {
             return options
         }
         let representedIds = Set(options.map(\.client.clientId))
@@ -191,16 +195,18 @@ final class CloudGatewayViewModel: ObservableObject {
         isSignedIn && role == "admin"
     }
 
+    // Reauth order per the provider-ordering standard: Apple, then Google, then
+    // email & password last (for convenience when other providers are linked).
     var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
         let providerIds = currentProviderIds
-        if providerIds.contains("password") {
-            return .password
-        }
         if providerIds.contains("apple.com") {
             return .apple
         }
         if providerIds.contains("google.com") {
             return .google
+        }
+        if providerIds.contains("password") {
+            return .password
         }
         return .unsupported
     }
@@ -209,8 +215,12 @@ final class CloudGatewayViewModel: ObservableObject {
         accountDeleteReauthMethod == .password
     }
 
+    // Link order per the provider-ordering standard: email & password, Apple,
+    // then Google.
+    private static let linkProviderOrder: [CloudGatewayAuthProvider] = [.password, .apple, .google]
+
     var missingLinkProviders: [CloudGatewayAuthProvider] {
-        CloudGatewayAuthProvider.allCases.filter { !currentProviderIds.contains($0.rawValue) }
+        Self.linkProviderOrder.filter { !currentProviderIds.contains($0.rawValue) }
     }
 
     var canLinkAnotherProvider: Bool {
@@ -220,8 +230,8 @@ final class CloudGatewayViewModel: ObservableObject {
     var linkPasswordDisabled: Bool {
         isWorking
             || linkEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || linkPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || (accountLinkReauthMethod == .password && linkCurrentPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || linkPassword.isEmpty
+            || (accountLinkReauthMethod == .password && linkCurrentPassword.isEmpty)
     }
 
     private var currentProviderIds: [String] {
@@ -300,7 +310,7 @@ final class CloudGatewayViewModel: ObservableObject {
             guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
                 throw CloudGatewayAppError.accessDenied("Enter a valid email address.")
             }
-            guard !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard !password.isEmpty else {
                 throw CloudGatewayAppError.accessDenied("Password is required.")
             }
             let user = try await service.signIn(email: trimmedEmail, password: password)
@@ -349,7 +359,7 @@ final class CloudGatewayViewModel: ObservableObject {
     func linkEmailPassword() async {
         await linkAccountProvider(.password) {
             let email = self.linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-            let password = self.linkPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = self.linkPassword
             guard email.contains("@"), email.contains(".") else {
                 throw CloudGatewayAppError.invalidEmail
             }
@@ -380,13 +390,14 @@ final class CloudGatewayViewModel: ObservableObject {
             try await service.reauthenticateWithApple(
                 idToken: idToken,
                 rawNonce: rawNonce,
-                authorizationCode: authorizationCode
+                authorizationCode: authorizationCode,
+                revoke: false
             )
             accountLinkReauthMethod = .none
             switch pendingLinkProvider {
             case .password:
                 let email = linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-                let password = linkPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+                let password = linkPassword
                 _ = try await service.linkEmailPassword(email: email, password: password)
             case .google:
                 _ = try await service.linkGoogle()
@@ -532,34 +543,37 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func deleteSelectedClient() async {
+    // Deletes exactly the client captured when the confirmation alert opened.
+    // Taking the option explicitly (rather than reading selectedClientOption at
+    // confirm time) avoids deleting the wrong client if a background refresh
+    // prunes or moves the selection between opening and confirming.
+    func deleteClient(_ option: CloudGatewayClientOption) async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
-            guard let selectedClientOption else {
-                throw CloudGatewayAppError.accessDenied("Choose a config to delete.")
-            }
             let token = try await service.idToken()
             let response = try await service.deleteClient(
-                clientId: selectedClientOption.client.clientId,
-                userId: selectedClientOption.client.ownerUid ?? user.uid,
-                regionId: selectedClientOption.client.regionId,
+                clientId: option.client.clientId,
+                userId: option.client.ownerUid ?? user.uid,
+                regionId: option.client.regionId,
                 idToken: token
             )
-            selectedClientId = nil
+            if selectedClientId == option.client.clientId {
+                selectedClientId = nil
+            }
             apply(try await configManager.removeInstalledConfigIfMatches(
                 clientId: response.clientId,
                 regionId: response.regionId
             ))
             try await loadRemoteStateMarkingUnavailable(for: user)
-            successText = "\(selectedClientOption.client.displayName) was deleted."
+            successText = "\(option.client.displayName) was deleted."
         }
     }
 
     func deleteAccountWithPassword() async {
         await deleteAccount {
-            let password = self.deleteAccountPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+            let password = self.deleteAccountPassword
             guard !password.isEmpty else {
                 throw CloudGatewayAppError.accessDenied("Enter your password to delete your account.")
             }
@@ -569,7 +583,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func deleteAccountWithGoogle() async {
         await deleteAccount {
-            try await self.service.reauthenticateWithGoogle()
+            try await self.service.reauthenticateWithGoogle(revoke: true)
         }
     }
 
@@ -578,7 +592,8 @@ final class CloudGatewayViewModel: ObservableObject {
             try await self.service.reauthenticateWithApple(
                 idToken: idToken,
                 rawNonce: rawNonce,
-                authorizationCode: authorizationCode
+                authorizationCode: authorizationCode,
+                revoke: true
             )
         }
     }
@@ -592,7 +607,7 @@ final class CloudGatewayViewModel: ObservableObject {
                 throw CloudGatewayAppError.missingCurrentUser
             }
             if accountLinkReauthMethod == .password {
-                let password = linkCurrentPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+                let password = linkCurrentPassword
                 guard !password.isEmpty else {
                     throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
                 }
@@ -615,18 +630,19 @@ final class CloudGatewayViewModel: ObservableObject {
     private func prepareRecentLoginRecovery(for provider: CloudGatewayAuthProvider) async throws -> Bool {
         pendingLinkProvider = provider
         let providerIds = currentProviderIds
+        // Reauth order per the standard: Apple, then Google, then password last.
+        if providerIds.contains(CloudGatewayAuthProvider.apple.rawValue) {
+            accountLinkReauthMethod = .apple
+            throw CloudGatewayAppError.accessDenied("Sign in with Apple again, then try linking once more.")
+        }
         if providerIds.contains(CloudGatewayAuthProvider.google.rawValue) {
-            try await service.reauthenticateWithGoogle()
+            try await service.reauthenticateWithGoogle(revoke: false)
             accountLinkReauthMethod = .none
             return true
         }
         if providerIds.contains(CloudGatewayAuthProvider.password.rawValue) {
             accountLinkReauthMethod = .password
             throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
-        }
-        if providerIds.contains(CloudGatewayAuthProvider.apple.rawValue) {
-            accountLinkReauthMethod = .apple
-            throw CloudGatewayAppError.accessDenied("Sign in with Apple again, then try linking once more.")
         }
         throw CloudGatewayAppError.requiresRecentLogin
     }
@@ -892,6 +908,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private func applyRemoteRefreshUnavailable() async {
         _ = try? await configManager.loadLocalState()
         apply(await configManager.markRemoteRefreshUnavailable())
+        remoteRefreshUnavailable = true
     }
 
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
@@ -905,13 +922,16 @@ final class CloudGatewayViewModel: ObservableObject {
             throw CloudGatewayAppError.noEnabledRegions
         }
         let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
-        role = (try? await service.fetchUserRole(uid: user.uid)) ?? access.role
+        // Explicitly flatten so both a missing UserRoles doc (fetch returns nil)
+        // and a fetch failure fall back to the check-access role.
+        role = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
         let regions = await service.addCapacity(to: enabledRegions, idToken: token)
         let fetchedClients = role == "admin"
             ? try await service.fetchAllClients()
             : try await service.fetchOwnedClients(uid: user.uid)
         let clients = merge(existingClients: existingClients, fetchedClients: fetchedClients)
         apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
+        remoteRefreshUnavailable = false
         ensureSelectedRegion()
         pruneSelectedClient()
     }
@@ -958,10 +978,14 @@ final class CloudGatewayViewModel: ObservableObject {
         lastRefreshText = nil
         syncResult = nil
         remoteInvalidInstalledConfig = false
+        remoteRefreshUnavailable = false
         successText = nil
         selectedRegionId = nil
         selectedClientId = nil
         newClientName = ""
+        // Clear credentials on sign-out; leave `email` populated for convenience.
+        password = ""
+        deleteAccountPassword = ""
         clearAccountLinkState()
         linkedProviderIds = []
     }

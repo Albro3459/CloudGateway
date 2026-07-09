@@ -90,7 +90,14 @@ public actor CloudGatewayConfigManager {
             }
             throw error
         }
-        try await cache.save(snapshot)
+        do {
+            try await cache.save(snapshot)
+        } catch {
+            // The profile + keychain secret are already written, so keep them
+            // installed and surface a specific error telling the user the install
+            // partially completed; a refresh/reinstall reconciles the local cache.
+            throw CloudGatewayConfigManagerError.installCachePersistFailed
+        }
         if let oldReference, oldReference != snapshot.secretReference {
             try? secretStore.deleteConfig(for: oldReference)
         }

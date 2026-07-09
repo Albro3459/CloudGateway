@@ -382,6 +382,15 @@ def delete_account(
         _ensure_recent_auth(user)
         _ensure_account_delete_allowed(repository, user.uid)
 
+        # Ordering: snapshot the owner's clients, remove their WireGuard peers,
+        # then hard-delete the account docs. We keep the UserRoles doc until the
+        # hard delete (do not delete it first) so a retry of DELETE /account can
+        # still authorize. There is an accepted, sub-second race: a user racing
+        # their own deletion from a second device could orphan a single peer if
+        # a client is created between the snapshot and the hard delete. We do
+        # not fence it; cloudgateway-sync-peers reconciles any orphaned peer on
+        # its next run. See the plan (Medium #4) for why role-first fencing is
+        # rejected.
         clients = repository.list_clients_for_owner(user.uid)
         _remove_account_peers(
             clients=clients,
@@ -633,7 +642,25 @@ def _remove_account_peers(
                 )
 
     for client in remote_clients:
-        _delete_remote_client(client=client, user=user, token=token, api_hostname=api_hostname)
+        try:
+            _delete_remote_client(client=client, user=user, token=token, api_hostname=api_hostname)
+        except WireGuardApplyFailedError as exc:
+            if not exc.transient:
+                # Region answered with a challenge/auth/HTTP error - do not assume
+                # the peer is gone, so abort rather than silently lose it.
+                raise
+            # Region host unreachable: continue the deletion. The client doc is
+            # hard-deleted next and cloudgateway-sync-peers reconciles the
+            # orphaned peer when the host returns.
+            log_event(
+                logger,
+                Event.ACCOUNT_DELETE_PEER_UNREACHABLE,
+                level=logging.WARNING,
+                request_id=request_id,
+                user_id=user.uid,
+                client_id=client.client_id,
+                region_id=client.region_id,
+            )
 
 
 def _delete_remote_client(
@@ -661,8 +688,13 @@ def _delete_remote_client(
             if response.status < 200 or response.status >= 300:
                 raise WireGuardApplyFailedError("Failed to remove regional VPN configuration.")
     except HTTPError as exc:
+        # The host answered with an HTTP status error (incl. a Cloudflare
+        # challenge or an auth failure). Do not assume the peer is gone - abort.
         raise WireGuardApplyFailedError("Failed to remove regional VPN configuration.") from exc
-    except URLError as exc:
+    except (URLError, TimeoutError) as exc:
+        # Host truly unreachable (DNS/connection failure or timeout). Marked
+        # transient so the caller can continue the deletion; the orphaned peer is
+        # reconciled by cloudgateway-sync-peers once the host returns.
         raise WireGuardApplyFailedError("Failed to reach regional VPN configuration service.", transient=True) from exc
 
 

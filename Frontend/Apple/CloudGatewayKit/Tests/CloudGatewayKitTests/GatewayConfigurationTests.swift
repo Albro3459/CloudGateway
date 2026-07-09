@@ -179,6 +179,36 @@ private func sampleConfig(
     #expect(tunnel.peers[0].allowedIPs.count == 2)
 }
 
+@Test func parserNormalizesPrefixLessAddressesToImplicitHostRoutes() throws {
+    let tunnel = try GatewayWireGuardConfigParser.parse("""
+    [Interface]
+    PrivateKey = \(privateKey)
+    Address = 10.0.0.2, fd42:42:42::2
+    DNS = 10.0.0.1
+
+    [Peer]
+    PublicKey = \(publicKey)
+    AllowedIPs = 10.0.0.1, fd42:42:42::1/128
+    """)
+
+    // A bare IPv4 address becomes /32, a bare IPv6 address becomes /128, and an
+    // already-prefixed value is preserved.
+    #expect(tunnel.interface.addresses == ["10.0.0.2/32", "fd42:42:42::2/128"])
+    #expect(tunnel.peers[0].allowedIPs == ["10.0.0.1/32", "fd42:42:42::1/128"])
+}
+
+@Test func parserErrorsOnTrailingPeerHeaderWithNoPublicKey() {
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.peerHasNoPublicKey) {
+        try GatewayWireGuardConfigParser.parse("""
+        [Interface]
+        PrivateKey = \(privateKey)
+        Address = 10.0.0.2/32
+
+        [Peer]
+        """)
+    }
+}
+
 @Test func parserAcceptsOptionalPeerPreSharedKey() throws {
     let tunnel = try GatewayWireGuardConfigParser.parse(sampleConfig(peer: "PreSharedKey = \(preSharedKey)"))
 

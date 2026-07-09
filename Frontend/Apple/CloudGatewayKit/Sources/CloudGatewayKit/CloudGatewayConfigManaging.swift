@@ -90,11 +90,14 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
 
 public enum CloudGatewayConfigManagerError: LocalizedError, Equatable, Sendable {
     case remoteInvalidInstalledConfig
+    case installCachePersistFailed
 
     public var errorDescription: String? {
         switch self {
         case .remoteInvalidInstalledConfig:
             "The installed config is no longer active remotely. Choose another config before starting."
+        case .installCachePersistFailed:
+            "The VPN profile was installed, but saving its local record failed. Refresh or reinstall this config to finish."
         }
     }
 }

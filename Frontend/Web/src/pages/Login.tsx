@@ -41,7 +41,7 @@ const Login: React.FC = () => {
             return "This domain is not authorized for Apple sign-in.";
         }
         if (code === "auth/account-exists-with-different-credential") {
-            return "An account already exists for this email. Sign in with email and password first.";
+            return "An account already exists for this email. Sign in with a method you've already linked.";
         }
         if (code === "auth/user-disabled") {
             return getDisabledAccountMessage();
@@ -62,7 +62,7 @@ const Login: React.FC = () => {
             return "This domain is not authorized for Google sign-in.";
         }
         if (code === "auth/account-exists-with-different-credential") {
-            return "An account already exists for this email. Sign in with email and password first.";
+            return "An account already exists for this email. Sign in with a method you've already linked.";
         }
         if (code === "auth/user-disabled") {
             return getDisabledAccountMessage();
@@ -120,7 +120,7 @@ const Login: React.FC = () => {
                 setError("Not a valid email.");
                 return;
             }
-            if (!password.trim().length) {
+            if (!password.length) {
                 setError("Password is required.");
                 return;
             }

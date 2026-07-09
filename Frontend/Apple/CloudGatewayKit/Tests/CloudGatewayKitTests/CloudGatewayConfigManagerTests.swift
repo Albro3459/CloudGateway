@@ -162,7 +162,9 @@ private enum ManagerTestError: Error {
     let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
     let option = CloudGatewayClientOption(client: client(id: "client-1"), region: region())
 
-    await #expect(throws: ManagerTestError.cacheSaveFailed) {
+    // A cache-save failure after the profile + secret are written surfaces a
+    // specific partial-install error, but keeps the installed profile/secret.
+    await #expect(throws: CloudGatewayConfigManagerError.installCachePersistFailed) {
         try await manager.install(option)
     }
 

@@ -144,8 +144,10 @@ struct ContentView: View {
         }
         .alert("Delete Config?", isPresented: deleteConfirmationPresented) {
             Button("Delete", role: .destructive) {
+                guard let option = clientPendingDelete else { return }
+                clientPendingDelete = nil
                 Task {
-                    await viewModel.deleteSelectedClient()
+                    await viewModel.deleteClient(option)
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -1158,7 +1160,7 @@ private struct DeleteAccountView: View {
                 .buttonStyle(DangerButtonStyle())
                 .disabled(
                     viewModel.isWorking
-                        || viewModel.deleteAccountPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || viewModel.deleteAccountPassword.isEmpty
                 )
             }
         case .apple:

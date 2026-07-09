@@ -410,6 +410,28 @@ describe("Home account linking", () => {
         Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
     });
 
+    it("closes the account menu on Escape", async () => {
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        expect(screen.getByRole("button", { name: "Logout" })).toBeTruthy();
+
+        fireEvent.keyDown(document, { key: "Escape" });
+
+        expect(screen.queryByRole("button", { name: "Logout" })).toBeNull();
+    });
+
+    it("closes the account menu on an outside click", async () => {
+        await renderHome();
+
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        expect(screen.getByRole("button", { name: "Logout" })).toBeTruthy();
+
+        fireEvent.mouseDown(document.body);
+
+        expect(screen.queryByRole("button", { name: "Logout" })).toBeNull();
+    });
+
     it("shows only unlinked sign-in methods", async () => {
         await renderHome();
 
@@ -579,5 +601,50 @@ describe("Home account deletion reauthentication", () => {
             expect(deleteAccount).toHaveBeenCalledWith("firebase-token");
         });
         expect(reauthenticateWithPopup).not.toHaveBeenCalledWith(mockUser, appleProvider);
+    });
+
+    it("surfaces a failed account deletion inline without logging out", async () => {
+        mockUser.providerData = [{ providerId: "google.com" }];
+        const { deleteAccount } = require("../../helpers/APIHelper");
+        const { logout } = require("../../helpers/firebaseDbHelper");
+        deleteAccount.mockResolvedValue({
+            success: false,
+            error: "Failed to reach regional VPN configuration service.",
+        });
+
+        await openDeleteModalAndConfirm();
+
+        expect(
+            await screen.findByText("Failed to reach regional VPN configuration service.")
+        ).toBeTruthy();
+        expect(logout).not.toHaveBeenCalled();
+    });
+
+    it("maps a Firebase reauth error to friendly copy inline", async () => {
+        mockUser.providerData = [{ providerId: "google.com" }];
+        const { reauthenticateWithPopup } = require("../../firebase");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+        reauthenticateWithPopup.mockRejectedValue({ code: "auth/requires-recent-login" });
+
+        await openDeleteModalAndConfirm();
+
+        expect(
+            await screen.findByText("Please sign in again, then retry deleting your account.")
+        ).toBeTruthy();
+        expect(deleteAccount).not.toHaveBeenCalled();
+    });
+
+    it("prefers Apple over Google for deletion reauth when both are linked", async () => {
+        mockUser.providerData = [{ providerId: "google.com" }, { providerId: "apple.com" }];
+        const { reauthenticateWithPopup, appleProvider, googleProvider } = require("../../firebase");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+
+        await openDeleteModalAndConfirm();
+
+        await waitFor(() => {
+            expect(reauthenticateWithPopup).toHaveBeenCalledWith(mockUser, appleProvider);
+            expect(deleteAccount).toHaveBeenCalledWith("firebase-token");
+        });
+        expect(reauthenticateWithPopup).not.toHaveBeenCalledWith(mockUser, googleProvider);
     });
 });

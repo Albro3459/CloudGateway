@@ -32,21 +32,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    override func handleAppMessage(
-        _ messageData: Data,
-        completionHandler: ((Data?) -> Void)? = nil
-    ) {
-        guard let completionHandler else { return }
-        guard messageData.count == 1, messageData[0] == 0 else {
-            completionHandler(nil)
-            return
-        }
-
-        adapter.getRuntimeConfiguration { runtimeConfiguration in
-            completionHandler(runtimeConfiguration?.data(using: .utf8))
-        }
-    }
-
     private func makeTunnelConfiguration() throws -> TunnelConfiguration {
         guard let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,

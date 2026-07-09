@@ -114,6 +114,18 @@ enum CloudGatewayAPIURLBuilder {
         return normalizedRegionId
     }
 
+    // Validate a client id against a safe charset before interpolating it into
+    // an API path, so a value with "/", "?", or "#" cannot alter the request URL.
+    static func validatedClientId(_ clientId: String) throws -> String {
+        guard clientId.range(
+            of: #"^[A-Za-z0-9_-]{1,128}$"#,
+            options: .regularExpression
+        ) != nil else {
+            throw CloudGatewayAppError.invalidAPIResponse
+        }
+        return clientId
+    }
+
     private static func apiURL(host: String, path: String) throws -> URL {
         var components = URLComponents()
         components.scheme = "https"
@@ -179,8 +191,8 @@ protocol CloudGatewayServicing {
     func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func linkGoogle() async throws -> AuthenticatedUser
     func reauthenticateWithPassword(_ password: String) async throws
-    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws
-    func reauthenticateWithGoogle() async throws
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws
+    func reauthenticateWithGoogle(revoke: Bool) async throws
     func sendPasswordReset(email: String) async throws
     func signOut() throws
     func idToken(forceRefresh: Bool) async throws -> String

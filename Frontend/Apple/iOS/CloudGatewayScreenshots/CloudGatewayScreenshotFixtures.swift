@@ -126,9 +126,9 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
 
     func reauthenticateWithPassword(_ password: String) async throws {}
 
-    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {}
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {}
 
-    func reauthenticateWithGoogle() async throws {}
+    func reauthenticateWithGoogle(revoke: Bool) async throws {}
 
     func sendPasswordReset(email: String) async throws {}
 

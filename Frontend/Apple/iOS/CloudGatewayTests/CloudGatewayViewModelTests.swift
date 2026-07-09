@@ -86,6 +86,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
             return
         }
         viewModel.selectedClientId = option.client.clientId
+        viewModel.email = "user@example.com"
+        viewModel.password = "secret-password"
         await viewModel.install(option)
 
         XCTAssertEqual(viewModel.appMode, .signedIn)
@@ -97,6 +99,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.appMode, .guest)
         XCTAssertFalse(viewModel.isSignedIn)
+        // Credentials are cleared on sign-out; the email is kept for convenience.
+        XCTAssertEqual(viewModel.password, "")
+        XCTAssertEqual(viewModel.email, "user@example.com")
         XCTAssertFalse(viewModel.installedSnapshots.isEmpty)
         XCTAssertNil(viewModel.visibleInstalledSnapshot)
         XCTAssertNil(viewModel.visibleTunnelStatus)
@@ -270,7 +275,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.filteredClientOptions.last?.client.ownerEmail, "user@example.com")
     }
 
-    func testAdminDeleteUsesSelectedClientOwnerUid() async {
+    func testAdminDeleteUsesSelectedClientOwnerUid() async throws {
         let service = signedInAdminService()
         service.currentUser = AuthenticatedUser(uid: "admin-uid", email: "admin@example.com")
         service.ownedClients = [
@@ -280,10 +285,37 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         viewModel.selectedClientId = "theirs"
-        await viewModel.deleteSelectedClient()
+        let option = try XCTUnwrap(viewModel.selectedClientOption)
+        await viewModel.deleteClient(option)
 
         XCTAssertEqual(service.deleteClientCallCount, 1)
         XCTAssertEqual(service.deleteClientUserId, "user-uid")
+    }
+
+    func testDeleteClientDeletesCapturedOptionNotDriftedSelection() async throws {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [
+            TestFixtures.client("a", regionId: "us-sanjose-1"),
+            TestFixtures.client("b", regionId: "us-sanjose-1"),
+        ]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        // Capture the option for "a" (as the confirm alert would), then let the
+        // selection drift to "b" before confirming.
+        let pending = try XCTUnwrap(
+            viewModel.displayedClientOptions.first { $0.client.clientId == "a" }
+        )
+        viewModel.selectedClientId = "b"
+
+        await viewModel.deleteClient(pending)
+
+        // The captured "a" is deleted, not the currently-selected "b".
+        XCTAssertEqual(service.deleteClientCallCount, 1)
+        XCTAssertEqual(service.deleteClientClientId, "a")
+        // A non-matching selection is left intact.
+        XCTAssertEqual(viewModel.selectedClientId, "b")
     }
 
     func testSyncSelectedRegionCapturesResult() async {
@@ -461,7 +493,37 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.canLinkAnotherProvider)
     }
 
-    func testLinkEmailPasswordTrimsInputsAndKeepsUserSignedIn() async {
+    func testMissingLinkProvidersFollowLinkOrder() async {
+        let service = signedInService()
+        // Only email & password linked -> the two missing providers must be
+        // offered Apple before Google per the link-ordering standard.
+        service.providerIdsValue = ["password"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.missingLinkProviders, [.apple, .google])
+    }
+
+    func testAccountDeleteReauthPrefersAppleThenGoogleThenPassword() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        // No refresh(): currentProviderIds reads the service live, so each case
+        // below reflects the freshly-set provider set.
+        let viewModel = makeViewModel(service)
+
+        service.providerIdsValue = ["password", "google.com", "apple.com"]
+        XCTAssertEqual(viewModel.accountDeleteReauthMethod, .apple)
+
+        service.providerIdsValue = ["password", "google.com"]
+        XCTAssertEqual(viewModel.accountDeleteReauthMethod, .google)
+
+        service.providerIdsValue = ["password"]
+        XCTAssertEqual(viewModel.accountDeleteReauthMethod, .password)
+    }
+
+    func testLinkEmailPasswordTrimsEmailButNotPassword() async {
         let service = signedInService()
         service.providerIdsValue = ["google.com"]
         service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
@@ -474,7 +536,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertEqual(service.linkEmailPasswordCallCount, 1)
         XCTAssertEqual(service.linkEmail, "linked@example.com")
-        XCTAssertEqual(service.linkPassword, "password123")
+        // Email is trimmed; the password is passed through verbatim.
+        XCTAssertEqual(service.linkPassword, " password123 ")
         XCTAssertEqual(viewModel.appMode, .signedIn)
         XCTAssertEqual(viewModel.successText, "Email and password was linked to your account.")
         XCTAssertNil(viewModel.errorText)
@@ -507,6 +570,32 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertEqual(service.reauthenticateWithGoogleCallCount, 1)
         XCTAssertEqual(service.linkAppleCallCount, 2)
+        // Linking recovery must not disconnect the existing Google grant.
+        XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [false])
+    }
+
+    func testDeleteAccountWithGoogleRevokesGrant() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.deleteAccountWithGoogle()
+
+        // Account deletion must disconnect the Google grant.
+        XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [true])
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
+    }
+
+    func testDeleteAccountWithAppleRevokesGrant() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.deleteAccountWithApple(idToken: "tok", rawNonce: "nonce", authorizationCode: "code")
+
+        // Account deletion must revoke the Apple grant.
+        XCTAssertEqual(service.reauthenticateWithAppleRevokeValues, [true])
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
     }
 
     // MARK: - Capacity gating
@@ -911,7 +1000,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.deleteAccountWithPassword()
 
         XCTAssertEqual(service.reauthenticateWithPasswordCallCount, 1)
-        XCTAssertEqual(service.reauthenticatePassword, "password")
+        // The password is passed through verbatim, never trimmed.
+        XCTAssertEqual(service.reauthenticatePassword, " password ")
         XCTAssertEqual(service.idTokenForceRefreshValues, [true])
         XCTAssertEqual(service.deleteAccountCallCount, 1)
         XCTAssertEqual(service.signOutCallCount, 1)
@@ -987,6 +1077,14 @@ final class CloudGatewayViewModelTests: XCTestCase {
             regionId: "us-sanjose-1.gocloudlaunch.com",
             path: "clients"
         ))
+    }
+
+    func testValidatedClientIdAcceptsSafeCharsetAndRejectsPathInjection() throws {
+        XCTAssertEqual(try CloudGatewayAPIURLBuilder.validatedClientId("Client_123-abc"), "Client_123-abc")
+
+        for unsafe in ["a/b", "../account", "id?x=1", "id#frag", "has space", ""] {
+            XCTAssertThrowsError(try CloudGatewayAPIURLBuilder.validatedClientId(unsafe))
+        }
     }
 
     // MARK: - Remote warning scope
@@ -1093,6 +1191,25 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // Switch to a region that holds none of the user's clients.
         viewModel.selectedRegionId = "us-ashburn-1"
 
+        XCTAssertTrue(viewModel.displayedClientOptions.isEmpty)
+    }
+
+    func testCachedInstalledConfigDoesNotGhostWhenOnlineAndClientRemovedRemotely() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        // Remote refresh succeeds but the client is gone (deleted/revoked); only
+        // the stale local install snapshot remains.
+        service.ownedClients = []
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+
+        await viewModel.refresh()
+
+        // Online and refresh succeeded, so the removed client must not linger.
+        XCTAssertFalse(viewModel.remoteRefreshUnavailable)
         XCTAssertTrue(viewModel.displayedClientOptions.isEmpty)
     }
 }

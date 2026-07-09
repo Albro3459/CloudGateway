@@ -91,6 +91,12 @@ public enum GatewayWireGuardConfigParser {
             } else if parsedLine.value == "[peer]" {
                 section = .peer
                 attributes.removeAll()
+                // A [Peer] header as the final line opens a section with no body.
+                // Commit it so the missing public key errors instead of being
+                // silently dropped.
+                if isLastLine {
+                    peerConfigurations.append(try makePeer(from: attributes))
+                }
             }
         }
 
@@ -179,10 +185,10 @@ public enum GatewayWireGuardConfigParser {
         }
         if let addressesString = attributes["address"] {
             interface.addresses = try addressesString.csvValues().map { addressString in
-                guard isValidIPAddressRange(addressString) else {
+                guard let normalized = normalizedIPAddressRange(addressString) else {
                     throw ParseError.interfaceHasInvalidAddress(addressString)
                 }
-                return addressString
+                return normalized
             }
         }
         if let dnsString = attributes["dns"] {
@@ -222,10 +228,10 @@ public enum GatewayWireGuardConfigParser {
         }
         if let allowedIPsString = attributes["allowedips"] {
             peer.allowedIPs = try allowedIPsString.csvValues().map { allowedIPString in
-                guard isValidIPAddressRange(allowedIPString) else {
+                guard let normalized = normalizedIPAddressRange(allowedIPString) else {
                     throw ParseError.peerHasInvalidAllowedIP(allowedIPString)
                 }
-                return allowedIPString
+                return normalized
             }
         }
         if let endpointString = attributes["endpoint"] {
@@ -271,18 +277,30 @@ public enum GatewayWireGuardConfigParser {
         return "\(key) = <redacted>"
     }
 
-    private static func isValidIPAddressRange(_ value: String) -> Bool {
+    // Accepts an IP with an optional CIDR prefix. A bare address (no "/prefix")
+    // is treated as an implicit /32 (IPv4) or /128 (IPv6). Returns the normalized
+    // "ip/prefix" string, or nil if the value is not a valid address/range.
+    private static func normalizedIPAddressRange(_ value: String) -> String? {
         let parts = value.split(separator: "/", omittingEmptySubsequences: false)
+        if parts.count == 1 {
+            let ip = String(parts[0])
+            if IPv4Address(ip) != nil {
+                return "\(ip)/32"
+            }
+            if IPv6Address(ip) != nil {
+                return "\(ip)/128"
+            }
+            return nil
+        }
         guard parts.count == 2,
               let prefix = Int(parts[1]),
               isValidIPAddress(String(parts[0])) else {
-            return false
+            return nil
         }
-
         if IPv4Address(String(parts[0])) != nil {
-            return (0...32).contains(prefix)
+            return (0...32).contains(prefix) ? value : nil
         }
-        return (0...128).contains(prefix)
+        return (0...128).contains(prefix) ? value : nil
     }
 
     private static func isValidIPAddress(_ value: String) -> Bool {

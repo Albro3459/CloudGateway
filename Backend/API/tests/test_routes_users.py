@@ -1,8 +1,13 @@
+from email.message import Message
+from urllib.error import HTTPError, URLError
+
+import pytest
+
 from src.auth import AuthenticatedUser
 import src.routes as routes
-from src.enums import Role
-from src.errors import FirebaseWriteFailedError
-from src.repository import UserDoc, utc_now
+from src.enums import ClientStatus, Role
+from src.errors import FirebaseWriteFailedError, WireGuardApplyFailedError
+from src.repository import ClientDoc, UserDoc, utc_now
 
 from .conftest import REGION_ID
 from .test_errors import assert_error_shape
@@ -393,3 +398,71 @@ def test_delete_account_can_retry_auth_delete_after_docs_were_removed(client, re
         "deletedClientCount": 0,
     }
     assert repository.deleted_auth_uids == ["user-1"]
+
+
+def _remote_client_doc() -> ClientDoc:
+    return ClientDoc(
+        client_id="remote-client-1",
+        owner_uid="user-1",
+        owner_email="user@example.com",
+        client_name="Remote",
+        region_id="us-other-1",
+        status=ClientStatus.ACTIVE,
+        assigned_tunnel_ipv4="10.0.0.2",
+        assigned_tunnel_ipv6="fd00::2",
+        server_endpoint_ipv4="203.0.113.10",
+        server_public_key="server-pub",
+        client_public_key="client-pub",
+        wireguard_config=None,
+    )
+
+
+def _raise(exc: Exception):
+    def _raiser(*args, **kwargs):
+        raise exc
+
+    return _raiser
+
+
+def test_remove_account_peers_continues_when_remote_region_unreachable(monkeypatch, wireguard):
+    calls = {"count": 0}
+
+    def _unreachable(*args, **kwargs):
+        calls["count"] += 1
+        raise URLError("name resolution failed")
+
+    monkeypatch.setattr(routes, "urlopen", _unreachable)
+
+    # Unreachable host must not raise: the account deletion continues and the
+    # orphaned peer is reconciled later by cloudgateway-sync-peers.
+    routes._remove_account_peers(
+        clients=[_remote_client_doc()],
+        user=AuthenticatedUser(uid="user-1", email="user@example.com"),
+        token="user-token",
+        local_region_id=REGION_ID,
+        api_hostname="api.gocloudlaunch.com",
+        wireguard=wireguard,
+        request_id="req-1",
+    )
+
+    assert calls["count"] == 1
+
+
+def test_remove_account_peers_aborts_on_remote_http_error(monkeypatch, wireguard):
+    http_error = HTTPError("https://us-other-1.example/api", 403, "Forbidden", Message(), None)
+    monkeypatch.setattr(routes, "urlopen", _raise(http_error))
+
+    # A challenge / auth / HTTP status error means the host answered: do not
+    # assume the peer is gone - abort so it is not silently lost.
+    with pytest.raises(WireGuardApplyFailedError) as excinfo:
+        routes._remove_account_peers(
+            clients=[_remote_client_doc()],
+            user=AuthenticatedUser(uid="user-1", email="user@example.com"),
+            token="user-token",
+            local_region_id=REGION_ID,
+            api_hostname="api.gocloudlaunch.com",
+            wireguard=wireguard,
+            request_id="req-1",
+        )
+
+    assert excinfo.value.transient is False

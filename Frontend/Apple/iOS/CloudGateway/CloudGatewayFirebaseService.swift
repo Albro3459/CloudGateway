@@ -181,7 +181,10 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         _ = try await user.reauthenticate(with: credential)
     }
 
-    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String) async throws {
+    // `revoke` is only for account deletion, which must revoke the Apple grant.
+    // Account-linking recovery passes `revoke: false` so re-linking a provider
+    // never tears down the user's existing Apple grant.
+    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
         guard let user = Auth.auth().currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
@@ -191,17 +194,24 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             fullName: nil
         )
         _ = try await user.reauthenticate(with: credential)
-        try await Auth.auth().revokeToken(withAuthorizationCode: authorizationCode)
+        if revoke {
+            try await Auth.auth().revokeToken(withAuthorizationCode: authorizationCode)
+        }
     }
 
-    func reauthenticateWithGoogle() async throws {
+    // `revoke` is only for account deletion, which must disconnect the Google
+    // grant. Account-linking recovery passes `revoke: false` so it does not
+    // disconnect a grant merely to link a new provider.
+    func reauthenticateWithGoogle(revoke: Bool) async throws {
         guard let user = Auth.auth().currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
         let (idToken, accessToken) = try await Self.presentGoogleSignIn(clientID: googleClientID())
         let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
         _ = try await user.reauthenticate(with: credential)
-        try await Self.disconnectGoogle()
+        if revoke {
+            try await Self.disconnectGoogle()
+        }
     }
 
     private static func mapAuthError(_ error: Error) -> Error {
@@ -419,8 +429,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         regionId: String,
         idToken: String
     ) async throws -> CloudGatewayDeleteClientResponse {
-        try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "clients/\(clientId)"),
+        let safeClientId = try CloudGatewayAPIURLBuilder.validatedClientId(clientId)
+        return try await sendJSONRequest(
+            url: try regionalAPIURL(regionId: regionId, path: "clients/\(safeClientId)"),
             method: "DELETE",
             idToken: idToken,
             body: DeleteClientRequest(userId: userId, regionId: regionId)

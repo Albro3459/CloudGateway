@@ -46,6 +46,7 @@ class Event(str, Enum):
     ACCOUNT_DELETE_STARTED = "account_delete_started"
     ACCOUNT_DELETE_COMPLETED = "account_delete_completed"
     ACCOUNT_DELETE_FAILED = "account_delete_failed"
+    ACCOUNT_DELETE_PEER_UNREACHABLE = "account_delete_peer_unreachable"
     USER_ACCESS_EMAIL_COMPLETED = "user_access_email_completed"
     USER_ACCESS_EMAIL_FAILED = "user_access_email_failed"
     CLIENT_CREATE_STARTED = "client_create_started"
