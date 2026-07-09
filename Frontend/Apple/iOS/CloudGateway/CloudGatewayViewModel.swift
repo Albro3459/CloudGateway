@@ -723,7 +723,11 @@ final class CloudGatewayViewModel: ObservableObject {
         // Mirror toggleIsOn's "on" set so a client that is still connecting is
         // treated as the active tunnel to switch away from, not left running
         // alongside a newly started one on this single-tunnel provider.
-        clientOptions.first { option in
+        let representedIds = Set(clientOptions.map(\.client.clientId))
+        let cachedOnly = CloudGatewayConfigSelection.offlineClientOptions(from: installedSnapshots)
+            .filter { !representedIds.contains($0.client.clientId) }
+        let options = clientOptions + cachedOnly
+        return options.first { option in
             switch configState.tunnelStatus(for: option.client.clientId) {
             case .connected, .connecting, .reasserting:
                 return true

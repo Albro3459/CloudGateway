@@ -1174,6 +1174,78 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.displayedClientOptions.contains { $0.client.clientId == "c1" })
     }
 
+    func testOfflineCachedActiveTunnelIsStoppedBeforeStartingAnotherCachedTunnel() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "c1")
+        await tunnelManager.setStatus(.disconnected, for: "c2")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("c1", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("c2", regionId: "us-sanjose-1"),
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        guard let nextRow = viewModel.displayedClientOptions.first(where: { $0.client.clientId == "c2" }) else {
+            XCTFail("Expected the second cached config to surface as a row.")
+            return
+        }
+
+        XCTAssertEqual(viewModel.activeTunnelClient?.client.clientId, "c1")
+
+        await viewModel.switchTunnel(to: nextRow)
+
+        let stopRequests = await tunnelManager.stopRequests()
+        XCTAssertEqual(stopRequests, ["c1"])
+        XCTAssertTrue(viewModel.toggleIsOn(for: nextRow))
+    }
+
+    func testOfflineCachedActiveTunnelIsFoundAcrossRegionsBeforeSwitching() async {
+        let service = signedInService()
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1"),
+            TestFixtures.region("us-ashburn-1"),
+        ]
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "c1")
+        await tunnelManager.setStatus(.disconnected, for: "c2")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("c1", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("c2", regionId: "us-ashburn-1"),
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+        viewModel.selectedRegionId = "us-ashburn-1"
+        guard let nextRow = viewModel.displayedClientOptions.first(where: { $0.client.clientId == "c2" }) else {
+            XCTFail("Expected the second region's cached config to surface as a row.")
+            return
+        }
+
+        XCTAssertEqual(viewModel.activeTunnelClient?.client.clientId, "c1")
+
+        await viewModel.switchTunnel(to: nextRow)
+
+        let stopRequests = await tunnelManager.stopRequests()
+        XCTAssertEqual(stopRequests, ["c1"])
+        XCTAssertTrue(viewModel.toggleIsOn(for: nextRow))
+    }
+
     func testCachedInstalledConfigDoesNotLeakIntoOtherRegions() async {
         let service = signedInService()
         service.enabledRegions = [

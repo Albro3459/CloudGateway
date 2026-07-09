@@ -8,6 +8,7 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var statuses = [String: GatewayTunnelStatus]()
     private var startError: Error?
     private var stopError: Error?
+    private var stoppedIdentifiers = [String]()
 
     init(status: GatewayTunnelStatus? = nil) {
         self.status = status
@@ -43,6 +44,7 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
         if let stopError {
             throw stopError
         }
+        stoppedIdentifiers.append(identifier)
         statuses[identifier] = .disconnected
     }
 
@@ -60,6 +62,10 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 
     func setStopError(_ error: Error?) {
         stopError = error
+    }
+
+    func stopRequests() -> [String] {
+        stoppedIdentifiers
     }
 }
 
