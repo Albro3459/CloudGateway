@@ -3,6 +3,12 @@ import XCTest
 
 @MainActor
 final class CloudGatewayViewModelTests: XCTestCase {
+    private func waitForLocalState(_ viewModel: CloudGatewayViewModel) async {
+        for _ in 0..<100 where viewModel.installedSnapshots.isEmpty {
+            await Task.yield()
+        }
+    }
+
     private func makeViewModel(_ service: MockGatewayService) -> CloudGatewayViewModel {
         CloudGatewayViewModel(
             service: service,
@@ -17,7 +23,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
     private func makeViewModel(
         _ service: MockGatewayService,
         installedSnapshots: [CloudGatewayConfigSnapshot],
-        tunnelStatus: GatewayTunnelStatus
+        tunnelStatus: GatewayTunnelStatus,
+        healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader()
     ) -> CloudGatewayViewModel {
         CloudGatewayViewModel(
             service: service,
@@ -25,7 +32,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
                 tunnelManager: FakeTunnelManager(status: tunnelStatus),
                 cache: FakeConfigCache(snapshots: installedSnapshots),
                 secretStore: FakeConfigSecretStore()
-            )
+            ),
+            healthReader: healthReader
         )
     }
 
@@ -33,6 +41,82 @@ final class CloudGatewayViewModelTests: XCTestCase {
         let service = MockGatewayService()
         service.currentUser = AuthenticatedUser(uid: "u1", email: "a@b.com")
         return service
+    }
+
+    func testDeadTunnelTimeoutShowsVpnWarningInsteadOfGenericTimeout() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.fetchRegionsError = URLError(.timedOut)
+        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connected,
+            healthReader: healthReader
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertTrue(viewModel.shouldShowDeadTunnelWarning)
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertEqual(viewModel.appMode, .signedIn)
+    }
+
+    func testLoggedOutUserCanSeeAndDisconnectDeadTunnelWarning() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(status: .connected),
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader
+        )
+
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+        viewModel.refreshTunnelHealth()
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertTrue(viewModel.shouldShowDeadTunnelWarning)
+        XCTAssertFalse(viewModel.isSignedIn)
+
+        await viewModel.disconnectDeadTunnel()
+
+        XCTAssertFalse(viewModel.shouldShowDeadTunnelWarning)
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+    }
+
+    func testStaleDeadTunnelSnapshotDoesNotShowWarning() async {
+        let service = signedInService()
+        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date(timeIntervalSinceNow: -GatewayTunnelHealthSnapshot.freshnessWindow - 1)
+        ))
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connected,
+            healthReader: healthReader
+        )
+
+        await waitForLocalState(viewModel)
+        viewModel.refreshTunnelHealth()
+
+        XCTAssertNil(viewModel.tunnelHealthSnapshot)
+        XCTAssertFalse(viewModel.shouldShowDeadTunnelWarning)
     }
 
     // MARK: - Guest flow

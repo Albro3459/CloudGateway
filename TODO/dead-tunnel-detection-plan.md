@@ -154,7 +154,7 @@ appropriate point. Implement `UNUserNotificationCenterDelegate.willPresent` ->
 - `PacketTunnelProvider.swift` - post the notification.
 - App - request authorization; set the foreground-presentation delegate.
 
-### Stage 4 - App fast path + in-app banner
+### Stage 4 - App fast path + in-app banner - DONE
 When an app request times out and a tunnel is connected, read the app-group
 health flag. If the tunnel is dead, surface the VPN-specific message with a
 Disconnect action instead of the generic "The request timed out." Also render an
@@ -166,6 +166,11 @@ dashboard.
   message/state.
 - `ContentView.swift` - banner + Disconnect action, shown in guest and signed-in
   modes.
+
+### Final review - DONE
+GPT 5.4 Low reviewed Stage 4 after implementation and fixes. GPT 5.4 Medium
+reviewed all stages against this plan; the final review found no actionable
+issues.
 
 ---
 
@@ -200,6 +205,9 @@ dashboard.
 - Build the apple targets (`./scripts/test.sh` where applicable) and add unit
   coverage for the UAPI health evaluator (never-handshaked, stale handshake,
   `rx`-flat/`tx`-rising, healthy) in `CloudGatewayKit` tests.
+- Automated validation complete: `./scripts/test.sh apple` passes 82
+  `CloudGatewayKit` tests, the unsigned iOS app/packet-tunnel build, and the
+  full iOS simulator view-model suite.
 - Manual: connect a client, delete it server-side, confirm the notification and
   in-app banner appear within ~10-15s in both logged-in and logged-out states,
   and that a healthy tunnel on slow cellular does **not** false-positive.

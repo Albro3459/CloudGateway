@@ -152,3 +152,15 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     try store.clear()
     #expect(try store.read() == nil)
 }
+
+@Test func healthSnapshotExpiresAfterExtensionStopsUpdatingIt() {
+    let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let snapshot = GatewayTunnelHealthSnapshot(
+        tunnelIdentifier: "client-1",
+        health: .notPassingTraffic,
+        updatedAt: updatedAt
+    )
+
+    #expect(snapshot.isFresh(at: updatedAt.addingTimeInterval(30)))
+    #expect(!snapshot.isFresh(at: updatedAt.addingTimeInterval(31)))
+}

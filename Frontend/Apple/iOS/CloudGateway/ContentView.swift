@@ -54,6 +54,15 @@ struct ContentView: View {
             topMessages
         }
         .foregroundStyle(theme.content)
+        .onAppear {
+            viewModel.refreshTunnelHealth()
+        }
+        .task {
+            while !Task.isCancelled {
+                viewModel.refreshTunnelHealth()
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
         .onChange(of: viewModel.appMode) { previousMode, mode in
             if mode == .signedIn {
                 isShowingLogin = false
@@ -427,7 +436,19 @@ struct ContentView: View {
     @ViewBuilder
     private var topMessages: some View {
         VStack(spacing: 8) {
-            if let errorText = viewModel.errorText {
+            if viewModel.shouldShowDeadTunnelWarning {
+                MessageBanner(
+                    text: CloudGatewayViewModel.deadTunnelMessage,
+                    style: .warning,
+                    onDismiss: nil,
+                    actionTitle: "Disconnect",
+                    onAction: {
+                        Task {
+                            await viewModel.disconnectDeadTunnel()
+                        }
+                    }
+                )
+            } else if let errorText = viewModel.errorText {
                 MessageBanner(
                     text: errorText,
                     style: .error,
@@ -445,7 +466,11 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
-        .allowsHitTesting(viewModel.errorText != nil || viewModel.successText != nil)
+        .allowsHitTesting(
+            viewModel.shouldShowDeadTunnelWarning
+                || viewModel.errorText != nil
+                || viewModel.successText != nil
+        )
     }
 
     private var adminPanel: some View {
@@ -1862,6 +1887,22 @@ private struct MessageBanner: View {
     let text: String
     let style: MessageBannerStyle
     let onDismiss: (() -> Void)?
+    let actionTitle: String?
+    let onAction: (() -> Void)?
+
+    init(
+        text: String,
+        style: MessageBannerStyle,
+        onDismiss: (() -> Void)?,
+        actionTitle: String? = nil,
+        onAction: (() -> Void)? = nil
+    ) {
+        self.text = text
+        self.style = style
+        self.onDismiss = onDismiss
+        self.actionTitle = actionTitle
+        self.onAction = onAction
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1869,6 +1910,13 @@ private struct MessageBanner: View {
                 .font(.subheadline)
                 .foregroundStyle(foregroundColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let actionTitle, let onAction {
+                Button(actionTitle, action: onAction)
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(foregroundColor)
+            }
 
             if let onDismiss {
                 Button(action: onDismiss) {

@@ -82,6 +82,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.withdrawDeadTunnelNotification()
             self.healthTunnelIdentifier = tunnelIdentifier
             self.healthStore = GatewayTunnelHealthStore(appGroupIdentifier: appGroupIdentifier)
+            // Do not let a fresh extension session inherit a dead verdict from
+            // the previous process. The first new runtime sample will publish
+            // .unknown, .passingTraffic, or .notPassingTraffic for this session.
+            try? self.healthStore?.clear()
             self.healthEvaluator = GatewayTunnelHealthEvaluator(startedAt: Date())
             self.lastPublishedHealth = nil
 

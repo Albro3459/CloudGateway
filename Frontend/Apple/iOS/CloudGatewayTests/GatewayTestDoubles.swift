@@ -1,6 +1,18 @@
 import CloudGatewayKit
 import Foundation
 
+final class FakeTunnelHealthReader: CloudGatewayTunnelHealthReading {
+    var snapshot: GatewayTunnelHealthSnapshot?
+
+    init(snapshot: GatewayTunnelHealthSnapshot? = nil) {
+        self.snapshot = snapshot
+    }
+
+    func currentSnapshot() -> GatewayTunnelHealthSnapshot? {
+        snapshot
+    }
+}
+
 /// In-memory tunnel manager for view-model tests. Reports "no installed tunnel" by
 /// default so `CloudGatewayConfigManager.refreshStatus()` maps it to a nil status.
 actor FakeTunnelManager: CloudGatewayTunnelManaging {

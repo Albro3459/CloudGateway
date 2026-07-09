@@ -4,6 +4,11 @@ import Foundation
 /// the app can read it without a network round-trip. Carries no traffic content,
 /// keys, or metadata - just which tunnel, its health, and when it was written.
 public struct GatewayTunnelHealthSnapshot: Codable, Equatable, Sendable {
+    /// The extension normally rewrites this file every five seconds. A bounded
+    /// window prevents a dead verdict from surviving an extension crash or a
+    /// long suspension and misleading the app later.
+    public static let freshnessWindow: TimeInterval = 30
+
     public let tunnelIdentifier: String
     public let health: GatewayTunnelHealth
     public let updatedAt: Date
@@ -12,6 +17,10 @@ public struct GatewayTunnelHealthSnapshot: Codable, Equatable, Sendable {
         self.tunnelIdentifier = tunnelIdentifier
         self.health = health
         self.updatedAt = updatedAt
+    }
+
+    public func isFresh(at now: Date = Date()) -> Bool {
+        now.timeIntervalSince(updatedAt) <= Self.freshnessWindow
     }
 }
 

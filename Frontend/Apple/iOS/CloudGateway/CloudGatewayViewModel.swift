@@ -90,6 +90,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var staleText: String?
     @Published private(set) var lastRefreshText: String?
     @Published private(set) var syncResult: CloudGatewaySyncResult?
+    @Published private(set) var tunnelHealthSnapshot: GatewayTunnelHealthSnapshot?
     @Published private(set) var remoteInvalidInstalledConfig = false
     // True when the last remote refresh failed (offline / API error). Gates the
     // cached-row fallback so a client removed remotely while online does not
@@ -117,9 +118,23 @@ final class CloudGatewayViewModel: ObservableObject {
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
+    static let deadTunnelMessage = "Your VPN server isn't responding. Disconnect to restore your connection."
 
     var isSignedIn: Bool {
         appMode == .signedIn
+    }
+
+    var shouldShowDeadTunnelWarning: Bool {
+        guard tunnelHealthSnapshot?.health == .notPassingTraffic,
+              let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
+            return false
+        }
+        switch configState.tunnelStatus(for: tunnelIdentifier) {
+        case .connected, .connecting, .reasserting:
+            return true
+        case .invalid, .disconnected, .disconnecting, nil:
+            return false
+        }
     }
 
     var statusText: String {
@@ -431,6 +446,23 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func refresh() async {
         await reloadCurrentState(showsWorkingOverlay: true)
+    }
+
+    func refreshTunnelHealth() {
+        let snapshot = healthReader.currentSnapshot()
+        tunnelHealthSnapshot = snapshot?.isFresh() == true ? snapshot : nil
+    }
+
+    func disconnectDeadTunnel() async {
+        refreshTunnelHealth()
+        guard shouldShowDeadTunnelWarning,
+              let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
+            return
+        }
+        await run {
+            apply(try await configManager.stopTunnel(identifier: tunnelIdentifier))
+            tunnelHealthSnapshot = nil
+        }
     }
 
     func pullToRefresh() async {
@@ -889,6 +921,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private func loadLocalState() async {
         do {
             applyLocal(try await configManager.loadLocalState())
+            refreshTunnelHealth()
         } catch {
             errorText = error.localizedDescription
         }
@@ -1122,8 +1155,18 @@ final class CloudGatewayViewModel: ObservableObject {
                 apply(state)
             }
         } catch {
-            errorText = error.localizedDescription
+            refreshTunnelHealth()
+            if isRequestTimeout(error), shouldShowDeadTunnelWarning {
+                errorText = nil
+            } else {
+                errorText = error.localizedDescription
+            }
         }
+    }
+
+    private func isRequestTimeout(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
     }
 }
 
