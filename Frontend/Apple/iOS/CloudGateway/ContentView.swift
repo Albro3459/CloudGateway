@@ -1662,13 +1662,10 @@ private struct ClientRow: View {
 
                     Spacer()
 
-                    VStack(alignment: .trailing, spacing: 6) {
-                        StatusBadge(status: option.client.status)
-                        if let installState {
-                            Text(installState)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(theme.accentStrong)
-                        }
+                    if let installState {
+                        Text(installState)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(theme.accentStrong)
                     }
                 }
             }
@@ -1743,76 +1740,6 @@ private struct ClientRow: View {
         // details. simultaneousGesture keeps the toggle and buttons tappable.
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .simultaneousGesture(LongPressGesture().onEnded { _ in onDetails() })
-    }
-}
-
-private struct StatusBadge: View {
-    @Environment(\.cloudGatewayTheme) private var theme
-    let status: CloudGatewayClientStatus
-
-    var body: some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(backgroundColor)
-            .foregroundStyle(foregroundColor)
-            .clipShape(Capsule())
-            .overlay {
-                Capsule().stroke(borderColor, lineWidth: 1)
-            }
-    }
-
-    private var title: String {
-        switch status {
-        case .creating:
-            "Creating"
-        case .active:
-            "Active"
-        case .failed:
-            "Failed"
-        case .removed:
-            "Removed"
-        }
-    }
-
-    private var backgroundColor: Color {
-        switch status {
-        case .active:
-            theme.successSoft
-        case .creating:
-            theme.warningSoft
-        case .failed:
-            theme.dangerSoft
-        case .removed:
-            theme.neutralStrong
-        }
-    }
-
-    private var foregroundColor: Color {
-        switch status {
-        case .active:
-            theme.successStrong
-        case .creating:
-            theme.warningStrong
-        case .failed:
-            theme.dangerStrong
-        case .removed:
-            theme.content
-        }
-    }
-
-    private var borderColor: Color {
-        switch status {
-        case .active:
-            theme.successSoftEdge
-        case .creating:
-            theme.warningSoftEdge
-        case .failed:
-            theme.dangerSoftEdge
-        case .removed:
-            theme.neutralStrong
-        }
     }
 }
 
