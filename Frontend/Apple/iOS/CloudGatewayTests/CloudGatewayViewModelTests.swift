@@ -1237,6 +1237,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertEqual(viewModel.appMode, .signedIn)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+        XCTAssertEqual(viewModel.selectedRegionId, "us-sanjose-1")
+        XCTAssertTrue(viewModel.isUsingOfflineRegionFallback)
         // The remote client list is empty offline, but the cached install still shows.
         XCTAssertTrue(viewModel.filteredClientOptions.isEmpty)
         guard let row = viewModel.displayedClientOptions.first(where: { $0.client.clientId == "c1" }) else {
@@ -1256,6 +1259,32 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertFalse(viewModel.toggleIsOn(for: row))
         XCTAssertTrue(viewModel.displayedClientOptions.contains { $0.client.clientId == "c1" })
+    }
+
+    func testOfflineRegionSelectionKeepsSelectedClientInSelectedRegion() async {
+        let service = signedInService()
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(status: .disconnected),
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("california-client", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("chicago-client", regionId: "us-chicago-1"),
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.selectedRegionId, "us-chicago-1")
+        XCTAssertEqual(viewModel.selectedClientId, "chicago-client")
+
+        viewModel.selectRegion("us-sanjose-1")
+
+        XCTAssertEqual(viewModel.selectedClientId, "california-client")
+        XCTAssertEqual(viewModel.displayedClientOptions.map(\.client.clientId), ["california-client"])
     }
 
     func testOfflineCachedActiveTunnelIsStoppedBeforeStartingAnotherCachedTunnel() async {

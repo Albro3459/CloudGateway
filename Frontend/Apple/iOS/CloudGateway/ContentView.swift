@@ -190,7 +190,9 @@ struct ContentView: View {
                         adminPanel
                     }
 
-                    signedInCreatePanel
+                    if !viewModel.isUsingOfflineRegionFallback {
+                        signedInCreatePanel
+                    }
                     regionsPanel
                     clientsPanel
                 }
@@ -520,7 +522,9 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(
                     title: "Regions",
-                    subtitle: "Choose where new VPN clients are created."
+                    subtitle: viewModel.isUsingOfflineRegionFallback
+                        ? "Your installed VPN configs, grouped by region."
+                        : "Choose where new VPN clients are created."
                 )
 
                 if viewModel.isLoadingRegions {
@@ -541,15 +545,17 @@ struct ContentView: View {
                             RegionButton(
                                 region: region,
                                 isSelected: region.regionId == viewModel.selectedRegionId,
-                                showsCapacity: viewModel.isSignedIn,
+                                showsCapacity: viewModel.isSignedIn && !viewModel.isUsingOfflineRegionFallback,
                                 isLoading: viewModel.isWorking
                             ) {
-                                viewModel.selectedRegionId = region.regionId
+                                viewModel.selectRegion(region.regionId)
                             }
                         }
                     }
 
-                    if viewModel.isSignedIn, let selectedRegion = viewModel.selectedRegion {
+                    if viewModel.isSignedIn,
+                       !viewModel.isUsingOfflineRegionFallback,
+                       let selectedRegion = viewModel.selectedRegion {
                         RegionCapacityNote(region: selectedRegion, isLoading: viewModel.isWorking)
                     }
                 }

@@ -347,6 +347,37 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(CloudGatewayConfigSelection.clientOptions(in: "us-sanjose-1", options: options).map(\.client.clientId) == ["a", "b"])
 }
 
+@Test func offlineRegionsUseLatestCachedDisplayNameAndFallbackToRegionId() throws {
+    func snapshot(
+        clientId: String,
+        regionId: String,
+        regionDisplayName: String,
+        readAt: TimeInterval
+    ) throws -> CloudGatewayConfigSnapshot {
+        try CloudGatewayConfigSnapshot(
+            clientId: clientId,
+            regionId: regionId,
+            clientName: clientId,
+            regionDisplayName: regionDisplayName,
+            status: .active,
+            wireGuardConfig: usableConfig,
+            readAt: Date(timeIntervalSince1970: readAt),
+            updatedAt: nil
+        )
+    }
+
+    let snapshots = [
+        try snapshot(clientId: "old", regionId: "us-sanjose-1", regionDisplayName: "Old California", readAt: 100),
+        try snapshot(clientId: "new", regionId: "us-sanjose-1", regionDisplayName: "California", readAt: 200),
+        try snapshot(clientId: "unknown", regionId: "us-unknown-1", regionDisplayName: "", readAt: 300),
+    ]
+
+    let regions = CloudGatewayConfigSelection.offlineRegions(from: snapshots)
+
+    #expect(regions.map(\.regionId) == ["us-sanjose-1", "us-unknown-1"])
+    #expect(regions.map(\.displayName) == ["California", "us-unknown-1"])
+}
+
 @Test func installStateTreatsCachedRowWithoutConfigAsInstalled() throws {
     let snapshot = try CloudGatewayConfigSnapshot(
         clientId: "client-1",

@@ -252,6 +252,28 @@ public enum CloudGatewayConfigSelection {
         return options.filter { $0.client.regionId == regionId }
     }
 
+    /// Builds the region selector from locally installed config metadata when
+    /// the remote region list is unavailable. A device can only show regions
+    /// represented by its installed snapshots, and the display name comes from
+    /// the server response cached when each config was installed.
+    public static func offlineRegions(
+        from snapshots: [CloudGatewayConfigSnapshot]
+    ) -> [CloudGatewayRegion] {
+        let snapshotsByRegion = Dictionary(grouping: snapshots, by: \.regionId)
+        return sortedRegions(snapshotsByRegion.map { regionId, snapshots in
+            let displayName = snapshots
+                .sorted { $0.readAt > $1.readAt }
+                .first?
+                .regionDisplayName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return CloudGatewayRegion(
+                regionId: regionId,
+                displayName: displayName?.isEmpty == false ? displayName! : regionId,
+                enabled: true
+            )
+        })
+    }
+
     // Build display rows from locally cached install snapshots, for when the
     // remote client list is unavailable (e.g. offline). Keeps an installed - and
     // possibly connected - tunnel visible and controllable. The WireGuard config
@@ -260,7 +282,8 @@ public enum CloudGatewayConfigSelection {
     public static func offlineClientOptions(
         from snapshots: [CloudGatewayConfigSnapshot]
     ) -> [CloudGatewayClientOption] {
-        snapshots
+        let regionsById = Dictionary(uniqueKeysWithValues: offlineRegions(from: snapshots).map { ($0.regionId, $0) })
+        return snapshots
             .map { snapshot in
                 CloudGatewayClientOption(
                     client: CloudGatewayClient(
@@ -271,11 +294,7 @@ public enum CloudGatewayConfigSelection {
                         wireGuardConfig: nil,
                         updatedAt: snapshot.updatedAt
                     ),
-                    region: CloudGatewayRegion(
-                        regionId: snapshot.regionId,
-                        displayName: snapshot.regionDisplayName,
-                        enabled: true
-                    )
+                    region: regionsById[snapshot.regionId]
                 )
             }
             .sorted(by: compareOptions)

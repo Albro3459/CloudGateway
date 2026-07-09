@@ -174,6 +174,10 @@ final class CloudGatewayViewModel: ObservableObject {
         return cachedInRegion.isEmpty ? options : options + cachedInRegion
     }
 
+    var isUsingOfflineRegionFallback: Bool {
+        isSignedIn && remoteRefreshUnavailable && clientOptions.isEmpty
+    }
+
     var selectedClientOption: CloudGatewayClientOption? {
         CloudGatewayConfigSelection.selectedOption(clientId: selectedClientId, in: filteredClientOptions)
     }
@@ -446,6 +450,11 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func refresh() async {
         await reloadCurrentState(showsWorkingOverlay: true)
+    }
+
+    func selectRegion(_ regionId: String) {
+        selectedRegionId = regionId
+        pruneSelectedClient()
     }
 
     func refreshTunnelHealth() {
@@ -950,8 +959,14 @@ final class CloudGatewayViewModel: ObservableObject {
     // controllable, then flag them as stale/offline.
     private func applyRemoteRefreshUnavailable() async {
         _ = try? await configManager.loadLocalState()
-        apply(await configManager.markRemoteRefreshUnavailable())
+        var state = await configManager.markRemoteRefreshUnavailable()
+        if state.regions.isEmpty {
+            state.regions = CloudGatewayConfigSelection.offlineRegions(from: state.installedSnapshots)
+        }
+        apply(state)
         remoteRefreshUnavailable = true
+        ensureSelectedRegion()
+        pruneSelectedClient()
     }
 
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
@@ -1098,7 +1113,10 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func pruneSelectedClient() {
         if let selectedClientId,
-           configState.installedSnapshot(clientId: selectedClientId) != nil {
+           configState.installedSnapshot(
+               clientId: selectedClientId,
+               regionId: selectedRegionId
+           ) != nil {
             return
         }
         let prunedSelection = CloudGatewayConfigSelection.prunedClientSelection(
@@ -1106,7 +1124,10 @@ final class CloudGatewayViewModel: ObservableObject {
             regionId: selectedRegionId,
             options: clientOptions
         )
-        selectedClientId = prunedSelection ?? installedSnapshots.first?.clientId
+        selectedClientId = prunedSelection
+            ?? installedSnapshots.first(where: { snapshot in
+                selectedRegionId == nil || snapshot.regionId == selectedRegionId
+            })?.clientId
     }
 
     private var selectedRegionAllowsCreate: Bool {
