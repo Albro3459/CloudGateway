@@ -124,7 +124,7 @@ out the ~180s background threshold.
 
 ## Stages
 
-### Stage 1 - Bound the request timeout (standalone win)
+### Stage 1 - Bound the request timeout (standalone win) - DONE
 Give the app's API calls a dedicated `URLSession` with
 `timeoutIntervalForRequest = 10` (and `waitsForConnectivity = false`), replacing
 `URLSession.shared` in `send()`. Turns the 60s wait into ~10s on its own, even
@@ -132,7 +132,7 @@ before health detection lands.
 
 - `CloudGatewayFirebaseService.swift:616` (`send`) - use a configured session.
 
-### Stage 2 - Extension-side tunnel health
+### Stage 2 - Extension-side tunnel health - DONE
 In the packet-tunnel extension, poll `adapter.getRuntimeConfiguration` on a timer,
 parse `last_handshake_time_sec` / `rx_bytes` / `tx_bytes`, and derive a health
 state (never-handshaked, stale handshake, or one-way-dead via `rx` flat while
@@ -144,7 +144,7 @@ state (never-handshaked, stale handshake, or one-way-dead via `rx` flat while
   store, so iOS and the future macOS extension share it. Sits next to
   `CloudGatewayConfigCache` / `GatewayPlatformConfiguration`.
 
-### Stage 3 - Local notification from the extension
+### Stage 3 - Local notification from the extension - DONE
 On a confirmed-dead tunnel, the extension posts a local notification via
 `UNUserNotificationCenter` ("Your VPN server isn't responding - disconnect to
 restore your connection"). Request notification authorization from the app at an

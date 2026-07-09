@@ -214,3 +214,14 @@ extension CloudGatewayServicing {
         try await idToken(forceRefresh: false)
     }
 }
+
+/// App-side seam over the shared-app-group tunnel-health flag the packet-tunnel
+/// extension writes, so the view model can read it without a network round-trip
+/// (and be exercised with a fake in tests).
+protocol CloudGatewayTunnelHealthReading {
+    func currentSnapshot() -> GatewayTunnelHealthSnapshot?
+}
+
+struct NoopTunnelHealthReader: CloudGatewayTunnelHealthReading {
+    func currentSnapshot() -> GatewayTunnelHealthSnapshot? { nil }
+}

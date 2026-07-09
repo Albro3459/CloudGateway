@@ -1,6 +1,7 @@
 import CloudGatewayKit
 import NetworkExtension
 import os
+import UserNotifications
 import WireGuardKit
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -9,13 +10,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         os_log("%{private}@", log: .default, type: logType, message)
     }
 
+    // Tunnel-health polling. Runs entirely inside the extension so it keeps
+    // working when the app is backgrounded, closed, or signed out.
+    private let healthQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health")
+    private let healthPollInterval: TimeInterval = 5
+    private var healthTimer: DispatchSourceTimer?
+    private var healthEvaluator: GatewayTunnelHealthEvaluator?
+    private var healthStore: GatewayTunnelHealthStore?
+    private var healthTunnelIdentifier: String?
+    private var lastPublishedHealth: GatewayTunnelHealth?
+
     override func startTunnel(
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
         do {
             let tunnelConfiguration = try makeTunnelConfiguration()
-            adapter.start(tunnelConfiguration: tunnelConfiguration) { error in
+            adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
+                if error == nil {
+                    self?.startHealthMonitoring()
+                }
                 completionHandler(error)
             }
         } catch {
@@ -27,6 +41,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
+        stopHealthMonitoring()
         adapter.stop { _ in
             completionHandler()
         }
@@ -50,6 +65,102 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let wireGuardConfig = try secretStore.loadConfig(for: secretReference).rawValue
         let tunnelName = protocolConfiguration.serverAddress ?? "CloudGateway"
         return try GatewayWireGuardConfigParser.parse(wireGuardConfig, named: tunnelName).wireGuardTunnelConfiguration()
+    }
+
+    private func startHealthMonitoring() {
+        guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
+              let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
+              let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
+            return
+        }
+        healthQueue.async { [weak self] in
+            guard let self else { return }
+            // Clear any notification left over from a prior process: iOS can kill
+            // and relaunch the extension without a stopTunnel, and the fresh
+            // evaluator warms up through .unknown, so recovery alone would not
+            // withdraw a stale "not responding" notification.
+            self.withdrawDeadTunnelNotification()
+            self.healthTunnelIdentifier = tunnelIdentifier
+            self.healthStore = GatewayTunnelHealthStore(appGroupIdentifier: appGroupIdentifier)
+            self.healthEvaluator = GatewayTunnelHealthEvaluator(startedAt: Date())
+            self.lastPublishedHealth = nil
+
+            let timer = DispatchSource.makeTimerSource(queue: self.healthQueue)
+            timer.schedule(deadline: .now() + self.healthPollInterval, repeating: self.healthPollInterval)
+            timer.setEventHandler { [weak self] in
+                self?.pollTunnelHealth()
+            }
+            self.healthTimer = timer
+            timer.resume()
+        }
+    }
+
+    // Synchronous so the stale health flag is guaranteed cleared before
+    // stopTunnel's completion fires - iOS may suspend/terminate the extension
+    // immediately after, and an enqueued clear could otherwise never run.
+    private func stopHealthMonitoring() {
+        healthQueue.sync {
+            healthTimer?.cancel()
+            healthTimer = nil
+            healthEvaluator = nil
+            try? healthStore?.clear()
+            healthStore = nil
+            healthTunnelIdentifier = nil
+            lastPublishedHealth = nil
+        }
+        withdrawDeadTunnelNotification()
+    }
+
+    // Called on healthQueue. Reads the tunnel's runtime stats, updates the
+    // evaluator, and publishes the verdict to the shared app group.
+    private func pollTunnelHealth() {
+        adapter.getRuntimeConfiguration { [weak self] configuration in
+            self?.healthQueue.async {
+                guard let self,
+                      let configuration,
+                      let stats = GatewayTunnelRuntimeStats.parse(configuration),
+                      var evaluator = self.healthEvaluator,
+                      let store = self.healthStore,
+                      let tunnelIdentifier = self.healthTunnelIdentifier else {
+                    return
+                }
+                let now = Date()
+                let health = evaluator.evaluate(stats, at: now)
+                self.healthEvaluator = evaluator
+                try? store.write(GatewayTunnelHealthSnapshot(
+                    tunnelIdentifier: tunnelIdentifier,
+                    health: health,
+                    updatedAt: now
+                ))
+
+                let previous = self.lastPublishedHealth
+                self.lastPublishedHealth = health
+                if GatewayTunnelHealthNotification.shouldNotify(previous: previous, current: health) {
+                    self.postDeadTunnelNotification()
+                } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
+                    self.withdrawDeadTunnelNotification()
+                }
+            }
+        }
+    }
+
+    private func postDeadTunnelNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = GatewayTunnelHealthNotification.title
+        content.body = GatewayTunnelHealthNotification.body
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: GatewayTunnelHealthNotification.identifier,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func withdrawDeadTunnelNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
     }
 }
 

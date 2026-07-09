@@ -113,6 +113,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
+    private let healthReader: CloudGatewayTunnelHealthReading
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
@@ -285,9 +286,14 @@ final class CloudGatewayViewModel: ObservableObject {
         isSignedIn && isWorking && clientOptions.isEmpty
     }
 
-    init(service: CloudGatewayServicing, configManager: CloudGatewayConfigManager) {
+    init(
+        service: CloudGatewayServicing,
+        configManager: CloudGatewayConfigManager,
+        healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader()
+    ) {
         self.service = service
         self.configManager = configManager
+        self.healthReader = healthReader
         authHandle = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)

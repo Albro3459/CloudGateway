@@ -28,6 +28,9 @@ extension CloudGatewayViewModel {
                     accessGroup: platform.keychainAccessGroupIdentifier
                 ),
                 configSecretServiceName: platform.configSecretServiceName
+            ),
+            healthReader: CloudGatewayTunnelHealthReader(
+                store: GatewayTunnelHealthStore(appGroupIdentifier: platform.appGroupIdentifier)
             )
         )
     }
@@ -40,6 +43,14 @@ extension CloudGatewayViewModel {
         } catch {
             preconditionFailure(error.localizedDescription)
         }
+    }
+}
+
+struct CloudGatewayTunnelHealthReader: CloudGatewayTunnelHealthReading {
+    let store: GatewayTunnelHealthStore
+
+    func currentSnapshot() -> GatewayTunnelHealthSnapshot? {
+        try? store.read()
     }
 }
 
@@ -70,6 +81,9 @@ struct CloudGatewayRegionsResponse: Decodable, Equatable {
 final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let db = Firestore.firestore()
     private let apiOriginHost = "gocloudlaunch.com"
+    // Bounded request timeout so a dead/blackholing tunnel fails in ~10s instead
+    // of URLSession's 60s default (see GatewayAPISession).
+    private let apiSession = GatewayAPISession.makeSession()
 
     var currentUser: AuthenticatedUser? {
         guard let user = Auth.auth().currentUser else {
@@ -614,7 +628,7 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await apiSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw CloudGatewayAppError.invalidAPIResponse
         }
