@@ -158,15 +158,23 @@ import sys
 path, mode = sys.argv[1:]
 text = open(path, encoding="utf-8").read()
 
-builds = re.findall(r"\n\s*CURRENT_PROJECT_VERSION = (\d+);", text)
-if len(builds) != 2 or len(set(builds)) != 1:
-    raise SystemExit("expected exactly two matching app build settings")
-current_build = int(builds[0])
+config_pattern = re.compile(
+    r"(\n\t\t[0-9A-F]+ /\* [^\n]+ = \{\n\t\t\tisa = XCBuildConfiguration;.*?\n\t\t\};)",
+    re.DOTALL,
+)
+configs = list(config_pattern.finditer(text))
+app_configs = [match for match in configs if "PRODUCT_BUNDLE_IDENTIFIER = com.gocloudlaunch.gateway;" in match.group(1)]
+if len(app_configs) != 2:
+    raise SystemExit("expected exactly two CloudGateway app build configurations")
 
-versions = re.findall(r"\n\s*MARKETING_VERSION = ([0-9]+\.[0-9]+\.[0-9]+);", text)
-if len(versions) != 4 or len(set(versions)) != 1:
-    raise SystemExit("expected matching app and tunnel marketing versions")
-current_version = versions[0]
+app_builds = re.findall(r"\n\s*CURRENT_PROJECT_VERSION = (\d+);", "".join(match.group(1) for match in app_configs))
+app_versions = re.findall(r"\n\s*MARKETING_VERSION = ([0-9]+\.[0-9]+\.[0-9]+);", "".join(match.group(1) for match in app_configs))
+if len(app_builds) != 2 or len(set(app_builds)) != 1:
+    raise SystemExit("expected matching app build settings")
+if len(app_versions) != 2 or len(set(app_versions)) != 1:
+    raise SystemExit("expected matching app marketing versions")
+current_build = int(app_builds[0])
+current_version = app_versions[0]
 major, minor, patch = map(int, current_version.split("."))
 if mode == "major":
     major, minor, patch = major + 1, 0, 0
@@ -177,19 +185,22 @@ elif mode == "patch":
 new_version = f"{major}.{minor}.{patch}" if mode else current_version
 new_build = current_build + 1
 
-text = re.sub(
-    r"(\n\s*CURRENT_PROJECT_VERSION = )\d+(;)",
-    rf"\g<1>{new_build}\g<2>",
-    text,
-    count=2,
-)
-if mode:
-    text = re.sub(
-        r"(\n\s*MARKETING_VERSION = )[0-9]+\.[0-9]+\.[0-9]+(;)",
-        rf"\g<1>{new_version}\g<2>",
-        text,
-        count=4,
+for match in reversed(app_configs):
+    block = match.group(1)
+    block = re.sub(
+        r"(\n\s*CURRENT_PROJECT_VERSION = )\d+(;)",
+        rf"\g<1>{new_build}\g<2>",
+        block,
+        count=1,
     )
+    if mode:
+        block = re.sub(
+            r"(\n\s*MARKETING_VERSION = )[0-9]+\.[0-9]+\.[0-9]+(;)",
+            rf"\g<1>{new_version}\g<2>",
+            block,
+            count=1,
+        )
+    text = text[:match.start()] + block + text[match.end():]
 open(path, "w", encoding="utf-8").write(text)
 print(current_version, current_build, new_version, new_build)
 PY
