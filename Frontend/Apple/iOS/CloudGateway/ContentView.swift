@@ -1475,22 +1475,22 @@ private struct ClientDetailsView: View {
     }
 
     private var endpoint: String {
-        guard let config = option.client.wireGuardConfig,
-              let parsed = try? GatewayWireGuardConfigParser.parse(config),
-              let endpoint = parsed.peers.first?.endpoint else {
-            return "Unavailable"
+        if let hostname = option.client.serverEndpointHostname, !hostname.isEmpty {
+            return hostname
         }
-        return endpoint
+        if let ipv4 = option.client.serverEndpointIpv4, !ipv4.isEmpty {
+            return ipv4
+        }
+        return "Unavailable"
     }
 
     private var tunnelIP: String {
-        guard let config = option.client.wireGuardConfig,
-              let parsed = try? GatewayWireGuardConfigParser.parse(config),
-              let address = parsed.interface.addresses.first(where: { $0.contains(".") }) else {
+        guard let address = option.client.assignedTunnelIpv4,
+              let host = address.split(separator: "/").first,
+              !host.isEmpty else {
             return "Unavailable"
         }
-        // Strip the CIDR prefix (e.g. "10.42.0.11/32" -> "10.42.0.11").
-        return String(address.split(separator: "/").first ?? "")
+        return String(host)
     }
 
     private var detailsText: String {

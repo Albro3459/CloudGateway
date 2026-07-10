@@ -78,6 +78,9 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
     public let regionId: String
     public let status: CloudGatewayClientStatus
     public let wireGuardConfig: String?
+    public let assignedTunnelIpv4: String?
+    public let serverEndpointIpv4: String?
+    public let serverEndpointHostname: String?
     public let updatedAt: Date?
     public let ownerUid: String?
     public let ownerEmail: String?
@@ -88,6 +91,9 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
         regionId: String,
         status: CloudGatewayClientStatus,
         wireGuardConfig: String?,
+        assignedTunnelIpv4: String? = nil,
+        serverEndpointIpv4: String? = nil,
+        serverEndpointHostname: String? = nil,
         updatedAt: Date? = nil,
         ownerUid: String? = nil,
         ownerEmail: String? = nil
@@ -97,6 +103,9 @@ public struct CloudGatewayClient: Codable, Equatable, Sendable {
         self.regionId = regionId
         self.status = status
         self.wireGuardConfig = wireGuardConfig
+        self.assignedTunnelIpv4 = assignedTunnelIpv4
+        self.serverEndpointIpv4 = serverEndpointIpv4
+        self.serverEndpointHostname = serverEndpointHostname
         self.updatedAt = updatedAt
         self.ownerUid = ownerUid
         self.ownerEmail = ownerEmail
@@ -143,6 +152,9 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
     public let secretReference: GatewayConfigSecretReference
     public let readAt: Date
     public let updatedAt: Date?
+    public let assignedTunnelIpv4: String?
+    public let serverEndpointIpv4: String?
+    public let serverEndpointHostname: String?
 
     public init(
         clientId: String,
@@ -153,7 +165,10 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         configHash: String,
         secretReference: GatewayConfigSecretReference,
         readAt: Date,
-        updatedAt: Date?
+        updatedAt: Date?,
+        assignedTunnelIpv4: String? = nil,
+        serverEndpointIpv4: String? = nil,
+        serverEndpointHostname: String? = nil
     ) {
         self.clientId = clientId
         self.regionId = regionId
@@ -164,6 +179,9 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         self.secretReference = secretReference
         self.readAt = readAt
         self.updatedAt = updatedAt
+        self.assignedTunnelIpv4 = assignedTunnelIpv4
+        self.serverEndpointIpv4 = serverEndpointIpv4
+        self.serverEndpointHostname = serverEndpointHostname
     }
 
     public init(
@@ -292,6 +310,9 @@ public enum CloudGatewayConfigSelection {
                         regionId: snapshot.regionId,
                         status: snapshot.status,
                         wireGuardConfig: nil,
+                        assignedTunnelIpv4: snapshot.assignedTunnelIpv4,
+                        serverEndpointIpv4: snapshot.serverEndpointIpv4,
+                        serverEndpointHostname: snapshot.serverEndpointHostname,
                         updatedAt: snapshot.updatedAt
                     ),
                     region: regionsById[snapshot.regionId]
@@ -407,7 +428,10 @@ public enum CloudGatewayConfigSelection {
                 service: serviceName
             ),
             readAt: readAt,
-            updatedAt: option.client.updatedAt
+            updatedAt: option.client.updatedAt,
+            assignedTunnelIpv4: option.client.assignedTunnelIpv4,
+            serverEndpointIpv4: option.client.serverEndpointIpv4,
+            serverEndpointHostname: option.client.serverEndpointHostname
         )
     }
 

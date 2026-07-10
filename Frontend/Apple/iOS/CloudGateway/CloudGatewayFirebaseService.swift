@@ -60,6 +60,9 @@ struct CloudGatewayCreateClientResponse: Decodable, Equatable {
     let clientName: String
     let status: CloudGatewayClientStatus
     let wireguardConfig: String
+    let assignedTunnelIpv4: String?
+    let serverEndpointIpv4: String?
+    let serverEndpointHostname: String?
 }
 
 struct CloudGatewayCapacityResponse: Decodable, Equatable {
@@ -434,6 +437,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             regionId: response.regionId,
             status: response.status,
             wireGuardConfig: response.wireguardConfig,
+            assignedTunnelIpv4: response.assignedTunnelIpv4,
+            serverEndpointIpv4: response.serverEndpointIpv4,
+            serverEndpointHostname: response.serverEndpointHostname,
             updatedAt: nil,
             ownerUid: Auth.auth().currentUser?.uid,
             ownerEmail: Auth.auth().currentUser?.email
@@ -551,6 +557,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
             regionId: regionId,
             status: status,
             wireGuardConfig: string(data["wireguardConfig"]),
+            assignedTunnelIpv4: string(data["assignedTunnelIpv4"]),
+            serverEndpointIpv4: string(data["serverEndpointIpv4"]),
+            serverEndpointHostname: string(data["serverEndpointHostname"]),
             updatedAt: date(data["updatedAt"]),
             ownerUid: string(data["ownerUid"]),
             ownerEmail: string(data["ownerEmail"]) ?? string(data["email"])

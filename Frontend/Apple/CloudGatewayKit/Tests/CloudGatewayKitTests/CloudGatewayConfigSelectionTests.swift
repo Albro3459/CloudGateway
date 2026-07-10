@@ -159,6 +159,29 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(try snapshot.tunnelConfiguration().identifier == "client-1")
 }
 
+@Test func snapshotPreservesCanonicalDisplayMetadataForOfflineRows() throws {
+    let option = CloudGatewayClientOption(
+        client: CloudGatewayClient(
+            clientId: "client-1",
+            clientName: "iPhone",
+            regionId: "us-sanjose-1",
+            status: .active,
+            wireGuardConfig: usableConfig,
+            assignedTunnelIpv4: "10.0.0.2/32",
+            serverEndpointIpv4: "203.0.113.10",
+            serverEndpointHostname: "wg.us-sanjose-1.example.com"
+        ),
+        region: CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true)
+    )
+
+    let snapshot = try CloudGatewayConfigSelection.snapshot(from: option)
+    let offline = CloudGatewayConfigSelection.offlineClientOptions(from: [snapshot]).first?.client
+
+    #expect(offline?.assignedTunnelIpv4 == "10.0.0.2/32")
+    #expect(offline?.serverEndpointIpv4 == "203.0.113.10")
+    #expect(offline?.serverEndpointHostname == "wg.us-sanjose-1.example.com")
+}
+
 @Test func cachedSnapshotDoesNotSelectRemoteConfigAutomatically() throws {
     let cached = try CloudGatewayConfigSnapshot(
         clientId: "old-client",
