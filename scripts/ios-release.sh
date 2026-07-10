@@ -19,7 +19,6 @@ SOURCE_PACKAGES="$ARCHIVE_ROOT/SourceFirestorePackages"
 VERSION_MODE=""
 BACKUP=""
 COMMITTED=0
-AUTH_HOME=""
 RELEASE_METADATA=""
 
 usage() {
@@ -69,9 +68,6 @@ restore_project() {
 
 cleanup() {
   restore_project
-  if [[ -n "$AUTH_HOME" && -d "$AUTH_HOME" ]]; then
-    trash "$AUTH_HOME" >/dev/null 2>&1 || true
-  fi
   if [[ -n "$BACKUP" && -f "$BACKUP" ]]; then
     trash "$BACKUP" >/dev/null 2>&1 || true
   fi
@@ -81,13 +77,72 @@ cleanup() {
 }
 trap cleanup EXIT
 
-AUTH_HOME="$(mktemp -d /private/tmp/CloudGatewayASC.XXXXXX)"
-mkdir -p "$AUTH_HOME/.appstoreconnect/private_keys"
-cp "$KEY_PATH" "$AUTH_HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
-chmod 600 "$AUTH_HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+JWT="$(python3 - "$KEY_PATH" "$KEY_ID" <<'PY'
+import base64
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+key_path, key_id = sys.argv[1:]
+
+def encode(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+header = encode(json.dumps({"alg": "ES256", "kid": key_id, "typ": "JWT"}, separators=(",", ":")).encode())
+now = int(time.time())
+payload = encode(json.dumps({
+    "sub": "user",
+    "iat": now,
+    "exp": now + 1200,
+    "aud": "appstoreconnect-v1",
+}, separators=(",", ":")).encode())
+signing_input = f"{header}.{payload}".encode()
+
+with tempfile.TemporaryDirectory(prefix="cloudgateway-asc-") as directory:
+    input_path = os.path.join(directory, "input")
+    signature_path = os.path.join(directory, "signature.der")
+    with open(input_path, "wb") as handle:
+        handle.write(signing_input)
+    subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", key_path, "-out", signature_path, input_path],
+        check=True,
+    )
+    signature = open(signature_path, "rb").read()
+
+def der_length(data, offset):
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        count = length & 0x7f
+        length = int.from_bytes(data[offset:offset + count], "big")
+        offset += count
+    return length, offset
+
+if signature[0] != 0x30:
+    raise SystemExit("unexpected ECDSA signature format")
+_, offset = der_length(signature, 1)
+if signature[offset] != 0x02:
+    raise SystemExit("missing ECDSA r value")
+r_length, offset = der_length(signature, offset + 1)
+r = signature[offset:offset + r_length]
+offset += r_length
+if signature[offset] != 0x02:
+    raise SystemExit("missing ECDSA s value")
+s_length, offset = der_length(signature, offset + 1)
+s = signature[offset:offset + s_length]
+r = r.lstrip(b"\0").rjust(32, b"\0")
+s = s.lstrip(b"\0").rjust(32, b"\0")
+if len(r) != 32 or len(s) != 32:
+    raise SystemExit("unexpected ECDSA signature length")
+print(f"{header}.{payload}.{encode(r + s)}")
+PY
+)"
 
 echo "==> Validating App Store Connect API key"
-HOME="$AUTH_HOME" "$TRANSPORTER" -m provider -apiKey "$KEY_ID" -v informational >/dev/null
+"$TRANSPORTER" -m provider -jwt "$JWT" -v informational >/dev/null
 
 mkdir -p "$ARCHIVE_ROOT" "$SOURCE_DERIVED_DATA" "$SOURCE_PACKAGES"
 BACKUP="$(mktemp /private/tmp/CloudGatewayProject.XXXXXX)"
@@ -192,7 +247,7 @@ if [[ "$(git -C "$ROOT" status --porcelain)" != " M Frontend/Apple/iOS/CloudGate
 fi
 
 echo "==> Uploading IPA"
-HOME="$AUTH_HOME" "$TRANSPORTER" -m upload -apiKey "$KEY_ID" -assetFile "$IPA_PATH"
+"$TRANSPORTER" -m upload -jwt "$JWT" -assetFile "$IPA_PATH"
 
 git -C "$ROOT" add "$PBXPROJ"
 git -C "$ROOT" commit -m "Deploy iOS v${NEW_VERSION} (build ${NEW_BUILD})"
