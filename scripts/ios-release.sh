@@ -21,6 +21,7 @@ VERSION_MODE=""
 BACKUP=""
 COMMITTED=0
 RELEASE_METADATA=""
+AUTH_HOME=""
 
 usage() {
   echo "usage: $0 [--version major|minor|patch]" >&2
@@ -69,6 +70,9 @@ restore_project() {
 
 cleanup() {
   restore_project
+  if [[ -n "$AUTH_HOME" && -d "$AUTH_HOME" ]]; then
+    trash "$AUTH_HOME" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$BACKUP" && -f "$BACKUP" ]]; then
     trash "$BACKUP" >/dev/null 2>&1 || true
   fi
@@ -261,7 +265,17 @@ if [[ "$(git -C "$ROOT" status --porcelain)" != " M Frontend/Apple/iOS/CloudGate
 fi
 
 echo "==> Uploading IPA"
-"$TRANSPORTER" -m upload -jwt "$JWT" -assetFile "$IPA_PATH"
+AUTH_HOME="$(mktemp -d /private/tmp/CloudGatewayTransporter.XXXXXX)"
+mkdir -p "$AUTH_HOME/private_keys"
+cp "$KEY_PATH" "$AUTH_HOME/private_keys/AuthKey_${KEY_ID}.p8"
+chmod 600 "$AUTH_HOME/private_keys/AuthKey_${KEY_ID}.p8"
+(
+  cd "$AUTH_HOME"
+  "$TRANSPORTER" -m upload \
+    -apiIssuer "$ISSUER_ID" \
+    -apiKey "$KEY_ID" \
+    -assetFile "$IPA_PATH"
+)
 
 git -C "$ROOT" add "$PBXPROJ"
 git -C "$ROOT" commit -m "Deploy iOS v${NEW_VERSION} (build ${NEW_BUILD})"
