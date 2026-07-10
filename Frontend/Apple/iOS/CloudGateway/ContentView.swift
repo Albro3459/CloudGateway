@@ -1396,6 +1396,7 @@ private struct ClientDetailsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         DetailLine(label: "VPN id", value: option.client.clientId, selectable: false)
                         DetailLine(label: "Region id", value: option.client.regionId, selectable: false)
+                        DetailLine(label: "Tunnel IP", value: tunnelIP, selectable: false)
                         DetailLine(label: "Connection URL", value: endpoint, selectable: false)
                         DetailLine(label: "Owner email", value: option.client.ownerEmail ?? "Unknown", selectable: false)
                     }
@@ -1418,12 +1419,23 @@ private struct ClientDetailsView: View {
         return endpoint
     }
 
+    private var tunnelIP: String {
+        guard let config = option.client.wireGuardConfig,
+              let parsed = try? GatewayWireGuardConfigParser.parse(config),
+              let address = parsed.interface.addresses.first(where: { $0.contains(".") }) else {
+            return "Unavailable"
+        }
+        // Strip the CIDR prefix (e.g. "10.42.0.11/32" -> "10.42.0.11").
+        return String(address.split(separator: "/").first ?? "")
+    }
+
     private var detailsText: String {
         """
         \(option.client.displayName)
 
         VPN id: \(option.client.clientId)
         Region id: \(option.client.regionId)
+        Tunnel IP: \(tunnelIP)
         Connection URL: \(endpoint)
         Owner email: \(option.client.ownerEmail ?? "Unknown")
         """

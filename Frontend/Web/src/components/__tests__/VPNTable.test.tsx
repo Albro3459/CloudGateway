@@ -104,6 +104,8 @@ describe("VPNTable", () => {
         expect(screen.getByText("Removed")).toBeTruthy();
         expect(screen.getByText("Apply failed")).toBeTruthy();
         expect(screen.queryByText("Region")).toBeNull();
+        expect(screen.getByText("Tunnel IP")).toBeTruthy();
+        expect(screen.queryByText("Endpoint")).toBeNull();
         expect(screen.getByText("Created")).toBeTruthy();
         expect(screen.getAllByText(formatCreatedAt(olderCreatedAt)).length).toBeGreaterThan(0);
         expect(screen.queryByText("Stored")).toBeNull();
@@ -114,8 +116,8 @@ describe("VPNTable", () => {
         expect(await screen.findByText("Copied")).toBeTruthy();
         await waitFor(() => expect(screen.queryByLabelText("Copy config for Laptop")).toBeNull());
 
-        fireEvent.click(screen.getAllByLabelText(/Copy Laptop server endpoint/)[0]);
-        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("wg.us-sanjose-1.example.com"));
+        fireEvent.click(screen.getAllByLabelText(/Copy Laptop tunnel IP/)[0]);
+        await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("10.0.0.2"));
 
         const removedCheckbox = screen.getByLabelText("Select Old phone for removal") as HTMLInputElement;
         expect(removedCheckbox.disabled).toBe(true);

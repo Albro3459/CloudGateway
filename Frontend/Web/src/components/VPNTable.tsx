@@ -3,6 +3,7 @@ import { Download, QrCode, Trash2, Copy } from "lucide-react";
 
 import { CopyableValue } from "./CopyableValue";
 import { formatVPNStatus, VPN_STATUS, VPNStatus } from "../helpers/vpnStatus";
+import { stripCidr } from "../helpers/ipHelper";
 
 export type VPNTableEntry = {
     userID: string;
@@ -173,8 +174,8 @@ const VPNTableRow: React.FC<VPNTableRowData> = ({
             </td>
             <td className="px-3 py-3 text-center align-middle">
                 <CopyableValue
-                    value={entry.serverEndpointHostname || entry.serverEndpointIpv4 || entry.ipv4}
-                    label={`${entry.clientName || entry.clientId} server endpoint`}
+                    value={stripCidr(entry.assignedTunnelIpv4)}
+                    label={`${entry.clientName || entry.clientId} tunnel IP`}
                 />
             </td>
             <td className="px-3 py-3 align-middle">
@@ -343,7 +344,7 @@ export const VPNTable: React.FC<VPNTableData> = ({
                             >
                                 Status
                             </th>
-                            <th className="px-3 py-2 text-center">Endpoint</th>
+                            <th className="px-3 py-2 text-center">Tunnel IP</th>
                             <th className="px-3 py-2 text-center">Config</th>
                         </tr>
                     </thead>

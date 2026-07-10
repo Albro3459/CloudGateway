@@ -20,6 +20,7 @@ import { User } from "firebase/auth";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { VPN_STATUS } from "../helpers/vpnStatus";
 import { filterVisibleVPNClients, getClientKey } from "../helpers/vpnVisibility";
+import { stripCidr } from "../helpers/ipHelper";
 
 type Banner = {
     type: "error" | "success";
@@ -82,6 +83,7 @@ const Home: React.FC = () => {
     const [vpnRegion, setVpnRegion] = useState<string | null>(null);
     const [activeConfigClientName, setActiveConfigClientName] = useState<string | null>(null);
     const [activeConfigEndpoint, setActiveConfigEndpoint] = useState<string | null>(null);
+    const [activeConfigTunnelIp, setActiveConfigTunnelIp] = useState<string | null>(null);
     const [configData, setConfigData] = useState<string | null>(null);
     const [configCopied, setConfigCopied] = useState(false);
     const [pullDistance, setPullDistance] = useState(0);
@@ -639,6 +641,7 @@ const Home: React.FC = () => {
         }
 
         setActiveConfigEndpoint(vpn.serverEndpointHostname || vpn.serverEndpointIpv4 || vpn.ipv4);
+        setActiveConfigTunnelIp(stripCidr(vpn.assignedTunnelIpv4));
         setVpnRegion(vpn.region);
         setActiveConfigClientName(vpn.clientName || vpn.clientId);
         setConfigData(vpn.wireguardConfig);
@@ -648,6 +651,7 @@ const Home: React.FC = () => {
     const closeConfigModal = () => {
         setConfigData(null);
         setActiveConfigEndpoint(null);
+        setActiveConfigTunnelIp(null);
         setVpnRegion(null);
         setActiveConfigClientName(null);
     };
@@ -1182,6 +1186,11 @@ const Home: React.FC = () => {
                         {vpnRegion && (
                             <p className="pt-1 text-content-secondary">
                                 Region: <b>{getRegionName(vpnRegion, ociRegions)}</b>
+                            </p>
+                        )}
+                        {activeConfigTunnelIp && (
+                            <p className="flex items-center justify-center gap-1 pt-1 text-content-secondary">
+                                Tunnel IP: <CopyableValue value={activeConfigTunnelIp} label={`${activeConfigClientName || "client"} tunnel IP`} />
                             </p>
                         )}
                         {activeConfigEndpoint && (
