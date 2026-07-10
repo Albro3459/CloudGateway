@@ -29,9 +29,10 @@ push the commit.
 ./scripts/ios-release.sh --version major
 ```
 
-The script expects the individual API key at
-`$HOME/.ssh/Apple_API_KEY/ApiKey_0N5LJ5JLIV1M.p8` with mode `600`.
-The key ID is not secret; the `.p8` file must never be committed or logged.
+The script expects the team API key at
+`$HOME/.ssh/Apple_API_KEY/AuthKey_YDM2P5LSK8.p8` with mode `600`.
+The key ID and issuer ID are identifiers, not secrets; the `.p8` file must
+never be committed or logged.
 
 For manual archive-only fallback:
 

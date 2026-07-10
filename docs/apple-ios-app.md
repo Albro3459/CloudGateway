@@ -129,9 +129,10 @@ App Store Connect API key, archives with source Firestore, exports an IPA,
 uploads it with Transporter, and commits a `Deploy iOS v<version> (build <n>)`
 commit without pushing it.
 
-The configured individual key path is
-`$HOME/.ssh/Apple_API_KEY/ApiKey_0N5LJ5JLIV1M.p8`. It must have mode `600`. The
-key ID is an identifier, not a secret; never commit or log the `.p8` private key.
+The configured team key path is
+`$HOME/.ssh/Apple_API_KEY/AuthKey_YDM2P5LSK8.p8`. It must have mode `600`. The
+key ID and issuer ID are identifiers, not secrets; never commit or log the `.p8`
+private key.
 
 For the manual Xcode flow, quit Xcode and reopen the project with source
 Firestore:

@@ -11,8 +11,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj"
 PBXPROJ="$PROJECT/project.pbxproj"
-KEY_ID="0N5LJ5JLIV1M"
-KEY_PATH="${HOME}/.ssh/Apple_API_KEY/ApiKey_${KEY_ID}.p8"
+KEY_ID="YDM2P5LSK8"
+ISSUER_ID="9157d52e-3841-40de-8e45-fc74f01dfd2f"
+KEY_PATH="${HOME}/.ssh/Apple_API_KEY/AuthKey_${KEY_ID}.p8"
 ARCHIVE_ROOT="/private/tmp/CloudGatewayArchives"
 SOURCE_DERIVED_DATA="$ARCHIVE_ROOT/SourceFirestoreDerivedData"
 SOURCE_PACKAGES="$ARCHIVE_ROOT/SourceFirestorePackages"
@@ -77,7 +78,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-JWT="$(python3 - "$KEY_PATH" "$KEY_ID" <<'PY'
+JWT="$(python3 - "$KEY_PATH" "$KEY_ID" "$ISSUER_ID" <<'PY'
 import base64
 import json
 import os
@@ -86,7 +87,7 @@ import sys
 import tempfile
 import time
 
-key_path, key_id = sys.argv[1:]
+key_path, key_id, issuer_id = sys.argv[1:]
 
 def encode(value):
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
@@ -94,7 +95,7 @@ def encode(value):
 header = encode(json.dumps({"alg": "ES256", "kid": key_id, "typ": "JWT"}, separators=(",", ":")).encode())
 now = int(time.time())
 payload = encode(json.dumps({
-    "sub": "user",
+    "iss": issuer_id,
     "iat": now,
     "exp": now + 1200,
     "aud": "appstoreconnect-v1",
