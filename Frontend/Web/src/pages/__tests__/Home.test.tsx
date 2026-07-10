@@ -165,6 +165,35 @@ describe("Home pull to refresh", () => {
         expect(screen.queryByText(/No enabled regions are available\./)).toBeNull();
     });
 
+    it("keeps the VPN table loading while VPN data arrives before regions", async () => {
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        let resolveVPNs!: (value: never[]) => void;
+        const vpnPromise = new Promise<never[]>(resolve => {
+            resolveVPNs = resolve;
+        });
+        let regionsAvailable = false;
+
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: regionsAvailable ? regionStoreState.ociRegions : null,
+            loading: false,
+            error: null,
+        }));
+        getUsersVPNs.mockReturnValue(vpnPromise);
+
+        const { rerender } = render(<Home />);
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledTimes(1));
+
+        resolveVPNs([]);
+        await waitFor(() => expect(screen.queryByText("No VPN clients in this region.")).toBeNull());
+
+        regionsAvailable = true;
+        rerender(<Home />);
+        await waitFor(() => expect(screen.getAllByText("San Jose").length).toBeGreaterThan(0));
+        expect(screen.getByText("No VPN clients in this region.")).toBeTruthy();
+    });
+
     it("shows known region capacity", async () => {
         const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
         const { default: Home } = require("../Home");

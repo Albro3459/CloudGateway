@@ -103,8 +103,7 @@ const Home: React.FC = () => {
     const showRegionTabs = enabledRegions.length > 1;
 
     const activeRegionEntries = useMemo(() => {
-        if (VPNTableEntries === null) return null;
-        if (!activeRegionId) return [];
+        if (VPNTableEntries === null || !activeRegionId) return null;
 
         return VPNTableEntries.filter(vpn => vpn.region === activeRegionId);
     }, [VPNTableEntries, activeRegionId]);
