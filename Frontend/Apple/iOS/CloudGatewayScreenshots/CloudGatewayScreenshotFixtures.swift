@@ -242,6 +242,10 @@ actor CloudGatewayScreenshotTunnelManager: CloudGatewayTunnelManaging {
         }
     }
 
+    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        statuses
+    }
+
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
         statuses[tunnel.identifier] = .disconnected
     }

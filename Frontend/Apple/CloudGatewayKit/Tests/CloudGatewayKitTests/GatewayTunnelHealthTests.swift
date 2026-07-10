@@ -164,3 +164,14 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     #expect(snapshot.isFresh(at: updatedAt.addingTimeInterval(30)))
     #expect(!snapshot.isFresh(at: updatedAt.addingTimeInterval(31)))
 }
+
+@Test func healthPersistencePolicyRetriesAfterUnrecordedWrite() {
+    var policy = GatewayTunnelHealthPersistencePolicy(heartbeatInterval: 15)
+    let first = now
+    #expect(policy.shouldPersist(.passingTraffic, at: first))
+    // A failed write does not record the attempt, so the next poll remains due.
+    #expect(policy.shouldPersist(.passingTraffic, at: first.addingTimeInterval(5)))
+    policy.recordPersisted(.passingTraffic, at: first.addingTimeInterval(5))
+    #expect(!policy.shouldPersist(.passingTraffic, at: first.addingTimeInterval(10)))
+    #expect(policy.shouldPersist(.passingTraffic, at: first.addingTimeInterval(21)))
+}

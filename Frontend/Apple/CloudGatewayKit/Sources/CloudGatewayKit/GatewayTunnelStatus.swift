@@ -38,4 +38,13 @@ public enum GatewayTunnelStatus: Equatable, Sendable {
             return false
         }
     }
+
+    public var blocksDestructiveOperation: Bool {
+        switch self {
+        case .connecting, .connected, .reasserting:
+            return true
+        case .invalid, .disconnected, .disconnecting:
+            return false
+        }
+    }
 }

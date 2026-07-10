@@ -126,6 +126,9 @@ public actor CloudGatewayConfigManager {
     public func removeTunnel(identifier: String) async throws -> CloudGatewayConfigManagerState {
         let secretReference = state.installedSnapshot(clientId: identifier)?.secretReference
         try await tunnelManager.removeTunnel(identifier: identifier)
+        // The system profile is gone even if local cleanup below fails. Keep the
+        // snapshot for retry, but do not report a removed profile as active.
+        state.tunnelStatuses[identifier] = nil
         // Delete the Keychain secret before clearing the cache. If the delete
         // throws, the cache entry still holds the reference so a reboot reloads
         // it and can retry; clearing the cache first would orphan the secret.
@@ -134,7 +137,6 @@ public actor CloudGatewayConfigManager {
         }
         try await cache.clear(identifier: identifier)
         state.installedSnapshots.removeAll { $0.clientId == identifier }
-        state.tunnelStatuses[identifier] = nil
         state.staleTexts[identifier] = nil
         state.remoteInvalidInstalledConfigIds.remove(identifier)
         return state
@@ -168,6 +170,10 @@ public actor CloudGatewayConfigManager {
         }
         state.tunnelStatuses = statuses
         return state
+    }
+
+    public func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        try await tunnelManager.allInstalledStatuses()
     }
 
     public func installState(for option: CloudGatewayClientOption) -> CloudGatewayConfigInstallState? {

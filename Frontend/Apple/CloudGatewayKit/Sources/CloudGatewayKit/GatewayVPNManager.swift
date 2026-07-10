@@ -44,6 +44,17 @@ public final class GatewayVPNManager {
         }
     }
 
+    public func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        return managers.reduce(into: [String: GatewayTunnelStatus]()) { statuses, manager in
+            guard let identifier = tunnelIdentifier(of: manager),
+                  matches(manager, identifier: identifier) else {
+                return
+            }
+            statuses[identifier] = GatewayTunnelStatus(manager.connection.status)
+        }
+    }
+
     public func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
         let managers = try await NETunnelProviderManager.loadAllFromPreferences()
         let manager = managers.first { matches($0, identifier: tunnel.identifier) } ?? NETunnelProviderManager()

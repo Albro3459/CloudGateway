@@ -206,12 +206,26 @@ final class CloudGatewayViewModel: ObservableObject {
     // full-tunnel config, the DELETE response is blackholed by the tunnel it is
     // deleting. The user must disconnect (or switch configs) first.
     func isTunnelActive(clientId: String) -> Bool {
-        configState.tunnelStatus(for: clientId)?.isConnectionActive ?? false
+        configState.tunnelStatus(for: clientId)?.blocksDestructiveOperation ?? false
+    }
+
+    func isTunnelActiveNow(clientId: String) async -> Bool {
+        guard let statuses = try? await configManager.allInstalledStatuses() else {
+            return isTunnelActive(clientId: clientId)
+        }
+        return statuses[clientId]?.blocksDestructiveOperation ?? false
     }
 
     // Account deletion removes every peer, so any active tunnel blocks it.
     var hasActiveTunnel: Bool {
-        tunnelStatuses.values.contains { $0.isConnectionActive }
+        tunnelStatuses.values.contains { $0.blocksDestructiveOperation }
+    }
+
+    func hasActiveTunnelNow() async -> Bool {
+        guard let statuses = try? await configManager.allInstalledStatuses() else {
+            return hasActiveTunnel
+        }
+        return statuses.values.contains { $0.blocksDestructiveOperation }
     }
 
     var canSyncSelectedRegion: Bool {
@@ -609,14 +623,14 @@ final class CloudGatewayViewModel: ObservableObject {
     // confirm time) avoids deleting the wrong client if a background refresh
     // prunes or moves the selection between opening and confirming.
     func deleteClient(_ option: CloudGatewayClientOption) async {
-        if isTunnelActive(clientId: option.client.clientId) {
-            errorText = Self.activeConfigDeleteMessage
-            return
-        }
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            try await ensureDestructiveOperationAllowed(
+                clientId: option.client.clientId,
+                message: Self.activeConfigDeleteMessage
+            )
             let token = try await service.idToken()
             let response = try await service.deleteClient(
                 clientId: option.client.clientId,
@@ -719,14 +733,11 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
-        if hasActiveTunnel {
-            errorText = Self.activeAccountDeleteMessage
-            return
-        }
         await run {
             guard service.currentUser != nil else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            try await ensureDestructiveOperationAllowed(message: Self.activeAccountDeleteMessage)
             try await reauthenticate()
             let token = try await service.idToken(forceRefresh: true)
             _ = try await service.deleteAccount(idToken: token)
@@ -738,8 +749,15 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func removeInstalledConfigsAfterAccountDelete() async {
-        for snapshot in installedSnapshots {
-            _ = try? await configManager.removeTunnel(identifier: snapshot.clientId)
+        let cachedIdentifiers = installedSnapshots.map(\.clientId)
+        let installedIdentifiers: Set<String>
+        if let statuses = try? await configManager.allInstalledStatuses() {
+            installedIdentifiers = Set(statuses.keys)
+        } else {
+            installedIdentifiers = []
+        }
+        for identifier in Set(cachedIdentifiers).union(installedIdentifiers) {
+            _ = try? await configManager.removeTunnel(identifier: identifier)
         }
         if let state = try? await configManager.loadLocalState() {
             apply(state)
@@ -899,6 +917,15 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
         configState.installState(for: option) != nil
+            && configState.tunnelStatus(for: option.client.clientId) != nil
+    }
+
+    private func ensureDestructiveOperationAllowed(clientId: String? = nil, message: String) async throws {
+        let statuses = try await configManager.allInstalledStatuses()
+        let statusValues = clientId.flatMap { statuses[$0].map { [$0] } } ?? Array(statuses.values)
+        guard !statusValues.contains(where: { $0.blocksDestructiveOperation }) else {
+            throw CloudGatewayAppError.accessDenied(message)
+        }
     }
 
     func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {

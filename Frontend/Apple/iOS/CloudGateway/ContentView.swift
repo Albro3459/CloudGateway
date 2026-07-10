@@ -697,10 +697,12 @@ struct ContentView: View {
                                 },
                                 onDelete: {
                                     viewModel.selectedClientId = option.client.clientId
-                                    if viewModel.isTunnelActive(clientId: option.client.clientId) {
-                                        activeTunnelDeleteMessage = CloudGatewayViewModel.activeConfigDeleteMessage
-                                    } else {
-                                        clientPendingDelete = option
+                                    Task { @MainActor in
+                                        if await viewModel.isTunnelActiveNow(clientId: option.client.clientId) {
+                                            activeTunnelDeleteMessage = CloudGatewayViewModel.activeConfigDeleteMessage
+                                        } else {
+                                            clientPendingDelete = option
+                                        }
                                     }
                                 },
                                 onDetails: {
@@ -806,12 +808,16 @@ struct ContentView: View {
     }
 
     private func presentDeleteAccount() {
-        if viewModel.hasActiveTunnel {
-            activeTunnelDeleteMessage = CloudGatewayViewModel.activeAccountDeleteMessage
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            isShowingDeleteAccount = true
+        Task { @MainActor in
+            if await viewModel.hasActiveTunnelNow() {
+                activeTunnelDeleteMessage = CloudGatewayViewModel.activeAccountDeleteMessage
+                return
+            }
+            viewModel.dismissMessages()
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if !viewModel.isWorking {
+                isShowingDeleteAccount = true
+            }
         }
     }
 

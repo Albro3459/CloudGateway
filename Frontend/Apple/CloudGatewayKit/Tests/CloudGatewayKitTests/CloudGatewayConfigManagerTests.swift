@@ -350,6 +350,9 @@ private enum ManagerTestError: Error {
     #expect(await tunnelManager.removeCount() == 1)
     #expect(await cache.clearCount() == 0)
     #expect(secretStore.deletedReferences().isEmpty)
+    let state = await manager.state
+    #expect(state.installedSnapshots.map(\.clientId) == ["client-1"])
+    #expect(state.tunnelStatus(for: "client-1") == nil)
 }
 
 @Test func managerStartStopTargetsSelectedIdentifier() async throws {
@@ -454,6 +457,10 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
                 result[identifier] = status
             }
         }
+    }
+
+    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        statuses
     }
 
     func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {

@@ -12,3 +12,10 @@ import Testing
     #expect(!GatewayTunnelStatus.disconnected.isConnectionActive)
     #expect(!GatewayTunnelStatus.invalid.isConnectionActive)
 }
+
+@Test func disconnectingDoesNotBlockDestructiveOperations() {
+    #expect(!GatewayTunnelStatus.disconnecting.blocksDestructiveOperation)
+    #expect(GatewayTunnelStatus.connecting.blocksDestructiveOperation)
+    #expect(GatewayTunnelStatus.connected.blocksDestructiveOperation)
+    #expect(GatewayTunnelStatus.reasserting.blocksDestructiveOperation)
+}

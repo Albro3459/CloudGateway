@@ -425,6 +425,56 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.activeConfigDeleteMessage)
     }
 
+    func testDeleteClientAllowsOptimisticallyDisconnectingConfig() async throws {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnecting
+        )
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+
+        let option = try XCTUnwrap(viewModel.displayedClientOptions.first)
+        await viewModel.deleteClient(option)
+
+        XCTAssertEqual(service.deleteClientCallCount, 1)
+    }
+
+    func testDeleteClientOnlyBlocksTheTargetActiveProfile() async throws {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [
+            TestFixtures.client("target", regionId: "us-sanjose-1"),
+            TestFixtures.client("other", regionId: "us-sanjose-1")
+        ]
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.disconnected, for: "target")
+        await tunnelManager.setStatus(.connected, for: "other")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("target", regionId: "us-sanjose-1"),
+                    TestFixtures.snapshot("other", regionId: "us-sanjose-1")
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+
+        let option = try XCTUnwrap(
+            viewModel.displayedClientOptions.first { $0.client.clientId == "target" }
+        )
+        await viewModel.deleteClient(option)
+
+        XCTAssertEqual(service.deleteClientCallCount, 1)
+        XCTAssertNil(viewModel.errorText)
+    }
+
     func testSyncSelectedRegionCapturesResult() async {
         let service = signedInAdminService()
         let viewModel = makeViewModel(service)
@@ -723,6 +773,45 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.deleteAccountCallCount, 0)
         XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [])
         XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.activeAccountDeleteMessage)
+    }
+
+    func testDeleteAccountBlocksUncachedActiveProfile() async {
+        let service = signedInService()
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.connected, for: "uncached")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.deleteAccountWithGoogle()
+
+        XCTAssertEqual(service.deleteAccountCallCount, 0)
+        XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.activeAccountDeleteMessage)
+    }
+
+    func testDeleteAccountRemovesUncachedProfileAfterSuccessfulDeletion() async {
+        let service = signedInService()
+        let tunnelManager = FakeTunnelManager()
+        await tunnelManager.setStatus(.disconnected, for: "uncached")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+
+        await viewModel.deleteAccountWithGoogle()
+
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
+        let statuses = try? await tunnelManager.allInstalledStatuses()
+        XCTAssertTrue(statuses?.isEmpty ?? false)
     }
 
     // MARK: - Capacity gating

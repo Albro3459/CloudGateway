@@ -18,6 +18,7 @@ final class FakeTunnelHealthReader: CloudGatewayTunnelHealthReading {
 actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var status: GatewayTunnelStatus?
     private var statuses = [String: GatewayTunnelStatus]()
+    private var knownIdentifiers = Set<String>()
     private var startError: Error?
     private var stopError: Error?
     private var stoppedIdentifiers = [String]()
@@ -34,9 +35,18 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
-        identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
+        knownIdentifiers.formUnion(identifiers)
+        return identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
             if let status = statuses[identifier] ?? status {
                 result[identifier] = status
+            }
+        }
+    }
+
+    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        knownIdentifiers.reduce(into: statuses) { result, identifier in
+            if let status {
+                result[identifier] = result[identifier] ?? status
             }
         }
     }
