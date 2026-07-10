@@ -11,22 +11,29 @@ Run the full suite; everything must pass before deploying:
 ## Deploy the frontend
 
 ```sh
-cd Frontend/Web && npm run deploy && cd -
+./scripts/deploy-react.sh
 ```
 
 ## Build iOS App Store archive
 
-1. Quit Xcode.
-2. Reopen it with source Firestore:
+The release script always increments the iOS build number. It keeps the
+marketing version unchanged unless a version flag is supplied. It validates the
+individual App Store Connect API key, archives with source Firestore, exports an
+IPA, uploads it with Transporter, and commits the project-file bump. It does not
+push the commit.
 
-   ```sh
-   open --env FIREBASE_SOURCE_FIRESTORE=1 Frontend/Apple/iOS/CloudGateway.xcodeproj
-   ```
+```sh
+./scripts/ios-release.sh
+./scripts/ios-release.sh --version patch
+./scripts/ios-release.sh --version minor
+./scripts/ios-release.sh --version major
+```
 
-3. In Xcode, run `Product > Archive`.
-4. Quit and reopen Xcode normally after archiving for faster development device builds.
+The script expects the individual API key at
+`$HOME/.ssh/Apple_API_KEY/ApiKey_0N5LJ5JLIV1M.p8` with mode `600`.
+The key ID is not secret; the `.p8` file must never be committed or logged.
 
-Fallback CLI archive:
+For manual archive-only fallback:
 
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages

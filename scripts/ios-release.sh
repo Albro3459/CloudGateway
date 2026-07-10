@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+
+# Bump, archive, export, and upload the production iOS app.
+#
+# Usage:
+#   ./scripts/ios-release.sh
+#   ./scripts/ios-release.sh --version patch|minor|major
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT="$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj"
+PBXPROJ="$PROJECT/project.pbxproj"
+KEY_ID="0N5LJ5JLIV1M"
+KEY_PATH="${HOME}/.ssh/Apple_API_KEY/ApiKey_${KEY_ID}.p8"
+ARCHIVE_ROOT="/private/tmp/CloudGatewayArchives"
+SOURCE_DERIVED_DATA="$ARCHIVE_ROOT/SourceFirestoreDerivedData"
+SOURCE_PACKAGES="$ARCHIVE_ROOT/SourceFirestorePackages"
+VERSION_MODE=""
+BACKUP=""
+COMMITTED=0
+AUTH_HOME=""
+RELEASE_METADATA=""
+
+usage() {
+  echo "usage: $0 [--version major|minor|patch]" >&2
+}
+
+if [[ $# -gt 0 ]]; then
+  if [[ $# -ne 2 || "$1" != "--version" || ! "$2" =~ ^(major|minor|patch)$ ]]; then
+    usage
+    exit 2
+  fi
+  VERSION_MODE="$2"
+fi
+
+if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
+  echo "Working tree is not clean. Commit or stash changes before releasing." >&2
+  git -C "$ROOT" status --short >&2
+  exit 1
+fi
+
+if [[ ! -r "$KEY_PATH" ]]; then
+  echo "Missing App Store Connect API key: $KEY_PATH" >&2
+  exit 1
+fi
+
+if [[ "$(stat -f '%Lp' "$KEY_PATH")" != "600" ]]; then
+  echo "App Store Connect API key must have mode 600: $KEY_PATH" >&2
+  exit 1
+fi
+
+TRANSPORTER="$(xcrun --find iTMSTransporter 2>/dev/null || true)"
+if [[ -z "$TRANSPORTER" && -x "/Applications/Transporter.app/Contents/itms/bin/iTMSTransporter" ]]; then
+  TRANSPORTER="/Applications/Transporter.app/Contents/itms/bin/iTMSTransporter"
+fi
+if [[ -z "$TRANSPORTER" ]]; then
+  echo "Unable to locate iTMSTransporter. Install Apple's Transporter app or expose it through xcrun." >&2
+  exit 1
+fi
+
+# Transporter discovers API keys from this standard directory. Use an isolated
+# HOME so the release does not alter the user's normal Transporter credentials.
+restore_project() {
+  if [[ "$COMMITTED" -eq 0 && -n "$BACKUP" && -f "$BACKUP" ]]; then
+    cp "$BACKUP" "$PBXPROJ"
+  fi
+}
+
+cleanup() {
+  restore_project
+  if [[ -n "$AUTH_HOME" && -d "$AUTH_HOME" ]]; then
+    trash "$AUTH_HOME" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BACKUP" && -f "$BACKUP" ]]; then
+    trash "$BACKUP" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RELEASE_METADATA" && -f "$RELEASE_METADATA" ]]; then
+    trash "$RELEASE_METADATA" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+AUTH_HOME="$(mktemp -d /private/tmp/CloudGatewayASC.XXXXXX)"
+mkdir -p "$AUTH_HOME/.appstoreconnect/private_keys"
+cp "$KEY_PATH" "$AUTH_HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+chmod 600 "$AUTH_HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+
+echo "==> Validating App Store Connect API key"
+HOME="$AUTH_HOME" "$TRANSPORTER" -m provider -apiKey "$KEY_ID" -v informational >/dev/null
+
+mkdir -p "$ARCHIVE_ROOT" "$SOURCE_DERIVED_DATA" "$SOURCE_PACKAGES"
+BACKUP="$(mktemp /private/tmp/CloudGatewayProject.XXXXXX)"
+RELEASE_METADATA="$(mktemp /private/tmp/CloudGatewayRelease.XXXXXX)"
+cp "$PBXPROJ" "$BACKUP"
+
+if ! python3 - "$PBXPROJ" "$VERSION_MODE" > "$RELEASE_METADATA" <<'PY'
+import re
+import sys
+
+path, mode = sys.argv[1:]
+text = open(path, encoding="utf-8").read()
+
+builds = re.findall(r"\n\s*CURRENT_PROJECT_VERSION = (\d+);", text)
+if len(builds) != 2 or len(set(builds)) != 1:
+    raise SystemExit("expected exactly two matching app build settings")
+current_build = int(builds[0])
+
+versions = re.findall(r"\n\s*MARKETING_VERSION = ([0-9]+\.[0-9]+\.[0-9]+);", text)
+if len(versions) != 4 or len(set(versions)) != 1:
+    raise SystemExit("expected matching app and tunnel marketing versions")
+current_version = versions[0]
+major, minor, patch = map(int, current_version.split("."))
+if mode == "major":
+    major, minor, patch = major + 1, 0, 0
+elif mode == "minor":
+    minor, patch = minor + 1, 0
+elif mode == "patch":
+    patch += 1
+new_version = f"{major}.{minor}.{patch}" if mode else current_version
+new_build = current_build + 1
+
+text = re.sub(
+    r"(\n\s*CURRENT_PROJECT_VERSION = )\d+(;)",
+    rf"\g<1>{new_build}\g<2>",
+    text,
+    count=2,
+)
+if mode:
+    text = re.sub(
+        r"(\n\s*MARKETING_VERSION = )[0-9]+\.[0-9]+\.[0-9]+(;)",
+        rf"\g<1>{new_version}\g<2>",
+        text,
+        count=4,
+    )
+open(path, "w", encoding="utf-8").write(text)
+print(current_version, current_build, new_version, new_build)
+PY
+then
+  exit 1
+fi
+read -r CURRENT_VERSION CURRENT_BUILD NEW_VERSION NEW_BUILD < "$RELEASE_METADATA"
+
+ARCHIVE_PATH="$ARCHIVE_ROOT/CloudGateway-${NEW_VERSION}-${NEW_BUILD}.xcarchive"
+EXPORT_PATH="$ARCHIVE_ROOT/CloudGateway-${NEW_VERSION}-${NEW_BUILD}"
+EXPORT_OPTIONS="$ARCHIVE_ROOT/ExportOptions-${NEW_VERSION}-${NEW_BUILD}.plist"
+
+cat > "$EXPORT_OPTIONS" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>teamID</key>
+  <string>CRQWDQ7QQR</string>
+</dict>
+</plist>
+EOF
+
+echo "==> Bumping iOS version ${CURRENT_VERSION} (${CURRENT_BUILD}) to ${NEW_VERSION} (${NEW_BUILD})"
+echo "==> Archiving with source Firestore"
+FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR="$SOURCE_PACKAGES" \
+  xcodebuild \
+    -project "$PROJECT" \
+    -scheme CloudGateway \
+    -destination generic/platform=iOS \
+    -configuration Release \
+    -derivedDataPath "$SOURCE_DERIVED_DATA" \
+    -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
+    -archivePath "$ARCHIVE_PATH" \
+    archive
+
+echo "==> Exporting IPA"
+xcodebuild -exportArchive \
+  -archivePath "$ARCHIVE_PATH" \
+  -exportOptionsPlist "$EXPORT_OPTIONS" \
+  -exportPath "$EXPORT_PATH"
+
+IPA_PATH="$EXPORT_PATH/CloudGateway.ipa"
+if [[ ! -f "$IPA_PATH" ]]; then
+  echo "Expected exported IPA was not created: $IPA_PATH" >&2
+  exit 1
+fi
+
+if [[ "$(git -C "$ROOT" status --porcelain)" != " M Frontend/Apple/iOS/CloudGateway.xcodeproj/project.pbxproj" ]]; then
+  echo "Archive changed files other than the intended project build settings; refusing to upload." >&2
+  git -C "$ROOT" status --short >&2
+  exit 1
+fi
+
+echo "==> Uploading IPA"
+HOME="$AUTH_HOME" "$TRANSPORTER" -m upload -apiKey "$KEY_ID" -assetFile "$IPA_PATH"
+
+git -C "$ROOT" add "$PBXPROJ"
+git -C "$ROOT" commit -m "Deploy iOS v${NEW_VERSION} (build ${NEW_BUILD})"
+COMMITTED=1
+
+echo "Published iOS v${NEW_VERSION} (build ${NEW_BUILD})"
+echo "Archive: $ARCHIVE_PATH"
+echo "IPA: $IPA_PATH"

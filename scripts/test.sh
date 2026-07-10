@@ -79,6 +79,7 @@ test_api() {
 test_web() {
   cd "$ROOT/Frontend/Web" || return 1
 
+  run_check "React deployment script syntax" bash -n "$ROOT/scripts/deploy-react.sh"
   if [[ ! -d node_modules ]]; then
     echo "Installing Web dependencies"
     run_check "Web dependency install" npm install || return 1
@@ -111,6 +112,7 @@ test_firebase() {
 test_apple() {
   cd "$ROOT" || return 1
 
+  run_check "Apple release script syntax" bash -n scripts/ios-release.sh
   run_check "Apple CloudGatewayKit tests" swift test --package-path Frontend/Apple/CloudGatewayKit
   run_check "Apple iOS project list" xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
 

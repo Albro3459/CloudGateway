@@ -116,6 +116,26 @@ SwiftUI and Firebase code should not perform WireGuardKit mapping directly.
 
 Firestore must use its source SwiftPM distribution for App Store archives. The default binary distribution embeds `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`; App Store Connect then expects dSYMs for those prebuilt frameworks.
 
+The normal CLI release path is:
+
+```sh
+./scripts/ios-release.sh
+```
+
+The script increments the build number on every run. Use `--version patch`,
+`--version minor`, or `--version major` to bump the marketing version as well;
+those runs also increment the build number. The script validates the individual
+App Store Connect API key, archives with source Firestore, exports an IPA,
+uploads it with Transporter, and commits a `Deploy iOS v<version> (build <n>)`
+commit without pushing it.
+
+The configured individual key path is
+`$HOME/.ssh/Apple_API_KEY/ApiKey_0N5LJ5JLIV1M.p8`. It must have mode `600`. The
+key ID is an identifier, not a secret; never commit or log the `.p8` private key.
+
+For the manual Xcode flow, quit Xcode and reopen the project with source
+Firestore:
+
 Archive from Xcode with the source Firestore environment:
 
 1. Quit Xcode.
