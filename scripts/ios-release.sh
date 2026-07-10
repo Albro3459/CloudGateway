@@ -142,7 +142,9 @@ PY
 )"
 
 echo "==> Validating App Store Connect API key"
-"$TRANSPORTER" -m provider -jwt "$JWT" -v informational >/dev/null
+curl --fail --silent --show-error --output /dev/null \
+  -H "Authorization: Bearer $JWT" \
+  "https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=com.gocloudlaunch.gateway"
 
 mkdir -p "$ARCHIVE_ROOT" "$SOURCE_DERIVED_DATA" "$SOURCE_PACKAGES"
 BACKUP="$(mktemp /private/tmp/CloudGatewayProject.XXXXXX)"
