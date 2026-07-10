@@ -26,4 +26,16 @@ public enum GatewayTunnelStatus: Equatable, Sendable {
             self = .invalid
         }
     }
+
+    // True while the tunnel may still be routing traffic. Used to block
+    // destructive requests that would blackhole their own response over a
+    // full-tunnel route; only a fully disconnected/invalid tunnel is safe.
+    public var isConnectionActive: Bool {
+        switch self {
+        case .connecting, .connected, .reasserting, .disconnecting:
+            return true
+        case .invalid, .disconnected:
+            return false
+        }
+    }
 }

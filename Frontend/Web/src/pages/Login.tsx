@@ -74,6 +74,26 @@ const Login: React.FC = () => {
     const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
         try {
             const token = await user.getIdToken();
+
+            // Verify apex account access before any regional capacity call. The
+            // capacity endpoints disable and revoke unprovisioned users, which
+            // would turn a later access check into a generic auth failure and
+            // hide the real "not provisioned" reason. The apex check runs on the
+            // still-valid token and returns the specific reason. Regions are
+            // unused by the endpoint builder, so none are needed here.
+            const access = await checkAccountAccess(token, null);
+            if (!access.success) {
+                await signOut(auth);
+                if (showAccessError) {
+                    setError(
+                        access.errorCode === "USER_NOT_PROVISIONED"
+                            ? access.error
+                            : "Unable to verify account access. Please try again.",
+                    );
+                }
+                return;
+            }
+
             await fetchOciRegions(token, true);
             const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
 
@@ -85,19 +105,6 @@ const Login: React.FC = () => {
                 await signOut(auth);
                 if (showAccessError) {
                     setError(getNoRegionsMessage());
-                }
-                return;
-            }
-
-            const access = await checkAccountAccess(token, ociRegions);
-            if (!access.success) {
-                await signOut(auth);
-                if (showAccessError) {
-                    setError(
-                        access.errorCode === "USER_NOT_PROVISIONED"
-                            ? access.error
-                            : "Unable to verify account access. Please try again.",
-                    );
                 }
                 return;
             }

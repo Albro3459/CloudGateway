@@ -21,6 +21,7 @@ import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 import { VPN_STATUS } from "../helpers/vpnStatus";
 import { filterVisibleVPNClients, getClientKey } from "../helpers/vpnVisibility";
 import { stripCidr } from "../helpers/ipHelper";
+import { useModalDialog } from "../hooks/useModalDialog";
 
 type Banner = {
     type: "error" | "success";
@@ -656,6 +657,13 @@ const Home: React.FC = () => {
         setActiveConfigClientName(null);
     };
 
+    // Dialog a11y for the hand-rolled overlays: focus trap, focus restore, and
+    // Escape-to-close. The close handlers already no-op while their operation is
+    // in flight, so Escape is safe to wire directly.
+    const linkAccountModalRef = useModalDialog<HTMLDivElement>(linkAccountModalOpen, closeLinkAccountModal);
+    const configModalRef = useModalDialog<HTMLDivElement>(!!configData, closeConfigModal);
+    const deleteAccountModalRef = useModalDialog<HTMLDivElement>(deleteAccountModalOpen, closeDeleteAccountModal);
+
     const handleDownloadConfig = (vpn: VPNTableEntry) => {
         if (!vpn.wireguardConfig) {
             showBanner("error", "Config not available for download.");
@@ -1034,7 +1042,12 @@ const Home: React.FC = () => {
                     onClick={closeLinkAccountModal}
                 >
                     <div
-                        className="relative w-full max-w-lg rounded-lg bg-card p-6 text-left shadow-lg"
+                        ref={linkAccountModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="link-account-modal-title"
+                        tabIndex={-1}
+                        className="relative w-full max-w-lg rounded-lg bg-card p-6 text-left shadow-lg focus:outline-none"
                         onClick={(event) => event.stopPropagation()}
                     >
                         <button
@@ -1045,7 +1058,7 @@ const Home: React.FC = () => {
                         >
                             x
                         </button>
-                        <h3 className="mb-3 text-2xl font-semibold text-content">Link Sign-In Method</h3>
+                        <h3 id="link-account-modal-title" className="mb-3 text-2xl font-semibold text-content">Link Sign-In Method</h3>
                         <div className="space-y-2 text-sm text-content-secondary">
                             <p>Choose a provider to link to your CloudGateway account.</p>
                             <p>The provider account you link to cannot have an existing CloudGateway account.</p>
@@ -1167,7 +1180,12 @@ const Home: React.FC = () => {
                     onClick={closeConfigModal}
                 >
                     <div
-                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-center shadow-lg"
+                        ref={configModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="config-modal-title"
+                        tabIndex={-1}
+                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-center shadow-lg focus:outline-none"
                         onClick={(event) => event.stopPropagation()}
                     >
                         <button
@@ -1177,7 +1195,7 @@ const Home: React.FC = () => {
                         >
                             x
                         </button>
-                        <h3 className="mb-2 text-2xl font-semibold">VPN QR Code</h3>
+                        <h3 id="config-modal-title" className="mb-2 text-2xl font-semibold">VPN QR Code</h3>
                         {activeConfigClientName && (
                             <p className="pt-1 text-content-secondary">
                                 Client: <b>{activeConfigClientName}</b>
@@ -1223,7 +1241,12 @@ const Home: React.FC = () => {
                     onClick={closeDeleteAccountModal}
                 >
                     <div
-                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-left shadow-lg"
+                        ref={deleteAccountModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="delete-account-modal-title"
+                        tabIndex={-1}
+                        className="relative w-full max-w-md rounded-lg bg-card p-6 text-left shadow-lg focus:outline-none"
                         onClick={(event) => event.stopPropagation()}
                     >
                         <button
@@ -1234,7 +1257,7 @@ const Home: React.FC = () => {
                         >
                             x
                         </button>
-                        <h3 className="mb-3 text-2xl font-semibold text-content">Delete Account?</h3>
+                        <h3 id="delete-account-modal-title" className="mb-3 text-2xl font-semibold text-content">Delete Account?</h3>
                         <p className="text-sm text-content-secondary">
                             This will permanently delete your CloudGateway account, VPN clients, stored VPN configuration data, and access records. This cannot be undone.
                         </p>

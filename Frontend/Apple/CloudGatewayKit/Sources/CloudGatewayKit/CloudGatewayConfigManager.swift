@@ -126,10 +126,13 @@ public actor CloudGatewayConfigManager {
     public func removeTunnel(identifier: String) async throws -> CloudGatewayConfigManagerState {
         let secretReference = state.installedSnapshot(clientId: identifier)?.secretReference
         try await tunnelManager.removeTunnel(identifier: identifier)
-        try await cache.clear(identifier: identifier)
+        // Delete the Keychain secret before clearing the cache. If the delete
+        // throws, the cache entry still holds the reference so a reboot reloads
+        // it and can retry; clearing the cache first would orphan the secret.
         if let secretReference {
             try secretStore.deleteConfig(for: secretReference)
         }
+        try await cache.clear(identifier: identifier)
         state.installedSnapshots.removeAll { $0.clientId == identifier }
         state.tunnelStatuses[identifier] = nil
         state.staleTexts[identifier] = nil
@@ -148,11 +151,20 @@ public actor CloudGatewayConfigManager {
             }
         }
         for snapshot in missingSnapshots {
+            // Delete the secret before clearing the cache/state reference. On a
+            // failed delete, keep the cached snapshot so the next reconcile
+            // retries instead of orphaning the Keychain secret. Keychain deletes
+            // are idempotent, so a later retry after a partial cleanup still
+            // succeeds (see removeTunnel).
+            do {
+                try secretStore.deleteConfig(for: snapshot.secretReference)
+            } catch {
+                continue
+            }
             try await cache.clear(identifier: snapshot.clientId)
             state.installedSnapshots.removeAll { $0.clientId == snapshot.clientId }
             state.staleTexts[snapshot.clientId] = nil
             state.remoteInvalidInstalledConfigIds.remove(snapshot.clientId)
-            try? secretStore.deleteConfig(for: snapshot.secretReference)
         }
         state.tunnelStatuses = statuses
         return state

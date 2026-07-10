@@ -2,11 +2,13 @@ import AuthenticationServices
 import CloudGatewayKit
 import SwiftUI
 import UIKit
+import UserNotifications
 
 struct ContentView: View {
     @StateObject private var viewModel: CloudGatewayViewModel
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
+    @State private var activeTunnelDeleteMessage: String?
     @State private var isShowingLogin = false
     @State private var hasEnteredGuestDashboard = false
     @State private var isShowingAbout = false
@@ -165,6 +167,15 @@ struct ContentView: View {
         } message: {
             if let clientPendingDelete {
                 Text("Delete \(clientPendingDelete.client.displayName) in \(clientPendingDelete.regionDisplayName)? This removes the regional VPN peer and the local VPN profile if this config is installed.")
+            }
+        }
+        .alert("Disconnect First", isPresented: activeTunnelDeletePresented) {
+            Button("OK", role: .cancel) {
+                activeTunnelDeleteMessage = nil
+            }
+        } message: {
+            if let activeTunnelDeleteMessage {
+                Text(activeTunnelDeleteMessage)
             }
         }
     }
@@ -666,6 +677,7 @@ struct ContentView: View {
                                 onToggle: { isOn in
                                     viewModel.selectedClientId = option.client.clientId
                                     if isOn {
+                                        requestNotificationAuthorization()
                                         if let active = viewModel.activeTunnelClient,
                                            active.client.clientId != option.client.clientId {
                                             Task { await viewModel.switchTunnel(to: option) }
@@ -678,13 +690,18 @@ struct ContentView: View {
                                 },
                                 onInstall: {
                                     viewModel.selectedClientId = option.client.clientId
+                                    requestNotificationAuthorization()
                                     Task {
                                         await viewModel.installFromCloud(option)
                                     }
                                 },
                                 onDelete: {
                                     viewModel.selectedClientId = option.client.clientId
-                                    clientPendingDelete = option
+                                    if viewModel.isTunnelActive(clientId: option.client.clientId) {
+                                        activeTunnelDeleteMessage = CloudGatewayViewModel.activeConfigDeleteMessage
+                                    } else {
+                                        clientPendingDelete = option
+                                    }
                                 },
                                 onDetails: {
                                     clientShowingDetails = option
@@ -713,6 +730,17 @@ struct ContentView: View {
             set: { isPresented in
                 if !isPresented {
                     clientPendingDelete = nil
+                }
+            }
+        )
+    }
+
+    private var activeTunnelDeletePresented: Binding<Bool> {
+        Binding(
+            get: { activeTunnelDeleteMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    activeTunnelDeleteMessage = nil
                 }
             }
         )
@@ -770,7 +798,18 @@ struct ContentView: View {
         }
     }
 
+    // Ask for notification permission the first time the user installs or
+    // connects a VPN - the dead-tunnel alert only matters once a tunnel exists.
+    // iOS prompts only once; later calls are no-ops that keep the current status.
+    private func requestNotificationAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
     private func presentDeleteAccount() {
+        if viewModel.hasActiveTunnel {
+            activeTunnelDeleteMessage = CloudGatewayViewModel.activeAccountDeleteMessage
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             isShowingDeleteAccount = true
         }
@@ -1146,28 +1185,47 @@ private struct DeleteAccountView: View {
         ZStack {
             theme.page.ignoresSafeArea()
 
-            ThemedPanel {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Delete Account?")
-                        .font(.title2.bold())
-                        .foregroundStyle(theme.content)
+            ScrollView {
+                ThemedPanel {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Delete Account?")
+                            .font(.title2.bold())
+                            .foregroundStyle(theme.content)
 
-                    Text("This will permanently delete your CloudGateway account, VPN clients, stored VPN configuration data, and access records. This cannot be undone.")
-                        .foregroundStyle(theme.contentSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text("This will permanently delete your CloudGateway account, VPN clients, stored VPN configuration data, and access records. This cannot be undone.")
+                            .foregroundStyle(theme.contentSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
 
-                    reauthControl
+                        reauthControl
 
-                    Button("Cancel") {
-                        onCancel()
+                        if viewModel.isWorking {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .tint(theme.content)
+                                Text("Deleting your account…")
+                                    .font(.subheadline)
+                                    .foregroundStyle(theme.contentSecondary)
+                            }
+                        } else if let errorText = viewModel.errorText {
+                            Text(errorText)
+                                .font(.subheadline)
+                                .foregroundStyle(theme.dangerContent)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Button("Cancel") {
+                            onCancel()
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        .disabled(viewModel.isWorking)
                     }
-                    .buttonStyle(SecondaryButtonStyle())
-                    .disabled(viewModel.isWorking)
                 }
+                .padding(16)
             }
-            .padding(16)
         }
-        .presentationDetents([.height(390)])
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     @ViewBuilder

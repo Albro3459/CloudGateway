@@ -1,4 +1,5 @@
 import FirebaseCore
+import FirebaseFirestore
 import GoogleSignIn
 import SwiftUI
 import UIKit
@@ -10,12 +11,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         FirebaseApp.configure()
+        // WireGuard configs (including private keys) are read through Firestore.
+        // Force a memory-only cache before any read so secret material never
+        // lands in Firestore's on-disk persistence; the Keychain stays the only
+        // at-rest store. Must run before the first Firestore access.
+        let firestoreSettings = FirestoreSettings()
+        firestoreSettings.cacheSettings = MemoryCacheSettings()
+        Firestore.firestore().settings = firestoreSettings
         // The packet-tunnel extension posts a local "VPN not responding"
-        // notification when the tunnel blackholes traffic; ask for permission so
-        // it can surface even when the app is backgrounded, closed, or signed out.
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // notification when the tunnel blackholes traffic. Set the delegate so
+        // the banner can present while foregrounded; authorization is requested
+        // in context at first VPN install/connect rather than at launch.
+        UNUserNotificationCenter.current().delegate = self
         return true
     }
 

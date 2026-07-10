@@ -14,11 +14,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // working when the app is backgrounded, closed, or signed out.
     private let healthQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health")
     private let healthPollInterval: TimeInterval = 5
+    // Persist on every state transition, and otherwise at most once per heartbeat
+    // so the stored snapshot stays inside GatewayTunnelHealthStore.freshnessWindow
+    // (30s) without rewriting the protected file on every 5s poll.
+    private let healthHeartbeatInterval: TimeInterval = 15
     private var healthTimer: DispatchSourceTimer?
     private var healthEvaluator: GatewayTunnelHealthEvaluator?
     private var healthStore: GatewayTunnelHealthStore?
     private var healthTunnelIdentifier: String?
     private var lastPublishedHealth: GatewayTunnelHealth?
+    private var lastPersistedHealth: GatewayTunnelHealth?
+    private var lastPersistedAt: Date?
 
     override func startTunnel(
         options: [String: NSObject]?,
@@ -88,6 +94,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try? self.healthStore?.clear()
             self.healthEvaluator = GatewayTunnelHealthEvaluator(startedAt: Date())
             self.lastPublishedHealth = nil
+            self.lastPersistedHealth = nil
+            self.lastPersistedAt = nil
 
             let timer = DispatchSource.makeTimerSource(queue: self.healthQueue)
             timer.schedule(deadline: .now() + self.healthPollInterval, repeating: self.healthPollInterval)
@@ -111,6 +119,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             healthStore = nil
             healthTunnelIdentifier = nil
             lastPublishedHealth = nil
+            lastPersistedHealth = nil
+            lastPersistedAt = nil
         }
         withdrawDeadTunnelNotification()
     }
@@ -131,11 +141,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let now = Date()
                 let health = evaluator.evaluate(stats, at: now)
                 self.healthEvaluator = evaluator
-                try? store.write(GatewayTunnelHealthSnapshot(
-                    tunnelIdentifier: tunnelIdentifier,
-                    health: health,
-                    updatedAt: now
-                ))
+
+                // Write on a state transition, or when the last write is old
+                // enough that the stored snapshot would otherwise go stale.
+                let transitioned = health != self.lastPersistedHealth
+                let heartbeatDue = self.lastPersistedAt
+                    .map { now.timeIntervalSince($0) >= self.healthHeartbeatInterval } ?? true
+                if transitioned || heartbeatDue {
+                    try? store.write(GatewayTunnelHealthSnapshot(
+                        tunnelIdentifier: tunnelIdentifier,
+                        health: health,
+                        updatedAt: now
+                    ))
+                    self.lastPersistedHealth = health
+                    self.lastPersistedAt = now
+                }
 
                 let previous = self.lastPublishedHealth
                 self.lastPublishedHealth = health

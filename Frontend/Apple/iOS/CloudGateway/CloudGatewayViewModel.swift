@@ -119,6 +119,8 @@ final class CloudGatewayViewModel: ObservableObject {
     private var authHandle: Any?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
     static let deadTunnelMessage = "Your VPN server isn't responding. Disconnect to restore your connection."
+    static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
+    static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
 
     var isSignedIn: Bool {
         appMode == .signedIn
@@ -198,6 +200,18 @@ final class CloudGatewayViewModel: ObservableObject {
             return nil
         }
         return configState.tunnelStatus(for: selectedClientId)
+    }
+
+    // A config cannot be deleted while its own tunnel is routing: with a
+    // full-tunnel config, the DELETE response is blackholed by the tunnel it is
+    // deleting. The user must disconnect (or switch configs) first.
+    func isTunnelActive(clientId: String) -> Bool {
+        configState.tunnelStatus(for: clientId)?.isConnectionActive ?? false
+    }
+
+    // Account deletion removes every peer, so any active tunnel blocks it.
+    var hasActiveTunnel: Bool {
+        tunnelStatuses.values.contains { $0.isConnectionActive }
     }
 
     var canSyncSelectedRegion: Bool {
@@ -595,6 +609,10 @@ final class CloudGatewayViewModel: ObservableObject {
     // confirm time) avoids deleting the wrong client if a background refresh
     // prunes or moves the selection between opening and confirming.
     func deleteClient(_ option: CloudGatewayClientOption) async {
+        if isTunnelActive(clientId: option.client.clientId) {
+            errorText = Self.activeConfigDeleteMessage
+            return
+        }
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
@@ -701,6 +719,10 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
+        if hasActiveTunnel {
+            errorText = Self.activeAccountDeleteMessage
+            return
+        }
         await run {
             guard service.currentUser != nil else {
                 throw CloudGatewayAppError.missingCurrentUser

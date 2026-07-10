@@ -15,7 +15,7 @@ no data migration or backwards-compatibility work is required anywhere below.
 
 ## Security
 
-### 3. iOS must not persist WireGuard private keys in Firestore's disk cache - TODO
+### 3. iOS must not persist WireGuard private keys in Firestore's disk cache - DONE
 **Decision:** Must fix. Keychain is the only place secret material may live at
 rest. The default Firestore instance uses on-disk persistence, so every fetched
 `Instances` document (each containing a client `wireguardConfig` with the private
@@ -46,7 +46,7 @@ of legacy persistence is needed - there are no released installs to migrate.
 
 ## Correctness / Lifecycle
 
-### 1. Block deleting a config while its own tunnel is connected (iOS) - TODO
+### 1. Block deleting a config while its own tunnel is connected (iOS) - DONE
 **Decision:** Nothing to do on web (web does not route its own traffic). On iOS,
 do **not** allow deleting a config the device is actively connected to. The user
 must disconnect first (connecting to another config also disconnects this one).
@@ -77,7 +77,7 @@ returns instead of being blackholed by the full-tunnel route.
 - Account-deletion path (`deleteAccount*` in `CloudGatewayViewModel.swift`) -
   disconnect + await `.disconnected` before the request.
 
-### 4b. Sign out Google Sign-In on logout (iOS) - TODO
+### 4b. Sign out Google Sign-In on logout (iOS) - DONE
 **Decision:** Keeping the local tunnel alive across logout is intentional and
 stays. Only the Google credential leak is a real gap: Firebase `signOut()` does
 not clear Google Sign-In's saved Keychain session, so Google tokens survive
@@ -91,7 +91,7 @@ CloudGateway logout.
 - `Frontend/Apple/iOS/CloudGateway/CloudGatewayFirebaseService.swift:325`
   (`signOut()`) - add the Google sign-out.
 
-### 6. Delete the Keychain secret before clearing its cache reference (iOS) - TODO
+### 6. Delete the Keychain secret before clearing its cache reference (iOS) - DONE
 **Decision:** Fix the ordering so a failed secret deletion is retryable.
 
 **Approach:**
@@ -110,7 +110,7 @@ CloudGateway logout.
   (`removeTunnel`) - delete secret before `cache.clear`.
 - `:150-156` (missing-profile path in `refreshStatus`) - same ordering.
 
-### 5. Web login must check apex account access before regional capacity (Web) - TODO
+### 5. Web login must check apex account access before regional capacity (Web) - DONE
 **Decision:** Agreed. Run `checkAccountAccess` first so the intended access
 message shows instead of a generic authentication failure.
 
@@ -128,7 +128,7 @@ message shows instead of a generic authentication failure.
 
 ## UI / Polish
 
-### 9. Fix destructive/auth modal UI and accessibility gaps - TODO
+### 9. Fix destructive/auth modal UI and accessibility gaps - DONE
 **Decision:** Low priority but fine to fix.
 
 **Approach:**
@@ -147,7 +147,7 @@ message shows instead of a generic authentication failure.
 - `Frontend/Web/src/pages/Home.tsx:1027` (link overlay), `:1211` (delete overlay) -
   dialog semantics, focus trap/restore, Escape.
 
-### 11. Reduce tunnel-health filesystem churn (iOS extension) - TODO
+### 11. Reduce tunnel-health filesystem churn (iOS extension) - DONE
 **Decision:** Optional but cheap; implement. Currently the extension writes the
 health file on every 5s poll (~17,280 atomic writes/day for a continuously
 connected VPN).
@@ -166,7 +166,7 @@ connected VPN).
 - `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealthStore.swift:10`
   (`freshnessWindow`) - reference for the heartbeat bound.
 
-### 12. Request notification permission in context, not at launch (iOS) - TODO
+### 12. Request notification permission in context, not at launch (iOS) - DONE
 **Decision:** Valid finding (dropped from the final 11 only as lowest-priority,
 not because it was wrong). Requesting authorization in `didFinishLaunching`
 prompts guests who have never installed a VPN, with no context; iOS shows the

@@ -263,10 +263,12 @@ private enum ManagerTestError: Error {
     let state = await manager.state
     #expect(state.installedSnapshots == [snapshot])
     #expect(state.installState(for: state.configOptions[0]) == .installed)
-    #expect(secretStore.deletedReferences().isEmpty)
+    // The secret is deleted first (before the failing cache clear); Keychain
+    // deletes are idempotent, so a later retry after the cache recovers is safe.
+    #expect(secretStore.deletedReferences() == [snapshot.secretReference])
 }
 
-@Test func managerClearsCachedInstallWhenMissingTunnelSecretDeleteFails() async throws {
+@Test func managerKeepsCachedInstallWhenMissingTunnelSecretDeleteFails() async throws {
     let snapshot = cachedSnapshot(clientId: "client-1")
     let tunnelManager = RecordingTunnelManager()
     let cache = MemoryConfigCache(snapshots: [snapshot])
@@ -278,9 +280,11 @@ private enum ManagerTestError: Error {
         clients: [client(id: "client-1")]
     )
 
-    #expect(state.installedSnapshots.isEmpty)
-    #expect(state.installState(for: state.configOptions[0]) == nil)
-    #expect(await cache.clearCount() == 1)
+    // A failed secret delete keeps the cached snapshot and its cache entry so
+    // the next reconcile retries instead of orphaning the Keychain secret.
+    #expect(state.installedSnapshots == [snapshot])
+    #expect(state.installState(for: state.configOptions[0]) == .installed)
+    #expect(await cache.clearCount() == 0)
 }
 
 @Test func managerRemoveInstalledConfigIfMatchesOnlyClearsMatchingLocalTunnel() async throws {
@@ -328,6 +332,24 @@ private enum ManagerTestError: Error {
     #expect(state.installedSnapshots.map(\.clientId) == ["client-2"])
     #expect(state.tunnelStatus(for: "client-1") == nil)
     #expect(state.tunnelStatus(for: "client-2") == .disconnected)
+}
+
+@Test func managerRemoveTunnelKeepsCacheWhenSecretDeleteFails() async throws {
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let cache = MemoryConfigCache(snapshots: [cachedSnapshot(clientId: "client-1")])
+    let secretStore = MemoryConfigSecretStore(deleteError: ManagerTestError.secretDeleteFailed)
+    let manager = makeManager(tunnelManager: tunnelManager, cache: cache, secretStore: secretStore)
+    _ = try await manager.loadLocalState()
+
+    await #expect(throws: ManagerTestError.secretDeleteFailed) {
+        try await manager.removeTunnel(identifier: "client-1")
+    }
+
+    // The secret delete failed, so the cache entry must survive to allow a
+    // retry on the next launch instead of orphaning the Keychain secret.
+    #expect(await tunnelManager.removeCount() == 1)
+    #expect(await cache.clearCount() == 0)
+    #expect(secretStore.deletedReferences().isEmpty)
 }
 
 @Test func managerStartStopTargetsSelectedIdentifier() async throws {

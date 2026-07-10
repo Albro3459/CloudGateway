@@ -323,6 +323,9 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     func signOut() throws {
+        // Firebase sign-out alone leaves Google Sign-In's current user (and its
+        // saved Keychain session) in place, so clear it too.
+        GIDSignIn.sharedInstance.signOut()
         try Auth.auth().signOut()
     }
 

@@ -402,6 +402,29 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedClientId, "b")
     }
 
+    func testDeleteClientBlockedWhileConnectedToItsConfig() async throws {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connected
+        )
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+
+        let option = try XCTUnwrap(
+            viewModel.displayedClientOptions.first { $0.client.clientId == "c1" }
+        )
+        await viewModel.deleteClient(option)
+
+        // A connected config cannot be deleted: the DELETE response would be
+        // blackholed by the tunnel it removes.
+        XCTAssertEqual(service.deleteClientCallCount, 0)
+        XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.activeConfigDeleteMessage)
+    }
+
     func testSyncSelectedRegionCapturesResult() async {
         let service = signedInAdminService()
         let viewModel = makeViewModel(service)
@@ -680,6 +703,26 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // Account deletion must revoke the Apple grant.
         XCTAssertEqual(service.reauthenticateWithAppleRevokeValues, [true])
         XCTAssertEqual(service.deleteAccountCallCount, 1)
+    }
+
+    func testDeleteAccountBlockedWhileConnected() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .connected
+        )
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+
+        await viewModel.deleteAccountWithGoogle()
+
+        // Account deletion removes every peer, so an active tunnel blocks it and
+        // no reauth/delete request is made.
+        XCTAssertEqual(service.deleteAccountCallCount, 0)
+        XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [])
+        XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.activeAccountDeleteMessage)
     }
 
     // MARK: - Capacity gating

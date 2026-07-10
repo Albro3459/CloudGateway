@@ -81,18 +81,20 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: /Sign in with Google/ }));
 
         await waitFor(() => {
+            expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null);
             expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
-            expect(checkAccountAccess).toHaveBeenCalledWith(
-                "firebase-token",
-                [{ regionId: "us-sanjose-1", enabled: true }],
-            );
             expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
         });
+
+        // The apex access check must run before any regional capacity fetch.
+        expect(checkAccountAccess.mock.invocationCallOrder[0])
+            .toBeLessThan(fetchOciRegions.mock.invocationCallOrder[0]);
     });
 
     it("signs out and shows the backend message when access is not provisioned", async () => {
         const { signInWithGoogle, signOut } = require("../../firebase");
         const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
         const { default: Login } = require("../Login");
 
         const message = "Your account does not have access to CloudGateway. Your account has been disabled until an admin grants access.";
@@ -113,6 +115,10 @@ describe("Login", () => {
             expect(screen.getByText(message)).toBeTruthy();
             expect(mockNavigate).not.toHaveBeenCalledWith("/home", { replace: true });
         });
+
+        // An unprovisioned user is rejected before any capacity call, which is
+        // what keeps the specific message from degrading to a generic failure.
+        expect(fetchOciRegions).not.toHaveBeenCalled();
     });
 
     it("signs out and shows a region message when no regions are available", async () => {
@@ -122,6 +128,10 @@ describe("Login", () => {
         const { default: Login } = require("../Login");
 
         signInWithGoogle.mockResolvedValue({ user });
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
         useOciRegionsStore.getState.mockReturnValue({
             ociRegions: [],
             error: null,
@@ -133,7 +143,7 @@ describe("Login", () => {
 
         await waitFor(() => {
             expect(signOut).toHaveBeenCalled();
-            expect(checkAccountAccess).not.toHaveBeenCalled();
+            expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null);
             expect(screen.getByText(/No enabled regions are available\./)).toBeTruthy();
             expect(screen.getByRole("link", { name: "Contact an admin" }).getAttribute("href"))
                 .toBe("mailto:Brodsky.Alex22@gmail.com");
@@ -158,13 +168,13 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: /Sign in with Apple/ }));
 
         await waitFor(() => {
+            expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null);
             expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
-            expect(checkAccountAccess).toHaveBeenCalledWith(
-                "firebase-token",
-                [{ regionId: "us-sanjose-1", enabled: true }],
-            );
             expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
         });
+
+        expect(checkAccountAccess.mock.invocationCallOrder[0])
+            .toBeLessThan(fetchOciRegions.mock.invocationCallOrder[0]);
     });
 
     it("signs out and shows the backend message when Apple access is not provisioned", async () => {
