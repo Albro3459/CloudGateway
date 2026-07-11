@@ -43,15 +43,23 @@ describe("apiEndpoints", () => {
         })).toBe("https://api.gocloudlaunch.com/api/regions");
     });
 
-    it("preserves ports for localhost derived URLs", async () => {
+    it("uses apex and regional proxy paths for localhost API requests", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";
-        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
+        const { buildApexApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } = require("../apiEndpoints");
 
         expect(buildRegionalApiEndpoint("us-sanjose-1", "health", {
             hostname: "localhost",
             host: "localhost:3000",
-        })).toBe("https://us-sanjose-1.localhost:3000/api/health");
+        })).toBe("/api/regions/us-sanjose-1/health");
+        expect(buildApexApiEndpoint("auth/check-access", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("/api/auth/check-access");
+        expect(buildCreateUserApiEndpoint([{ regionId: "us-sanjose-1", enabled: true }], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("/api/regions/us-sanjose-1/users");
     });
 
     it("uses REACT_APP_API_ORIGIN for user creation without requiring regions", async () => {

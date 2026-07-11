@@ -108,7 +108,17 @@ cd Frontend/Web
 npm start
 ```
 
-The `start` script starts React without opening a browser automatically and runs the Tailwind watcher at the same time. Set `REACT_APP_API_ORIGIN` yourself only when you have a local Caddy-style `/api/*` proxy or another regional API-compatible endpoint running.
+The `start` script starts React without opening a browser automatically and runs the Tailwind watcher at the same time. During local development, the CRA proxy routes apex `/api/*` requests to `https://api.gocloudlaunch.com`. Local regional paths include the region ID, such as `/api/regions/us-sanjose-1/capacity`, and the proxy forwards them to `https://us-sanjose-1.gocloudlaunch.com/api/capacity`. The proxy runs only with `npm start`; production builds keep using direct deployed API URLs.
+
+For this setup, run exactly:
+```sh
+cd Frontend/Web
+npm start
+```
+
+Do not set `REACT_APP_API_ORIGIN`; setting it to `https://api.gocloudlaunch.com` would bypass the multi-origin local proxy and incorrectly route regional requests through the apex API.
+
+Set `REACT_APP_API_ORIGIN` yourself only when you have a different local Caddy-style `/api/*` proxy or another regional API-compatible endpoint running. Restart `npm start` after changing the variable.
 
 ## Tailwind
 

@@ -23,7 +23,11 @@ const getWindowLocation = (): LocationLike => {
 };
 
 const getFrontendOriginHost = (location: LocationLike = getWindowLocation()) => (
-    isLocalDevHostname(location.hostname) ? location.host : location.hostname
+    location.hostname
+);
+
+const usesLocalDevProxy = (location: LocationLike) => (
+    !API_ORIGIN && isLocalDevHostname(location.hostname)
 );
 
 export const getApiOriginOverride = () => API_ORIGIN;
@@ -41,7 +45,9 @@ export const buildRegionalApiEndpoint = (
     if (API_ORIGIN) {
         return `${API_ORIGIN}/api/${apiPath}`;
     }
-
+    if (usesLocalDevProxy(location)) {
+        return `/api/regions/${encodeURIComponent(regionId)}/${apiPath}`;
+    }
     return `https://${regionId}.${getFrontendOriginHost(location)}/api/${apiPath}`;
 };
 
@@ -52,6 +58,9 @@ export const buildApexApiEndpoint = (
     const apiPath = normalizeApiPath(path);
     if (API_ORIGIN) {
         return `${API_ORIGIN}/api/${apiPath}`;
+    }
+    if (usesLocalDevProxy(location)) {
+        return `/api/${apiPath}`;
     }
 
     return `https://api.${getFrontendOriginHost(location)}/api/${apiPath}`;
@@ -92,7 +101,6 @@ export const buildCreateUserApiEndpoint = (
     if (!regionId) {
         throw new Error("No enabled regions are available for user creation");
     }
-
     return buildRegionalApiEndpoint(regionId, "users", location);
 };
 
