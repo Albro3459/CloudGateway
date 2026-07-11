@@ -128,7 +128,7 @@ cd Frontend/Web
 npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch
 ```
 
-The generated stylesheet is [src/output.css](src/output.css), built from [src/input.css](src/input.css).
+The generated stylesheet is [src/output.css](src/output.css), built from [src/input.css](src/input.css). Production builds generate this stylesheet with Tailwind's `--minify` option so responsive utilities remain intact through the CRA production optimizer.
 
 ## Deploy GitHub Page
 

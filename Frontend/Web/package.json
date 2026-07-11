@@ -33,11 +33,11 @@
   },
   "scripts": {
     "start": "concurrently \"cross-env BROWSER=none react-scripts start\" \"npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch\"",
-    "prebuild": "npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css",
+    "prebuild": "npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --minify",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
-    "predeploy": "npm version patch --no-git-tag-version && npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css && npm run build",
+    "predeploy": "npm version patch --no-git-tag-version && npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --minify && npm run build",
     "deploy": "gh-pages -d build"
   },
   "eslintConfig": {
