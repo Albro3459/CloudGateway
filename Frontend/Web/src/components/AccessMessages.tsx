@@ -12,7 +12,7 @@ const ContactAdmin: React.FC = () => (
     </>
 );
 
-// Empty-regions message used by Login, Home, and CreateUser. Renders inline (a
+// Empty-regions message used by Login and Home. Renders inline (a
 // fragment) so it can sit inside an existing banner or paragraph.
 export const NoRegionsMessage: React.FC = () => (
     <>

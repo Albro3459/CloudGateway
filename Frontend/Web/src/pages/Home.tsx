@@ -12,7 +12,7 @@ import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapa
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
-import { NoRegionsMessage } from "../components/AccessMessages";
+import { NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { AppNav } from "../components/AppNav";
 import { RegionSyncCard } from "../components/RegionSyncCard";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
@@ -1136,7 +1136,7 @@ const Home: React.FC = () => {
                     {role && role !== "admin" && (
                         <div className="mt-3 text-xs">
                             <a
-                                href="mailto:Brodsky.Alex22@gmail.com"
+                                href={`mailto:${SUPPORT_EMAIL}`}
                                 className="text-accent underline hover:text-accent-strong"
                             >
                                 Email me to request a region
