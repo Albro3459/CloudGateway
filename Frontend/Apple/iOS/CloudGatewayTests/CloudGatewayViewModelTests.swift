@@ -475,6 +475,40 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorText)
     }
 
+    func testDeleteUninstalledClientNotBlockedByAnotherActiveTunnel() async throws {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [
+            TestFixtures.client("target", regionId: "us-sanjose-1"),
+            TestFixtures.client("other", regionId: "us-sanjose-1")
+        ]
+        let tunnelManager = FakeTunnelManager()
+        // Only "other" is installed on this device and it is connected. "target"
+        // has no local tunnel, so it is absent from allInstalledStatuses().
+        await tunnelManager.setStatus(.connected, for: "other")
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [
+                    TestFixtures.snapshot("other", regionId: "us-sanjose-1")
+                ]),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+
+        let option = try XCTUnwrap(
+            viewModel.displayedClientOptions.first { $0.client.clientId == "target" }
+        )
+        await viewModel.deleteClient(option)
+
+        // Deleting a client with no local tunnel must not be blocked just
+        // because an unrelated tunnel is connected.
+        XCTAssertEqual(service.deleteClientCallCount, 1)
+        XCTAssertNil(viewModel.errorText)
+    }
+
     func testSyncSelectedRegionCapturesResult() async {
         let service = signedInAdminService()
         let viewModel = makeViewModel(service)

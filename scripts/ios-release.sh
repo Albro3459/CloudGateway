@@ -60,8 +60,6 @@ if [[ -z "$TRANSPORTER" ]]; then
   exit 1
 fi
 
-# Transporter discovers API keys from this standard directory. Use an isolated
-# HOME so the release does not alter the user's normal Transporter credentials.
 restore_project() {
   if [[ "$COMMITTED" -eq 0 && -n "$BACKUP" && -f "$BACKUP" ]]; then
     cp "$BACKUP" "$PBXPROJ"
@@ -265,6 +263,9 @@ if [[ "$(git -C "$ROOT" status --porcelain)" != " M Frontend/Apple/iOS/CloudGate
 fi
 
 echo "==> Uploading IPA"
+# Transporter discovers API keys from a private_keys directory under its
+# working directory. Run from a temp copy so the user's normal Transporter
+# credentials are untouched.
 AUTH_HOME="$(mktemp -d /private/tmp/CloudGatewayTransporter.XXXXXX)"
 mkdir -p "$AUTH_HOME/private_keys"
 cp "$KEY_PATH" "$AUTH_HOME/private_keys/AuthKey_${KEY_ID}.p8"

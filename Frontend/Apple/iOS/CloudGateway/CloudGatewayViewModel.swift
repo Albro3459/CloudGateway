@@ -228,6 +228,12 @@ final class CloudGatewayViewModel: ObservableObject {
         return statuses.values.contains { $0.blocksDestructiveOperation }
     }
 
+    // True when at least one VPN config is installed on this device. Used to
+    // decide whether a notification prompt is worth showing.
+    var hasInstalledConfig: Bool {
+        !installedSnapshots.isEmpty
+    }
+
     var canSyncSelectedRegion: Bool {
         role == "admin" && selectedRegion != nil && !isWorking
     }
@@ -750,18 +756,29 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func removeInstalledConfigsAfterAccountDelete() async {
         let cachedIdentifiers = installedSnapshots.map(\.clientId)
-        let installedIdentifiers: Set<String>
-        if let statuses = try? await configManager.allInstalledStatuses() {
-            installedIdentifiers = Set(statuses.keys)
-        } else {
-            installedIdentifiers = []
-        }
+        // The account is already deleted server-side, so this local cleanup must
+        // catch on-device profiles that are not in the cached snapshot. A
+        // transient failure here would silently leave a stale system VPN
+        // profile behind, so retry the live query briefly before giving up.
+        let installedIdentifiers = await installedIdentifiersWithRetry()
         for identifier in Set(cachedIdentifiers).union(installedIdentifiers) {
             _ = try? await configManager.removeTunnel(identifier: identifier)
         }
         if let state = try? await configManager.loadLocalState() {
             apply(state)
         }
+    }
+
+    private func installedIdentifiersWithRetry(attempts: Int = 3) async -> Set<String> {
+        for attempt in 0..<attempts {
+            if let statuses = try? await configManager.allInstalledStatuses() {
+                return Set(statuses.keys)
+            }
+            if attempt < attempts - 1 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        return []
     }
 
     func installSelectedClient() async {
@@ -922,7 +939,14 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func ensureDestructiveOperationAllowed(clientId: String? = nil, message: String) async throws {
         let statuses = try await configManager.allInstalledStatuses()
-        let statusValues = clientId.flatMap { statuses[$0].map { [$0] } } ?? Array(statuses.values)
+        let statusValues: [GatewayTunnelStatus]
+        if let clientId {
+            // Per-client delete only cares about that client's own tunnel. If it
+            // has no installed tunnel, there is nothing to block on.
+            statusValues = statuses[clientId].map { [$0] } ?? []
+        } else {
+            statusValues = Array(statuses.values)
+        }
         guard !statusValues.contains(where: { $0.blocksDestructiveOperation }) else {
             throw CloudGatewayAppError.accessDenied(message)
         }

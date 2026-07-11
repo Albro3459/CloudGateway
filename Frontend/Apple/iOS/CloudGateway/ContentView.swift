@@ -4,6 +4,11 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+private enum PendingAccountAction {
+    case linkProvider
+    case deleteAccount
+}
+
 struct ContentView: View {
     @StateObject private var viewModel: CloudGatewayViewModel
     @State private var clientPendingDelete: CloudGatewayClientOption?
@@ -15,6 +20,7 @@ struct ContentView: View {
     @State private var isShowingAccount = false
     @State private var isShowingAccountLinking = false
     @State private var isShowingDeleteAccount = false
+    @State private var pendingAccountAction: PendingAccountAction?
     @State private var isConfirmingReset = false
     @State private var isShowingCreateRestriction = false
     @State private var appleRawNonce = ""
@@ -84,7 +90,7 @@ struct ContentView: View {
                 isShowingAbout = false
             }
         }
-        .sheet(isPresented: $isShowingAccount) {
+        .sheet(isPresented: $isShowingAccount, onDismiss: runPendingAccountAction) {
             AccountView(
                 email: viewModel.signedInEmail,
                 isWorking: viewModel.isWorking,
@@ -96,12 +102,12 @@ struct ContentView: View {
                     }
                 },
                 onLinkAnotherProvider: {
+                    pendingAccountAction = .linkProvider
                     isShowingAccount = false
-                    presentAccountLinking()
                 },
                 onDelete: {
+                    pendingAccountAction = .deleteAccount
                     isShowingAccount = false
-                    presentDeleteAccount()
                 }
             )
         }
@@ -213,6 +219,14 @@ struct ContentView: View {
             .scrollDismissesKeyboard(.immediately)
             .refreshable {
                 await viewModel.pullToRefresh()
+            }
+        }
+        .onAppear {
+            requestNotificationAuthorizationForExistingInstall()
+        }
+        .onChange(of: viewModel.hasInstalledConfig) { _, hasInstalled in
+            if hasInstalled {
+                requestNotificationAuthorizationForExistingInstall()
             }
         }
     }
@@ -815,6 +829,37 @@ struct ContentView: View {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
+    // Covers users who upgraded from a build that never asked: if they already
+    // have a config installed but have never been prompted, ask once now. Anyone
+    // who already allowed or denied is `.notDetermined == false`, so this never
+    // re-prompts them.
+    private func requestNotificationAuthorizationForExistingInstall() {
+        guard viewModel.hasInstalledConfig else { return }
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+    }
+
+    // The account sheet must finish dismissing before another sheet is
+    // presented, so the follow-up action is deferred to its onDismiss instead
+    // of racing it behind a fixed delay.
+    private func runPendingAccountAction() {
+        let action = pendingAccountAction
+        pendingAccountAction = nil
+        // A forced sign-out can flip appMode to .guest while the account sheet is
+        // still dismissing; don't present a follow-up sheet once signed out.
+        guard viewModel.appMode == .signedIn else { return }
+        switch action {
+        case .linkProvider:
+            presentAccountLinking()
+        case .deleteAccount:
+            presentDeleteAccount()
+        case nil:
+            break
+        }
+    }
+
     private func presentDeleteAccount() {
         Task { @MainActor in
             if await viewModel.hasActiveTunnelNow() {
@@ -822,7 +867,6 @@ struct ContentView: View {
                 return
             }
             viewModel.dismissMessages()
-            try? await Task.sleep(nanoseconds: 200_000_000)
             if !viewModel.isWorking {
                 isShowingDeleteAccount = true
             }
@@ -830,9 +874,7 @@ struct ContentView: View {
     }
 
     private func presentAccountLinking() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            isShowingAccountLinking = true
-        }
+        isShowingAccountLinking = true
     }
 
     private func handleLinkAccountAppleCompletion(_ result: Result<ASAuthorization, Error>) {

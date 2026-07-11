@@ -27,18 +27,16 @@ public enum GatewayTunnelStatus: Equatable, Sendable {
         }
     }
 
-    // True while the tunnel may still be routing traffic. Used to block
-    // destructive requests that would blackhole their own response over a
-    // full-tunnel route; only a fully disconnected/invalid tunnel is safe.
-    public var isConnectionActive: Bool {
-        switch self {
-        case .connecting, .connected, .reasserting, .disconnecting:
-            return true
-        case .invalid, .disconnected:
-            return false
-        }
-    }
-
+    // Whether a destructive request (delete config / delete account) must be
+    // blocked because the tunnel could blackhole its own response over a
+    // full-tunnel route.
+    //
+    // `.disconnecting` is intentionally treated as NOT blocking: we switch the
+    // UI off optimistically the moment the user taps Stop, matching Control
+    // Center, because Apple is slow to report the final `.disconnected` state.
+    // Once teardown has begun the tunnel is no longer expected to route the
+    // response, so a destructive op is allowed to proceed rather than trap the
+    // user behind a status the OS is slow to clear.
     public var blocksDestructiveOperation: Bool {
         switch self {
         case .connecting, .connected, .reasserting:
