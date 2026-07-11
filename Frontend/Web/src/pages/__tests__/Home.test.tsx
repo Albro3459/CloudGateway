@@ -33,9 +33,11 @@ jest.mock("../../firebase", () => ({
 }));
 
 jest.mock("../../helpers/APIHelper", () => ({
+    createAdminUser: jest.fn(),
     createClient: jest.fn(),
     deleteClient: jest.fn(),
     deleteAccount: jest.fn(),
+    runRegionsSync: jest.fn(),
 }));
 
 jest.mock("../../helpers/firebaseDbHelper", () => ({
@@ -396,6 +398,72 @@ describe("Home pull to refresh", () => {
         expect(screen.queryByText("Release to refresh")).toBeNull();
         expect(getUsersVPNs).toHaveBeenCalledTimes(1);
         expect(fetchOciRegions).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("Home admin tools", () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockUser.getIdToken.mockResolvedValue("firebase-token");
+        const { auth, onAuthStateChanged } = require("../../firebase");
+        const { createAdminUser, runRegionsSync } = require("../../helpers/APIHelper");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
+
+        auth.currentUser = mockUser;
+        onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            callback(mockUser);
+            return () => undefined;
+        });
+        getUsersVPNs.mockResolvedValue([]);
+        getUserRole.mockResolvedValue("admin");
+        fetchOciRegions.mockResolvedValue(undefined);
+        createAdminUser.mockResolvedValue({
+            success: true,
+            data: { userId: "user-2", email: "new@example.com", role: "user", alreadyExisted: false },
+        });
+        runRegionsSync.mockResolvedValue([]);
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [
+                { displayName: "San Jose", regionId: "us-sanjose-1", enabled: true, displayOrder: 1 },
+                { displayName: "Ashburn", regionId: "us-ashburn-1", enabled: true, displayOrder: 2 },
+            ],
+            loading: false,
+            error: null,
+        }));
+        Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    });
+
+    it("grants user access from the dashboard modal", async () => {
+        const { createAdminUser } = require("../../helpers/APIHelper");
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+        fireEvent.click(await screen.findByRole("button", { name: "Grant User Access" }));
+        fireEvent.change(screen.getByLabelText("Email"), { target: { value: "  new@example.com  " } });
+        fireEvent.click(screen.getByRole("button", { name: "Grant Access" }));
+
+        await waitFor(() => expect(createAdminUser).toHaveBeenCalledWith(
+            { email: "new@example.com" },
+            "firebase-token",
+            expect.arrayContaining([expect.objectContaining({ regionId: "us-sanjose-1" })]),
+        ));
+        expect(await screen.findByText("new@example.com now has CloudGateway access.")).toBeTruthy();
+    });
+
+    it("selects every enabled region when the sync modal opens", async () => {
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+        fireEvent.click(await screen.findByRole("button", { name: "Sync Region Clients" }));
+        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(
+            ["us-sanjose-1", "us-ashburn-1"],
+            "firebase-token",
+        ));
     });
 });
 

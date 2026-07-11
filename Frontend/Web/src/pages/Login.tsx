@@ -5,7 +5,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithApple, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
 import { checkAccountAccess } from "../helpers/APIHelper";
 import packageJson from "../../package.json";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
 import { DisabledAccountMessage, NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
 
@@ -218,19 +218,7 @@ const Login: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
-        {/* Navbar */}
-        <nav className="w-full bg-nav text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-            <button 
-                onClick={() => navigate("/about", { replace: true })} 
-                className="cursor-pointer bg-nav-btn text-accent hover:bg-nav-btn-hover px-4 py-2 rounded-lg transition absolute left-6"
-            >
-                About
-            </button>
-            <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
-            <div className="absolute right-6">
-                <ThemeToggle />
-            </div>
-        </nav>
+        <AppNav subtitle="Guest" showAbout />
 
         {/* {error && <p>{error}</p>} */}
         {/* Error or Success */}

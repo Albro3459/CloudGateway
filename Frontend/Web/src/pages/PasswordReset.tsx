@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { confirmPasswordReset, verifyPasswordResetCode } from "firebase/auth";
 import { auth, signInWithEmailAndPassword } from "../firebase";
 import { validatePassword } from "../helpers/passwordHelper";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
 
 const PasswordReset: React.FC = () => {
     const navigate = useNavigate();
@@ -75,12 +75,7 @@ const PasswordReset: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
-            <nav className="w-full bg-nav text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-                <h1 className="text-xl font-semibold align-self-center">CloudGateway</h1>
-                <div className="absolute right-6">
-                    <ThemeToggle />
-                </div>
-            </nav>
+            <AppNav subtitle="Reset Password" homePath="/" />
 
             {(errorMessage || successMessage) && (
                 <div className="fixed top-20 w-full flex justify-center z-50">

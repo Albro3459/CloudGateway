@@ -13,7 +13,7 @@ export const ThemeToggle: React.FC = () => {
         <button
             type="button"
             onClick={toggleTheme}
-            className="cursor-pointer rounded-lg bg-nav-btn p-2 text-accent transition hover:bg-nav-btn-hover focus:outline-none focus:ring-2 focus:ring-white/80"
+            className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-nav-btn text-accent transition hover:bg-nav-btn-hover focus:outline-none focus:ring-2 focus:ring-white/80"
             aria-label={label}
             title={label}
         >

@@ -2,13 +2,11 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getIdToken, onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faHouse } from "@fortawesome/free-solid-svg-icons";
 import { createAdminUser } from "../helpers/APIHelper";
 import { getUserRole } from "../helpers/usersHelper";
 import { logout } from "../helpers/firebaseDbHelper";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
 import { NoRegionsMessage } from "../components/AccessMessages";
 
 const CreateUser: React.FC = () => {
@@ -107,24 +105,7 @@ const CreateUser: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
-            {/* Navbar */}
-            <nav className="w-full bg-nav text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-                <FontAwesomeIcon 
-                    icon={faHouse} 
-                    onClick={() => navigate("/home")}
-                    className="text-2xl cursor-pointer absolute left-6" 
-                />
-                <h1 className="text-xl font-semibold align-self-center">Grant User Access</h1>
-                <div className="absolute right-6 flex items-center gap-3">
-                    <ThemeToggle />
-                    <button
-                    onClick={async () => await logout(navigate)}
-                    className="cursor-pointer bg-nav-btn text-accent hover:bg-nav-btn-hover px-4 py-2 rounded-lg transition"
-                    >
-                    Logout
-                    </button>
-                </div>
-            </nav>
+            <AppNav subtitle="Grant User Access" homePath="/home" />
 
             {/* Error or Success */}
             {(errorMessage || successMessage) && (

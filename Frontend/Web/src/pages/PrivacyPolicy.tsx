@@ -1,8 +1,5 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faArrowLeft, faHouse } from "@fortawesome/free-solid-svg-icons";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
 import { SUPPORT_EMAIL } from "../components/AccessMessages";
 
 const thirdPartyServices = [
@@ -37,32 +34,9 @@ const thirdPartyServices = [
 ];
 
 const PrivacyPolicy: React.FC = () => {
-    const navigate = useNavigate();
-
     return (
         <div className="min-h-screen bg-page px-4 pb-12 pt-24 text-content">
-            <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-nav px-6 py-4 text-white shadow-md">
-                <button
-                    type="button"
-                    onClick={() => navigate(-1)}
-                    aria-label="Go back"
-                    className="absolute left-6 cursor-pointer text-2xl text-accent transition hover:text-accent-strong"
-                >
-                    <FontAwesomeIcon icon={faArrowLeft} />
-                </button>
-                <h1 className="text-xl font-semibold">Privacy Policy</h1>
-                <div className="absolute right-6 flex items-center gap-4">
-                    <button
-                        type="button"
-                        onClick={() => navigate("/home")}
-                        aria-label="Home"
-                        className="cursor-pointer text-xl text-accent transition hover:text-accent-strong"
-                    >
-                        <FontAwesomeIcon icon={faHouse} />
-                    </button>
-                    <ThemeToggle />
-                </div>
-            </nav>
+            <AppNav subtitle="Privacy Policy" back homePath="/home" />
 
             <main className="mx-auto w-full max-w-4xl">
                 <section className="rounded-2xl border border-edge bg-card p-6 shadow-lg md:p-8">

@@ -1,11 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faHouse } from "@fortawesome/free-solid-svg-icons"; // Home icon
 import { auth, onAuthStateChanged } from "../firebase";
-import { logout } from "../helpers/firebaseDbHelper";
 import packageJson from "../../package.json";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
 
 const About: React.FC = () => {
     const navigate = useNavigate();
@@ -26,26 +23,7 @@ const About: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
-            {/* Navbar */}
-            <nav className="w-full bg-nav text-white p-4 shadow-md fixed top-0 left-0 flex justify-center items-center px-6">
-                <FontAwesomeIcon 
-                    icon={faHouse} 
-                    onClick={() => navigate("/home")}
-                    className="text-2xl cursor-pointer absolute left-6" 
-                />
-                <h1 className="text-xl font-semibold align-self-center">About</h1>
-                <div className="absolute right-6 flex items-center gap-3">
-                    <ThemeToggle />
-                    {email && email.length > 0 &&
-                    <button 
-                        onClick={async () => await logout(navigate)} 
-                        className="cursor-pointer bg-nav-btn text-accent hover:bg-nav-btn-hover px-4 py-2 rounded-lg transition"
-                    >
-                        Logout
-                    </button>
-                    }
-                </div>
-            </nav>
+            <AppNav subtitle="About" homePath={email ? "/home" : "/"} />
     
             {/* About Section */}
             <div className="bg-card p-6 md:p-8 rounded-2xl shadow-lg w-full max-w-xl text-center mx-4">

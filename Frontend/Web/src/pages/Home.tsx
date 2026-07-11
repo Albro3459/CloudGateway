@@ -1,19 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { saveAs } from "file-saver";
-import { Eye, EyeOff, KeyRound, Link, LogOut, Trash2, UserCircle } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Link, LogOut, RefreshCw, Trash2, UserCircle, UserPlus, X } from "lucide-react";
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
-import { createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
-import type { ApiHelperFailure } from "../helpers/APIHelper";
+import { createAdminUser, createClient, deleteAccount, deleteClient, runRegionsSync } from "../helpers/APIHelper";
+import type { ApiHelperFailure, RegionSyncResult } from "../helpers/APIHelper";
 import { appleProvider, auth, EmailAuthProvider, googleProvider, linkWithCredential, linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
 import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
 import { NoRegionsMessage } from "../components/AccessMessages";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { AppNav } from "../components/AppNav";
+import { RegionSyncCard } from "../components/RegionSyncCard";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
@@ -67,6 +68,16 @@ const Home: React.FC = () => {
 
     const [role, setRole] = useState<string | null>(null);
     const [jwtToken, setJwtToken] = useState<string | null>(null);
+    const [grantAccessModalOpen, setGrantAccessModalOpen] = useState(false);
+    const [grantAccessEmail, setGrantAccessEmail] = useState("");
+    const [grantingAccess, setGrantingAccess] = useState(false);
+    const [grantAccessError, setGrantAccessError] = useState<string | null>(null);
+    const [grantAccessSuccess, setGrantAccessSuccess] = useState<string | null>(null);
+    const [syncRegionsModalOpen, setSyncRegionsModalOpen] = useState(false);
+    const [selectedSyncRegionIds, setSelectedSyncRegionIds] = useState<Set<string>>(new Set());
+    const [syncingRegions, setSyncingRegions] = useState(false);
+    const [syncRegionResults, setSyncRegionResults] = useState<RegionSyncResult[] | null>(null);
+    const [syncRegionsError, setSyncRegionsError] = useState<string | null>(null);
 
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
     const enabledRegions = useMemo(() => getEnabledRegions(ociRegions), [ociRegions]);
@@ -101,6 +112,10 @@ const Home: React.FC = () => {
         : "No region selected";
 
     const showRegionTabs = enabledRegions.length > 1;
+    const allSyncRegionsSelected = enabledRegions.length > 0 && selectedSyncRegionIds.size === enabledRegions.length;
+    const syncRegionDisplayNames = useMemo(() => (
+        new Map(enabledRegions.map(region => [region.regionId, region.displayName]))
+    ), [enabledRegions]);
 
     const activeRegionEntries = useMemo(() => {
         if (VPNTableEntries === null || !activeRegionId) return null;
@@ -234,15 +249,112 @@ const Home: React.FC = () => {
         resetPull();
     };
 
-    const handleCreateNewAccount = () => {
-        if (role === "admin") {
-            navigate("/create-user", { replace: true });
+    const openGrantAccessModal = () => {
+        setGrantAccessEmail("");
+        setGrantAccessError(null);
+        setGrantAccessSuccess(null);
+        setGrantAccessModalOpen(true);
+    };
+
+    const closeGrantAccessModal = () => {
+        if (grantingAccess) return;
+        setGrantAccessModalOpen(false);
+    };
+
+    const handleGrantAccess = async (event: React.FormEvent) => {
+        event.preventDefault();
+        const email = grantAccessEmail.trim();
+
+        if (!jwtToken) {
+            setGrantAccessError("Your session is not ready. Try again in a moment.");
+            return;
+        }
+        if (!email.includes("@") || !email.includes(".")) {
+            setGrantAccessError("Enter a valid email address.");
+            return;
+        }
+        if (!enabledRegions.length) {
+            setGrantAccessError("No enabled regions are available.");
+            return;
+        }
+
+        setGrantingAccess(true);
+        setGrantAccessError(null);
+        setGrantAccessSuccess(null);
+        try {
+            const result = await createAdminUser({ email }, jwtToken, enabledRegions);
+            if (!result.success) {
+                setGrantAccessError(result.error || "Unable to grant access.");
+                return;
+            }
+
+            setGrantAccessEmail("");
+            setGrantAccessSuccess(result.data.alreadyExisted
+                ? `${email} already has CloudGateway access.`
+                : `${email} now has CloudGateway access.`);
+        } catch (error) {
+            console.error("Error granting user access:", error);
+            setGrantAccessError("Unable to grant access.");
+        } finally {
+            setGrantingAccess(false);
         }
     };
 
-    const handleSyncRegions = () => {
-        if (role === "admin") {
-            navigate("/sync-regions");
+    const openSyncRegionsModal = () => {
+        setSelectedSyncRegionIds(new Set(enabledRegions.map(region => region.regionId)));
+        setSyncRegionResults(null);
+        setSyncRegionsError(null);
+        setSyncRegionsModalOpen(true);
+    };
+
+    const closeSyncRegionsModal = () => {
+        if (syncingRegions) return;
+        setSyncRegionsModalOpen(false);
+    };
+
+    const toggleSyncRegion = (regionId: string) => {
+        setSelectedSyncRegionIds(current => {
+            const next = new Set(current);
+            if (next.has(regionId)) {
+                next.delete(regionId);
+            } else {
+                next.add(regionId);
+            }
+            return next;
+        });
+    };
+
+    const toggleAllSyncRegions = () => {
+        setSelectedSyncRegionIds(current => (
+            current.size === enabledRegions.length
+                ? new Set()
+                : new Set(enabledRegions.map(region => region.regionId))
+        ));
+    };
+
+    const handleSyncRegions = async () => {
+        if (!jwtToken) {
+            setSyncRegionsError("Your session is not ready. Try again in a moment.");
+            return;
+        }
+        if (!selectedSyncRegionIds.size) {
+            setSyncRegionsError("Select at least one region to sync.");
+            return;
+        }
+
+        setSyncingRegions(true);
+        setSyncRegionsError(null);
+        setSyncRegionResults(null);
+        try {
+            setSyncRegionResults(await runRegionsSync([...selectedSyncRegionIds], jwtToken));
+            if (auth.currentUser) {
+                await refreshVPNs(auth.currentUser);
+            }
+        } catch (error) {
+            console.error("Error syncing regions:", error);
+            setSyncRegionsError("Unable to sync regions.");
+        } finally {
+            setSyncingRegions(false);
         }
     };
 
@@ -662,6 +774,8 @@ const Home: React.FC = () => {
     const linkAccountModalRef = useModalDialog<HTMLDivElement>(linkAccountModalOpen, closeLinkAccountModal);
     const configModalRef = useModalDialog<HTMLDivElement>(!!configData, closeConfigModal);
     const deleteAccountModalRef = useModalDialog<HTMLDivElement>(deleteAccountModalOpen, closeDeleteAccountModal);
+    const grantAccessModalRef = useModalDialog<HTMLDivElement>(grantAccessModalOpen, closeGrantAccessModal);
+    const syncRegionsModalRef = useModalDialog<HTMLDivElement>(syncRegionsModalOpen, closeSyncRegionsModal);
 
     const handleDownloadConfig = (vpn: VPNTableEntry) => {
         if (!vpn.wireguardConfig) {
@@ -801,68 +915,67 @@ const Home: React.FC = () => {
             onPointerUp={handlePullEnd}
             onPointerCancel={resetPull}
         >
-            <nav className="fixed left-0 top-0 z-40 flex w-full items-center justify-center bg-nav p-4 px-6 text-white shadow-md">
-                <button
-                    onClick={() => navigate("/about")}
-                    className="absolute left-6 cursor-pointer rounded-lg bg-nav-btn px-4 py-2 text-accent transition hover:bg-nav-btn-hover"
-                >
-                    About
-                </button>
-                <h1 className="text-xl font-semibold">CloudGateway</h1>
-                <div className="absolute right-6 flex items-center gap-3">
-                    <ThemeToggle />
-                    <div className="relative" ref={accountMenuRef}>
-                        <button
-                            type="button"
-                            onClick={() => setAccountMenuOpen(open => !open)}
-                            className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-nav-btn text-accent transition hover:bg-nav-btn-hover"
-                            aria-label="Account"
-                            aria-expanded={accountMenuOpen}
-                        >
-                            <UserCircle size={22} aria-hidden="true" />
-                        </button>
-                        {accountMenuOpen && (
-                            <div className="absolute right-0 mt-2 w-64 rounded-lg border border-edge bg-card py-2 text-content shadow-lg">
-                                <button
-                                    type="button"
-                                    onClick={async () => {
-                                        setAccountMenuOpen(false);
-                                        await logout(navigate);
-                                    }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
-                                >
-                                    <LogOut size={16} aria-hidden="true" />
-                                    Logout
-                                </button>
-                                {canLinkAnotherProvider && (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setAccountMenuOpen(false);
-                                            setLinkAccountModalOpen(true);
-                                        }}
-                                        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
-                                    >
-                                        <Link size={16} aria-hidden="true" />
-                                        Link another sign-in method
-                                    </button>
-                                )}
+            <AppNav
+                subtitle={auth.currentUser?.email || "Signed in"}
+                showAbout
+                onRefresh={() => void refreshDashboard()}
+                refreshDisabled={loading || pullRefreshing}
+                refreshing={pullRefreshing}
+            >
+                <div className="relative" ref={accountMenuRef}>
+                    <button
+                        type="button"
+                        onClick={() => setAccountMenuOpen(open => !open)}
+                        className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg bg-nav-btn text-accent transition hover:bg-nav-btn-hover focus:outline-none focus:ring-2 focus:ring-white/80"
+                        aria-label="Account"
+                        aria-expanded={accountMenuOpen}
+                    >
+                        <UserCircle size={22} aria-hidden="true" />
+                    </button>
+                    {accountMenuOpen && (
+                        <div className="absolute right-0 mt-2 w-64 rounded-lg border border-edge bg-card py-2 text-content shadow-lg">
+                            <div className="border-b border-edge-faint px-4 pb-2 text-xs text-content-muted sm:hidden">
+                                {auth.currentUser?.email}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    setAccountMenuOpen(false);
+                                    await logout(navigate);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
+                            >
+                                <LogOut size={16} aria-hidden="true" />
+                                Logout
+                            </button>
+                            {canLinkAnotherProvider && (
                                 <button
                                     type="button"
                                     onClick={() => {
                                         setAccountMenuOpen(false);
-                                        setDeleteAccountModalOpen(true);
+                                        setLinkAccountModalOpen(true);
                                     }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-danger-content transition hover:bg-danger-soft"
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
                                 >
-                                    <Trash2 size={16} aria-hidden="true" />
-                                    Delete Account
+                                    <Link size={16} aria-hidden="true" />
+                                    Link another sign-in method
                                 </button>
-                            </div>
-                        )}
-                    </div>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setAccountMenuOpen(false);
+                                    setDeleteAccountModalOpen(true);
+                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-danger-content transition hover:bg-danger-soft"
+                            >
+                                <Trash2 size={16} aria-hidden="true" />
+                                Delete Account
+                            </button>
+                        </div>
+                    )}
                 </div>
-            </nav>
+            </AppNav>
 
             {(pullDistance > 0 || pullRefreshing) && (
                 <div
@@ -893,19 +1006,28 @@ const Home: React.FC = () => {
             )}
 
             {role === "admin" && (
-                <div className="mb-4 flex w-full max-w-md flex-col gap-2 sm:flex-row">
-                    <button
-                        onClick={handleCreateNewAccount}
-                        className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
-                    >
-                        Grant User Access
-                    </button>
-                    <button
-                        onClick={handleSyncRegions}
-                        className="w-full cursor-pointer rounded-lg bg-primary p-3 text-white transition hover:bg-primary-hover"
-                    >
-                        Sync Region Clients
-                    </button>
+                <div className="mb-4 w-full max-w-7xl rounded-lg border border-edge-faint bg-card p-4 shadow-lg md:p-6">
+                    <h2 className="text-xl font-semibold text-content">Admin</h2>
+                    <p className="mt-1 text-sm text-content-muted">Manage regions and user access.</p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <button
+                            type="button"
+                            onClick={openGrantAccessModal}
+                            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover"
+                        >
+                            <UserPlus size={18} aria-hidden="true" />
+                            Grant User Access
+                        </button>
+                        <button
+                            type="button"
+                            onClick={openSyncRegionsModal}
+                            disabled={regionsLoading || !enabledRegions.length}
+                            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                        >
+                            <RefreshCw size={18} aria-hidden="true" />
+                            Sync Region Clients
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -1034,6 +1156,196 @@ const Home: React.FC = () => {
                 removing={removeDisabled}
                 activeRegionName={activeRegionName}
             />
+
+            {grantAccessModalOpen && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                    onClick={closeGrantAccessModal}
+                >
+                    <div
+                        ref={grantAccessModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="grant-access-modal-title"
+                        tabIndex={-1}
+                        className="relative w-full max-w-md rounded-lg border border-edge-faint bg-card p-6 text-left shadow-lg focus:outline-none"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <button
+                            type="button"
+                            onClick={closeGrantAccessModal}
+                            disabled={grantingAccess}
+                            className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-lg text-content-muted transition hover:bg-inset hover:text-content disabled:cursor-not-allowed"
+                            aria-label="Close grant user access"
+                        >
+                            <X size={20} aria-hidden="true" />
+                        </button>
+                        <div className="pr-10">
+                            <h3 id="grant-access-modal-title" className="text-2xl font-semibold text-content">Grant User Access</h3>
+                            <p className="mt-2 text-sm text-content-muted">
+                                Invite someone to sign in and create CloudGateway VPN clients.
+                            </p>
+                        </div>
+
+                        {grantAccessError && (
+                            <div className="mt-4 rounded-lg border border-danger-soft-edge bg-danger-soft px-4 py-3 text-sm text-danger-content">
+                                {grantAccessError}
+                            </div>
+                        )}
+                        {grantAccessSuccess && (
+                            <div className="mt-4 rounded-lg border border-success-soft-edge bg-success-soft px-4 py-3 text-sm text-success-strong">
+                                {grantAccessSuccess}
+                            </div>
+                        )}
+
+                        <form onSubmit={handleGrantAccess} className="mt-5">
+                            <label className="block text-sm font-medium text-content-secondary">
+                                Email
+                                <input
+                                    type="email"
+                                    value={grantAccessEmail}
+                                    onChange={(event) => setGrantAccessEmail(event.target.value)}
+                                    autoComplete="email"
+                                    placeholder="user@example.com"
+                                    disabled={grantingAccess}
+                                    className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                />
+                            </label>
+                            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                                <button
+                                    type="button"
+                                    onClick={closeGrantAccessModal}
+                                    disabled={grantingAccess}
+                                    className="rounded-lg bg-inset-strong px-5 py-3 text-sm font-semibold text-content-secondary transition hover:bg-inset-strong-hover disabled:cursor-not-allowed"
+                                >
+                                    {grantAccessSuccess ? "Done" : "Cancel"}
+                                </button>
+                                {!grantAccessSuccess && (
+                                    <button
+                                        type="submit"
+                                        disabled={grantingAccess || !grantAccessEmail.trim() || regionsLoading}
+                                        className="rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                                    >
+                                        {grantingAccess ? "Granting..." : "Grant Access"}
+                                    </button>
+                                )}
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {syncRegionsModalOpen && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                    onClick={closeSyncRegionsModal}
+                >
+                    <div
+                        ref={syncRegionsModalRef}
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="sync-regions-modal-title"
+                        tabIndex={-1}
+                        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-edge-faint bg-card text-left shadow-lg focus:outline-none"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-start justify-between gap-4 border-b border-edge-faint p-6">
+                            <div>
+                                <h3 id="sync-regions-modal-title" className="text-2xl font-semibold text-content">Sync Region Clients</h3>
+                                <p className="mt-2 text-sm text-content-muted">
+                                    Reconcile live WireGuard peers with the desired clients in each selected region.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={closeSyncRegionsModal}
+                                disabled={syncingRegions}
+                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted transition hover:bg-inset hover:text-content disabled:cursor-not-allowed"
+                                aria-label="Close sync regions"
+                            >
+                                <X size={20} aria-hidden="true" />
+                            </button>
+                        </div>
+
+                        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                            {syncRegionsError && (
+                                <div className="mb-4 rounded-lg border border-danger-soft-edge bg-danger-soft px-4 py-3 text-sm text-danger-content">
+                                    {syncRegionsError}
+                                </div>
+                            )}
+
+                            <div className="rounded-lg border border-edge-subtle bg-inset p-4">
+                                <label className="flex cursor-pointer items-center gap-3 border-b border-edge-subtle pb-3 text-sm font-semibold text-content">
+                                    <input
+                                        type="checkbox"
+                                        checked={allSyncRegionsSelected}
+                                        onChange={toggleAllSyncRegions}
+                                        disabled={syncingRegions}
+                                        className="h-4 w-4 accent-primary"
+                                    />
+                                    Select all regions
+                                </label>
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                    {enabledRegions.map(region => (
+                                        <label
+                                            key={region.regionId}
+                                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-edge-faint bg-card p-3 text-sm text-content transition hover:border-primary-soft-edge"
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedSyncRegionIds.has(region.regionId)}
+                                                onChange={() => toggleSyncRegion(region.regionId)}
+                                                disabled={syncingRegions}
+                                                className="mt-0.5 h-4 w-4 accent-primary"
+                                            />
+                                            <span className="min-w-0">
+                                                <span className="block font-medium">{region.displayName}</span>
+                                                <span className="block truncate text-xs text-content-muted">{region.regionId}</span>
+                                            </span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {syncRegionResults && (
+                                <div className="mt-5 space-y-3">
+                                    <h4 className="text-sm font-semibold text-content">Sync results</h4>
+                                    {syncRegionResults.map(({ regionId, result }) => (
+                                        <RegionSyncCard
+                                            key={regionId}
+                                            regionId={regionId}
+                                            displayName={syncRegionDisplayNames.get(regionId)}
+                                            result={result}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex flex-col-reverse gap-3 border-t border-edge-faint bg-card p-4 sm:flex-row sm:justify-end sm:px-6">
+                            <button
+                                type="button"
+                                onClick={closeSyncRegionsModal}
+                                disabled={syncingRegions}
+                                className="rounded-lg bg-inset-strong px-5 py-3 text-sm font-semibold text-content-secondary transition hover:bg-inset-strong-hover disabled:cursor-not-allowed"
+                            >
+                                {syncRegionResults ? "Done" : "Cancel"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => void handleSyncRegions()}
+                                disabled={syncingRegions || selectedSyncRegionIds.size === 0}
+                                className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
+                            >
+                                <RefreshCw className={syncingRegions ? "animate-spin" : ""} size={17} aria-hidden="true" />
+                                {syncingRegions
+                                    ? "Syncing..."
+                                    : `Sync ${selectedSyncRegionIds.size} region${selectedSyncRegionIds.size === 1 ? "" : "s"}`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {linkAccountModalOpen && (
                 <div
