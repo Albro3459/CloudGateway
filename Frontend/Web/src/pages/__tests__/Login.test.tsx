@@ -91,6 +91,42 @@ describe("Login", () => {
             .toBeLessThan(fetchOciRegions.mock.invocationCallOrder[0]);
     });
 
+    it("shows a loading indicator through email sign-in and access checks", async () => {
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+
+        let resolveSignIn: (value: { user: typeof user }) => void = () => undefined;
+        signInWithEmailAndPassword.mockReturnValue(new Promise((resolve) => {
+            resolveSignIn = resolve;
+        }));
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
+
+        render(<Login />);
+
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
+            target: { value: "user@example.com" },
+        });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), {
+            target: { value: "Password1!" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+
+        expect(screen.getByRole("status").textContent).toContain("Signing in...");
+        expect(screen.getAllByRole("button", { name: "Signing in..." })[0].hasAttribute("disabled")).toBe(true);
+
+        resolveSignIn({ user });
+
+        await waitFor(() => {
+            expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null);
+            expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
+        });
+        expect(screen.queryByRole("status")).toBeNull();
+    });
+
     it("signs out and shows the backend message when access is not provisioned", async () => {
         const { signInWithGoogle, signOut } = require("../../firebase");
         const { checkAccountAccess } = require("../../helpers/APIHelper");
