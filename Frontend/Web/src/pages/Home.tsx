@@ -263,6 +263,7 @@ const Home: React.FC = () => {
 
     const handleGrantAccess = async (event: React.FormEvent) => {
         event.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
         const email = grantAccessEmail.trim();
 
         if (!jwtToken) {
@@ -614,6 +615,7 @@ const Home: React.FC = () => {
 
     const handleCreateClient = async (e: React.FormEvent) => {
         e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
 
         if (!jwtToken) {
             showBanner("error", "Error: JWT token not found");

@@ -48,6 +48,7 @@ const CreateUser: React.FC = () => {
 
     const handleCreateAccount = async (e: React.FormEvent) => {
         e.preventDefault();
+        (document.activeElement as HTMLElement | null)?.blur();
         setLoading(true);
         setErrorMessage(null);
         setSuccessMessage(null);

@@ -515,6 +515,7 @@ struct ContentView: View {
                     )
 
                     Button {
+                        dismissKeyboard()
                         Task {
                             await viewModel.grantAccess()
                         }
@@ -594,6 +595,10 @@ struct ContentView: View {
         )
     }
 
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     private func createPanel(isCreateDisabled: Bool, onCreate: @escaping () -> Void) -> some View {
         ThemedPanel {
             VStack(alignment: .leading, spacing: 14) {
@@ -609,7 +614,10 @@ struct ContentView: View {
                     keyboardType: .default
                 )
 
-                Button(action: onCreate) {
+                Button {
+                    dismissKeyboard()
+                    onCreate()
+                } label: {
                     Label("Create VPN Client", systemImage: "plus")
                 }
                 .buttonStyle(PrimaryButtonStyle())
