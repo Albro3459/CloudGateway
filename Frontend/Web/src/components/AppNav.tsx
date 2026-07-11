@@ -51,17 +51,6 @@ export const AppNav: React.FC<AppNavProps> = ({
                             <ArrowLeft size={19} aria-hidden="true" />
                         </button>
                     )}
-                    {homePath && (
-                        <button
-                            type="button"
-                            onClick={() => navigate(homePath)}
-                            className={navButtonClasses}
-                            aria-label="Home"
-                            title="Home"
-                        >
-                            <Home size={19} aria-hidden="true" />
-                        </button>
-                    )}
                     {showAbout && (
                         <button
                             type="button"
@@ -86,6 +75,17 @@ export const AppNav: React.FC<AppNavProps> = ({
                         </button>
                     )}
                     <ThemeToggle />
+                    {homePath && (
+                        <button
+                            type="button"
+                            onClick={() => navigate(homePath)}
+                            className={navButtonClasses}
+                            aria-label="Home"
+                            title="Home"
+                        >
+                            <Home size={19} aria-hidden="true" />
+                        </button>
+                    )}
                     {children}
                 </div>
             </div>

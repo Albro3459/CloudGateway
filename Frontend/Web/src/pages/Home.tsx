@@ -1012,14 +1012,6 @@ const Home: React.FC = () => {
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <button
                             type="button"
-                            onClick={openGrantAccessModal}
-                            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover"
-                        >
-                            <UserPlus size={18} aria-hidden="true" />
-                            Grant User Access
-                        </button>
-                        <button
-                            type="button"
                             onClick={openSyncRegionsModal}
                             disabled={regionsLoading || !enabledRegions.length}
                             className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
@@ -1027,12 +1019,20 @@ const Home: React.FC = () => {
                             <RefreshCw size={18} aria-hidden="true" />
                             Sync Region Clients
                         </button>
+                        <button
+                            type="button"
+                            onClick={openGrantAccessModal}
+                            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover"
+                        >
+                            <UserPlus size={18} aria-hidden="true" />
+                            Grant User Access
+                        </button>
                     </div>
                 </div>
             )}
 
             <div className="w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div className="flex flex-col gap-4">
                     <div>
                         <h2 className="text-xl font-semibold text-content">VPN Dashboard</h2>
                         <p className="mt-1 text-sm text-content-muted">
@@ -1042,8 +1042,8 @@ const Home: React.FC = () => {
                         </p>
                     </div>
 
-                    <form onSubmit={handleCreateClient} className="flex w-full flex-col gap-3 sm:flex-row lg:w-auto">
-                        <label className="flex min-w-0 flex-1 flex-col text-sm font-medium text-content-secondary lg:w-64">
+                    <form onSubmit={handleCreateClient} className="flex w-full max-w-xl flex-col gap-3 sm:flex-row sm:items-end">
+                        <label className="flex min-w-0 flex-1 flex-col text-sm font-medium text-content-secondary sm:w-64">
                             Client display name
                             <input
                                 value={clientName}
@@ -1057,7 +1057,7 @@ const Home: React.FC = () => {
                         <button
                             type="submit"
                             disabled={createDisabled}
-                            className={`rounded-lg px-5 py-3 text-sm font-medium transition sm:self-end ${
+                                className={`rounded-lg px-5 py-3 text-sm font-medium transition ${
                                 !createDisabled
                                     ? "cursor-pointer bg-primary text-white hover:bg-primary-hover"
                                     : "cursor-not-allowed bg-disabled text-content-disabled"

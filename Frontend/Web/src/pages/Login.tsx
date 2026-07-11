@@ -218,7 +218,7 @@ const Login: React.FC = () => {
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-page px-4">
-        <AppNav subtitle="Guest" showAbout />
+        <AppNav showAbout />
 
         {/* {error && <p>{error}</p>} */}
         {/* Error or Success */}
