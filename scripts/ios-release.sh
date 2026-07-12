@@ -270,13 +270,34 @@ AUTH_HOME="$(mktemp -d /private/tmp/CloudGatewayTransporter.XXXXXX)"
 mkdir -p "$AUTH_HOME/private_keys"
 cp "$KEY_PATH" "$AUTH_HOME/private_keys/AuthKey_${KEY_ID}.p8"
 chmod 600 "$AUTH_HOME/private_keys/AuthKey_${KEY_ID}.p8"
+UPLOAD_LOG="$ARCHIVE_ROOT/upload-${NEW_VERSION}-${NEW_BUILD}.log"
+set +e
 (
   cd "$AUTH_HOME"
   "$TRANSPORTER" -m upload \
     -apiIssuer "$ISSUER_ID" \
     -apiKey "$KEY_ID" \
     -assetFile "$IPA_PATH"
-)
+) 2>&1 | tee "$UPLOAD_LOG"
+UPLOAD_STATUS=${PIPESTATUS[0]}
+set -e
+
+if [[ "$UPLOAD_STATUS" -ne 0 ]]; then
+  echo "Upload failed: iTMSTransporter exited $UPLOAD_STATUS. Nothing committed. See $UPLOAD_LOG" >&2
+  exit 1
+fi
+# iTMSTransporter can exit 0 while still reporting a server-side validation or
+# delivery failure, so scan the captured output before trusting the upload.
+if grep -qE 'ERROR:|VALIDATION_ERROR|Validation failed|The upload failed' "$UPLOAD_LOG"; then
+  echo "Upload reported errors despite a zero exit status. Nothing committed. See $UPLOAD_LOG" >&2
+  exit 1
+fi
+# Require Transporter's explicit success sentinel so a truncated/hung run cannot
+# pass as delivered.
+if ! grep -qE 'Returning 0' "$UPLOAD_LOG"; then
+  echo "Upload did not report a success sentinel. Nothing committed. See $UPLOAD_LOG" >&2
+  exit 1
+fi
 
 git -C "$ROOT" add "$PBXPROJ"
 git -C "$ROOT" commit -m "Deploy iOS v${NEW_VERSION} (build ${NEW_BUILD})"
