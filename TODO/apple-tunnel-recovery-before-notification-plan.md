@@ -442,9 +442,9 @@ generic fork must not contain CloudGateway thresholds or user-facing behavior.
 - [x] Stage 3: bounded health evidence and deterministic tests implemented.
 - [x] Stage 4: pure recovery policy and packet-tunnel orchestration implemented.
 - [x] Stage 5: notification and in-app copy share the confirmed-state message.
-- [ ] Stage 6: 97 CloudGatewayKit tests pass. The complete Xcode build remains
-  blocked until the pinned fork revision is published to GitHub; real-device
-  transition and controlled outage checks also remain required.
+- [x] Stage 6: 97 CloudGatewayKit tests, package resolution, project listing,
+  unsigned iOS build, and iOS simulator view-model tests pass. Physical-device
+  transition and controlled outage checks remain pending.
 
 ### Stage 1: fork API
 
