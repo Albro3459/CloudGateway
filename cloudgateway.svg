@@ -1,26 +1,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
-  <title id="title">CloudGateway favicon</title>
-  <desc id="desc">A cloud and upload gateway mark for a VPN platform. The area outside the rounded icon is transparent.</desc>
+  <title id="title">CloudGateway logo</title>
+  <desc id="desc">A white cloud with a connected gateway tunnel on a light blue gradient background.</desc>
   <defs>
-    <linearGradient id="bg" x1="6" y1="7" x2="57" y2="58" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#39C3F6"/>
-      <stop offset="1" stop-color="#2563EB"/>
+    <linearGradient id="background" x1="7" y1="6" x2="57" y2="59" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66DDF7"/>
+      <stop offset="0.48" stop-color="#39B9F2"/>
+      <stop offset="1" stop-color="#397FF0"/>
     </linearGradient>
-    <linearGradient id="cloud" x1="14" y1="22" x2="52" y2="45" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#E0EFFF"/>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(17 11) rotate(48) scale(40)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cloud" x1="17" y1="19" x2="45" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF8FF"/>
     </linearGradient>
-    <linearGradient id="gate" x1="25" y1="25" x2="41" y2="44" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1E3A8A"/>
-      <stop offset="1" stop-color="#1D4ED8"/>
-    </linearGradient>
+    <filter id="shadow" x="3" y="11" width="58" height="43" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#1977CD" flood-opacity="0.22"/>
+    </filter>
   </defs>
 
-  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <rect width="64" height="64" rx="14" fill="url(#background)"/>
+  <rect width="64" height="64" rx="14" fill="url(#glow)"/>
 
-  <path fill="url(#cloud)" d="M18.1 45.6h28.4c6.2 0 10.8-4.1 10.8-9.4 0-5-4.2-9.1-9.4-9.5C45.4 20 39.2 15.8 32 15.8c-7.3 0-13.6 4.5-15.9 11.2-5.5.7-9.4 4.8-9.4 9.9 0 5.2 4.4 8.7 11.4 8.7Z"/>
+  <g filter="url(#shadow)">
+    <path fill="url(#cloud)" d="M17.5 47h29c6.5 0 11.3-4.3 11.3-9.9 0-5.3-4.4-9.6-9.9-10-2.5-7-8.9-11.4-16.4-11.4-7.7 0-14.2 4.7-16.7 11.8C9 28.2 5 32.6 5 37.9 5 43.4 9.7 47 17.5 47Z"/>
 
-  <path fill="url(#gate)" d="M23.2 45.6V32.2c0-4.9 3.6-7.9 8.8-7.9h.1c5.1 0 8.7 3 8.7 7.9v13.4h-5.9V35.3H29v10.3h-5.8Z"/>
+    <path fill="url(#background)" d="M25.2 47V36.3c0-4.6 2.8-7.8 6.8-7.8s6.8 3.2 6.8 7.8V47h-4.6V36.5c0-2.2-.8-3.5-2.2-3.5s-2.2 1.3-2.2 3.5V47h-4.6Z"/>
 
-  <path fill="#FFFFFF" d="M32 27.7 39.1 35h-4v10.6h-6.2V35h-4L32 27.7Z"/>
+    <path d="M17.5 37.3h7.7M38.8 37.3h7.7" fill="none" stroke="url(#background)" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="17.5" cy="37.3" r="2.7" fill="url(#background)"/>
+    <circle cx="46.5" cy="37.3" r="2.7" fill="url(#background)"/>
+    <circle cx="17.5" cy="37.3" r="1" fill="#FFFFFF" fill-opacity="0.8"/>
+    <circle cx="46.5" cy="37.3" r="1" fill="#FFFFFF" fill-opacity="0.8"/>
+  </g>
 </svg>
