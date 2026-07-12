@@ -91,6 +91,8 @@ On startup, `PacketTunnelProvider`:
 
 The extension logs WireGuardKit messages with private formatting and does not log VPN traffic, DNS queries, destination metadata, private keys, full configs, auth tokens, or Firebase credentials.
 
+The extension also monitors tunnel health, silently attempts binding-refresh recovery, and raises one "VPN not responding" notification for a persistently dead tunnel (a blackholed full tunnel on otherwise working Internet, e.g. during a server deployment). See `docs/apple-tunnel-health-notification.md`.
+
 ## WireGuardKit Integration
 
 The app uses WireGuardKit from a Swift Package dependency. CloudGateway currently pins Alex's fork:

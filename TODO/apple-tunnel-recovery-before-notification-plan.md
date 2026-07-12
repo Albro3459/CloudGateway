@@ -446,6 +446,16 @@ generic fork must not contain CloudGateway thresholds or user-facing behavior.
   unsigned iOS build, and iOS simulator view-model tests pass. Physical-device
   transition and controlled outage checks remain pending.
 
+### Device evidence
+
+* 2026-07-12, iOS v1.0.0 (build 10): controlled full-tunnel blackhole detected
+  and notified in about 50-55 seconds with continuing traffic. Matches the
+  expected timeline (three bounded windows plus poll quantization). Decision:
+  keep the current constants; faster detection was evaluated and rejected to
+  avoid re-introducing false positives (see
+  `docs/apple-tunnel-health-notification.md`). Weak-network false-positive
+  matrix (transitions, flaky Wi-Fi) still pending on device.
+
 ### Stage 1: fork API
 
 Repository: `/Users/alexbrodsky/GitHub/wireguard-apple`
