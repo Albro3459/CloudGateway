@@ -47,6 +47,10 @@ public struct GatewayTunnelHealthEvaluator {
     private var previousSample: GatewayTunnelRuntimeStats?
     private var previousSampleAt: Date?
     private var oneWayCandidate: (startedAt: Date, startingTx: UInt64)?
+    // Once a one-way window concludes failed, stay failed while RX remains flat.
+    // Without this the evaluator would blink `.healthy` between candidate windows
+    // during a continuous blackhole, which reads as recovery and flaps the outage.
+    private var oneWayLatched = false
 
     public init(startedAt: Date, thresholds: GatewayTunnelHealthThresholds = .default) {
         self.thresholds = thresholds
@@ -83,7 +87,9 @@ public struct GatewayTunnelHealthEvaluator {
 
         if let prior {
             if stats.rxBytes > prior.rxBytes {
+                // Any inbound progress clears both the pending window and the latch.
                 oneWayCandidate = nil
+                oneWayLatched = false
             } else if stats.rxBytes == prior.rxBytes, stats.txBytes > prior.txBytes,
                       oneWayCandidate == nil {
                 oneWayCandidate = (now, prior.txBytes)
@@ -101,11 +107,16 @@ public struct GatewayTunnelHealthEvaluator {
             return .failed(.staleHandshake)
         }
 
+        if oneWayLatched {
+            return .failed(.oneWayTraffic)
+        }
+
         if let candidate = oneWayCandidate,
            now.timeIntervalSince(candidate.startedAt) >= thresholds.oneWayFlatDuration {
             oneWayCandidate = nil
             if stats.txBytes >= candidate.startingTx,
                stats.txBytes - candidate.startingTx >= thresholds.oneWayMinTxGrowth {
+                oneWayLatched = true
                 return .failed(.oneWayTraffic)
             }
         }
@@ -120,6 +131,7 @@ public struct GatewayTunnelHealthEvaluator {
         at now: Date? = nil
     ) {
         oneWayCandidate = nil
+        oneWayLatched = false
         previousSample = baseline
         previousSampleAt = baseline == nil ? nil : now
     }
@@ -137,5 +149,6 @@ public struct GatewayTunnelHealthEvaluator {
         previousSample = nil
         previousSampleAt = nil
         oneWayCandidate = nil
+        oneWayLatched = false
     }
 }

@@ -181,7 +181,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 )
                 self.publishHealth(action.health, at: now)
                 if action.requestBindingRefresh {
-                    self.requestBindingRefresh(sessionGeneration: sessionGeneration)
+                    self.requestBindingRefresh(sessionGeneration: sessionGeneration, baseline: stats)
                 }
             }
         }
@@ -218,7 +218,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return quietAge >= 10 || continuouslySatisfiedAge >= 30 ? .satisfied : .settling
     }
 
-    private func requestBindingRefresh(sessionGeneration: UInt64) {
+    private func requestBindingRefresh(sessionGeneration: UInt64, baseline: GatewayTunnelRuntimeStats?) {
         let routeGeneration = policyPathGeneration
         adapter.refreshNetworkBinding { [weak self] error in
             self?.healthQueue.async {
@@ -233,7 +233,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let now = Date()
                 self.recoveryPolicy.bindingRefreshCompleted(accepted: accepted, at: now)
                 if accepted {
-                    self.healthEvaluator?.resetTrafficEvidence()
+                    // Seed the fresh one-way window with the sample that opened
+                    // this attempt so the next poll can start a new candidate
+                    // instead of discarding the first post-refresh sample.
+                    self.healthEvaluator?.resetTrafficEvidence(baseline: baseline, at: now)
                 }
             }
         }

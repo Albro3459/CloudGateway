@@ -119,10 +119,11 @@ public struct GatewayTunnelRecoveryPolicy {
             return GatewayTunnelRecoveryAction(health: .unknown)
 
         case let .awaitingBaseline(attempt, acceptedAt):
-            if evidence == .healthy {
-                state = .probation(confirmed: false, healthyPolls: 1)
-                return GatewayTunnelRecoveryAction(health: .unknown)
-            }
+            // The first post-refresh sample only fixes the verification baseline.
+            // Recovery must be proven by later inbound progress, not by a single
+            // `.healthy` verdict: right after a traffic-evidence reset a one-way
+            // blackhole has no matured candidate yet and reads `.healthy`, which
+            // is not proof the tunnel recovered.
             state = .verifying(attempt: attempt, since: acceptedAt, baseline: stats)
             return GatewayTunnelRecoveryAction(health: .unknown)
 

@@ -168,11 +168,76 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
     _ = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
     policy.bindingRefreshCompleted(accepted: true, at: now)
-    let recovered = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
-    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
-    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).health == .passingTraffic)
+    // First post-refresh sample only establishes the verification baseline.
+    let baseline = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
+    #expect(policy.update(stats: baseline, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
+    // Advancing RX is real inbound progress -> enters probation, still not healthy yet.
+    let progressing = stats(handshakeSecondsAgo: 1, rx: 40, tx: 20, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: progressing, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).health == .unknown)
+    // A second healthy poll ends probation and publishes recovery.
+    let progressingAgain = stats(handshakeSecondsAgo: 1, rx: 60, tx: 20, relativeTo: now.addingTimeInterval(15))
+    #expect(policy.update(stats: progressingAgain, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).health == .passingTraffic)
 
-    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(15)).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(20)).health == .unknown)
+}
+
+// Drives the evaluator and policy together exactly as PacketTunnelProvider does:
+// evaluate raw evidence, feed the policy, and on an accepted refresh reset the
+// traffic window with the current sample as the new baseline.
+private func driveRecovery(
+    handshakeEpoch: (Date) -> Int,
+    rx: (Int) -> UInt64,
+    tx: (Int) -> UInt64,
+    polls: Int
+) -> (confirmed: Bool, passedAfterRefresh: Bool) {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    var policy = GatewayTunnelRecoveryPolicy()
+    var confirmed = false
+    var passedAfterRefresh = false
+    var sawRefresh = false
+
+    for i in 0..<polls {
+        let t = now.addingTimeInterval(Double(i) * 5)
+        let sample = GatewayTunnelRuntimeStats(
+            latestHandshakeEpochSeconds: handshakeEpoch(t), rxBytes: rx(i), txBytes: tx(i))
+        let evidence = evaluator.evaluateEvidence(sample, at: t)
+        let action = policy.update(stats: sample, evidence: evidence, path: .satisfied, routeGeneration: 1, at: t)
+        if action.health == .notPassingTraffic { confirmed = true }
+        if action.health == .passingTraffic, sawRefresh { passedAfterRefresh = true }
+        if action.requestBindingRefresh {
+            sawRefresh = true
+            policy.bindingRefreshCompleted(accepted: true, at: t)
+            evaluator.resetTrafficEvidence(baseline: sample, at: t)
+        }
+    }
+    return (confirmed, passedAfterRefresh)
+}
+
+@Test func persistentOneWayBlackholeConfirmsAndNeverFalselyPasses() {
+    // Fresh handshake that stays fixed (UDP blackholed, so no new handshake
+    // completes), RX flat, TX climbing hard. This is the deployment-outage case
+    // the notification exists for; it must escalate, not report recovery.
+    let fixedHandshake = Int(now.timeIntervalSince1970) - 5
+    let result = driveRecovery(
+        handshakeEpoch: { _ in fixedHandshake },
+        rx: { _ in 1000 },
+        tx: { i in 1000 &+ UInt64(i) &* 8000 },
+        polls: 24
+    )
+    #expect(result.confirmed)
+    #expect(!result.passedAfterRefresh)
+}
+
+@Test func persistentNeverHandshakedConfirmsAndNeverFalselyPasses() {
+    // Never-handshaked tunnel with continuing outbound activity must escalate.
+    let result = driveRecovery(
+        handshakeEpoch: { _ in 0 },
+        rx: { _ in 0 },
+        tx: { i in 1000 &+ UInt64(i) &* 8000 },
+        polls: 24
+    )
+    #expect(result.confirmed)
+    #expect(!result.passedAfterRefresh)
 }
 
 @Test func rejectedRefreshReturnsToObservationWhenRuntimeReturns() {
@@ -213,6 +278,18 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     let healthy = stats(handshakeSecondsAgo: 1, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(30))
     #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(30)).health == .notPassingTraffic)
     #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(35)).health == .passingTraffic)
+}
+
+@Test func oneWayFailureStaysLatchedUntilReceiveResumes() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 1000, tx: 1000), at: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 6, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(1)), at: now.addingTimeInterval(1))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 16, rx: 1000, tx: 12000, relativeTo: now.addingTimeInterval(11)), at: now.addingTimeInterval(11)) == .failed(.oneWayTraffic))
+    // Continuing flat-RX polls stay failed instead of blinking healthy between windows.
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 21, rx: 1000, tx: 20000, relativeTo: now.addingTimeInterval(16)), at: now.addingTimeInterval(16)) == .failed(.oneWayTraffic))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 26, rx: 1000, tx: 28000, relativeTo: now.addingTimeInterval(21)), at: now.addingTimeInterval(21)) == .failed(.oneWayTraffic))
+    // Real inbound progress clears the latch.
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 31, rx: 2000, tx: 36000, relativeTo: now.addingTimeInterval(26)), at: now.addingTimeInterval(26)) == .healthy)
 }
 
 @Test func idleTunnelIsNotFlaggedOneWayDead() {
