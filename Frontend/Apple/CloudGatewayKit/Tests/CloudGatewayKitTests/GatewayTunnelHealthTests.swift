@@ -89,8 +89,8 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
 
 @Test func neverHandshakedIsUnknownWithinGraceThenDead() {
     var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
-    #expect(evaluator.evaluate(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(10)) == .unknown)
-    #expect(evaluator.evaluate(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(16)) == .notPassingTraffic)
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(9)) == .warmingUp)
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(10)) == .failed(.neverHandshaked))
 }
 
 @Test func freshHandshakeWithReceiveActivityIsHealthy() {
@@ -108,9 +108,111 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
 @Test func oneWayDeadWhenReceiveFlatAndSendGrows() {
     var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
     _ = evaluator.evaluate(stats(handshakeSecondsAgo: 5, rx: 1000, tx: 1000), at: now)
-    // 11s later: rx unchanged, tx grew 5000 (> 4096) -> one-way dead.
+    _ = evaluator.evaluate(stats(handshakeSecondsAgo: 6, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(1)), at: now.addingTimeInterval(1))
     let sample = stats(handshakeSecondsAgo: 16, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(11))
-    #expect(evaluator.evaluate(sample, at: now.addingTimeInterval(11)) == .notPassingTraffic)
+    #expect(evaluator.evaluateEvidence(sample, at: now.addingTimeInterval(11)) == .failed(.oneWayTraffic))
+}
+
+@Test func longIdleThenBurstWaitsFullWindow() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 1000, tx: 1000), at: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 105, rx: 1000, tx: 1000, relativeTo: now.addingTimeInterval(100)), at: now.addingTimeInterval(100))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 106, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(101)), at: now.addingTimeInterval(101)) == .healthy)
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 115, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(110)), at: now.addingTimeInterval(110)) == .healthy)
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 116, rx: 1000, tx: 6000, relativeTo: now.addingTimeInterval(111)), at: now.addingTimeInterval(111)) == .failed(.oneWayTraffic))
+}
+
+@Test func subthresholdWindowsDoNotAccumulate() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 1, tx: 0), at: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 6, rx: 1, tx: 100, relativeTo: now.addingTimeInterval(1)), at: now.addingTimeInterval(1))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 16, rx: 1, tx: 200, relativeTo: now.addingTimeInterval(11)), at: now.addingTimeInterval(11)) == .healthy)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 17, rx: 1, tx: 300, relativeTo: now.addingTimeInterval(12)), at: now.addingTimeInterval(12))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 27, rx: 1, tx: 400, relativeTo: now.addingTimeInterval(22)), at: now.addingTimeInterval(22)) == .healthy)
+}
+
+@Test func counterAndClockRollbackRestartWarmup() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 100, tx: 100), at: now.addingTimeInterval(20))
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(21)) == .warmingUp)
+    #expect(evaluator.evaluateEvidence(stats(handshakeSecondsAgo: nil, rx: 0, tx: 0), at: now.addingTimeInterval(19)) == .warmingUp)
+
+    var staleEvaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = staleEvaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 100, tx: 100), at: now.addingTimeInterval(20))
+    #expect(staleEvaluator.evaluateEvidence(stats(handshakeSecondsAgo: 200, rx: 0, tx: 0, relativeTo: now.addingTimeInterval(21)), at: now.addingTimeInterval(21)) == .warmingUp)
+}
+
+// MARK: - Recovery policy
+
+@Test func recoveryRequiresTwoFreshFailedAttempts() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    var action = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    #expect(action == GatewayTunnelRecoveryAction(health: .unknown, requestBindingRefresh: true))
+    policy.bindingRefreshCompleted(accepted: true, at: now)
+    _ = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    action = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10))
+    #expect(action == GatewayTunnelRecoveryAction(health: .unknown))
+
+    let second = stats(handshakeSecondsAgo: 210, rx: 10, tx: 20, relativeTo: now.addingTimeInterval(10))
+    action = policy.update(stats: second, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10))
+    #expect(action.requestBindingRefresh)
+    policy.bindingRefreshCompleted(accepted: true, at: now.addingTimeInterval(10))
+    _ = policy.update(stats: second, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11))
+    action = policy.update(stats: stats(handshakeSecondsAgo: 220, rx: 10, tx: 30, relativeTo: now.addingTimeInterval(20)), evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20))
+    #expect(action.health == .notPassingTraffic)
+}
+
+@Test func recoveryProgressAndPathLossSuppressConfirmation() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.bindingRefreshCompleted(accepted: true, at: now)
+    let recovered = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
+    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
+    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).health == .passingTraffic)
+
+    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(15)).health == .unknown)
+}
+
+@Test func rejectedRefreshReturnsToObservationWhenRuntimeReturns() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let failed = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: failed, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.bindingRefreshCompleted(accepted: false, at: now)
+
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).health == .passingTraffic)
+}
+
+@Test func refreshVerificationBaselineStartsAfterAcceptance() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let beforeRequest = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: beforeRequest, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.bindingRefreshCompleted(accepted: true, at: now.addingTimeInterval(5))
+
+    let acceptanceSample = stats(handshakeSecondsAgo: 205, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(5))
+    #expect(policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
+    #expect(!policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).requestBindingRefresh)
+}
+
+@Test func runtimeUnavailableConfirmsOnlyOnSatisfiedPath() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 1, at: now).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(20)).health == .notPassingTraffic)
+}
+
+@Test func confirmedEpisodeSurvivesPathLossAndNeedsTwoHealthyPolls() {
+    var policy = GatewayTunnelRecoveryPolicy(thresholds: .init(runtimeUnavailableDuration: 20))
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20)).health == .notPassingTraffic)
+    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(25)).health == .notPassingTraffic)
+
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(30))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(30)).health == .notPassingTraffic)
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(35)).health == .passingTraffic)
 }
 
 @Test func idleTunnelIsNotFlaggedOneWayDead() {

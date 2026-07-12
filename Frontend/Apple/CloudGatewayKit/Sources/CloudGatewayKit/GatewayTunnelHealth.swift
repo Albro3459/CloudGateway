@@ -1,36 +1,31 @@
 import Foundation
 
-/// Whether the tunnel is actually carrying traffic, as judged from WireGuard
-/// runtime stats. A full tunnel keeps running even when its peer is deleted or
-/// the server is down; this distinguishes "packets are flowing" from "packets
-/// are being blackholed."
 public enum GatewayTunnelHealth: String, Codable, Equatable, Sendable {
-    /// Not enough information yet (e.g. still within the initial handshake grace).
     case unknown
-    /// The tunnel handshaked recently and traffic is not one-way dead.
     case passingTraffic
-    /// The tunnel is blackholing: never handshaked past the grace window, the
-    /// handshake went stale, or traffic is flowing out with nothing coming back.
     case notPassingTraffic
 }
 
+public enum GatewayTunnelHealthFailureReason: Equatable, Sendable {
+    case neverHandshaked
+    case staleHandshake
+    case oneWayTraffic
+}
+
+public enum GatewayTunnelHealthEvidence: Equatable, Sendable {
+    case warmingUp
+    case healthy
+    case failed(GatewayTunnelHealthFailureReason)
+}
+
 public struct GatewayTunnelHealthThresholds: Equatable, Sendable {
-    /// How long a freshly started tunnel may go without any handshake before it
-    /// is judged dead.
     public var neverHandshakeGrace: TimeInterval
-    /// A handshake older than this on an established tunnel means the peer went
-    /// dark. Must sit above WireGuard's rekey interval (~120s) so a healthy idle
-    /// tunnel is not false-flagged.
     public var staleHandshake: TimeInterval
-    /// How long received bytes must stay flat (while bytes are still being sent)
-    /// before the tunnel is judged one-way dead.
     public var oneWayFlatDuration: TimeInterval
-    /// Minimum sent-byte growth during the flat window, above keepalive noise, to
-    /// confirm the tunnel is one-way dead rather than merely idle.
     public var oneWayMinTxGrowth: UInt64
 
     public init(
-        neverHandshakeGrace: TimeInterval = 15,
+        neverHandshakeGrace: TimeInterval = 10,
         staleHandshake: TimeInterval = 180,
         oneWayFlatDuration: TimeInterval = 10,
         oneWayMinTxGrowth: UInt64 = 4096
@@ -44,69 +39,103 @@ public struct GatewayTunnelHealthThresholds: Equatable, Sendable {
     public static let `default` = GatewayTunnelHealthThresholds()
 }
 
-/// Evaluates a stream of tunnel runtime samples into a health verdict. Holds the
-/// small amount of state needed to detect a one-way-dead tunnel (received bytes
-/// flat while sent bytes climb). Not thread-safe: feed it from a single queue.
+/// Produces raw transport evidence. User-visible outage policy intentionally
+/// lives in `GatewayTunnelRecoveryPolicy`.
 public struct GatewayTunnelHealthEvaluator {
     private let thresholds: GatewayTunnelHealthThresholds
-    private let startedAt: Date
-    private var lastRxBytes: UInt64?
-    private var lastRxAdvanceAt: Date
-    private var txBytesAtLastRxAdvance: UInt64
+    private var startedAt: Date
+    private var previousSample: GatewayTunnelRuntimeStats?
+    private var previousSampleAt: Date?
+    private var oneWayCandidate: (startedAt: Date, startingTx: UInt64)?
 
     public init(startedAt: Date, thresholds: GatewayTunnelHealthThresholds = .default) {
         self.thresholds = thresholds
         self.startedAt = startedAt
-        self.lastRxBytes = nil
-        self.lastRxAdvanceAt = startedAt
-        self.txBytesAtLastRxAdvance = 0
     }
 
-    public mutating func evaluate(_ stats: GatewayTunnelRuntimeStats, at now: Date) -> GatewayTunnelHealth {
-        updateReceiveActivity(stats, at: now)
+    public mutating func evaluateEvidence(
+        _ stats: GatewayTunnelRuntimeStats,
+        at now: Date
+    ) -> GatewayTunnelHealthEvidence {
+        var sessionReset = false
+        if let previousSampleAt, now < previousSampleAt {
+            resetSession(at: now)
+            sessionReset = true
+        }
+
+        if let previousSample,
+           stats.rxBytes < previousSample.rxBytes || stats.txBytes < previousSample.txBytes {
+            resetSession(at: now)
+            sessionReset = true
+        }
+
+        if sessionReset {
+            previousSample = stats
+            previousSampleAt = now
+            return .warmingUp
+        }
+
+        let prior = previousSample
+        defer {
+            previousSample = stats
+            previousSampleAt = now
+        }
+
+        if let prior {
+            if stats.rxBytes > prior.rxBytes {
+                oneWayCandidate = nil
+            } else if stats.rxBytes == prior.rxBytes, stats.txBytes > prior.txBytes,
+                      oneWayCandidate == nil {
+                oneWayCandidate = (now, prior.txBytes)
+            }
+        }
 
         if stats.latestHandshakeEpochSeconds <= 0 {
             return now.timeIntervalSince(startedAt) >= thresholds.neverHandshakeGrace
-                ? .notPassingTraffic
-                : .unknown
+                ? .failed(.neverHandshaked)
+                : .warmingUp
         }
 
         let handshakeAge = now.timeIntervalSince1970 - Double(stats.latestHandshakeEpochSeconds)
         if handshakeAge > thresholds.staleHandshake {
-            return .notPassingTraffic
+            return .failed(.staleHandshake)
         }
 
-        if isOneWayDead(stats, at: now) {
-            return .notPassingTraffic
+        if let candidate = oneWayCandidate,
+           now.timeIntervalSince(candidate.startedAt) >= thresholds.oneWayFlatDuration {
+            oneWayCandidate = nil
+            if stats.txBytes >= candidate.startingTx,
+               stats.txBytes - candidate.startingTx >= thresholds.oneWayMinTxGrowth {
+                return .failed(.oneWayTraffic)
+            }
         }
 
-        return .passingTraffic
+        return .healthy
     }
 
-    // Reset the flatness baseline whenever received bytes change (traffic is
-    // coming back) or the counters reset (tunnel restarted). A stable rx count
-    // across polls is what accumulates the flat duration.
-    private mutating func updateReceiveActivity(_ stats: GatewayTunnelRuntimeStats, at now: Date) {
-        guard let lastRxBytes else {
-            self.lastRxBytes = stats.rxBytes
-            lastRxAdvanceAt = now
-            txBytesAtLastRxAdvance = stats.txBytes
-            return
-        }
-        if stats.rxBytes != lastRxBytes {
-            self.lastRxBytes = stats.rxBytes
-            lastRxAdvanceAt = now
-            txBytesAtLastRxAdvance = stats.txBytes
+    /// Starts a new traffic observation window after a binding refresh while
+    /// preserving handshake/session age.
+    public mutating func resetTrafficEvidence(
+        baseline: GatewayTunnelRuntimeStats? = nil,
+        at now: Date? = nil
+    ) {
+        oneWayCandidate = nil
+        previousSample = baseline
+        previousSampleAt = baseline == nil ? nil : now
+    }
+
+    public mutating func evaluate(_ stats: GatewayTunnelRuntimeStats, at now: Date) -> GatewayTunnelHealth {
+        switch evaluateEvidence(stats, at: now) {
+        case .warmingUp: return .unknown
+        case .healthy: return .passingTraffic
+        case .failed: return .notPassingTraffic
         }
     }
 
-    private func isOneWayDead(_ stats: GatewayTunnelRuntimeStats, at now: Date) -> Bool {
-        guard now.timeIntervalSince(lastRxAdvanceAt) >= thresholds.oneWayFlatDuration else {
-            return false
-        }
-        let txGrowth = stats.txBytes >= txBytesAtLastRxAdvance
-            ? stats.txBytes - txBytesAtLastRxAdvance
-            : 0
-        return txGrowth >= thresholds.oneWayMinTxGrowth
+    private mutating func resetSession(at now: Date) {
+        startedAt = now
+        previousSample = nil
+        previousSampleAt = nil
+        oneWayCandidate = nil
     }
 }

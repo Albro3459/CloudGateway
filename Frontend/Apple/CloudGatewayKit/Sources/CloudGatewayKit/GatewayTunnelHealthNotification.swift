@@ -9,7 +9,7 @@ public enum GatewayTunnelHealthNotification {
     public static let identifier = "com.gocloudlaunch.gateway.tunnel.notresponding"
 
     public static let title = "VPN not responding"
-    public static let body = "Your VPN server isn't responding. Disconnect to restore your connection."
+    public static let body = "CloudGateway couldn't restore the VPN connection. Disconnect to try using this network without the VPN."
 
     /// Notify only on the transition *into* notPassingTraffic, so a tunnel that
     /// stays dead is not re-notified on every poll.

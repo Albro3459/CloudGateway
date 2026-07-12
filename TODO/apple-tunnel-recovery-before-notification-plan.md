@@ -374,7 +374,7 @@ Responsibilities:
 * Clear monitoring state and invalidate generations synchronously on stop.
 
 Before an outage is confirmed, unavailable runtime on a non-satisfied path must
-publish `.unknown` and remain silent. Unavailable runtime that persists for 30
+publish `.unknown` and remain silent. Unavailable runtime that persists for 20
 seconds on the same settled satisfied path must become a causal-neutral
 confirmed VPN failure so a backend that never resumed cannot blackhole forever
 without warning. After an outage is already confirmed, transient missing stats
@@ -433,6 +433,18 @@ CloudGateway owns attempts, timing, verification, and notification policy. The
 generic fork must not contain CloudGateway thresholds or user-facing behavior.
 
 ## Implementation stages
+
+## Implementation status
+
+- [x] Stage 1: fork API implemented, documented, reviewed, and committed.
+- [x] Stage 2: submodule, Xcode package requirement, and `Package.resolved`
+  pinned locally to `4ff7fcd282cb64830f7febd5b9d1131653f2cc78`.
+- [x] Stage 3: bounded health evidence and deterministic tests implemented.
+- [x] Stage 4: pure recovery policy and packet-tunnel orchestration implemented.
+- [x] Stage 5: notification and in-app copy share the confirmed-state message.
+- [ ] Stage 6: 97 CloudGatewayKit tests pass. The complete Xcode build remains
+  blocked until the pinned fork revision is published to GitHub; real-device
+  transition and controlled outage checks also remain required.
 
 ### Stage 1: fork API
 
@@ -564,7 +576,7 @@ implementation adds a small notification-center seam.
   confirmation.
 * Link-quality chatter on poor Wi-Fi does not continuously restart settling.
 * Repeated real route changes while status stays satisfied stop suppressing
-  recovery after the 60-second cap.
+  recovery after the 30-second cap.
 * Weak Wi-Fi with stale UDP/NAT state: binding refresh restores RX without a
   warning.
 * Captive or UDP-blocking Wi-Fi: one causal-neutral warning may remain because
@@ -585,7 +597,7 @@ implementation adds a small notification-center seam.
 * A stale local binding that recovers within the two verification windows never
   produces the outage notification or in-app banner.
 * A genuine persistent server outage with continuing failure evidence on a
-  stable satisfied path produces exactly one warning in roughly one minute,
+  stable satisfied path produces exactly one warning in roughly 30 seconds,
   plus any path-settling delay.
 * With notification authorization granted, the warning remains available while
   signed out and while the app is closed. With authorization denied, the fresh

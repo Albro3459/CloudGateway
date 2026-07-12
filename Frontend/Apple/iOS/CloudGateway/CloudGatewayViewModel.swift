@@ -118,7 +118,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
-    static let deadTunnelMessage = "Your VPN server isn't responding. Disconnect to restore your connection."
+    static let deadTunnelMessage = GatewayTunnelHealthNotification.body
     static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
     static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
 

@@ -1,4 +1,5 @@
 import CloudGatewayKit
+import Network
 import NetworkExtension
 import os
 import UserNotifications
@@ -19,10 +20,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // (30s) without rewriting the protected file on every 5s poll.
     private var healthTimer: DispatchSourceTimer?
     private var healthEvaluator: GatewayTunnelHealthEvaluator?
+    private var recoveryPolicy = GatewayTunnelRecoveryPolicy()
     private var healthStore: GatewayTunnelHealthStore?
     private var healthTunnelIdentifier: String?
     private var lastPublishedHealth: GatewayTunnelHealth?
     private var healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
+    private var healthReadInFlight = false
+    private var healthSessionGeneration: UInt64 = 0
+    private var policyPathGeneration: UInt64 = 0
+    private var pathFingerprint: HealthPathFingerprint?
+    private var satisfiedSince: Date?
+    private var lastPathChangeAt: Date?
+    private var pathMonitor: NWPathMonitor?
 
     override func startTunnel(
         options: [String: NSObject]?,
@@ -91,8 +100,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // .unknown, .passingTraffic, or .notPassingTraffic for this session.
             try? self.healthStore?.clear()
             self.healthEvaluator = GatewayTunnelHealthEvaluator(startedAt: Date())
+            self.recoveryPolicy = GatewayTunnelRecoveryPolicy()
             self.lastPublishedHealth = nil
             self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
+            self.healthReadInFlight = false
+            self.healthSessionGeneration &+= 1
+            self.policyPathGeneration = 0
+            self.pathFingerprint = nil
+            self.satisfiedSince = nil
+            self.lastPathChangeAt = nil
+
+            let pathMonitor = NWPathMonitor()
+            pathMonitor.pathUpdateHandler = { [weak self] path in
+                self?.receivePathUpdate(path)
+            }
+            self.pathMonitor = pathMonitor
+            pathMonitor.start(queue: self.healthQueue)
 
             let timer = DispatchSource.makeTimerSource(queue: self.healthQueue)
             timer.schedule(deadline: .now() + self.healthPollInterval, repeating: self.healthPollInterval)
@@ -111,12 +134,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         healthQueue.sync {
             healthTimer?.cancel()
             healthTimer = nil
+            pathMonitor?.cancel()
+            pathMonitor = nil
             healthEvaluator = nil
+            recoveryPolicy = GatewayTunnelRecoveryPolicy()
             try? healthStore?.clear()
             healthStore = nil
             healthTunnelIdentifier = nil
             lastPublishedHealth = nil
             healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
+            healthReadInFlight = false
+            healthSessionGeneration &+= 1
+            policyPathGeneration &+= 1
+            pathFingerprint = nil
+            satisfiedSince = nil
+            lastPathChangeAt = nil
         }
         withdrawDeadTunnelNotification()
     }
@@ -124,43 +156,110 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // Called on healthQueue. Reads the tunnel's runtime stats, updates the
     // evaluator, and publishes the verdict to the shared app group.
     private func pollTunnelHealth() {
+        guard !healthReadInFlight else { return }
+        healthReadInFlight = true
+        let sessionGeneration = healthSessionGeneration
         adapter.getRuntimeConfiguration { [weak self] configuration in
             self?.healthQueue.async {
-                guard let self,
-                      let configuration,
-                      let stats = GatewayTunnelRuntimeStats.parse(configuration),
-                      var evaluator = self.healthEvaluator,
-                      let store = self.healthStore,
-                      let tunnelIdentifier = self.healthTunnelIdentifier else {
+                guard let self, sessionGeneration == self.healthSessionGeneration else {
                     return
                 }
+                self.healthReadInFlight = false
                 let now = Date()
-                let health = evaluator.evaluate(stats, at: now)
-                self.healthEvaluator = evaluator
-
-                // Write on a state transition, or when the last write is old
-                // enough that the stored snapshot would otherwise go stale.
-                if self.healthPersistencePolicy.shouldPersist(health, at: now) {
-                    do {
-                        try store.write(GatewayTunnelHealthSnapshot(
-                            tunnelIdentifier: tunnelIdentifier,
-                            health: health,
-                            updatedAt: now
-                        ))
-                        self.healthPersistencePolicy.recordPersisted(health, at: now)
-                    } catch {
-                        // Leave the policy unchanged so the next poll retries.
-                    }
+                let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
+                var evidence: GatewayTunnelHealthEvidence?
+                if let stats, var evaluator = self.healthEvaluator {
+                    evidence = evaluator.evaluateEvidence(stats, at: now)
+                    self.healthEvaluator = evaluator
                 }
-
-                let previous = self.lastPublishedHealth
-                self.lastPublishedHealth = health
-                if GatewayTunnelHealthNotification.shouldNotify(previous: previous, current: health) {
-                    self.postDeadTunnelNotification()
-                } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
-                    self.withdrawDeadTunnelNotification()
+                let action = self.recoveryPolicy.update(
+                    stats: stats,
+                    evidence: evidence,
+                    path: self.pathAvailability(at: now),
+                    routeGeneration: self.policyPathGeneration,
+                    at: now
+                )
+                self.publishHealth(action.health, at: now)
+                if action.requestBindingRefresh {
+                    self.requestBindingRefresh(sessionGeneration: sessionGeneration)
                 }
             }
+        }
+    }
+
+    private func receivePathUpdate(_ path: Network.NWPath) {
+        let now = Date()
+        let fingerprint = HealthPathFingerprint(path)
+        guard fingerprint != pathFingerprint else { return }
+
+        let wasContinuouslySatisfied = satisfiedSince != nil
+        pathFingerprint = fingerprint
+        lastPathChangeAt = now
+
+        if path.status == .satisfied {
+            if !wasContinuouslySatisfied {
+                satisfiedSince = now
+            }
+            if now.timeIntervalSince(satisfiedSince ?? now) < 30 {
+                policyPathGeneration &+= 1
+            }
+        } else {
+            satisfiedSince = nil
+            policyPathGeneration &+= 1
+        }
+    }
+
+    private func pathAvailability(at now: Date) -> GatewayTunnelPathAvailability {
+        guard pathFingerprint?.status == .satisfied, let satisfiedSince, let lastPathChangeAt else {
+            return .unavailable
+        }
+        let continuouslySatisfiedAge = now.timeIntervalSince(satisfiedSince)
+        let quietAge = now.timeIntervalSince(lastPathChangeAt)
+        return quietAge >= 10 || continuouslySatisfiedAge >= 30 ? .satisfied : .settling
+    }
+
+    private func requestBindingRefresh(sessionGeneration: UInt64) {
+        let routeGeneration = policyPathGeneration
+        adapter.refreshNetworkBinding { [weak self] error in
+            self?.healthQueue.async {
+                guard let self, sessionGeneration == self.healthSessionGeneration else {
+                    return
+                }
+                guard routeGeneration == self.policyPathGeneration else {
+                    self.recoveryPolicy.invalidatePendingBindingRefresh()
+                    return
+                }
+                let accepted = error == nil
+                let now = Date()
+                self.recoveryPolicy.bindingRefreshCompleted(accepted: accepted, at: now)
+                if accepted {
+                    self.healthEvaluator?.resetTrafficEvidence()
+                }
+            }
+        }
+    }
+
+    private func publishHealth(_ health: GatewayTunnelHealth, at now: Date) {
+        guard let store = healthStore, let tunnelIdentifier = healthTunnelIdentifier else { return }
+        if healthPersistencePolicy.shouldPersist(health, at: now) {
+            do {
+                try store.write(GatewayTunnelHealthSnapshot(
+                    tunnelIdentifier: tunnelIdentifier,
+                    health: health,
+                    updatedAt: now
+                ))
+                healthPersistencePolicy.recordPersisted(health, at: now)
+            } catch {
+                // Leave the policy unchanged so the next poll retries.
+            }
+        }
+
+        let previous = lastPublishedHealth
+        lastPublishedHealth = health
+        if GatewayTunnelHealthNotification.shouldNotify(previous: previous, current: health) {
+            postDeadTunnelNotification()
+        } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
+            withdrawDeadTunnelNotification()
         }
     }
 
@@ -181,6 +280,35 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
         center.removeDeliveredNotifications(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
+    }
+}
+
+private struct HealthPathFingerprint: Equatable {
+    enum Status: Equatable {
+        case satisfied
+        case unsatisfied
+        case requiresConnection
+    }
+
+    let status: Status
+    let interfaceTypes: [NWInterface.InterfaceType]
+    let gateways: [String]
+    let supportsIPv4: Bool
+    let supportsIPv6: Bool
+    let supportsDNS: Bool
+
+    init(_ path: Network.NWPath) {
+        switch path.status {
+        case .satisfied: status = .satisfied
+        case .requiresConnection: status = .requiresConnection
+        default: status = .unsatisfied
+        }
+        interfaceTypes = [.wifi, .cellular, .wiredEthernet, .loopback, .other]
+            .filter(path.usesInterfaceType)
+        gateways = path.gateways.map(String.init(describing:)).sorted()
+        supportsIPv4 = path.supportsIPv4
+        supportsIPv6 = path.supportsIPv6
+        supportsDNS = path.supportsDNS
     }
 }
 
