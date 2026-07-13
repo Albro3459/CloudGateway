@@ -168,7 +168,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Albro3459/wireguard-apple",
       "state" : {
-        "revision" : "431195054a20c4a1a3c90a1fe523ca3e0a940f64"
+        "revision" : "b5e1a37f4119b3beb32a768e54ba46e37a185a7e"
       }
     }
   ],

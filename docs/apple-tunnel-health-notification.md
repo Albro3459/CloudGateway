@@ -32,6 +32,9 @@ auto-disconnects or routes traffic outside the VPN; it only tells the user so
   starts failing (measured 50-55 seconds on device for a full blackhole with
   continuing traffic). Episodes that begin during a network transition can
   take up to ~30 seconds longer while the new path settles.
+* The in-app banner's action is "Disconnect & Reload": it stops the tunnel and
+  then reloads app state over the now-direct Internet connection, so the user
+  lands on an up-to-date dashboard instead of stale data.
 * The warning withdraws automatically once traffic verifiably resumes or the
   tunnel is stopped. There is no separate "recovered" notification.
 * The copy is causal-neutral on purpose: transport evidence cannot prove
@@ -136,8 +139,10 @@ recorded in the TODO plan.
 
 ## Related Documents
 
-* Design and state machine: `TODO/apple-tunnel-recovery-before-notification-plan.md`
-* Backend restart escalation: `TODO/apple-tunnel-backend-restart-recovery-plan.md`
-* Fork API: `wireguard-apple` `TODO/cloudgateway-backend-restart-plan.md`
-* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthTests.swift`
-* Real-device validation of the backend-restart recovery stage remains required.
+* Health evidence and recovery policy: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealth.swift`, `GatewayTunnelRecoveryPolicy.swift`, `GatewayTunnelPathPolicy.swift`.
+* Extension orchestration: `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift`.
+* Fork recovery APIs: `wireguard-apple` `WireGuardAdapter.refreshNetworkBinding` / `restartBackend`.
+* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthTests.swift`.
+
+The original design plans and device-evidence log live in git history (see the
+`TODO/apple-tunnel-*` docs removed after the feature shipped).
