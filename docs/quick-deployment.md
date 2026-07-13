@@ -34,12 +34,7 @@ The script expects the team API key at
 The key ID and issuer ID are identifiers, not secrets; the `.p8` file must
 never be committed or logged.
 
-For manual archive-only fallback:
-
-```sh
-mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
-FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
-```
+See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
 ## Deploy regional servers
 
