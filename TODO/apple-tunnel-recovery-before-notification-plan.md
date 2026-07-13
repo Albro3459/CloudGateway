@@ -455,6 +455,12 @@ generic fork must not contain CloudGateway thresholds or user-facing behavior.
   avoid re-introducing false positives (see
   `docs/apple-tunnel-health-notification.md`). Weak-network false-positive
   matrix (transitions, flaky Wi-Fi) still pending on device.
+* 2026-07-12, iOS v1.0.0 (build 10): weak indoor cellular (Costco) blackholed
+  the tunnel while the path stayed satisfied. Both binding refreshes ran and
+  did not recover; the warning posted correctly (~50s, true positive) and a
+  manual toggle recovered immediately. This meets the follow-up #2 evidence
+  bar; escalation is designed in
+  `TODO/apple-tunnel-backend-restart-recovery-plan.md`.
 
 ### Stage 1: fork API
 
@@ -638,7 +644,9 @@ implementation adds a small notification-center seam.
    degraded path that remains satisfied.
 2. If binding refresh does not recover cases that a manual toggle does, design a
    separately reviewed internal backend restart with explicit rollback and
-   failure semantics.
+   failure semantics. Evidence bar met on 2026-07-12 (weak-cellular blackhole,
+   see Device evidence); designed in
+   `TODO/apple-tunnel-backend-restart-recovery-plan.md`.
 3. If automatic deployment-IP recovery becomes a product requirement, design
    safe original-hostname resolution, last-known-endpoint fallback, DNS TTL
    behavior, and endpoint application as a separate stage.
