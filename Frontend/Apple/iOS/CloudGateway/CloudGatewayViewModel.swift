@@ -505,6 +505,10 @@ final class CloudGatewayViewModel: ObservableObject {
         await run {
             apply(try await configManager.stopTunnel(identifier: tunnelIdentifier))
             tunnelHealthSnapshot = nil
+            // The tunnel is down, so the device now has direct internet. Reload
+            // fresh state over the real network, mirroring pull-to-refresh, so
+            // the user lands on an up-to-date dashboard instead of stale data.
+            await reloadCurrentState(showsWorkingOverlay: false)
         }
     }
 

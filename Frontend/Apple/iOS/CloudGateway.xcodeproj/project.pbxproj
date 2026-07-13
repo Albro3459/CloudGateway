@@ -899,7 +899,7 @@
 			repositoryURL = "https://github.com/Albro3459/wireguard-apple";
 			requirement = {
 				kind = revision;
-				revision = f9a56d96d1a7163d17bfbfd9712612aa5e8f0b4f;
+				revision = 431195054a20c4a1a3c90a1fe523ca3e0a940f64;
 			};
 		};
 		ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {

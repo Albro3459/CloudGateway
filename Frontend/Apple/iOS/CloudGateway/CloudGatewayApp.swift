@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let firestoreSettings = FirestoreSettings()
         firestoreSettings.cacheSettings = MemoryCacheSettings()
         Firestore.firestore().settings = firestoreSettings
-        // The packet-tunnel extension posts a local "VPN not responding"
+        // The packet-tunnel extension posts a local "VPN connection interrupted"
         // notification when the tunnel blackholes traffic. Set the delegate so
         // the banner can present while foregrounded; authorization is requested
         // in context at first VPN install/connect rather than at launch.

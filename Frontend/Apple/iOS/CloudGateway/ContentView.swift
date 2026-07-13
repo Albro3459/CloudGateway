@@ -468,7 +468,7 @@ struct ContentView: View {
                     text: CloudGatewayViewModel.deadTunnelMessage,
                     style: .warning,
                     onDismiss: nil,
-                    actionTitle: "Disconnect",
+                    actionTitle: "Disconnect & Reload",
                     onAction: {
                         Task {
                             await viewModel.disconnectDeadTunnel()

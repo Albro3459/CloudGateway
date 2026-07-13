@@ -27,17 +27,16 @@ auto-disconnects or routes traffic outside the VPN; it only tells the user so
 * A likely-dead tunnel is first repaired silently (see recovery below). A
   transient problem that recovers produces nothing.
 * A persistent failure produces exactly one local notification and one in-app
-  banner per episode: "VPN not responding — CloudGateway couldn't restore the
-  VPN connection. Disconnect to try using this network without the VPN."
-* Users are normally notified about 30–55 seconds after meaningful traffic
-  starts failing (measured 50–55 seconds on device for a full blackhole with
+  banner per episode: "VPN connection interrupted - Your internet connection may be weak, or the VPN server may be down for maintenance for a few minutes. You can wait, or disconnect to use this network without the VPN."
+* Users are normally notified about 30-55 seconds after meaningful traffic
+  starts failing (measured 50-55 seconds on device for a full blackhole with
   continuing traffic). Episodes that begin during a network transition can
   take up to ~30 seconds longer while the new path settles.
 * The warning withdraws automatically once traffic verifiably resumes or the
   tunnel is stopped. There is no separate "recovered" notification.
 * The copy is causal-neutral on purpose: transport evidence cannot prove
-  "server down" versus "network blocks UDP," so the message never claims the
-  server is offline.
+  "server down" versus "weak network," so the message offers both as hedged
+  possibilities and never claims the server is offline.
 
 A deployment that changes the server's public IP is still warned about, but
 recovery may require the user to toggle the VPN off and on after the new
@@ -114,8 +113,8 @@ gates, in order of importance:
   healthy polls. A confirmed episode survives transient path loss or missing
   stats without withdrawing and reposting, so one outage is one notification.
 
-The deliberate cost of these gates is latency: roughly 30–55 seconds to
-notify instead of seconds. That trade is intentional — a warning that fires
+The deliberate cost of these gates is latency: roughly 30-55 seconds to
+notify instead of seconds. That trade is intentional - a warning that fires
 during ordinary network transitions trains users to ignore it, and a user who
 disconnects because of a false alarm exposes traffic outside the VPN for no
 reason. Detection constants may be tightened only with device evidence
