@@ -26,11 +26,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastPublishedHealth: GatewayTunnelHealth?
     private var healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
     private var healthReadInFlight = false
+    private var recoveryRequestInFlight = false
     private var healthSessionGeneration: UInt64 = 0
-    private var policyPathGeneration: UInt64 = 0
+    private var tunnelPathPolicy = GatewayTunnelPathPolicy()
     private var pathFingerprint: HealthPathFingerprint?
-    private var satisfiedSince: Date?
-    private var lastPathChangeAt: Date?
     private var pathMonitor: NWPathMonitor?
 
     override func startTunnel(
@@ -104,11 +103,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.lastPublishedHealth = nil
             self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
             self.healthReadInFlight = false
+            self.recoveryRequestInFlight = false
             self.healthSessionGeneration &+= 1
-            self.policyPathGeneration = 0
+            self.tunnelPathPolicy = GatewayTunnelPathPolicy()
             self.pathFingerprint = nil
-            self.satisfiedSince = nil
-            self.lastPathChangeAt = nil
 
             let pathMonitor = NWPathMonitor()
             pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -144,11 +142,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             lastPublishedHealth = nil
             healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
             healthReadInFlight = false
+            recoveryRequestInFlight = false
             healthSessionGeneration &+= 1
-            policyPathGeneration &+= 1
+            tunnelPathPolicy = GatewayTunnelPathPolicy()
             pathFingerprint = nil
-            satisfiedSince = nil
-            lastPathChangeAt = nil
         }
         withdrawDeadTunnelNotification()
     }
@@ -176,12 +173,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     stats: stats,
                     evidence: evidence,
                     path: self.pathAvailability(at: now),
-                    routeGeneration: self.policyPathGeneration,
+                    routeGeneration: self.tunnelPathPolicy.policyGeneration,
                     at: now
                 )
                 self.publishHealth(action.health, at: now)
-                if action.requestBindingRefresh {
-                    self.requestBindingRefresh(sessionGeneration: sessionGeneration, baseline: stats)
+                if let request = action.recoveryRequest {
+                    guard !self.recoveryRequestInFlight else {
+                        // A path-policy reset can create a new request while the
+                        // adapter is still finishing the prior one. Keep only
+                        // one operation in flight and retry from observing after
+                        // its callback arrives.
+                        self.recoveryPolicy.invalidatePendingRecoveryAttempt()
+                        return
+                    }
+                    self.requestRecovery(
+                        request,
+                        sessionGeneration: sessionGeneration,
+                        baseline: stats
+                    )
                 }
             }
         }
@@ -192,53 +201,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let fingerprint = HealthPathFingerprint(path)
         guard fingerprint != pathFingerprint else { return }
 
-        let wasContinuouslySatisfied = satisfiedSince != nil
         pathFingerprint = fingerprint
-        lastPathChangeAt = now
-
-        if path.status == .satisfied {
-            if !wasContinuouslySatisfied {
-                satisfiedSince = now
-            }
-            if now.timeIntervalSince(satisfiedSince ?? now) < 30 {
-                policyPathGeneration &+= 1
-            }
-        } else {
-            satisfiedSince = nil
-            policyPathGeneration &+= 1
-        }
+        tunnelPathPolicy.recordPathChange(isSatisfied: path.status == .satisfied, at: now)
     }
 
     private func pathAvailability(at now: Date) -> GatewayTunnelPathAvailability {
-        guard pathFingerprint?.status == .satisfied, let satisfiedSince, let lastPathChangeAt else {
-            return .unavailable
-        }
-        let continuouslySatisfiedAge = now.timeIntervalSince(satisfiedSince)
-        let quietAge = now.timeIntervalSince(lastPathChangeAt)
-        return quietAge >= 10 || continuouslySatisfiedAge >= 30 ? .satisfied : .settling
+        tunnelPathPolicy.availability(at: now)
     }
 
-    private func requestBindingRefresh(sessionGeneration: UInt64, baseline: GatewayTunnelRuntimeStats?) {
-        let routeGeneration = policyPathGeneration
-        adapter.refreshNetworkBinding { [weak self] error in
+    private func requestRecovery(
+        _ request: GatewayTunnelRecoveryRequest,
+        sessionGeneration: UInt64,
+        baseline: GatewayTunnelRuntimeStats?
+    ) {
+        let routeGeneration = tunnelPathPolicy.recoveryRouteGeneration
+        let policyGeneration = tunnelPathPolicy.policyGeneration
+        recoveryRequestInFlight = true
+        let completionHandler: (WireGuardAdapterError?) -> Void = { [weak self] error in
             self?.healthQueue.async {
                 guard let self, sessionGeneration == self.healthSessionGeneration else {
                     return
                 }
-                guard routeGeneration == self.policyPathGeneration else {
-                    self.recoveryPolicy.invalidatePendingBindingRefresh()
-                    return
-                }
+                self.recoveryRequestInFlight = false
                 let accepted = error == nil
                 let now = Date()
-                self.recoveryPolicy.bindingRefreshCompleted(accepted: accepted, at: now)
-                if accepted {
-                    // Seed the fresh one-way window with the sample that opened
-                    // this attempt so the next poll can start a new candidate
-                    // instead of discarding the first post-refresh sample.
-                    self.healthEvaluator?.resetTrafficEvidence(baseline: baseline, at: now)
+                if accepted, request == .backendRestart {
+                    // The backend was recreated even if the route changed while
+                    // the request was running, so its evaluator session is new.
+                    self.healthEvaluator?.resetSession(at: now)
                 }
+                let routeMatches = routeGeneration == self.tunnelPathPolicy.recoveryRouteGeneration
+                if accepted, request == .bindingRefresh {
+                    // Never carry a one-way latch across the refresh. The
+                    // captured sample can seed the new window only while its
+                    // route is still current.
+                    self.healthEvaluator?.resetTrafficEvidence(
+                        baseline: routeMatches ? baseline : nil,
+                        at: now
+                    )
+                }
+                guard routeMatches || policyGeneration == self.tunnelPathPolicy.policyGeneration else {
+                    return
+                }
+                self.recoveryPolicy.recoveryAttemptCompleted(accepted: accepted, at: now)
             }
+        }
+
+        switch request {
+        case .bindingRefresh:
+            adapter.refreshNetworkBinding(completionHandler: completionHandler)
+        case .backendRestart:
+            adapter.restartBackend(completionHandler: completionHandler)
         }
     }
 

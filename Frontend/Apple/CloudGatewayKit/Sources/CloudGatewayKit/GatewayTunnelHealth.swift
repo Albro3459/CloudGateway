@@ -144,7 +144,9 @@ public struct GatewayTunnelHealthEvaluator {
         }
     }
 
-    private mutating func resetSession(at now: Date) {
+    /// Starts a fresh backend session, including handshake warmup and traffic
+    /// baselines. Use when WireGuard's backend is intentionally recreated.
+    public mutating func resetSession(at now: Date) {
         startedAt = now
         previousSample = nil
         previousSampleAt = nil

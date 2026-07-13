@@ -66,12 +66,17 @@ runtime stats every 5 seconds and feeds two pure, unit-tested types in
 
 Before any warning, the policy attempts recovery:
 
-* It requests up to **two lightweight WireGuard binding refreshes**
-  (`refreshNetworkBinding` on the pinned `wireguard-apple` fork), the same
-  UDP re-bind Apple-driven path changes use. This silently repairs stale
-  NAT/UDP bindings — the common weak-network case.
-* After each refresh it waits at least 10 seconds and requires **fresh
-  post-refresh failure evidence** (new outbound traffic with no handshake or
+* Attempt one requests a **lightweight WireGuard binding refresh**
+  (`refreshNetworkBinding` on the pinned `wireguard-apple` fork), the same UDP
+  re-bind Apple-driven path changes use. This silently repairs stale NAT/UDP
+  bindings.
+* If fresh failure evidence persists, attempt two performs an **in-place
+  backend restart** (`restartBackend`): it stops wireguard-go, reapplies the
+  tunnel network settings, and starts a fresh backend while the VPN remains
+  fail-closed. This is intended to repair dead cellular route/flow state that
+  a socket re-bind alone cannot; real-device validation remains required.
+* After each attempt it waits at least 10 seconds and requires **fresh
+  post-attempt failure evidence** (new outbound traffic with no handshake or
   RX progress) before escalating. Static counters or an idle tunnel can never
   prove failure; an idle tunnel stays `unknown` indefinitely.
 * Missing runtime state for 20 seconds on a stable, satisfied network also
@@ -88,9 +93,9 @@ gates, in order of importance:
   activity, never with accumulated idle time, so a single burst after a long
   idle period cannot instantly look like a blackhole. Sub-threshold keepalive
   noise is discarded per window and cannot accumulate.
-* **Recovery before accusation.** Two binding refreshes with verification
-  windows give Apple, WireGuard, and the NAT path a chance to self-heal. A
-  stale binding that recovers produces no warning at all.
+* **Recovery before accusation.** A binding refresh followed, only when
+  necessary, by one backend restart gives Apple, WireGuard, and the active
+  network path a chance to self-heal. A recovered tunnel produces no warning.
 * **Path awareness.** A second `NWPathMonitor` (policy-only, separate from
   WireGuardKit's) gates confirmation. Only a continuously satisfied path can
   advance an outage; airplane mode, no service, or captive-portal states stay
@@ -99,9 +104,10 @@ gates, in order of importance:
   expensive/constrained chatter are excluded from the fingerprint so poor
   Wi-Fi cannot restart settling forever. Settling suppression is capped at 30
   seconds so a real outage during churn is still bounded.
-* **Fresh evidence for every escalation.** Each refresh resets traffic
-  evidence; escalation requires new post-refresh outbound traffic that gets
-  no answer. A tunnel that goes idle mid-recovery parks at `unknown` instead
+* **Fresh evidence for every escalation.** Each recovery attempt resets its
+  evidence window; escalation requires new outbound traffic that gets no
+  answer. The backend restart also starts a new handshake warmup and counter
+  baseline. A tunnel that goes idle mid-recovery parks at `unknown` instead
   of confirming.
 * **Hysteresis on both edges.** Confirmation requires the full
   evidence-refresh-verify sequence; withdrawal requires two consecutive
@@ -132,5 +138,7 @@ recorded in the TODO plan.
 ## Related Documents
 
 * Design and state machine: `TODO/apple-tunnel-recovery-before-notification-plan.md`
-* Fork API: `wireguard-apple` `TODO/cloudgateway-network-binding-refresh-plan.md`
+* Backend restart escalation: `TODO/apple-tunnel-backend-restart-recovery-plan.md`
+* Fork API: `wireguard-apple` `TODO/cloudgateway-backend-restart-plan.md`
 * Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthTests.swift`
+* Real-device validation of the backend-restart recovery stage remains required.

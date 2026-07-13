@@ -142,32 +142,440 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     #expect(staleEvaluator.evaluateEvidence(stats(handshakeSecondsAgo: 200, rx: 0, tx: 0, relativeTo: now.addingTimeInterval(21)), at: now.addingTimeInterval(21)) == .warmingUp)
 }
 
+@Test func explicitSessionResetRestartsHandshakeWarmupWithoutPriorSample() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    _ = evaluator.evaluateEvidence(
+        stats(handshakeSecondsAgo: 200, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(20)),
+        at: now.addingTimeInterval(20)
+    )
+
+    evaluator.resetSession(at: now.addingTimeInterval(21))
+
+    let freshBackend = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: 0,
+        rxBytes: 0,
+        txBytes: 0
+    )
+    #expect(evaluator.evaluateEvidence(freshBackend, at: now.addingTimeInterval(21)) == .warmingUp)
+    #expect(evaluator.evaluateEvidence(freshBackend, at: now.addingTimeInterval(30)) == .warmingUp)
+    #expect(evaluator.evaluateEvidence(freshBackend, at: now.addingTimeInterval(31)) == .failed(.neverHandshaked))
+}
+
 // MARK: - Recovery policy
+
+@Test func pathSettlingCapsContinuousChurnAndRearmsAfterQuiet() {
+    var pathPolicy = GatewayTunnelPathPolicy()
+    #expect(pathPolicy.availability(at: now) == .unavailable)
+
+    pathPolicy.recordPathChange(isSatisfied: true, at: now)
+    #expect(pathPolicy.availability(at: now) == .settling)
+
+    for seconds in stride(from: 5, through: 35, by: 5) {
+        pathPolicy.recordPathChange(
+            isSatisfied: true,
+            at: now.addingTimeInterval(TimeInterval(seconds))
+        )
+    }
+
+    #expect(pathPolicy.policyGeneration == 6)
+    #expect(pathPolicy.recoveryRouteGeneration == 8)
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(35)) == .satisfied)
+
+    // Churn after the aggregate cap still invalidates stale callbacks, but it
+    // cannot keep resetting the health policy or re-arm another settle window.
+    pathPolicy.recordPathChange(isSatisfied: true, at: now.addingTimeInterval(40))
+    #expect(pathPolicy.policyGeneration == 6)
+    #expect(pathPolicy.recoveryRouteGeneration == 9)
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(40)) == .satisfied)
+
+    // Ten quiet seconds close the episode; a later meaningful change gets a
+    // fresh settle window and policy generation.
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(50)) == .satisfied)
+    pathPolicy.recordPathChange(isSatisfied: true, at: now.addingTimeInterval(51))
+    #expect(pathPolicy.policyGeneration == 7)
+    #expect(pathPolicy.recoveryRouteGeneration == 10)
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(51)) == .settling)
+}
+
+@Test func unsatisfiedPathIsUnavailableAndStartsNewSettleEpisode() {
+    var pathPolicy = GatewayTunnelPathPolicy()
+    pathPolicy.recordPathChange(isSatisfied: true, at: now)
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(10)) == .satisfied)
+
+    pathPolicy.recordPathChange(isSatisfied: false, at: now.addingTimeInterval(11))
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(11)) == .unavailable)
+
+    pathPolicy.recordPathChange(isSatisfied: true, at: now.addingTimeInterval(12))
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(12)) == .settling)
+}
+
+@Test func pathEventRearmsAfterUnobservedQuietInterval() {
+    var pathPolicy = GatewayTunnelPathPolicy()
+    pathPolicy.recordPathChange(isSatisfied: true, at: now)
+
+    for seconds in stride(from: 5, through: 35, by: 5) {
+        pathPolicy.recordPathChange(
+            isSatisfied: true,
+            at: now.addingTimeInterval(TimeInterval(seconds))
+        )
+    }
+    #expect(pathPolicy.policyGeneration == 6)
+
+    // No availability poll observes the quiet interval. The next event must
+    // still close the capped episode and start a fresh settle window.
+    pathPolicy.recordPathChange(isSatisfied: true, at: now.addingTimeInterval(46))
+    #expect(pathPolicy.policyGeneration == 7)
+    #expect(pathPolicy.availability(at: now.addingTimeInterval(46)) == .settling)
+}
 
 @Test func recoveryRequiresTwoFreshFailedAttempts() {
     var policy = GatewayTunnelRecoveryPolicy()
     let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
     var action = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
-    #expect(action == GatewayTunnelRecoveryAction(health: .unknown, requestBindingRefresh: true))
-    policy.bindingRefreshCompleted(accepted: true, at: now)
+    #expect(action == GatewayTunnelRecoveryAction(health: .unknown, recoveryRequest: .bindingRefresh))
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
     _ = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
     action = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10))
     #expect(action == GatewayTunnelRecoveryAction(health: .unknown))
 
     let second = stats(handshakeSecondsAgo: 210, rx: 10, tx: 20, relativeTo: now.addingTimeInterval(10))
     action = policy.update(stats: second, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10))
-    #expect(action.requestBindingRefresh)
-    policy.bindingRefreshCompleted(accepted: true, at: now.addingTimeInterval(10))
-    _ = policy.update(stats: second, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11))
-    action = policy.update(stats: stats(handshakeSecondsAgo: 220, rx: 10, tx: 30, relativeTo: now.addingTimeInterval(20)), evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20))
+    #expect(action.recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(10))
+    let restartBaseline = stats(handshakeSecondsAgo: nil, rx: 0, tx: 0)
+    _ = policy.update(stats: restartBaseline, evidence: .warmingUp, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11))
+    let failedAfterRestart = stats(handshakeSecondsAgo: nil, rx: 0, tx: 30)
+    action = policy.update(stats: failedAfterRestart, evidence: .failed(.neverHandshaked), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20))
     #expect(action.health == .notPassingTraffic)
+}
+
+@Test func recoveryEscalatesFromBindingRefreshToOneBackendRestart() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+
+    var action = policy.update(
+        stats: initial,
+        evidence: .failed(.staleHandshake),
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now
+    )
+    #expect(action.recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+
+    _ = policy.update(
+        stats: initial,
+        evidence: .failed(.staleHandshake),
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(1)
+    )
+    let failedAfterRefresh = stats(
+        handshakeSecondsAgo: 210,
+        rx: 10,
+        tx: 5_000,
+        relativeTo: now.addingTimeInterval(10)
+    )
+    action = policy.update(
+        stats: failedAfterRefresh,
+        evidence: .failed(.staleHandshake),
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(10)
+    )
+    #expect(action.recoveryRequest == .backendRestart)
+
+    // Polls while the restart is in flight cannot request it again.
+    action = policy.update(
+        stats: failedAfterRefresh,
+        evidence: .failed(.staleHandshake),
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(15)
+    )
+    #expect(action.recoveryRequest == nil)
+}
+
+@Test func postRestartCounterResetRequiresFreshFailureEvidence() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    var policy = GatewayTunnelRecoveryPolicy()
+    let oldSample = stats(handshakeSecondsAgo: 200, rx: 100, tx: 100)
+
+    var evidence = evaluator.evaluateEvidence(oldSample, at: now)
+    var action = policy.update(
+        stats: oldSample,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now
+    )
+    #expect(action.recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    evaluator.resetTrafficEvidence(baseline: oldSample, at: now)
+
+    let refreshBaseline = stats(
+        handshakeSecondsAgo: 201,
+        rx: 100,
+        tx: 100,
+        relativeTo: now.addingTimeInterval(1)
+    )
+    evidence = evaluator.evaluateEvidence(refreshBaseline, at: now.addingTimeInterval(1))
+    _ = policy.update(
+        stats: refreshBaseline,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(1)
+    )
+    let failedAfterRefresh = stats(
+        handshakeSecondsAgo: 210,
+        rx: 100,
+        tx: 5_000,
+        relativeTo: now.addingTimeInterval(10)
+    )
+    evidence = evaluator.evaluateEvidence(failedAfterRefresh, at: now.addingTimeInterval(10))
+    action = policy.update(
+        stats: failedAfterRefresh,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(10)
+    )
+    #expect(action.recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(10))
+    evaluator.resetSession(at: now.addingTimeInterval(10))
+
+    // The fresh backend's lower counters establish a new session and baseline;
+    // they are not recovery and cannot prove failure on their own.
+    let restartBaseline = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: 0,
+        rxBytes: 0,
+        txBytes: 0
+    )
+    evidence = evaluator.evaluateEvidence(restartBaseline, at: now.addingTimeInterval(11))
+    action = policy.update(
+        stats: restartBaseline,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(11)
+    )
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == nil)
+
+    let staticCounters = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: 0,
+        rxBytes: 0,
+        txBytes: 0
+    )
+    evidence = evaluator.evaluateEvidence(staticCounters, at: now.addingTimeInterval(21))
+    action = policy.update(
+        stats: staticCounters,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(21)
+    )
+    #expect(action.health == .unknown)
+
+    let freshFailedTraffic = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: 0,
+        rxBytes: 0,
+        txBytes: 5_000
+    )
+    evidence = evaluator.evaluateEvidence(freshFailedTraffic, at: now.addingTimeInterval(26))
+    action = policy.update(
+        stats: freshFailedTraffic,
+        evidence: evidence,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(26)
+    )
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == nil)
+}
+
+@Test func bindingRefreshWithoutCurrentRouteBaselineClearsLatchedEvidence() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    var policy = GatewayTunnelRecoveryPolicy()
+    let handshakeEpoch = Int(now.timeIntervalSince1970) - 5
+
+    let initial = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: handshakeEpoch,
+        rxBytes: 100,
+        txBytes: 100
+    )
+    #expect(evaluator.evaluateEvidence(initial, at: now) == .healthy)
+
+    let candidate = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: handshakeEpoch,
+        rxBytes: 100,
+        txBytes: 500
+    )
+    #expect(evaluator.evaluateEvidence(candidate, at: now.addingTimeInterval(1)) == .healthy)
+
+    let latched = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: handshakeEpoch,
+        rxBytes: 100,
+        txBytes: 5_000
+    )
+    let failedEvidence = evaluator.evaluateEvidence(latched, at: now.addingTimeInterval(11))
+    #expect(failedEvidence == .failed(.oneWayTraffic))
+    #expect(policy.update(stats: latched, evidence: failedEvidence, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11)).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(11))
+
+    // A same-episode callback from an old route clears the latch without
+    // seeding the new route from the captured pre-route sample.
+    evaluator.resetTrafficEvidence(baseline: nil, at: now.addingTimeInterval(11))
+    let newRouteBaseline = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: handshakeEpoch,
+        rxBytes: 100,
+        txBytes: 10_000
+    )
+    let baselineEvidence = evaluator.evaluateEvidence(newRouteBaseline, at: now.addingTimeInterval(12))
+    _ = policy.update(stats: newRouteBaseline, evidence: baselineEvidence, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(12))
+
+    let subthresholdTraffic = GatewayTunnelRuntimeStats(
+        latestHandshakeEpochSeconds: handshakeEpoch,
+        rxBytes: 100,
+        txBytes: 10_001
+    )
+    let subthresholdEvidence = evaluator.evaluateEvidence(subthresholdTraffic, at: now.addingTimeInterval(22))
+    #expect(subthresholdEvidence == .healthy)
+    let action = policy.update(stats: subthresholdTraffic, evidence: subthresholdEvidence, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(22))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == nil)
+}
+
+@Test func firstPostRestartHandshakeRecoversThroughProbation() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(10))
+
+    // A handshake already present in the first post-restart sample is real
+    // inbound progress from the new backend, not merely a baseline.
+    let handshaked = stats(handshakeSecondsAgo: 1, rx: 0, tx: 500, relativeTo: now.addingTimeInterval(11))
+    #expect(policy.update(stats: handshaked, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11)).health == .unknown)
+    #expect(policy.update(stats: handshaked, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).health == .passingTraffic)
+}
+
+@Test func firstPostRestartReceiveProgressRecoversThroughProbation() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(10))
+
+    let received = GatewayTunnelRuntimeStats(latestHandshakeEpochSeconds: 0, rxBytes: 100, txBytes: 0)
+    #expect(policy.update(stats: received, evidence: .warmingUp, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11)).health == .unknown)
+    let handshaked = stats(handshakeSecondsAgo: 1, rx: 100, tx: 500, relativeTo: now.addingTimeInterval(15))
+    #expect(policy.update(stats: handshaked, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).health == .passingTraffic)
+}
+
+@Test func failedProbationAfterBindingRefreshEscalatesDirectlyToRestart() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+
+    let progressed = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
+    #expect(policy.update(stats: progressed, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
+
+    let failedAgain = stats(handshakeSecondsAgo: 200, rx: 20, tx: 5_000, relativeTo: now.addingTimeInterval(15))
+    var action = policy.update(stats: failedAgain, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == nil)
+    action = policy.update(stats: failedAgain, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == .backendRestart)
+}
+
+@Test func failedProbationAfterBackendRestartConfirmsWithoutAnotherRestart() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(10))
+
+    let handshaked = stats(handshakeSecondsAgo: 1, rx: 0, tx: 500, relativeTo: now.addingTimeInterval(11))
+    #expect(policy.update(stats: handshaked, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11)).health == .unknown)
+
+    let resetAgain = GatewayTunnelRuntimeStats(latestHandshakeEpochSeconds: 0, rxBytes: 0, txBytes: 0)
+    var action = policy.update(stats: resetAgain, evidence: .warmingUp, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(16))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == nil)
+
+    let failedAgain = stats(handshakeSecondsAgo: 200, rx: 0, tx: 5_000, relativeTo: now.addingTimeInterval(21))
+    action = policy.update(stats: failedAgain, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(21))
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == nil)
+    action = policy.update(stats: failedAgain, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(26))
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == nil)
+}
+
+@Test func routeChangeInvalidatesPendingRecoveryCompletion() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now).recoveryRequest == .bindingRefresh)
+
+    policy.invalidatePendingRecoveryAttempt()
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(1))
+
+    let action = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(5))
+    #expect(action.recoveryRequest == .bindingRefresh)
+}
+
+@Test func failedBackendRestartConfirmsOnlyAfterRuntimeRemainsUnavailable() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).recoveryRequest == .backendRestart)
+
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(10))
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(29)).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(30)).health == .notPassingTraffic)
+}
+
+@Test func failedBackendRestartThatResumesCannotRequestAnotherRestart() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(1))
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(10))
+    #expect(policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(10)).recoveryRequest == .backendRestart)
+
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(10))
+    let resumedBaseline = stats(handshakeSecondsAgo: nil, rx: 0, tx: 0)
+    #expect(policy.update(stats: resumedBaseline, evidence: .warmingUp, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(11)).health == .unknown)
+
+    let failedAfterResume = stats(handshakeSecondsAgo: nil, rx: 0, tx: 5_000)
+    let action = policy.update(stats: failedAfterResume, evidence: .failed(.neverHandshaked), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(21))
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == nil)
 }
 
 @Test func recoveryProgressAndPathLossSuppressConfirmation() {
     var policy = GatewayTunnelRecoveryPolicy()
     let initial = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
     _ = policy.update(stats: initial, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
-    policy.bindingRefreshCompleted(accepted: true, at: now)
+    policy.recoveryAttemptCompleted(accepted: true, at: now)
     // First post-refresh sample only establishes the verification baseline.
     let baseline = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
     #expect(policy.update(stats: baseline, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
@@ -194,23 +602,109 @@ private func driveRecovery(
     var policy = GatewayTunnelRecoveryPolicy()
     var confirmed = false
     var passedAfterRefresh = false
-    var sawRefresh = false
+    var sawRecoveryRequest = false
+    var restartPoll: Int?
 
     for i in 0..<polls {
         let t = now.addingTimeInterval(Double(i) * 5)
-        let sample = GatewayTunnelRuntimeStats(
-            latestHandshakeEpochSeconds: handshakeEpoch(t), rxBytes: rx(i), txBytes: tx(i))
+        let sample: GatewayTunnelRuntimeStats
+        if let restartPoll, i > restartPoll {
+            let postRestartPoll = i - restartPoll - 1
+            sample = GatewayTunnelRuntimeStats(
+                latestHandshakeEpochSeconds: 0,
+                rxBytes: rx(postRestartPoll) - rx(0),
+                txBytes: tx(postRestartPoll) - tx(0)
+            )
+        } else {
+            sample = GatewayTunnelRuntimeStats(
+                latestHandshakeEpochSeconds: handshakeEpoch(t),
+                rxBytes: rx(i),
+                txBytes: tx(i)
+            )
+        }
         let evidence = evaluator.evaluateEvidence(sample, at: t)
         let action = policy.update(stats: sample, evidence: evidence, path: .satisfied, routeGeneration: 1, at: t)
         if action.health == .notPassingTraffic { confirmed = true }
-        if action.health == .passingTraffic, sawRefresh { passedAfterRefresh = true }
-        if action.requestBindingRefresh {
-            sawRefresh = true
-            policy.bindingRefreshCompleted(accepted: true, at: t)
-            evaluator.resetTrafficEvidence(baseline: sample, at: t)
+        if action.health == .passingTraffic, sawRecoveryRequest { passedAfterRefresh = true }
+        if let request = action.recoveryRequest {
+            sawRecoveryRequest = true
+            policy.recoveryAttemptCompleted(accepted: true, at: t)
+            switch request {
+            case .bindingRefresh:
+                evaluator.resetTrafficEvidence(baseline: sample, at: t)
+            case .backendRestart:
+                restartPoll = i
+                evaluator.resetSession(at: t)
+            }
         }
     }
     return (confirmed, passedAfterRefresh)
+}
+
+@Test func restartedPersistentBlackholeConfirmsOnceFromFreshCounters() {
+    var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
+    var policy = GatewayTunnelRecoveryPolicy()
+    var requests: [GatewayTunnelRecoveryRequest] = []
+    var restartPoll: Int?
+    var previousHealth: GatewayTunnelHealth?
+    var confirmationTransitions = 0
+    var confirmedAt: TimeInterval?
+    var passedAfterRecoveryRequest = false
+    let fixedHandshake = Int(now.timeIntervalSince1970) - 5
+
+    for i in 0..<30 {
+        let t = now.addingTimeInterval(Double(i) * 5)
+        let sample: GatewayTunnelRuntimeStats
+        if let restartPoll, i > restartPoll {
+            let postRestartPoll = i - restartPoll - 1
+            sample = GatewayTunnelRuntimeStats(
+                latestHandshakeEpochSeconds: 0,
+                rxBytes: 0,
+                txBytes: UInt64(postRestartPoll) * 8_000
+            )
+        } else {
+            sample = GatewayTunnelRuntimeStats(
+                latestHandshakeEpochSeconds: fixedHandshake,
+                rxBytes: 1_000,
+                txBytes: 1_000 + UInt64(i) * 8_000
+            )
+        }
+
+        let evidence = evaluator.evaluateEvidence(sample, at: t)
+        let action = policy.update(
+            stats: sample,
+            evidence: evidence,
+            path: .satisfied,
+            routeGeneration: 1,
+            at: t
+        )
+        if action.health == .notPassingTraffic,
+           previousHealth != .notPassingTraffic {
+            confirmationTransitions += 1
+            confirmedAt = t.timeIntervalSince(now)
+        }
+        if action.health == .passingTraffic, !requests.isEmpty {
+            passedAfterRecoveryRequest = true
+        }
+        previousHealth = action.health
+
+        if let request = action.recoveryRequest {
+            requests.append(request)
+            policy.recoveryAttemptCompleted(accepted: true, at: t)
+            switch request {
+            case .bindingRefresh:
+                evaluator.resetTrafficEvidence(baseline: sample, at: t)
+            case .backendRestart:
+                restartPoll = i
+                evaluator.resetSession(at: t)
+            }
+        }
+    }
+
+    #expect(requests == [.bindingRefresh, .backendRestart])
+    #expect(confirmationTransitions == 1)
+    #expect(confirmedAt == 40)
+    #expect(!passedAfterRecoveryRequest)
 }
 
 @Test func persistentOneWayBlackholeConfirmsAndNeverFalselyPasses() {
@@ -244,7 +738,7 @@ private func driveRecovery(
     var policy = GatewayTunnelRecoveryPolicy()
     let failed = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
     _ = policy.update(stats: failed, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
-    policy.bindingRefreshCompleted(accepted: false, at: now)
+    policy.recoveryAttemptCompleted(accepted: false, at: now)
 
     let healthy = stats(handshakeSecondsAgo: 1, rx: 20, tx: 20, relativeTo: now.addingTimeInterval(5))
     #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
@@ -255,11 +749,11 @@ private func driveRecovery(
     var policy = GatewayTunnelRecoveryPolicy()
     let beforeRequest = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10)
     _ = policy.update(stats: beforeRequest, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now)
-    policy.bindingRefreshCompleted(accepted: true, at: now.addingTimeInterval(5))
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(5))
 
     let acceptanceSample = stats(handshakeSecondsAgo: 205, rx: 10, tx: 5_000, relativeTo: now.addingTimeInterval(5))
     #expect(policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(5)).health == .unknown)
-    #expect(!policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).requestBindingRefresh)
+    #expect(policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).recoveryRequest == nil)
 }
 
 @Test func runtimeUnavailableConfirmsOnlyOnSatisfiedPath() {

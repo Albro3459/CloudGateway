@@ -6,13 +6,21 @@ public enum GatewayTunnelPathAvailability: Equatable, Sendable {
     case satisfied
 }
 
+public enum GatewayTunnelRecoveryRequest: Equatable, Sendable {
+    case bindingRefresh
+    case backendRestart
+}
+
 public struct GatewayTunnelRecoveryAction: Equatable, Sendable {
     public let health: GatewayTunnelHealth
-    public let requestBindingRefresh: Bool
+    public let recoveryRequest: GatewayTunnelRecoveryRequest?
 
-    public init(health: GatewayTunnelHealth, requestBindingRefresh: Bool = false) {
+    public init(
+        health: GatewayTunnelHealth,
+        recoveryRequest: GatewayTunnelRecoveryRequest? = nil
+    ) {
         self.health = health
-        self.requestBindingRefresh = requestBindingRefresh
+        self.recoveryRequest = recoveryRequest
     }
 }
 
@@ -37,12 +45,18 @@ public struct GatewayTunnelRecoveryPolicy {
 
     private enum State {
         case observing
-        case runtimeUnavailable(since: Date)
-        case refreshPending(attempt: Int)
+        case runtimeUnavailable(attempt: Int, since: Date)
+        case recoveryPending(attempt: Int)
         case awaitingBaseline(attempt: Int, acceptedAt: Date)
         case verifying(attempt: Int, since: Date, baseline: GatewayTunnelRuntimeStats)
         case confirmed
-        case probation(confirmed: Bool, healthyPolls: Int)
+        case probation(
+            confirmed: Bool,
+            attempt: Int?,
+            healthyPolls: Int,
+            failureSince: Date?,
+            failureBaseline: GatewayTunnelRuntimeStats?
+        )
     }
 
     private let thresholds: Thresholds
@@ -77,9 +91,19 @@ public struct GatewayTunnelRecoveryPolicy {
             return GatewayTunnelRecoveryAction(health: isConfirmed ? .notPassingTraffic : .unknown)
         }
 
-        if case let .runtimeUnavailable(since) = state {
-            if stats != nil {
-                state = .observing
+        if case let .runtimeUnavailable(attempt, since) = state {
+            if let stats {
+                if evidence == .healthy || (attempt == 2 && hasInitialInboundProgress(stats)) {
+                    state = .probation(
+                        confirmed: false,
+                        attempt: attempt,
+                        healthyPolls: 1,
+                        failureSince: now,
+                        failureBaseline: stats
+                    )
+                } else {
+                    state = .verifying(attempt: attempt, since: now, baseline: stats)
+                }
                 runtimeUnavailableSince = nil
                 return GatewayTunnelRecoveryAction(health: .unknown)
             }
@@ -108,18 +132,31 @@ public struct GatewayTunnelRecoveryPolicy {
             case .healthy:
                 return GatewayTunnelRecoveryAction(health: .passingTraffic)
             case .failed:
-                state = .refreshPending(attempt: 1)
-                return GatewayTunnelRecoveryAction(health: .unknown, requestBindingRefresh: true)
+                state = .recoveryPending(attempt: 1)
+                return GatewayTunnelRecoveryAction(
+                    health: .unknown,
+                    recoveryRequest: .bindingRefresh
+                )
             }
 
         case .runtimeUnavailable:
             return GatewayTunnelRecoveryAction(health: .unknown)
 
-        case .refreshPending:
+        case .recoveryPending:
             return GatewayTunnelRecoveryAction(health: .unknown)
 
         case let .awaitingBaseline(attempt, acceptedAt):
-            // The first post-refresh sample only fixes the verification baseline.
+            if attempt == 2, hasInitialInboundProgress(stats) {
+                state = .probation(
+                    confirmed: false,
+                    attempt: attempt,
+                    healthyPolls: 1,
+                    failureSince: now,
+                    failureBaseline: stats
+                )
+                return GatewayTunnelRecoveryAction(health: .unknown)
+            }
+            // The first post-attempt sample only fixes the verification baseline.
             // Recovery must be proven by later inbound progress, not by a single
             // `.healthy` verdict: right after a traffic-evidence reset a one-way
             // blackhole has no matured candidate yet and reads `.healthy`, which
@@ -129,7 +166,13 @@ public struct GatewayTunnelRecoveryPolicy {
 
         case let .verifying(attempt, since, baseline):
             if hasInboundProgress(stats, since: baseline) {
-                state = .probation(confirmed: false, healthyPolls: 1)
+                state = .probation(
+                    confirmed: false,
+                    attempt: attempt,
+                    healthyPolls: 1,
+                    failureSince: now,
+                    failureBaseline: stats
+                )
                 return GatewayTunnelRecoveryAction(health: .unknown)
             }
             guard now.timeIntervalSince(since) >= thresholds.verificationDuration,
@@ -137,53 +180,94 @@ public struct GatewayTunnelRecoveryPolicy {
                 return GatewayTunnelRecoveryAction(health: .unknown)
             }
             if attempt == 1 {
-                state = .refreshPending(attempt: 2)
-                return GatewayTunnelRecoveryAction(health: .unknown, requestBindingRefresh: true)
+                state = .recoveryPending(attempt: 2)
+                return GatewayTunnelRecoveryAction(
+                    health: .unknown,
+                    recoveryRequest: .backendRestart
+                )
             }
             state = .confirmed
             return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
 
         case .confirmed:
             if evidence == .healthy {
-                state = .probation(confirmed: true, healthyPolls: 1)
+                state = .probation(
+                    confirmed: true,
+                    attempt: nil,
+                    healthyPolls: 1,
+                    failureSince: nil,
+                    failureBaseline: nil
+                )
             }
             return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
 
-        case let .probation(confirmed, healthyPolls):
+        case let .probation(
+            confirmed,
+            attempt,
+            healthyPolls,
+            failureSince,
+            failureBaseline
+        ):
             guard evidence == .healthy else {
-                state = confirmed ? .confirmed : .observing
-                return GatewayTunnelRecoveryAction(health: confirmed ? .notPassingTraffic : .unknown)
+                if confirmed {
+                    state = .confirmed
+                    return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+                }
+                if let attempt, let failureSince, let failureBaseline {
+                    state = .verifying(
+                        attempt: attempt,
+                        since: failureSince,
+                        baseline: failureBaseline
+                    )
+                } else {
+                    state = .observing
+                }
+                return GatewayTunnelRecoveryAction(health: .unknown)
             }
             let count = healthyPolls + 1
             if count >= thresholds.healthyPollsToRecover {
                 state = .observing
                 return GatewayTunnelRecoveryAction(health: .passingTraffic)
             }
-            state = .probation(confirmed: confirmed, healthyPolls: count)
+            state = .probation(
+                confirmed: confirmed,
+                attempt: attempt,
+                healthyPolls: count,
+                failureSince: failureSince,
+                failureBaseline: failureBaseline
+            )
             return GatewayTunnelRecoveryAction(health: confirmed ? .notPassingTraffic : .unknown)
         }
     }
 
-    public mutating func bindingRefreshCompleted(
+    public mutating func recoveryAttemptCompleted(
         accepted: Bool,
         at now: Date
     ) {
-        guard case let .refreshPending(attempt) = state else { return }
+        guard case let .recoveryPending(attempt) = state else { return }
         if accepted {
             state = .awaitingBaseline(attempt: attempt, acceptedAt: now)
         } else {
-            state = .runtimeUnavailable(since: now)
+            state = .runtimeUnavailable(attempt: attempt, since: now)
         }
     }
 
-    public mutating func invalidatePendingBindingRefresh() {
-        guard case .refreshPending = state else { return }
+    public mutating func invalidatePendingRecoveryAttempt() {
+        guard case .recoveryPending = state else { return }
         state = .observing
     }
 
     private var isConfirmed: Bool {
         switch state {
-        case .confirmed, .probation(confirmed: true, healthyPolls: _): return true
+        case .confirmed,
+             .probation(
+                confirmed: true,
+                attempt: _,
+                healthyPolls: _,
+                failureSince: _,
+                failureBaseline: _
+             ):
+            return true
         default: return false
         }
     }
@@ -193,6 +277,10 @@ public struct GatewayTunnelRecoveryPolicy {
         since baseline: GatewayTunnelRuntimeStats
     ) -> Bool {
         stats.rxBytes > baseline.rxBytes || stats.latestHandshakeEpochSeconds > baseline.latestHandshakeEpochSeconds
+    }
+
+    private func hasInitialInboundProgress(_ stats: GatewayTunnelRuntimeStats) -> Bool {
+        stats.rxBytes > 0 || stats.latestHandshakeEpochSeconds > 0
     }
 
     private func hasFreshFailureActivity(

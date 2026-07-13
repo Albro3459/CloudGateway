@@ -71,10 +71,12 @@ this sequence but is only reachable when iOS reports the path unsatisfied.
 * A restart is requested at most once per episode. No restart loops, no
   post-confirmation restarts in this stage.
 * A restart that reports failure (adapter lands in `.temporaryShutdown`) is
-  not retried by policy; the missing-runtime path (20s on a settled satisfied
-  path) owns confirmation, and the fork's path observer owns resume.
+  not retried by policy. If runtime returns after the fork's path observer
+  resumes it, fresh attempt-2 verification continues; otherwise the
+  missing-runtime path confirms after 20 seconds on a settled satisfied path.
 * Deployment-IP behavior is unchanged: still warns, may still require the
-  user toggle. The restart uses startup-resolved endpoints only.
+  user toggle. The restart uses the endpoints stored for the adapter's current
+  configuration and does not re-resolve the original hostname.
 * No auto-disconnect, no fail-open, no external probe, no server-side
   changes, no new persistence or logging.
 
@@ -98,9 +100,10 @@ public enum GatewayTunnelRecoveryRequest: Equatable, Sendable {
 `accepted == false` path continues to mean "adapter could not perform the
 request" and routes into the runtime-unavailable flow.
 
-State machine shape is otherwise unchanged: `refreshPending(attempt:)`,
-`awaitingBaseline`, `verifying`, `confirmed`, `probation` all keep their
-semantics. Only the side effect requested for attempt 2 differs.
+The existing `recoveryPending`, `awaitingBaseline`, `verifying`, `confirmed`,
+and `probation` stages remain. Probation retains its attempt and fresh-failure
+baseline so a brief apparent recovery cannot bypass the remaining verification
+window; attempt 2 changes the requested side effect to a backend restart.
 
 ### Evaluator interplay: the restart resets counters
 
@@ -108,13 +111,13 @@ A successful restart creates a new wireguard-go device: RX/TX restart at zero
 and the handshake epoch is 0 until a new handshake completes. Consequences to
 design for explicitly:
 
-* The evaluator's existing counter-rollback detection will fire on the first
-  post-restart sample and reset its session (warmup, fresh
-  `neverHandshakeGrace`). This is correct and must be kept: post-restart
-  evidence is genuinely fresh.
-* The provider must seed verification with a post-restart baseline (the
-  near-zero sample), not the pre-restart sample. `hasInboundProgress` then
-  reads naturally: any handshake epoch > 0 or RX > 0 is inbound progress.
+* The provider must explicitly reset the evaluator session when the restart
+  succeeds. Clearing only the traffic baseline would also remove the sample
+  needed to detect counter rollback while preserving the old handshake age.
+  A session reset gives the new backend its normal `neverHandshakeGrace`.
+* The first near-zero post-restart sample becomes the verification baseline.
+  `hasInboundProgress` then reads naturally: any handshake epoch > 0 or RX > 0
+  is inbound progress.
 * Fresh failure evidence after the restart is new TX with `.failed` evidence,
   same rule as today. The post-restart path to `.failed(.neverHandshaked)`
   takes the 10s grace plus continuing TX, which keeps total time-to-notify in
@@ -138,9 +141,15 @@ polls then withdraw any warning normally.
 * Map `.bindingRefresh` to `adapter.refreshNetworkBinding` and
   `.backendRestart` to `adapter.restartBackend`, both redispatched to the
   health queue with the existing session/route generation guards.
-* On restart success, reset traffic evidence with a nil baseline: the next
-  poll's near-zero sample becomes the baseline naturally, and the evaluator's
-  rollback reset handles session age. Do not carry any pre-restart baseline
+* Keep stale-callback route generation separate from the health-policy
+  generation. A callback from a superseded policy episode is discarded. If
+  route churn has reached the aggregate 30-second cap without starting a new
+  policy episode, its completion still consumes that attempt so the restart
+  ceiling cannot reset, but an old-route binding baseline is never applied.
+  A fresh episode rearms only after 10 quiet seconds.
+* On restart success, explicitly reset the evaluator session: the next poll's
+  near-zero sample becomes the baseline naturally and receives the normal
+  handshake warmup. Do not carry any pre-restart baseline or session age
   across the restart.
 * The restart can block the adapter work queue for up to ~5 seconds
   (`setNetworkSettings` timeout workaround); the health queue must not treat
@@ -151,15 +160,18 @@ polls then withdraw any warning normally.
 
 ## Implementation stages
 
-- [ ] Stage 1: fork `restartBackend` API (see fork plan). User reviews,
-  commits, publishes; never push.
-- [ ] Stage 2: advance the three CloudGateway pin references together
+- [x] Stage 1: fork `restartBackend` API (see fork plan). Committed and
+  published at `f9a56d96d1a7163d17bfbfd9712612aa5e8f0b4f` with explicit user
+  authorization; no force push.
+- [x] Stage 2: advance the three CloudGateway pin references together
   (submodule, Xcode package revision, `Package.resolved`). Fold in the
   pending fork TODO-doc cleanup so one revision carries both.
-- [ ] Stage 3: policy escalation - request kind enum, shared
+- [x] Stage 3: policy escalation - request kind enum, shared
   `recoveryAttemptCompleted`, attempt-2 restart semantics, counter-reset
   interplay, deterministic tests.
-- [ ] Stage 4: provider orchestration and `./scripts/test.sh apple`.
+- [x] Stage 4: provider orchestration and `./scripts/test.sh apple` (115
+  CloudGatewayKit tests, iOS view-model tests, and unsigned no-device iOS
+  build).
 - [ ] Stage 5: device validation (matrix below) recorded in this TODO before
   any constant changes.
 
@@ -177,7 +189,9 @@ polls then withdraw any warning normally.
 * Restart completion failure routes to the runtime-unavailable flow and
   confirms after 20s on a settled path; runtime returning (path-observer
   resume) re-enters warmup and can reach two healthy polls.
-* Late restart callbacks from an old session/route generation are ignored.
+* Late callbacks from an old session or superseded policy episode are
+  ignored; a same-episode callback after capped route churn consumes its
+  attempt without applying an old-route binding baseline.
 * All existing tests continue passing unchanged - detection constants and
   notification edge-triggering are untouched.
 
