@@ -8,7 +8,7 @@ import packageJson from "../../package.json";
 import { createAdminUser, createClient, deleteAccount, deleteClient, runRegionsSync } from "../helpers/APIHelper";
 import type { ApiHelperFailure, RegionSyncResult } from "../helpers/APIHelper";
 import { appleProvider, auth, EmailAuthProvider, googleProvider, linkWithCredential, linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
-import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region } from "../helpers/regionsHelper";
+import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region, resolveActiveRegionId } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
@@ -861,11 +861,21 @@ const Home: React.FC = () => {
             return;
         }
 
-        if (!activeRegionId || !enabledRegions.some(region => region.regionId === activeRegionId)) {
-            setActiveRegionId(enabledRegions[0].regionId);
-            clearSelectedClients();
+        // Keep a still-valid selection so a refresh doesn't clobber a manual pick.
+        if (activeRegionId && enabledRegions.some(region => region.regionId === activeRegionId)) {
+            return;
         }
-    }, [enabledRegions, activeRegionId]);
+
+        // Wait for the VPN list before preselecting so we can land on the first
+        // region (in display order) that actually has a config for the user.
+        if (VPNTableEntries === null) return;
+
+        const regionIdsWithConfig = new Set(
+            VPNTableEntries.map(entry => entry.region).filter((region): region is string => !!region)
+        );
+        setActiveRegionId(resolveActiveRegionId(enabledRegions, regionIdsWithConfig));
+        clearSelectedClients();
+    }, [enabledRegions, activeRegionId, VPNTableEntries]);
 
     useEffect(() => {
         if (!activeRegionEntries) return;

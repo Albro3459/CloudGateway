@@ -1,4 +1,4 @@
-import { getRegionCapacityLabel, isRegionAtCapacity, isRegionCapacityKnown, parseRegionDocument, sortRegions, Region } from "../regionsHelper";
+import { getRegionCapacityLabel, isRegionAtCapacity, isRegionCapacityKnown, parseRegionDocument, resolveActiveRegionId, sortRegions, Region } from "../regionsHelper";
 
 describe("regionsHelper", () => {
     it("parses shared VPN region documents", () => {
@@ -43,6 +43,23 @@ describe("regionsHelper", () => {
             "us-ashburn-1",
             "us-sanjose-1",
         ]);
+    });
+
+    it("preselects the first region with a config in display order", () => {
+        const enabledRegions = [
+            parseRegionDocument("us-sanjose-1", { displayName: "San Jose", enabled: true, displayOrder: 10 }),
+            parseRegionDocument("us-ashburn-1", { displayName: "Ashburn", enabled: true, displayOrder: 20 }),
+            parseRegionDocument("us-chicago-1", { displayName: "Chicago", enabled: true, displayOrder: 30 }),
+        ].filter((region): region is Region => region !== null);
+
+        // First region has no config; preselect the next region that does.
+        expect(resolveActiveRegionId(enabledRegions, new Set(["us-chicago-1", "us-ashburn-1"]))).toBe("us-ashburn-1");
+
+        // No config anywhere falls back to the first region by display order.
+        expect(resolveActiveRegionId(enabledRegions, new Set())).toBe("us-sanjose-1");
+
+        // No regions resolves to "" (check-access would have failed already).
+        expect(resolveActiveRegionId([], new Set(["us-ashburn-1"]))).toBe("");
     });
 
     it("formats allocated regional capacity", () => {

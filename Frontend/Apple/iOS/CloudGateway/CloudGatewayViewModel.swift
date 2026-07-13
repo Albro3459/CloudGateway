@@ -981,6 +981,10 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func handleAuthState(_ user: AuthenticatedUser?) async {
         if let user {
+            if appMode != .signedIn || signedInUid != user.uid {
+                selectedRegionId = nil
+                selectedClientId = nil
+            }
             signedInEmail = user.email
             signedInUid = user.uid
             refreshLinkedProviderIds()
@@ -1047,6 +1051,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
+        let isNewSignedInUser = appMode != .signedIn || signedInUid != user.uid
         signedInEmail = user.email
         signedInUid = user.uid
         refreshLinkedProviderIds()
@@ -1067,6 +1072,10 @@ final class CloudGatewayViewModel: ObservableObject {
         let clients = merge(existingClients: existingClients, fetchedClients: fetchedClients)
         apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
         remoteRefreshUnavailable = false
+        if isNewSignedInUser {
+            selectedRegionId = nil
+            selectedClientId = nil
+        }
         ensureSelectedRegion()
         pruneSelectedClient()
     }
@@ -1184,7 +1193,8 @@ final class CloudGatewayViewModel: ObservableObject {
     private func ensureSelectedRegion() {
         selectedRegionId = CloudGatewayConfigSelection.resolvedRegionSelection(
             current: selectedRegionId,
-            regions: regions
+            regions: regions,
+            clientOptions: clientOptions
         )
     }
 

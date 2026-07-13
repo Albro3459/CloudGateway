@@ -334,12 +334,22 @@ public enum CloudGatewayConfigSelection {
         return Array(clientsByKey.values)
     }
 
+    // Resolve which region to select on load. Keeps a still-valid current
+    // selection so refreshes don't clobber a manual pick. Otherwise walks the
+    // regions in display order and preselects the first one that has a config
+    // for the current user, falling back to the first region when the user has
+    // none anywhere. `regions` is expected in display order (callers sort first).
     public static func resolvedRegionSelection(
         current: String?,
-        regions: [CloudGatewayRegion]
+        regions: [CloudGatewayRegion],
+        clientOptions: [CloudGatewayClientOption] = []
     ) -> String? {
         if let current, regions.contains(where: { $0.regionId == current }) {
             return current
+        }
+        let regionIdsWithConfig = Set(clientOptions.map(\.client.regionId))
+        if let firstWithConfig = regions.first(where: { regionIdsWithConfig.contains($0.regionId) }) {
+            return firstWithConfig.regionId
         }
         return regions.first?.regionId
     }

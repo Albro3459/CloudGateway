@@ -56,6 +56,20 @@ export const sortRegions = (regions: Region[]) => (
     })
 );
 
+// Preselect a region on load: walk the enabled regions in display order and
+// pick the first one that has a config for the current user, falling back to
+// the first region when the user has none anywhere. `enabledRegions` is
+// expected in display order (callers filter a sorted list). Returns "" only
+// when there are no regions, which check-access would already have blocked.
+export const resolveActiveRegionId = (
+    enabledRegions: Region[],
+    regionIdsWithConfig: Set<string>
+): string => {
+    if (!enabledRegions.length) return "";
+    const withConfig = enabledRegions.find(region => regionIdsWithConfig.has(region.regionId));
+    return (withConfig ?? enabledRegions[0]).regionId;
+};
+
 export const getRegionName = (region: string | null, regions: Region[] | null): string => {
     if (!region) return '';
     return regions?.find(r => r.regionId === region)?.displayName || region;

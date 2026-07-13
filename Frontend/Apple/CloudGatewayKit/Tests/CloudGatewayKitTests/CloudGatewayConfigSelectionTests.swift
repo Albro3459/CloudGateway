@@ -241,6 +241,48 @@ PublicKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
     #expect(CloudGatewayConfigSelection.resolvedRegionSelection(current: "us-sanjose-1", regions: []) == nil)
 }
 
+@Test func resolvedRegionSelectionPrefersFirstRegionWithConfigInDisplayOrder() {
+    let regions = [
+        CloudGatewayRegion(regionId: "us-sanjose-1", displayName: "San Jose", enabled: true, displayOrder: 10),
+        CloudGatewayRegion(regionId: "us-ashburn-1", displayName: "Ashburn", enabled: true, displayOrder: 20),
+        CloudGatewayRegion(regionId: "us-chicago-1", displayName: "Chicago", enabled: true, displayOrder: 30),
+    ]
+    func option(regionId: String) -> CloudGatewayClientOption {
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(clientId: regionId, clientName: "Phone", regionId: regionId, status: .active, wireGuardConfig: usableConfig),
+            region: regions.first { $0.regionId == regionId }
+        )
+    }
+
+    // First region has no config; preselect the next region (in display order) that does.
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(
+        current: nil,
+        regions: regions,
+        clientOptions: [option(regionId: "us-chicago-1"), option(regionId: "us-ashburn-1")]
+    ) == "us-ashburn-1")
+
+    // No config anywhere falls back to the first region by display order.
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(
+        current: nil,
+        regions: regions,
+        clientOptions: []
+    ) == "us-sanjose-1")
+
+    // A still-valid current selection is preserved regardless of configs.
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(
+        current: "us-sanjose-1",
+        regions: regions,
+        clientOptions: [option(regionId: "us-ashburn-1")]
+    ) == "us-sanjose-1")
+
+    // No regions still resolves to nil (check-access would have failed already).
+    #expect(CloudGatewayConfigSelection.resolvedRegionSelection(
+        current: nil,
+        regions: [],
+        clientOptions: [option(regionId: "us-ashburn-1")]
+    ) == nil)
+}
+
 @Test func prunedClientSelectionDropsSelectionOutsideFilteredRegion() {
     let options = [
         CloudGatewayClientOption(

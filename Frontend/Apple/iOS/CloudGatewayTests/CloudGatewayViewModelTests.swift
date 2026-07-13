@@ -906,6 +906,25 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
     // MARK: - Selection ensure / prune
 
+    func testSignInReplacesGuestDefaultWithFirstRegionContainingConfig() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [
+            TestFixtures.region("us-sanjose-1", displayOrder: 10),
+            TestFixtures.region("us-ashburn-1", displayOrder: 20),
+        ]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-ashburn-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.selectedRegionId, "us-sanjose-1")
+
+        viewModel.email = "user@example.com"
+        viewModel.password = "password"
+        await viewModel.signIn()
+
+        XCTAssertEqual(viewModel.selectedRegionId, "us-ashburn-1")
+    }
+
     func testSelectedRegionDefaultsToFirstAndIsPreservedAcrossRefresh() async {
         let service = signedInService()
         service.enabledRegions = [
