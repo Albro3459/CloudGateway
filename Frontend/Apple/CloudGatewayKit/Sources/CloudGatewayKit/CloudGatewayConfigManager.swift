@@ -90,13 +90,17 @@ public actor CloudGatewayConfigManager {
             }
             throw error
         }
+        var cachePersistFailed = false
         do {
             try await cache.save(snapshot)
         } catch {
-            // The profile + keychain secret are already written, so keep them
-            // installed and surface a specific error telling the user the install
-            // partially completed; a refresh/reinstall reconciles the local cache.
-            throw CloudGatewayConfigManagerError.installCachePersistFailed
+            // The profile + keychain secret are already written and the live
+            // profile references the new secret, so still adopt the snapshot in
+            // memory and drop the superseded secret below; otherwise a later
+            // removeTunnel would read the stale reference, delete the old
+            // secret, and orphan the active key. Only the on-disk cache stays
+            // stale until a refresh/reinstall persists it.
+            cachePersistFailed = true
         }
         if let oldReference, oldReference != snapshot.secretReference {
             try? secretStore.deleteConfig(for: oldReference)
@@ -104,6 +108,11 @@ public actor CloudGatewayConfigManager {
         replaceInstalledSnapshot(snapshot)
         state.staleTexts[snapshot.clientId] = nil
         state.remoteInvalidInstalledConfigIds.remove(snapshot.clientId)
+        if cachePersistFailed {
+            // Surface a specific error telling the user the install partially
+            // completed; the installed profile and secret remain usable.
+            throw CloudGatewayConfigManagerError.installCachePersistFailed
+        }
         return try await refreshStatus()
     }
 

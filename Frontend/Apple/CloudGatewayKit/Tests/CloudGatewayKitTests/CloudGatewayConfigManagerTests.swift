@@ -163,7 +163,8 @@ private enum ManagerTestError: Error {
     let option = CloudGatewayClientOption(client: client(id: "client-1"), region: region())
 
     // A cache-save failure after the profile + secret are written surfaces a
-    // specific partial-install error, but keeps the installed profile/secret.
+    // specific partial-install error, but keeps the installed profile/secret
+    // and adopts the snapshot in memory so removeTunnel can still clean up.
     await #expect(throws: CloudGatewayConfigManagerError.installCachePersistFailed) {
         try await manager.install(option)
     }
@@ -171,6 +172,60 @@ private enum ManagerTestError: Error {
     #expect(await tunnelManager.installedIdentifiers() == ["client-1"])
     #expect(secretStore.savedReferences().count == 1)
     #expect(secretStore.deletedReferences().isEmpty)
+    let state = await manager.state
+    #expect(state.installedSnapshots.map(\.clientId) == ["client-1"])
+    let savedReference = try #require(secretStore.savedReferences().first)
+    #expect(state.installedSnapshot(clientId: "client-1")?.secretReference == savedReference)
+
+    // A remove after the partial install still cleans up the secret.
+    _ = try await manager.removeTunnel(identifier: "client-1")
+    #expect(secretStore.deletedReferences() == [savedReference])
+}
+
+@Test func managerAdoptsNewSecretWhenCacheSaveFailsDuringChangedReinstall() async throws {
+    let tunnelManager = RecordingTunnelManager(status: .disconnected)
+    let secretStore = MemoryConfigSecretStore()
+    let workingCache = MemoryConfigCache()
+    let installedManager = makeManager(
+        tunnelManager: tunnelManager,
+        cache: workingCache,
+        secretStore: secretStore
+    )
+    let installedState = try await installedManager.install(
+        CloudGatewayClientOption(client: client(id: "client-1"), region: region())
+    )
+    let oldReference = try #require(installedState.installedSnapshot(clientId: "client-1")?.secretReference)
+    let firstSnapshot = try #require(await workingCache.savedSnapshots().first)
+
+    let failingManager = makeManager(
+        tunnelManager: tunnelManager,
+        cache: MemoryConfigCache(snapshots: [firstSnapshot], saveError: ManagerTestError.cacheSaveFailed),
+        secretStore: secretStore
+    )
+    _ = try await failingManager.loadLocalState()
+
+    await #expect(throws: CloudGatewayConfigManagerError.installCachePersistFailed) {
+        try await failingManager.install(CloudGatewayClientOption(
+            client: client(id: "client-1", wireGuardConfig: managerConfig + "\n# changed"),
+            region: region()
+        ))
+    }
+
+    // The live profile references the new secret, so the superseded secret is
+    // deleted and the in-memory snapshot tracks the new reference even though
+    // the cache persist failed.
+    let newReference = try #require(await failingManager.state.installedSnapshot(clientId: "client-1")?.secretReference)
+    #expect(newReference != oldReference)
+    #expect(secretStore.deletedReferences() == [oldReference])
+    #expect(try secretStore.loadConfig(for: newReference).rawValue == managerConfig + "\n# changed")
+
+    // A remove after the partial install must delete the active secret, not
+    // the stale pre-reinstall reference.
+    _ = try await failingManager.removeTunnel(identifier: "client-1")
+    #expect(secretStore.deletedReferences() == [oldReference, newReference])
+    #expect(throws: (any Error).self) {
+        try secretStore.loadConfig(for: newReference)
+    }
 }
 
 @Test func managerRefreshesInstalledStatusesInOneBatch() async throws {

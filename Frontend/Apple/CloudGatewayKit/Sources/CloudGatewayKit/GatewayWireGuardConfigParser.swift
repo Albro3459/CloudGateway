@@ -88,6 +88,13 @@ public enum GatewayWireGuardConfigParser {
             if parsedLine.value == "[interface]" {
                 section = .interface
                 attributes.removeAll()
+                // An [Interface] header as the final line opens a section with
+                // no body. Commit it so a duplicate or truncated interface
+                // errors instead of being silently dropped.
+                if isLastLine {
+                    guard interfaceConfiguration == nil else { throw ParseError.multipleInterfaces }
+                    interfaceConfiguration = try makeInterface(from: attributes)
+                }
             } else if parsedLine.value == "[peer]" {
                 section = .peer
                 attributes.removeAll()

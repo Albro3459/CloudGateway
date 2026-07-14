@@ -1279,6 +1279,11 @@ final class CloudGatewayViewModel: ObservableObject {
 }
 
 private extension GatewayTunnelStatus {
+    // .connecting and .disconnecting deliberately show the optimistic final
+    // state: Apple can report the transition for 10-15s after the toggle even
+    // though Control Center flips in about a second. Matching Control Center
+    // avoids a status label that looks stuck (see
+    // GatewayTunnelStatus.blocksDestructiveOperation for the same reasoning).
     var displayName: String {
         switch self {
         case .invalid:

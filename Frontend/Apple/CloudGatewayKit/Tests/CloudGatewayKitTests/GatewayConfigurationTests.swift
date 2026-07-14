@@ -209,6 +209,28 @@ private func sampleConfig(
     }
 }
 
+@Test func parserErrorsOnTrailingInterfaceHeaderAfterValidInterface() {
+    // A truncated config ending in a bare [Interface] header must error like
+    // any other duplicate interface instead of being silently dropped.
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.multipleInterfaces) {
+        try GatewayWireGuardConfigParser.parse("""
+        [Interface]
+        PrivateKey = \(privateKey)
+
+        [Peer]
+        PublicKey = \(publicKey)
+
+        [Interface]
+        """)
+    }
+}
+
+@Test func parserErrorsOnTrailingInterfaceHeaderWithNoBody() {
+    #expect(throws: GatewayWireGuardConfigParser.ParseError.interfaceHasNoPrivateKey) {
+        try GatewayWireGuardConfigParser.parse("[Interface]")
+    }
+}
+
 @Test func parserAcceptsOptionalPeerPreSharedKey() throws {
     let tunnel = try GatewayWireGuardConfigParser.parse(sampleConfig(peer: "PreSharedKey = \(preSharedKey)"))
 
