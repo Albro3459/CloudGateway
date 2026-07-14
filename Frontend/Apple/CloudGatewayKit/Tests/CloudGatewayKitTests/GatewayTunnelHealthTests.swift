@@ -955,6 +955,42 @@ private func confirmedOutagePolicy() -> GatewayTunnelRecoveryPolicy {
     #expect(action.recoveryRequest == nil)
 }
 
+@Test func generationChangeDuringConfirmedProbationRestartsHealthyPollCount() {
+    var policy = confirmedOutagePolicy()
+
+    // One healthy poll on the unchanged network enters the confirmed-episode
+    // withdrawal probation at 1 of 2.
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(65))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(65)).health == .notPassingTraffic)
+
+    // A network change abandons that probation and restarts the healthy-poll
+    // count: this poll would withdraw the warning if the count were preserved,
+    // but it reads .notPassingTraffic because it counts as poll 1 of 2 again.
+    let afterSwitch = stats(handshakeSecondsAgo: 1, rx: 200, tx: 200, relativeTo: now.addingTimeInterval(70))
+    #expect(policy.update(stats: afterSwitch, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(70)).health == .notPassingTraffic)
+
+    // The second healthy poll on the new network completes probation.
+    let recovered = stats(handshakeSecondsAgo: 1, rx: 300, tx: 300, relativeTo: now.addingTimeInterval(75))
+    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(75)).health == .passingTraffic)
+}
+
+@Test func generationChangeDuringAwaitingBaselineReArmsWithLatchedProbation() {
+    var policy = confirmedOutagePolicy()
+
+    // Re-arm attempt 1 on a new network and accept it, parking in awaiting-baseline.
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(65))
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(65)).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(65))
+
+    // A second network change lands in awaiting-baseline; recovery must still be
+    // proven by the latched two-poll probation, not a single healthy verdict.
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(70))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(70)).health == .notPassingTraffic)
+
+    let recovered = stats(handshakeSecondsAgo: 1, rx: 200, tx: 200, relativeTo: now.addingTimeInterval(75))
+    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(75)).health == .passingTraffic)
+}
+
 @Test func oneWayFailureStaysLatchedUntilReceiveResumes() {
     var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
     _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 1000, tx: 1000), at: now)
