@@ -42,8 +42,7 @@ See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 2. Back up Firestore before replacing any regional server:
 
    ```sh
-   source Backend/API/.venv/bin/activate
-   python3 scripts/backup_firestore.py
+   Backend/API/.venv/bin/python3 scripts/backup_firestore.py
    ls -lh Backend/Firebase/backups
    ```
 

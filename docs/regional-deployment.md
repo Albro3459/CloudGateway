@@ -23,8 +23,7 @@ The host also downloads the prebuilt Caddy binary from the GitHub Release named 
 Before applying Terraform, back up Firestore from the repo root with the API virtualenv activated:
 
 ```sh
-source Backend/API/.venv/bin/activate
-python3 scripts/backup_firestore.py
+Backend/API/.venv/bin/python3 scripts/backup_firestore.py
 ls -lh Backend/Firebase/backups
 ```
 

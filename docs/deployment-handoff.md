@@ -51,8 +51,7 @@ and run the regional API. The runtime request/response surface is in
 - Before a regional deploy or host replacement, back up Firestore from the repo root:
 
   ```sh
-  source Backend/API/.venv/bin/activate
-  python3 scripts/backup_firestore.py
+  Backend/API/.venv/bin/python3 scripts/backup_firestore.py
   ls -lh Backend/Firebase/backups
   ```
 

@@ -82,8 +82,8 @@ Run this script from the repo root with the API virtualenv activated. It uses th
 hardcoded Admin SDK credential path `Backend/Firebase/Secrets/firebase-credentials.json`.
 
 ```sh
-source Backend/API/.venv/bin/activate
-python3 scripts/backup_firestore.py
+Backend/API/.venv/bin/python3 scripts/backup_firestore.py
+ls -lh Backend/Firebase/backups
 ```
 
 Backups are written to `Backend/Firebase/backups/backup-<timestamp>.json`. Treat these files as
