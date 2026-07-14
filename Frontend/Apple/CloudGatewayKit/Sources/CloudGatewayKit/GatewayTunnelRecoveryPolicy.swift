@@ -63,6 +63,12 @@ public struct GatewayTunnelRecoveryPolicy {
     private var state: State = .observing
     private var routeGeneration: UInt64?
     private var runtimeUnavailableSince: Date?
+    // Set whenever the policy confirms an outage; cleared only when traffic is
+    // proven flowing again. While set it floors any `.unknown` report to
+    // `.notPassingTraffic` (see `emit`) so a re-armed recovery ladder can run
+    // after a network change without withdrawing or duplicating the outage
+    // notification, which is edge-triggered on the health transitions.
+    private var confirmedOutageLatched = false
 
     public init(thresholds: Thresholds = Thresholds()) {
         self.thresholds = thresholds
@@ -78,7 +84,11 @@ public struct GatewayTunnelRecoveryPolicy {
         let generationChanged = self.routeGeneration != routeGeneration
         self.routeGeneration = routeGeneration
 
-        if generationChanged, !isConfirmed {
+        if generationChanged {
+            // A materially new path re-arms the full recovery ladder even from a
+            // confirmed outage: the failure may have been specific to the old
+            // path (stale NAT/UDP binding, black-holed socket). The outage latch
+            // keeps outward health at `.notPassingTraffic` throughout the retry.
             state = .observing
             runtimeUnavailableSince = nil
         }
@@ -88,7 +98,7 @@ public struct GatewayTunnelRecoveryPolicy {
                 state = .observing
                 runtimeUnavailableSince = nil
             }
-            return GatewayTunnelRecoveryAction(health: isConfirmed ? .notPassingTraffic : .unknown)
+            return emit(isConfirmed ? .notPassingTraffic : .unknown)
         }
 
         if case let .runtimeUnavailable(attempt, _) = state {
@@ -105,7 +115,7 @@ public struct GatewayTunnelRecoveryPolicy {
                     state = .verifying(attempt: attempt, since: now, baseline: stats)
                 }
                 runtimeUnavailableSince = nil
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             }
         }
 
@@ -118,22 +128,34 @@ public struct GatewayTunnelRecoveryPolicy {
         case .observing:
             switch evidence {
             case .warmingUp:
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             case .healthy:
-                return GatewayTunnelRecoveryAction(health: .passingTraffic)
+                // While an outage is latched, a single healthy poll after a
+                // network change is not proof of recovery. Require the same
+                // two-poll probation as any other recovery before withdrawing
+                // the warning. `confirmed: false` so a failed probation returns
+                // to `.observing` and keeps the re-armed ladder available.
+                guard confirmedOutageLatched else {
+                    return emit(.passingTraffic)
+                }
+                state = .probation(
+                    confirmed: false,
+                    attempt: nil,
+                    healthyPolls: 1,
+                    failureSince: nil,
+                    failureBaseline: nil
+                )
+                return emit(.unknown)
             case .failed:
                 state = .recoveryPending(attempt: 1)
-                return GatewayTunnelRecoveryAction(
-                    health: .unknown,
-                    recoveryRequest: .bindingRefresh
-                )
+                return emit(.unknown, recoveryRequest: .bindingRefresh)
             }
 
         case .runtimeUnavailable:
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
 
         case .recoveryPending:
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
 
         case let .awaitingBaseline(attempt, acceptedAt):
             if attempt == 2, hasInitialInboundProgress(stats) {
@@ -144,7 +166,7 @@ public struct GatewayTunnelRecoveryPolicy {
                     failureSince: now,
                     failureBaseline: stats
                 )
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             }
             // The first post-attempt sample only fixes the verification baseline.
             // Recovery must be proven by later inbound progress, not by a single
@@ -152,7 +174,7 @@ public struct GatewayTunnelRecoveryPolicy {
             // blackhole has no matured candidate yet and reads `.healthy`, which
             // is not proof the tunnel recovered.
             state = .verifying(attempt: attempt, since: acceptedAt, baseline: stats)
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
 
         case let .verifying(attempt, since, baseline):
             if hasInboundProgress(stats, since: baseline) {
@@ -163,21 +185,18 @@ public struct GatewayTunnelRecoveryPolicy {
                     failureSince: now,
                     failureBaseline: stats
                 )
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             }
             guard now.timeIntervalSince(since) >= thresholds.verificationDuration,
                   hasFreshFailureActivity(stats, evidence: evidence, since: baseline) else {
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             }
             if attempt == 1 {
                 state = .recoveryPending(attempt: 2)
-                return GatewayTunnelRecoveryAction(
-                    health: .unknown,
-                    recoveryRequest: .backendRestart
-                )
+                return emit(.unknown, recoveryRequest: .backendRestart)
             }
             state = .confirmed
-            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+            return emit(.notPassingTraffic)
 
         case .confirmed:
             if evidence == .healthy {
@@ -189,7 +208,7 @@ public struct GatewayTunnelRecoveryPolicy {
                     failureBaseline: nil
                 )
             }
-            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+            return emit(.notPassingTraffic)
 
         case let .probation(
             confirmed,
@@ -201,7 +220,7 @@ public struct GatewayTunnelRecoveryPolicy {
             guard evidence == .healthy else {
                 if confirmed {
                     state = .confirmed
-                    return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+                    return emit(.notPassingTraffic)
                 }
                 if let attempt, let failureSince, let failureBaseline {
                     state = .verifying(
@@ -212,12 +231,12 @@ public struct GatewayTunnelRecoveryPolicy {
                 } else {
                     state = .observing
                 }
-                return GatewayTunnelRecoveryAction(health: .unknown)
+                return emit(.unknown)
             }
             let count = healthyPolls + 1
             if count >= thresholds.healthyPollsToRecover {
                 state = .observing
-                return GatewayTunnelRecoveryAction(health: .passingTraffic)
+                return emit(.passingTraffic)
             }
             state = .probation(
                 confirmed: confirmed,
@@ -226,8 +245,30 @@ public struct GatewayTunnelRecoveryPolicy {
                 failureSince: failureSince,
                 failureBaseline: failureBaseline
             )
-            return GatewayTunnelRecoveryAction(health: confirmed ? .notPassingTraffic : .unknown)
+            return emit(confirmed ? .notPassingTraffic : .unknown)
         }
+    }
+
+    /// Single exit point for every action, so the confirmed-outage latch cannot
+    /// be missed at an individual return site. Every `.notPassingTraffic` this
+    /// policy emits corresponds to a confirmed or just-confirmed state, so
+    /// latching on it (and clearing only on `.passingTraffic`) keeps an outage
+    /// sticky: while latched, an `.unknown` report is floored to
+    /// `.notPassingTraffic` so a re-armed recovery ladder can run after a
+    /// network change without withdrawing or duplicating the edge-triggered
+    /// outage notification.
+    private mutating func emit(
+        _ health: GatewayTunnelHealth,
+        recoveryRequest: GatewayTunnelRecoveryRequest? = nil
+    ) -> GatewayTunnelRecoveryAction {
+        if health == .passingTraffic {
+            confirmedOutageLatched = false
+        } else if health == .notPassingTraffic {
+            confirmedOutageLatched = true
+        }
+        let reported: GatewayTunnelHealth =
+            confirmedOutageLatched && health == .unknown ? .notPassingTraffic : health
+        return GatewayTunnelRecoveryAction(health: reported, recoveryRequest: recoveryRequest)
     }
 
     public mutating func recoveryAttemptCompleted(
@@ -252,10 +293,10 @@ public struct GatewayTunnelRecoveryPolicy {
         at now: Date
     ) -> GatewayTunnelRecoveryAction {
         if isConfirmed {
-            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+            return emit(.notPassingTraffic)
         }
         if case .recoveryPending = state {
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
         }
 
         let unavailableSince: Date
@@ -265,30 +306,24 @@ public struct GatewayTunnelRecoveryPolicy {
             unavailableSince = runtimeUnavailableSince
         } else {
             runtimeUnavailableSince = now
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
         }
 
         guard now.timeIntervalSince(unavailableSince) >= thresholds.runtimeUnavailableDuration else {
-            return GatewayTunnelRecoveryAction(health: .unknown)
+            return emit(.unknown)
         }
         runtimeUnavailableSince = nil
 
         switch currentAttempt {
         case nil:
             state = .recoveryPending(attempt: 1)
-            return GatewayTunnelRecoveryAction(
-                health: .unknown,
-                recoveryRequest: .bindingRefresh
-            )
+            return emit(.unknown, recoveryRequest: .bindingRefresh)
         case 1:
             state = .recoveryPending(attempt: 2)
-            return GatewayTunnelRecoveryAction(
-                health: .unknown,
-                recoveryRequest: .backendRestart
-            )
+            return emit(.unknown, recoveryRequest: .backendRestart)
         default:
             state = .confirmed
-            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+            return emit(.notPassingTraffic)
         }
     }
 

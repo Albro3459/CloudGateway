@@ -125,6 +125,17 @@ gates, in order of importance:
   evidence-refresh-verify sequence; withdrawal requires two consecutive
   healthy polls. A confirmed episode survives transient path loss or missing
   stats without withdrawing and reposting, so one outage is one notification.
+* **A network change re-arms a confirmed outage.** Confirmation is not
+  terminal: a materially new path (Wi-Fi to cellular, an airplane-mode cycle,
+  a new Wi-Fi) re-arms the full recovery ladder from scratch - binding refresh
+  first, backend restart second - because the failure may have been specific
+  to the old path (stale NAT/UDP binding, black-holed socket). Throughout the
+  retry an outage latch keeps outward health pinned at `notPassingTraffic`, so
+  the edge-triggered notification is neither withdrawn nor reposted while the
+  re-armed ladder runs; the latch clears only when two consecutive healthy
+  polls prove `passingTraffic`, and a failed re-armed ladder silently
+  re-confirms. On the same unchanged network there is no periodic re-probe: an
+  idle dead tunnel stays parked by design.
 
 The deliberate cost of these gates is latency: roughly 30-55 seconds to
 notify instead of seconds. That trade is intentional - a warning that fires

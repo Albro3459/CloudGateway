@@ -810,6 +810,151 @@ private func driveRecovery(
     #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(75)).health == .passingTraffic)
 }
 
+// MARK: - Confirmed-outage network-change re-arm
+
+// Drives a policy to a confirmed outage on routeGeneration 1 via the
+// runtime-unavailable ladder (nil stats), leaving the outage latch set.
+// Confirms at now+60 with default thresholds (runtimeUnavailableDuration 20).
+private func confirmedOutagePolicy() -> GatewayTunnelRecoveryPolicy {
+    var policy = GatewayTunnelRecoveryPolicy()
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now)
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20))
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(20))
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(40))
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(40))
+    let confirmed = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(60))
+    #expect(confirmed.health == .notPassingTraffic)
+    return policy
+}
+
+@Test func confirmedOutageReArmsBindingRefreshOnNetworkChange() {
+    var policy = confirmedOutagePolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 1000, tx: 1000, relativeTo: now.addingTimeInterval(65))
+    let action = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(65))
+    #expect(action.recoveryRequest == .bindingRefresh)
+    // Latched: the re-armed ladder runs but health stays the confirmed outage,
+    // so the edge-triggered notification is neither withdrawn nor reposted.
+    #expect(action.health == .notPassingTraffic)
+}
+
+@Test func reArmedRuntimeUnavailableLadderReConfirmsWithoutRenotifying() {
+    var policy = confirmedOutagePolicy()
+
+    // Network change with runtime still unavailable: reset to observing, then
+    // walk the full ladder again. Health must never leave notPassingTraffic.
+    let seed = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(65))
+    #expect(seed.health == .notPassingTraffic)
+    #expect(seed.recoveryRequest == nil)
+
+    let firstRefresh = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(85))
+    #expect(firstRefresh.health == .notPassingTraffic)
+    #expect(firstRefresh.recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(85))
+
+    let restart = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(105))
+    #expect(restart.health == .notPassingTraffic)
+    #expect(restart.recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(105))
+
+    let reconfirm = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(125))
+    #expect(reconfirm.health == .notPassingTraffic)
+    #expect(reconfirm.recoveryRequest == nil)
+}
+
+@Test func reArmedEvidenceLadderEscalatesToBackendRestartStayingNotPassing() {
+    var policy = confirmedOutagePolicy()
+    let base = now.addingTimeInterval(65)
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: base)
+
+    let refresh = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base)
+    #expect(refresh.health == .notPassingTraffic)
+    #expect(refresh.recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: base)
+
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(1)).health == .notPassingTraffic)
+
+    let failedAfterRefresh = stats(handshakeSecondsAgo: 210, rx: 10, tx: 5_000, relativeTo: base.addingTimeInterval(10))
+    let restart = policy.update(stats: failedAfterRefresh, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(10))
+    #expect(restart.health == .notPassingTraffic)
+    #expect(restart.recoveryRequest == .backendRestart)
+}
+
+@Test func reArmedLadderRecoveryClearsLatch() {
+    var policy = confirmedOutagePolicy()
+    let base = now.addingTimeInterval(65)
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: base)
+
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: base)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(1))
+
+    // Inbound progress starts probation; still notPassingTraffic while latched.
+    let progressed = stats(handshakeSecondsAgo: 1, rx: 100, tx: 20, relativeTo: base.addingTimeInterval(5))
+    #expect(policy.update(stats: progressed, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(5)).health == .notPassingTraffic)
+
+    // Second healthy poll proves recovery and clears the latch.
+    let recovered = stats(handshakeSecondsAgo: 1, rx: 200, tx: 30, relativeTo: base.addingTimeInterval(10))
+    #expect(policy.update(stats: recovered, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(10)).health == .passingTraffic)
+
+    // A fresh failure now reports .unknown, not the floored .notPassingTraffic,
+    // proving the latch cleared.
+    let newFailure = stats(handshakeSecondsAgo: 200, rx: 200, tx: 40, relativeTo: base.addingTimeInterval(15))
+    let action = policy.update(stats: newFailure, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(15))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == .bindingRefresh)
+}
+
+@Test func latchedObservingHealthyNeedsTwoPolls() {
+    var policy = confirmedOutagePolicy()
+    let firstHealthy = stats(handshakeSecondsAgo: 1, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(65))
+    #expect(policy.update(stats: firstHealthy, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(65)).health == .notPassingTraffic)
+    let secondHealthy = stats(handshakeSecondsAgo: 1, rx: 200, tx: 200, relativeTo: now.addingTimeInterval(70))
+    #expect(policy.update(stats: secondHealthy, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(70)).health == .passingTraffic)
+}
+
+@Test func latchedObservingFailedProbationKeepsLadderAvailable() {
+    var policy = confirmedOutagePolicy()
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(65))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(65)).health == .notPassingTraffic)
+
+    // A failed poll before the second healthy one drops probation back to
+    // observing without withdrawing the warning...
+    let failed = stats(handshakeSecondsAgo: 200, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(70))
+    let dropped = policy.update(stats: failed, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(70))
+    #expect(dropped.health == .notPassingTraffic)
+    #expect(dropped.recoveryRequest == nil)
+
+    // ...and the re-armed ladder is still available for the next failure.
+    let failedAgain = stats(handshakeSecondsAgo: 200, rx: 100, tx: 100, relativeTo: now.addingTimeInterval(75))
+    let action = policy.update(stats: failedAgain, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(75))
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == .bindingRefresh)
+}
+
+@Test func secondNetworkChangeResetsReArmedAttemptBudget() {
+    var policy = confirmedOutagePolicy()
+    let base = now.addingTimeInterval(65)
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: base)
+
+    #expect(policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: base)
+    _ = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 2, at: base.addingTimeInterval(1))
+
+    // A new network change mid-retry re-arms attempt 1, not attempt 2.
+    let staleNext = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: base.addingTimeInterval(5))
+    let action = policy.update(stats: staleNext, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 3, at: base.addingTimeInterval(5))
+    #expect(action.recoveryRequest == .bindingRefresh)
+    #expect(action.health == .notPassingTraffic)
+}
+
+@Test func reArmedRetryHoldsWhilePathNotSatisfied() {
+    var policy = confirmedOutagePolicy()
+    let stale = stats(handshakeSecondsAgo: 200, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(65))
+    let action = policy.update(stats: stale, evidence: .failed(.staleHandshake), path: .settling, routeGeneration: 2, at: now.addingTimeInterval(65))
+    #expect(action.health == .notPassingTraffic)
+    #expect(action.recoveryRequest == nil)
+}
+
 @Test func oneWayFailureStaysLatchedUntilReceiveResumes() {
     var evaluator = GatewayTunnelHealthEvaluator(startedAt: now)
     _ = evaluator.evaluateEvidence(stats(handshakeSecondsAgo: 5, rx: 1000, tx: 1000), at: now)
