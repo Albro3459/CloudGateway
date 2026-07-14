@@ -756,22 +756,58 @@ private func driveRecovery(
     #expect(policy.update(stats: acceptanceSample, evidence: .failed(.staleHandshake), path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(15)).recoveryRequest == nil)
 }
 
-@Test func runtimeUnavailableConfirmsOnlyOnSatisfiedPath() {
+@Test func runtimeUnavailableUsesRecoveryLadderOnlyOnSatisfiedPath() {
     var policy = GatewayTunnelRecoveryPolicy()
     #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 1, at: now).health == .unknown)
     #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now).health == .unknown)
-    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(20)).health == .notPassingTraffic)
+
+    var action = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(20))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(20))
+
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(20))
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(39)).health == .unknown)
+    action = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(40))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(40))
+
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(40))
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(59)).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 2, at: now.addingTimeInterval(60)).health == .notPassingTraffic)
+}
+
+@Test func rejectedUnavailableRecoveriesStillCompleteTheLadder() {
+    var policy = GatewayTunnelRecoveryPolicy()
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20)).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(20))
+
+    let action = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(40))
+    #expect(action.health == .unknown)
+    #expect(action.recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: false, at: now.addingTimeInterval(40))
+
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(59)).health == .unknown)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(60)).health == .notPassingTraffic)
 }
 
 @Test func confirmedEpisodeSurvivesPathLossAndNeedsTwoHealthyPolls() {
     var policy = GatewayTunnelRecoveryPolicy(thresholds: .init(runtimeUnavailableDuration: 20))
     _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now)
-    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20)).health == .notPassingTraffic)
-    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(25)).health == .notPassingTraffic)
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(20)).recoveryRequest == .bindingRefresh)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(20))
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(21))
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(41)).recoveryRequest == .backendRestart)
+    policy.recoveryAttemptCompleted(accepted: true, at: now.addingTimeInterval(41))
+    _ = policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(42))
+    #expect(policy.update(stats: nil, evidence: nil, path: .satisfied, routeGeneration: 1, at: now.addingTimeInterval(62)).health == .notPassingTraffic)
+    #expect(policy.update(stats: nil, evidence: nil, path: .unavailable, routeGeneration: 2, at: now.addingTimeInterval(65)).health == .notPassingTraffic)
 
-    let healthy = stats(handshakeSecondsAgo: 1, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(30))
-    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(30)).health == .notPassingTraffic)
-    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(35)).health == .passingTraffic)
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 10, tx: 10, relativeTo: now.addingTimeInterval(70))
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(70)).health == .notPassingTraffic)
+    #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(75)).health == .passingTraffic)
 }
 
 @Test func oneWayFailureStaysLatchedUntilReceiveResumes() {

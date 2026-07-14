@@ -91,8 +91,8 @@ public struct GatewayTunnelRecoveryPolicy {
             return GatewayTunnelRecoveryAction(health: isConfirmed ? .notPassingTraffic : .unknown)
         }
 
-        if case let .runtimeUnavailable(attempt, since) = state {
-            if let stats {
+        if case let .runtimeUnavailable(attempt, _) = state {
+            if let stats, let evidence {
                 if evidence == .healthy || (attempt == 2 && hasInitialInboundProgress(stats)) {
                     state = .probation(
                         confirmed: false,
@@ -107,20 +107,10 @@ public struct GatewayTunnelRecoveryPolicy {
                 runtimeUnavailableSince = nil
                 return GatewayTunnelRecoveryAction(health: .unknown)
             }
-            if now.timeIntervalSince(since) >= thresholds.runtimeUnavailableDuration {
-                state = .confirmed
-                return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
-            }
-            return GatewayTunnelRecoveryAction(health: .unknown)
         }
 
         guard let stats, let evidence else {
-            if runtimeUnavailableSince == nil { runtimeUnavailableSince = now }
-            if !isConfirmed,
-               now.timeIntervalSince(runtimeUnavailableSince ?? now) >= thresholds.runtimeUnavailableDuration {
-                state = .confirmed
-            }
-            return GatewayTunnelRecoveryAction(health: isConfirmed ? .notPassingTraffic : .unknown)
+            return handleRuntimeUnavailable(at: now)
         }
         runtimeUnavailableSince = nil
 
@@ -245,6 +235,7 @@ public struct GatewayTunnelRecoveryPolicy {
         at now: Date
     ) {
         guard case let .recoveryPending(attempt) = state else { return }
+        runtimeUnavailableSince = nil
         if accepted {
             state = .awaitingBaseline(attempt: attempt, acceptedAt: now)
         } else {
@@ -255,6 +246,64 @@ public struct GatewayTunnelRecoveryPolicy {
     public mutating func invalidatePendingRecoveryAttempt() {
         guard case .recoveryPending = state else { return }
         state = .observing
+    }
+
+    private mutating func handleRuntimeUnavailable(
+        at now: Date
+    ) -> GatewayTunnelRecoveryAction {
+        if isConfirmed {
+            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+        }
+        if case .recoveryPending = state {
+            return GatewayTunnelRecoveryAction(health: .unknown)
+        }
+
+        let unavailableSince: Date
+        if case let .runtimeUnavailable(_, since) = state {
+            unavailableSince = since
+        } else if let runtimeUnavailableSince {
+            unavailableSince = runtimeUnavailableSince
+        } else {
+            runtimeUnavailableSince = now
+            return GatewayTunnelRecoveryAction(health: .unknown)
+        }
+
+        guard now.timeIntervalSince(unavailableSince) >= thresholds.runtimeUnavailableDuration else {
+            return GatewayTunnelRecoveryAction(health: .unknown)
+        }
+        runtimeUnavailableSince = nil
+
+        switch currentAttempt {
+        case nil:
+            state = .recoveryPending(attempt: 1)
+            return GatewayTunnelRecoveryAction(
+                health: .unknown,
+                recoveryRequest: .bindingRefresh
+            )
+        case 1:
+            state = .recoveryPending(attempt: 2)
+            return GatewayTunnelRecoveryAction(
+                health: .unknown,
+                recoveryRequest: .backendRestart
+            )
+        default:
+            state = .confirmed
+            return GatewayTunnelRecoveryAction(health: .notPassingTraffic)
+        }
+    }
+
+    private var currentAttempt: Int? {
+        switch state {
+        case let .runtimeUnavailable(attempt, _),
+             let .recoveryPending(attempt),
+             let .awaitingBaseline(attempt, _),
+             let .verifying(attempt, _, _):
+            return attempt
+        case let .probation(false, attempt, _, _, _):
+            return attempt
+        case .observing, .confirmed, .probation(true, _, _, _, _):
+            return nil
+        }
     }
 
     private var isConfirmed: Bool {

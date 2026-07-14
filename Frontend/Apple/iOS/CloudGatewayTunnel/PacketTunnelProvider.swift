@@ -289,7 +289,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { _ in
+            self.healthQueue.async {
+                // Registration is asynchronous, so recovery or stop can finish
+                // before this request lands. A newer dead session still needs
+                // the same stable notification and deliberately keeps it.
+                guard self.lastPublishedHealth != .notPassingTraffic else {
+                    return
+                }
+                self.withdrawDeadTunnelNotification()
+            }
+        }
     }
 
     private func withdrawDeadTunnelNotification() {

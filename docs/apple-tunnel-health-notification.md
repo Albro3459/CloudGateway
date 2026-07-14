@@ -76,14 +76,22 @@ Before any warning, the policy attempts recovery:
   backend restart** (`restartBackend`): it stops wireguard-go, reapplies the
   tunnel network settings, and starts a fresh backend while the VPN remains
   fail-closed. This is intended to repair dead cellular route/flow state that
-  a socket re-bind alone cannot; real-device validation remains required.
+  a socket re-bind alone cannot. If the deep restart fails after stopping the
+  old backend, the fork makes one fallback start against the still-active
+  prior network settings before giving up in temporary shutdown. Runtime
+  absence can also request this restart from temporary shutdown using its
+  saved settings, rather than counting a rejected operation as recovery.
+  Runtime traffic still verifies any start; real-device validation remains
+  required.
 * After each attempt it waits at least 10 seconds and requires **fresh
   post-attempt failure evidence** (new outbound traffic with no handshake or
   RX progress) before escalating. Static counters or an idle tunnel can never
   prove failure; an idle tunnel stays `unknown` indefinitely.
-* Missing runtime state for 20 seconds on a stable, satisfied network also
-  confirms a failure, so a backend that never resumed cannot blackhole
-  forever without warning.
+* Missing runtime state follows the same recovery ladder. After 20 seconds on
+  a stable, satisfied path it requests a binding refresh, after another 20
+  seconds it requests the backend restart, and only 20 seconds of continued
+  unavailability after that confirms a failure. A missing runtime sample can
+  never bypass recovery and notify immediately.
 
 ## How False Positives Are Prevented
 
@@ -100,12 +108,14 @@ gates, in order of importance:
   network path a chance to self-heal. A recovered tunnel produces no warning.
 * **Path awareness.** A second `NWPathMonitor` (policy-only, separate from
   WireGuardKit's) gates confirmation. Only a continuously satisfied path can
-  advance an outage; airplane mode, no service, or captive-portal states stay
-  silent. Every meaningful path change (status, interface types, gateways,
-  IP/DNS capability) starts a 10-second settling window; link-quality and
-  expensive/constrained chatter are excluded from the fingerprint so poor
-  Wi-Fi cannot restart settling forever. Settling suppression is capped at 30
-  seconds so a real outage during churn is still bounded.
+  advance an outage; airplane mode and no service stay silent. A captive or
+  upstream-less network can still report a satisfied path, so recovery and
+  causal-neutral copy remain necessary. Every meaningful path change (status,
+  interface types, gateways, IP/DNS capability) starts a 10-second settling
+  window; link-quality and expensive/constrained chatter are excluded from the
+  fingerprint so poor Wi-Fi cannot restart settling forever. Settling
+  suppression is capped at 30 seconds so a real outage during churn is still
+  bounded.
 * **Fresh evidence for every escalation.** Each recovery attempt resets its
   evidence window; escalation requires new outbound traffic that gets no
   answer. The backend restart also starts a new handshake warmup and counter
