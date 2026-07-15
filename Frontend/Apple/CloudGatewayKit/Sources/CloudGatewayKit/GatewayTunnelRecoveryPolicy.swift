@@ -26,7 +26,7 @@ public struct GatewayTunnelRecoveryAction: Equatable, Sendable {
 
 /// Converts raw WireGuard evidence into the stable outward health contract.
 /// Feed this type from one serial queue.
-public struct GatewayTunnelRecoveryPolicy {
+public struct GatewayTunnelRecoveryPolicy: Sendable {
     public struct Thresholds: Equatable, Sendable {
         public var verificationDuration: TimeInterval
         public var runtimeUnavailableDuration: TimeInterval
@@ -43,7 +43,7 @@ public struct GatewayTunnelRecoveryPolicy {
         }
     }
 
-    private enum State {
+    private enum State: Sendable {
         case observing
         case runtimeUnavailable(attempt: Int, since: Date)
         case recoveryPending(attempt: Int)

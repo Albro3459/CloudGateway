@@ -41,7 +41,7 @@ public struct GatewayTunnelHealthThresholds: Equatable, Sendable {
 
 /// Produces raw transport evidence. User-visible outage policy intentionally
 /// lives in `GatewayTunnelRecoveryPolicy`.
-public struct GatewayTunnelHealthEvaluator {
+public struct GatewayTunnelHealthEvaluator: Sendable {
     private let thresholds: GatewayTunnelHealthThresholds
     private var startedAt: Date
     private var previousSample: GatewayTunnelRuntimeStats?

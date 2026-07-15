@@ -48,6 +48,22 @@ Future macOS adoption scope:
 No backend, Firebase, Cloudflare, API, or WireGuard protocol changes are
 required.
 
+## Implementation Progress
+
+- [x] Stage 0: freeze the observable contract and select bounded timing values.
+- [x] Stage 1: add the unused pure coordinator and characterization traces.
+  - [x] Add session-qualified event, effect, wake, and operation primitives.
+  - [x] Compose the existing evaluator, recovery, path, and persistence policies.
+  - [x] Characterize lifecycle, recovery, path, persistence, notification, and stale-completion traces.
+  - [x] Pass the Apple test and unsigned-build target.
+  - [x] Complete the Stage 1 reviewer loop.
+- [ ] Stage 2: centralize timing and move elapsed-time decisions to monotonic time.
+- [ ] Stage 3: close callback, path, notification, and persistence gaps.
+- [ ] Stage 4: add the shared runtime monitor and adapters.
+- [ ] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.
+- [ ] Stage 6: update durable architecture and tunnel-health documentation.
+- [ ] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.
+
 ## Current Architecture And Root Cause
 
 The existing pure components are suitable for reuse:
@@ -349,9 +365,20 @@ Create one `GatewayTunnelHealthTiming` configuration containing every duration:
 * snapshot freshness;
 * notification retry delays and maximum retry delay.
 
-Retain current production values during extraction. The recovery-operation
-deadline and notification retry policy are new and must be selected explicitly,
-documented, and tested before enabling their behavior. Neither may be infinite.
+Retain current production values during extraction. The selected new values are:
+
+* 20-second recovery-operation deadline;
+* 10-second notification callback/reconciliation deadline;
+* retryable notification failures start at 5 seconds and double to a 60-second
+  maximum delay;
+* 5-second future-timestamp tolerance for snapshot freshness.
+
+Notification authorization denial is terminal for the session. Callback loss,
+transient notification-center failures, and an unknown reconciliation result are
+retryable within the bounded policy. These values remain plan constants until
+Stage 2 introduces `GatewayTunnelHealthTiming.production`; they must not be
+introduced as independent production literals. Neither operation deadlines nor
+retry delays may be infinite.
 
 Initialization or tests must enforce:
 
@@ -429,6 +456,23 @@ names and plan assertions:
 * 15-second snapshot heartbeat and 30-second freshness;
 * start/stop snapshot and notification cleanup;
 * no auto-disconnect.
+
+The behavior-preserving extraction is pinned to this production contract:
+
+| Concern | Observable contract |
+| --- | --- |
+| Sampling | Read runtime every 5 seconds; a runtime read becomes logically unavailable after 20 seconds. |
+| Never handshaked | Allow 10 seconds after evaluator/session reset before treating a missing handshake as failed evidence. |
+| Stale handshake | A handshake older than 180 seconds is failed evidence. |
+| One-way traffic | Require a 10-second evidence window and at least 4,096 bytes of transmit growth without receive growth; idle traffic is not failure evidence. |
+| Recovery | Attempt binding refresh, verify for 10 seconds, then attempt backend restart and verify for 10 seconds before confirmation. |
+| Runtime unavailable | Begin recovery after 20 seconds of unavailable runtime, then use the same two-step ladder. |
+| Path changes | Wait for 10 seconds of quiet, capped at 30 seconds of continuous churn; re-arm recovery without clearing a confirmed outage. |
+| Recovery probation | Require two consecutive healthy polls before changing a confirmed outage to passing traffic. |
+| Persistence | Persist health transitions and an unchanged-health heartbeat every 15 seconds. |
+| Snapshot consumption | Treat snapshots as fresh for 30 seconds, subject to the selected 5-second future tolerance. |
+| Notification | Register once per continuous confirmed outage and withdraw on startup, recovery, and stop. |
+| Safety | Notify only. Never auto-disconnect or bypass the fail-closed tunnel. |
 
 Decide and document:
 
