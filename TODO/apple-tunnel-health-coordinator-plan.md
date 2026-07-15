@@ -71,7 +71,12 @@ required.
   - [x] Keep failed or superseded persistence writes due until the desired snapshot succeeds.
   - [x] Add deterministic traces for late, missing, duplicate, retryable, terminal, and stale completions.
   - [x] Pass the Apple gate and Stage 3 reviewer loop.
-- [ ] Stage 4: add the shared runtime monitor and adapters.
+- [x] Stage 4: add the shared runtime monitor and adapters.
+  - [x] Add shared callback-driven runtime, persistence, notification, clock, and scheduler contracts.
+  - [x] Add the one-wake monitor actor without awaiting WireGuard callbacks.
+  - [x] Add the synchronously closable generation gate and serialized artifact reconciler.
+  - [x] Cover wake replacement, callback disorder, stop/restart, closed-generation repair, and unsupported restart.
+  - [x] Pass the Apple gate and Stage 4 reviewer loop.
 - [ ] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.
 - [ ] Stage 6: update durable architecture and tunnel-health documentation.
 - [ ] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.

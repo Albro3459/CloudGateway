@@ -1276,3 +1276,46 @@ private func driveToNotification(
     )
     #expect(lateSecond.effects == [.withdrawNotification])
 }
+
+@Test func coordinatorOlderRegisteredNotificationSatisfiesNewerOutage() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    let firstNotification = try driveToNotification(&harness, from: 5, through: 35)
+
+    for seconds in [35, 40] {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        _ = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: 1,
+                rx: UInt64(seconds) * 10,
+                tx: 31_000
+            ),
+            at: seconds
+        )
+    }
+    let secondNotification = try driveToNotification(
+        &harness,
+        from: 45,
+        through: 80
+    )
+    #expect(harness.transition.health == .notPassingTraffic)
+
+    let olderSuccess = harness.completeNotification(
+        firstNotification,
+        result: .registered,
+        at: 81
+    )
+    #expect(olderSuccess.effects.isEmpty)
+    #expect(harness.coordinator.desiredArtifacts.notificationOperationID == nil)
+
+    let supersededSuccess = harness.completeNotification(
+        secondNotification,
+        result: .registered,
+        at: 82
+    )
+    #expect(supersededSuccess.effects.isEmpty)
+}

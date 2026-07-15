@@ -22,15 +22,20 @@ public struct GatewayTunnelHealthMoment: Equatable, Sendable {
     }
 }
 
-struct GatewayTunnelPathDescriptor: Equatable, Sendable {
-    let isSatisfied: Bool
-    let routeID: UInt64
+public struct GatewayTunnelPathDescriptor: Equatable, Sendable {
+    public let isSatisfied: Bool
+    public let routeID: UInt64
+
+    public init(isSatisfied: Bool, routeID: UInt64) {
+        self.isSatisfied = isSatisfied
+        self.routeID = routeID
+    }
 }
 
-enum GatewayTunnelEffectResult: Equatable, Sendable { case success, failure }
-enum GatewayTunnelRecoveryResult: Equatable, Sendable { case accepted, rejected, unsupported }
+public enum GatewayTunnelEffectResult: Equatable, Sendable { case success, failure }
+public enum GatewayTunnelRecoveryResult: Equatable, Sendable { case accepted, rejected, unsupported }
 
-enum GatewayTunnelNotificationResult: Equatable, Sendable {
+public enum GatewayTunnelNotificationResult: Equatable, Sendable {
     case registered
     case absent
     case retryableFailure
@@ -134,6 +139,15 @@ struct GatewayTunnelHealthCoordinator: Sendable {
     init(timing: GatewayTunnelHealthTiming = .production) {
         self.timing = timing
         notificationRetryDelay = timing.notificationInitialRetryDelay
+    }
+
+    var desiredArtifacts: GatewayTunnelHealthDesiredArtifacts {
+        GatewayTunnelHealthDesiredArtifacts(
+            snapshot: desiredSnapshot,
+            notificationDesired: notificationDesired,
+            notificationRegistrationAllowed: !notificationTerminal,
+            notificationOperationID: pendingNotification?.id
+        )
     }
 
     mutating func start(
@@ -435,6 +449,8 @@ struct GatewayTunnelHealthCoordinator: Sendable {
             guard result == .registered else { return finish() }
             if notificationDesired {
                 notificationRegistered = true
+                pendingNotification = nil
+                ambiguousRegistration = nil
                 notificationRetry = nil
                 return finish()
             }
