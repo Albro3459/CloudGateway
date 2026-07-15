@@ -280,6 +280,7 @@ public actor GatewayTunnelHealthMonitor {
         self.artifactDriver = artifactDriver
         coordinator = GatewayTunnelHealthCoordinator(timing: timing)
         deadlineCleanup = { stoppingGeneration in
+            Task { await artifactDriver.abandonStop(generation: stoppingGeneration) }
             intent.withCurrentState { state in
                 guard state.generation != stoppingGeneration,
                       state.generation != nil else {

@@ -1,5 +1,23 @@
 import Foundation
 
+private final class GatewayTunnelHealthNotificationRegistrationToken: @unchecked Sendable {
+    let generation: UInt64
+    private let lock = NSLock()
+    private var completed = false
+
+    init(generation: UInt64) {
+        self.generation = generation
+    }
+
+    func claimCompletion() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return false }
+        completed = true
+        return true
+    }
+}
+
 private final class GatewayTunnelHealthDeadlineSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var handler: (@Sendable () async -> Void)?
@@ -162,6 +180,7 @@ actor GatewayTunnelHealthArtifactDriver {
     private var desired = GatewayTunnelHealthDesiredArtifacts.empty
     private var nextSequence: UInt64 = 0
     private var pending: [PendingKey: PendingOperation] = [:]
+    private var physicalNotificationRegistrationCounts: [UInt64: Int] = [:]
     private var deferredNotification: DeferredNotificationOperation?
     private var stopWaiters: [StopWaiter] = []
     private var snapshotRepairSequence: UInt64 = 0
@@ -315,6 +334,21 @@ actor GatewayTunnelHealthArtifactDriver {
         pending.values.filter { $0.kind == .notification }.count
     }
 
+    var physicalNotificationRegistrationGenerationCount: Int {
+        physicalNotificationRegistrationCounts.count
+    }
+
+    func abandonStop(generation: UInt64) {
+        physicalNotificationRegistrationCounts[generation] = nil
+        pending = pending.filter { $0.value.generation != generation }
+        if deferredNotification?.generation == generation {
+            deferredNotification = nil
+        }
+        stopWaiters.removeAll { $0.generation == generation }
+        drainNotificationLane()
+        finishStopWaitersIfPossible()
+    }
+
     private func nextPendingKey(generation: UInt64) -> PendingKey {
         let key = PendingKey(generation: generation, sequence: nextSequence)
         nextSequence &+= 1
@@ -373,6 +407,14 @@ actor GatewayTunnelHealthArtifactDriver {
             notificationID: operation.id,
             notificationKind: operation.kind
         )
+        let physicalRegistration: GatewayTunnelHealthNotificationRegistrationToken?
+        if operation.kind == .register {
+            physicalRegistration = beginPhysicalNotificationRegistration(
+                generation: operation.generation
+            )
+        } else {
+            physicalRegistration = nil
+        }
         let callback: @Sendable (GatewayTunnelNotificationResult) async -> Void = {
             [weak self] result in
             let reportedResult: GatewayTunnelNotificationResult
@@ -386,6 +428,7 @@ actor GatewayTunnelHealthArtifactDriver {
                 key: key,
                 id: operation.id,
                 result: reportedResult,
+                physicalRegistration: physicalRegistration,
                 completion: operation.completion
             )
         }
@@ -403,7 +446,11 @@ actor GatewayTunnelHealthArtifactDriver {
         result: GatewayTunnelEffectResult,
         completion: @escaping @Sendable (GatewayTunnelHealthEvent) async -> Void
     ) async {
-        guard pending.removeValue(forKey: key) != nil else { return }
+        guard pending.removeValue(forKey: key) != nil else {
+            requestRepair()
+            finishStopWaitersIfPossible()
+            return
+        }
         if activeGeneration == key.generation,
            gate.isCurrentAndOpen(generation: key.generation) {
             await completion(.persistenceCompleted(id, result))
@@ -414,7 +461,11 @@ actor GatewayTunnelHealthArtifactDriver {
     }
 
     private func completeClear(key: PendingKey) {
-        guard pending.removeValue(forKey: key) != nil else { return }
+        guard pending.removeValue(forKey: key) != nil else {
+            requestRepair()
+            finishStopWaitersIfPossible()
+            return
+        }
         if activeGeneration != key.generation || desired.snapshot != nil {
             requestRepair()
         }
@@ -425,8 +476,13 @@ actor GatewayTunnelHealthArtifactDriver {
         key: PendingKey,
         id: GatewayTunnelHealthOperationID,
         result: GatewayTunnelNotificationResult,
+        physicalRegistration: GatewayTunnelHealthNotificationRegistrationToken?,
         completion: @escaping @Sendable (GatewayTunnelHealthEvent) async -> Void
     ) async {
+        if let physicalRegistration,
+           !finishPhysicalNotificationRegistration(physicalRegistration) {
+            return
+        }
         guard pending.removeValue(forKey: key) != nil else {
             requestRepair()
             drainNotificationLane()
@@ -556,8 +612,19 @@ actor GatewayTunnelHealthArtifactDriver {
                 phase: .registering
             )
             notifyDeadlineChanged()
+            guard let generation = activeGeneration else {
+                finishNotificationRepair(sequence: sequence, succeeded: false)
+                return
+            }
+            let physicalRegistration = beginPhysicalNotificationRegistration(
+                generation: generation
+            )
             notifications.register { [weak self] result in
-                await self?.notificationRepairRegistered(result, sequence: sequence)
+                await self?.notificationRepairRegistered(
+                    result,
+                    sequence: sequence,
+                    physicalRegistration: physicalRegistration
+                )
             }
         case .absent, .terminalFailure:
             if result == .terminalFailure {
@@ -571,8 +638,15 @@ actor GatewayTunnelHealthArtifactDriver {
 
     private func notificationRepairRegistered(
         _ result: GatewayTunnelNotificationResult,
-        sequence: UInt64
+        sequence: UInt64,
+        physicalRegistration: GatewayTunnelHealthNotificationRegistrationToken
     ) async {
+        guard finishPhysicalNotificationRegistration(physicalRegistration) else { return }
+        guard notificationRepairInFlight?.sequence == sequence else {
+            requestRepair()
+            finishStopWaitersIfPossible()
+            return
+        }
         switch result {
         case .registered:
             await satisfyDeferredNotification(with: .registered)
@@ -606,7 +680,7 @@ actor GatewayTunnelHealthArtifactDriver {
         notificationRepairInFlight = nil
         notifyDeadlineChanged()
         if !succeeded { notificationRepairDirty = true }
-        if succeeded || deferredNotification != nil {
+        if succeeded || deferredNotification != nil || !desired.notificationDesired {
             drainNotificationLane()
         }
         finishStopWaitersIfPossible()
@@ -644,6 +718,27 @@ actor GatewayTunnelHealthArtifactDriver {
         deadlineSignal.notify()
     }
 
+    private func beginPhysicalNotificationRegistration(
+        generation: UInt64
+    ) -> GatewayTunnelHealthNotificationRegistrationToken {
+        physicalNotificationRegistrationCounts[generation, default: 0] += 1
+        return GatewayTunnelHealthNotificationRegistrationToken(generation: generation)
+    }
+
+    private func finishPhysicalNotificationRegistration(
+        _ registration: GatewayTunnelHealthNotificationRegistrationToken
+    ) -> Bool {
+        guard registration.claimCompletion() else { return false }
+        if let count = physicalNotificationRegistrationCounts[registration.generation] {
+            if count > 1 {
+                physicalNotificationRegistrationCounts[registration.generation] = count - 1
+            } else {
+                physicalNotificationRegistrationCounts[registration.generation] = nil
+            }
+        }
+        return true
+    }
+
     private func finishStopWaitersIfPossible() {
         guard snapshotRepairInFlight == nil,
               !snapshotRepairDirty,
@@ -654,7 +749,8 @@ actor GatewayTunnelHealthArtifactDriver {
         }
         var remaining: [StopWaiter] = []
         for waiter in stopWaiters {
-            if pending.values.contains(where: { $0.generation == waiter.generation }) {
+            if pending.values.contains(where: { $0.generation == waiter.generation }) ||
+                physicalNotificationRegistrationCounts[waiter.generation] != nil {
                 remaining.append(waiter)
             } else {
                 waiter.completion()

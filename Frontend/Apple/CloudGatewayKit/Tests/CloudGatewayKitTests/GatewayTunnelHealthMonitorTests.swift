@@ -1220,6 +1220,11 @@ private func makeMonitor(
     _ = gate.closeCurrent()
     await driver.stop(generation: 1) { stopped.set() }
     try await persistence.complete(0)
+    #expect(!stopped.value)
+
+    try await notifications.complete(0, result: .registered)
+    #expect(notifications.calls.last == .withdraw)
+    try await persistence.complete(1)
     #expect(stopped.value)
 }
 
@@ -1324,6 +1329,159 @@ private func makeMonitor(
     #expect(!stopped.value)
     try await persistence.complete(1)
     #expect(stopped.value)
+}
+
+@Test func artifactDriverStopWaitsForPhysicalRepairRegistration() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let stopped = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    try await notifications.complete(0, result: .absent)
+    #expect(notifications.calls == [.reconcile, .register])
+
+    _ = gate.closeCurrent()
+    await driver.stop(generation: 1) { stopped.set() }
+    try await persistence.complete(0)
+    try await persistence.complete(1)
+    #expect(!stopped.value)
+
+    try await notifications.complete(1, result: .registered)
+    #expect(notifications.calls.last == .withdraw)
+    #expect(stopped.value)
+}
+
+@Test func artifactDriverStopDrainsAfterPhysicalRepairRegistrationFailure() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let stopped = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    try await notifications.complete(0, result: .absent)
+    #expect(notifications.calls == [.reconcile, .register])
+
+    _ = gate.closeCurrent()
+    await driver.stop(generation: 1) { stopped.set() }
+    try await persistence.complete(0)
+    try await persistence.complete(1)
+    #expect(!stopped.value)
+
+    try await notifications.complete(1, result: .retryableFailure)
+    #expect(notifications.calls.last == .withdraw)
+    #expect(stopped.value)
+}
+
+@Test func artifactDriverBoundsLostPhysicalRegistrationBookkeeping() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let stopped = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    try await notifications.complete(0, result: .absent)
+
+    await driver.advance(to: .seconds(10))
+    try await notifications.complete(2, result: .absent)
+    await driver.advance(to: .seconds(20))
+    try await notifications.complete(4, result: .absent)
+    #expect(await driver.physicalNotificationRegistrationGenerationCount == 1)
+
+    _ = gate.closeCurrent()
+    await driver.stop(generation: 1) { stopped.set() }
+    await driver.abandonStop(generation: 1)
+    #expect(await driver.physicalNotificationRegistrationGenerationCount == 0)
+    #expect(!stopped.value)
+}
+
+@Test func artifactDriverAbandonmentUnblocksReplacementNotificationLane() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let first = GatewayTunnelHealthOperationID(
+        session: GatewayTunnelHealthSessionID(rawValue: 1),
+        sequence: 1
+    )
+    let replacement = GatewayTunnelHealthOperationID(
+        session: GatewayTunnelHealthSessionID(rawValue: 2),
+        sequence: 1
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true,
+            notificationOperationID: first
+        )
+    )
+    await driver.execute(.registerNotification(first), generation: 1) { _ in }
+    _ = gate.closeCurrent()
+    await driver.stop(generation: 1) {}
+
+    await driver.abandonStop(generation: 1)
+    gate.open(generation: 2)
+    await driver.activate(
+        generation: 2,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true,
+            notificationOperationID: replacement
+        )
+    )
+    await driver.execute(.registerNotification(replacement), generation: 2) { _ in }
+    #expect(notifications.calls == [.register, .withdraw, .register])
+
+    try await notifications.complete(0, result: .registered)
+    try await notifications.complete(2, result: .registered)
+    #expect(notifications.calls.last == .reconcile)
 }
 
 @Test func unsupportedBackendRestartConfirmsWithoutCallingAdapter() async throws {
