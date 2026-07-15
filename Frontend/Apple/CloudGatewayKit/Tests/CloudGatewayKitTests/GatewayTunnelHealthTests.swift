@@ -169,6 +169,7 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
 
     pathPolicy.recordPathChange(isSatisfied: true, at: now)
     #expect(pathPolicy.availability(at: now) == .settling)
+    #expect(pathPolicy.nextAvailabilityDeadline != nil)
 
     for seconds in stride(from: 5, through: 35, by: 5) {
         pathPolicy.recordPathChange(
@@ -180,6 +181,7 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     #expect(pathPolicy.policyGeneration == 6)
     #expect(pathPolicy.recoveryRouteGeneration == 8)
     #expect(pathPolicy.availability(at: now.addingTimeInterval(35)) == .satisfied)
+    #expect(pathPolicy.nextAvailabilityDeadline == nil)
 
     // Churn after the aggregate cap still invalidates stale callbacks, but it
     // cannot keep resetting the health policy or re-arm another settle window.
@@ -187,6 +189,7 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     #expect(pathPolicy.policyGeneration == 6)
     #expect(pathPolicy.recoveryRouteGeneration == 9)
     #expect(pathPolicy.availability(at: now.addingTimeInterval(40)) == .satisfied)
+    #expect(pathPolicy.nextAvailabilityDeadline == nil)
 
     // Ten quiet seconds close the episode; a later meaningful change gets a
     // fresh settle window and policy generation.
@@ -195,6 +198,7 @@ private func stats(handshakeSecondsAgo: Double?, rx: UInt64, tx: UInt64, relativ
     #expect(pathPolicy.policyGeneration == 7)
     #expect(pathPolicy.recoveryRouteGeneration == 10)
     #expect(pathPolicy.availability(at: now.addingTimeInterval(51)) == .settling)
+    #expect(pathPolicy.nextAvailabilityDeadline != nil)
 }
 
 @Test func unsatisfiedPathIsUnavailableAndStartsNewSettleEpisode() {

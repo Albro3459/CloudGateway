@@ -325,6 +325,15 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
         return emit(.notPassingTraffic)
     }
 
+    public mutating func recoveryAttemptTimedOut(
+        routeGeneration: UInt64
+    ) -> GatewayTunnelRecoveryAction {
+        self.routeGeneration = routeGeneration
+        runtimeUnavailableSince = nil
+        state = .confirmed
+        return emit(.notPassingTraffic)
+    }
+
     private mutating func handleRuntimeUnavailable(
         at now: Duration
     ) -> GatewayTunnelRecoveryAction {

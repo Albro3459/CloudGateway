@@ -64,7 +64,13 @@ required.
   - [x] Track desired versus completed persistence and notification state.
   - [x] Migrate the current iOS producer to monotonic policy inputs.
   - [x] Pass the Apple gate and Stage 2 reviewer loop.
-- [ ] Stage 3: close callback, path, notification, and persistence gaps.
+- [x] Stage 3: close callback, path, notification, and persistence gaps.
+  - [x] Bound missing runtime-read and recovery callbacks without queueing more WireGuard work.
+  - [x] Rebase physical-operation deadlines after path loss and reject stale-route recovery advancement.
+  - [x] Separate desired notification state from registration, reconciliation, terminal failure, and bounded retry state.
+  - [x] Keep failed or superseded persistence writes due until the desired snapshot succeeds.
+  - [x] Add deterministic traces for late, missing, duplicate, retryable, terminal, and stale completions.
+  - [x] Pass the Apple gate and Stage 3 reviewer loop.
 - [ ] Stage 4: add the shared runtime monitor and adapters.
 - [ ] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.
 - [ ] Stage 6: update durable architecture and tunnel-health documentation.

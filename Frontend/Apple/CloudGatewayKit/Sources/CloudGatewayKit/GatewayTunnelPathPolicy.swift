@@ -11,6 +11,7 @@ public struct GatewayTunnelPathPolicy: Sendable {
     private var isSatisfied = false
     private var settlingStartedAt: Duration?
     private var lastPathChangeAt: Duration?
+    private var settlingCapReached = false
 
     public init(timing: GatewayTunnelHealthTiming = .production) {
         quietPeriod = timing.pathQuietPeriod
@@ -23,6 +24,7 @@ public struct GatewayTunnelPathPolicy: Sendable {
            let lastPathChangeAt,
            now - lastPathChangeAt >= quietPeriod {
             settlingStartedAt = nil
+            settlingCapReached = false
         }
 
         self.isSatisfied = isSatisfied
@@ -31,12 +33,14 @@ public struct GatewayTunnelPathPolicy: Sendable {
 
         guard isSatisfied else {
             settlingStartedAt = nil
+            settlingCapReached = false
             policyGeneration &+= 1
             return
         }
 
         if settlingStartedAt == nil {
             settlingStartedAt = now
+            settlingCapReached = false
         }
         if now - (settlingStartedAt ?? now) < settlingCap {
             policyGeneration &+= 1
@@ -57,9 +61,20 @@ public struct GatewayTunnelPathPolicy: Sendable {
             return .satisfied
         }
         if now - settlingStartedAt >= settlingCap {
+            settlingCapReached = true
             return .satisfied
         }
         return .settling
+    }
+
+    var nextAvailabilityDeadline: Duration? {
+        guard isSatisfied,
+              !settlingCapReached,
+              let settlingStartedAt,
+              let lastPathChangeAt else {
+            return nil
+        }
+        return min(lastPathChangeAt + quietPeriod, settlingStartedAt + settlingCap)
     }
 
     public mutating func recordPathChange(isSatisfied: Bool, at now: Date) {

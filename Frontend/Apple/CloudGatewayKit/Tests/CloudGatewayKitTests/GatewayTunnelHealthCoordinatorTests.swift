@@ -159,8 +159,45 @@ private func notificationID(
     }.first
 }
 
+private func notificationReconciliationID(
+    in transition: GatewayTunnelHealthTransition
+) -> GatewayTunnelHealthOperationID? {
+    transition.effects.lazy.compactMap { effect in
+        guard case let .reconcileNotification(id) = effect else { return nil }
+        return id
+    }.first
+}
+
 private func containsWithdrawal(_ transition: GatewayTunnelHealthTransition) -> Bool {
     transition.effects.contains(.withdrawNotification)
+}
+
+private func driveToNotification(
+    _ harness: inout CoordinatorHarness,
+    from start: Int,
+    through end: Int
+) throws -> GatewayTunnelHealthOperationID {
+    var notification: GatewayTunnelHealthOperationID?
+    for seconds in stride(from: start, through: end, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        notification = notification ?? notificationID(in: transition)
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+        if notification != nil { break }
+    }
+    return try #require(notification)
 }
 
 @Test func coordinatorHealthyLifecyclePersistsAndStopsCleanly() throws {
@@ -755,4 +792,487 @@ private func containsWithdrawal(_ transition: GatewayTunnelHealthTransition) -> 
     )
     #expect(afterStop.effects.isEmpty)
     #expect(afterStop.health == nil)
+}
+
+@Test func coordinatorMissingRuntimeCallbackConfirmsAndLateHealthNeedsProbation() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let wake = try harness.wake(at: 5)
+    let stuckRead = try #require(runtimeReadID(in: wake))
+    for seconds in [10, 15, 20, 25] {
+        let transition = try harness.wake(at: seconds)
+        #expect(runtimeReadID(in: transition) == nil)
+        #expect(recoveryEffect(in: transition) == nil)
+        #expect(transition.health != .notPassingTraffic)
+    }
+
+    let timedOut = try harness.wake(at: 30)
+    #expect(timedOut.health == .notPassingTraffic)
+    #expect(runtimeReadID(in: timedOut) == nil)
+    #expect(recoveryEffect(in: timedOut) == nil)
+
+    let lateHealthy = harness.completeRead(
+        stuckRead,
+        stats: harness.stats(at: 31, handshakeAge: 1, rx: 100, tx: 100),
+        at: 31
+    )
+    #expect(lateHealthy.health == .notPassingTraffic)
+
+    let probationWake = try harness.wake(at: 35)
+    let probationRead = try #require(runtimeReadID(in: probationWake))
+    let recovered = harness.completeRead(
+        probationRead,
+        stats: harness.stats(at: 35, handshakeAge: 1, rx: 200, tx: 100),
+        at: 35
+    )
+    #expect(recovered.health == .passingTraffic)
+}
+
+@Test func coordinatorOverdueRuntimeCompletionCannotBypassTimeout() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let read = try #require(runtimeReadID(in: firstWake))
+    _ = try harness.wake(at: 10)
+    let overdue = harness.completeRead(
+        read,
+        stats: harness.stats(at: 31, handshakeAge: 1, rx: 100, tx: 100),
+        at: 31
+    )
+
+    #expect(overdue.health == .notPassingTraffic)
+    #expect(notificationID(in: overdue) != nil)
+}
+
+@Test func coordinatorOverduePathChangeCannotEraseRuntimeTimeout() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let read = try #require(runtimeReadID(in: firstWake))
+    _ = try harness.wake(at: 10)
+    let overduePath = harness.path(satisfied: true, routeID: 2, at: 31)
+    #expect(overduePath.health == .notPassingTraffic)
+
+    let lateHealthy = harness.completeRead(
+        read,
+        stats: harness.stats(at: 32, handshakeAge: 1, rx: 100, tx: 100),
+        at: 32
+    )
+    #expect(lateHealthy.health == .notPassingTraffic)
+}
+
+@Test func coordinatorPathLossRebasesOutstandingReadToFreshStableDeadline() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let firstRead = try #require(runtimeReadID(in: firstWake))
+    _ = harness.completeRead(
+        firstRead,
+        stats: harness.stats(at: 5, handshakeAge: 1, rx: 1, tx: 1),
+        at: 5
+    )
+    let secondWake = try harness.wake(at: 10)
+    #expect(runtimeReadID(in: secondWake) != nil)
+
+    _ = harness.path(satisfied: false, routeID: 2, at: 11)
+    _ = try harness.wake(at: 15)
+    _ = harness.path(satisfied: true, routeID: 3, at: 20)
+    for seconds in [20, 25, 30, 35, 40, 45] {
+        let transition = try harness.wake(at: seconds)
+        #expect(transition.health != .notPassingTraffic)
+        #expect(runtimeReadID(in: transition) == nil)
+    }
+
+    let timedOut = try harness.wake(at: 50)
+    #expect(timedOut.health == .notPassingTraffic)
+}
+
+@Test func coordinatorMissingRecoveryCallbackConfirmsWithoutQueueingBehindIt() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let firstRead = try #require(runtimeReadID(in: firstWake))
+    _ = harness.completeRead(
+        firstRead,
+        stats: harness.stats(at: 5, handshakeAge: nil, rx: 0, tx: 1_000),
+        at: 5
+    )
+    let secondWake = try harness.wake(at: 10)
+    let secondRead = try #require(runtimeReadID(in: secondWake))
+    let requested = harness.completeRead(
+        secondRead,
+        stats: harness.stats(at: 10, handshakeAge: nil, rx: 0, tx: 5_000),
+        at: 10
+    )
+    let recovery = try #require(recoveryEffect(in: requested))
+
+    for seconds in [15, 20, 25] {
+        let transition = try harness.wake(at: seconds)
+        #expect(runtimeReadID(in: transition) == nil)
+        #expect(recoveryEffect(in: transition) == nil)
+    }
+    let timedOut = try harness.wake(at: 30)
+    #expect(timedOut.health == .notPassingTraffic)
+    #expect(runtimeReadID(in: timedOut) == nil)
+
+    let late = harness.completeRecovery(
+        recovery.1,
+        result: .accepted,
+        at: 31
+    )
+    #expect(late.health == .notPassingTraffic)
+    #expect(late.effects.isEmpty)
+}
+
+@Test func coordinatorOverdueRecoveryCompletionCannotBypassTimeout() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let firstRead = try #require(runtimeReadID(in: firstWake))
+    _ = harness.completeRead(
+        firstRead,
+        stats: harness.stats(at: 5, handshakeAge: nil, rx: 0, tx: 1_000),
+        at: 5
+    )
+    let secondWake = try harness.wake(at: 10)
+    let secondRead = try #require(runtimeReadID(in: secondWake))
+    let requested = harness.completeRead(
+        secondRead,
+        stats: harness.stats(at: 10, handshakeAge: nil, rx: 0, tx: 5_000),
+        at: 10
+    )
+    let recovery = try #require(recoveryEffect(in: requested))
+
+    let overdue = harness.completeRecovery(recovery.1, result: .accepted, at: 31)
+    #expect(overdue.health == .notPassingTraffic)
+    #expect(notificationID(in: overdue) != nil)
+}
+
+@Test func coordinatorPathChangeDuringRecoveryDoesNotAdvanceNewRouteLadder() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let firstRead = try #require(runtimeReadID(in: firstWake))
+    _ = harness.completeRead(
+        firstRead,
+        stats: harness.stats(at: 5, handshakeAge: nil, rx: 0, tx: 1_000),
+        at: 5
+    )
+    let secondWake = try harness.wake(at: 10)
+    let secondRead = try #require(runtimeReadID(in: secondWake))
+    let requested = harness.completeRead(
+        secondRead,
+        stats: harness.stats(at: 10, handshakeAge: nil, rx: 0, tx: 5_000),
+        at: 10
+    )
+    let oldRouteRecovery = try #require(recoveryEffect(in: requested))
+    #expect(oldRouteRecovery.0 == .bindingRefresh)
+
+    _ = harness.path(satisfied: true, routeID: 2, at: 11)
+    let staleCompletion = harness.completeRecovery(
+        oldRouteRecovery.1,
+        result: .accepted,
+        at: 12
+    )
+    #expect(staleCompletion.health == .unknown)
+    #expect(staleCompletion.effects.isEmpty)
+
+    for seconds in [15, 20] {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let settling = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        #expect(recoveryEffect(in: settling) == nil)
+    }
+    _ = try harness.wake(at: 21)
+
+    let newRouteWake = try harness.wake(at: 25)
+    let newRouteRead = try #require(runtimeReadID(in: newRouteWake))
+    let newRoute = harness.completeRead(
+        newRouteRead,
+        stats: harness.stats(at: 25, handshakeAge: nil, rx: 0, tx: 25_000),
+        at: 25
+    )
+    #expect(recoveryEffect(in: newRoute)?.0 == .bindingRefresh)
+}
+
+@Test func coordinatorMissingNotificationCallbackReconcilesBeforeRetrying() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    var registration: GatewayTunnelHealthOperationID?
+
+    for seconds in stride(from: 5, through: 30, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        registration = registration ?? notificationID(in: transition)
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+    }
+    _ = try #require(registration)
+
+    _ = try harness.wake(at: 35)
+    let reconciliation = try harness.wake(at: 40)
+    let reconciliationID = try #require(notificationReconciliationID(in: reconciliation))
+    #expect(notificationID(in: reconciliation) == nil)
+
+    _ = harness.completeNotification(reconciliationID, result: .absent, at: 40)
+    let retry = try harness.wake(at: 45)
+    #expect(notificationID(in: retry) != nil)
+}
+
+@Test func coordinatorLateTerminalRegistrationCancelsAmbiguousRetry() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    let registration = try driveToNotification(&harness, from: 5, through: 35)
+
+    _ = try harness.wake(at: 35)
+    let reconciliation = try harness.wake(at: 40)
+    let reconciliationID = try #require(notificationReconciliationID(in: reconciliation))
+    _ = harness.completeNotification(
+        registration,
+        result: .terminalFailure,
+        at: 41
+    )
+    _ = harness.completeNotification(reconciliationID, result: .absent, at: 42)
+
+    for seconds in [45, 50, 55, 60] {
+        let transition = try harness.wake(at: seconds)
+        #expect(notificationID(in: transition) == nil)
+        #expect(notificationReconciliationID(in: transition) == nil)
+    }
+}
+
+@Test func coordinatorMissingNotificationReconciliationRetriesReconciliation() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    for seconds in stride(from: 5, through: 30, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+    }
+    _ = try #require(notificationID(in: harness.transition))
+
+    _ = try harness.wake(at: 35)
+    let firstReconciliation = try harness.wake(at: 40)
+    #expect(notificationReconciliationID(in: firstReconciliation) != nil)
+    _ = try harness.wake(at: 45)
+    _ = try harness.wake(at: 50)
+    let retry = try harness.wake(at: 55)
+    #expect(notificationReconciliationID(in: retry) != nil)
+    #expect(notificationID(in: retry) == nil)
+}
+
+@Test func coordinatorRetryableNotificationFailureRetriesRegistration() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    var notification: GatewayTunnelHealthOperationID?
+
+    for seconds in stride(from: 5, through: 30, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        notification = notification ?? notificationID(in: transition)
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+    }
+    let failed = try #require(notification)
+    _ = harness.completeNotification(failed, result: .retryableFailure, at: 30)
+
+    let retry = try harness.wake(at: 35)
+    let retried = try #require(notificationID(in: retry))
+    #expect(retried != failed)
+}
+
+@Test func coordinatorTerminalNotificationFailureDoesNotRetry() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    var notification: GatewayTunnelHealthOperationID?
+
+    for seconds in stride(from: 5, through: 30, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        notification = notification ?? notificationID(in: transition)
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+    }
+    let id = try #require(notification)
+    _ = harness.completeNotification(id, result: .terminalFailure, at: 30)
+    for seconds in [35, 40, 45, 50] {
+        let transition = try harness.wake(at: seconds)
+        #expect(notificationID(in: transition) == nil)
+        #expect(notificationReconciliationID(in: transition) == nil)
+    }
+}
+
+@Test func coordinatorTerminalNotificationFailureRemainsTerminalAfterRecovery() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    let firstNotification = try driveToNotification(&harness, from: 5, through: 35)
+    _ = harness.completeNotification(
+        firstNotification,
+        result: .terminalFailure,
+        at: 30
+    )
+
+    for seconds in [35, 40] {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        _ = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: 1,
+                rx: UInt64(seconds) * 10,
+                tx: 31_000
+            ),
+            at: seconds
+        )
+    }
+    #expect(harness.transition.health == .passingTraffic)
+
+    for seconds in stride(from: 45, through: 80, by: 5) {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        let transition = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: nil,
+                rx: 0,
+                tx: UInt64(seconds) * 1_000
+            ),
+            at: seconds
+        )
+        #expect(notificationID(in: transition) == nil)
+        #expect(notificationReconciliationID(in: transition) == nil)
+        if let recovery = recoveryEffect(in: transition) {
+            _ = harness.completeRecovery(recovery.1, result: .accepted, at: seconds)
+        }
+    }
+    #expect(harness.transition.health == .notPassingTraffic)
+}
+
+@Test func coordinatorReconcilesMultipleCancelledRegistrationsOutOfOrder() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+    let firstNotification = try driveToNotification(&harness, from: 5, through: 35)
+
+    for seconds in [35, 40] {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        _ = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: 1,
+                rx: UInt64(seconds) * 10,
+                tx: 31_000
+            ),
+            at: seconds
+        )
+    }
+    let secondNotification = try driveToNotification(&harness, from: 45, through: 80)
+
+    for seconds in [85, 90] {
+        let wake = try harness.wake(at: seconds)
+        let read = try #require(runtimeReadID(in: wake))
+        _ = harness.completeRead(
+            read,
+            stats: harness.stats(
+                at: seconds,
+                handshakeAge: 1,
+                rx: UInt64(seconds) * 10,
+                tx: 81_000
+            ),
+            at: seconds
+        )
+    }
+    #expect(harness.transition.health == .passingTraffic)
+
+    let lateFirst = harness.completeNotification(
+        firstNotification,
+        result: .registered,
+        at: 91
+    )
+    #expect(lateFirst.effects == [.withdrawNotification])
+    let lateSecond = harness.completeNotification(
+        secondNotification,
+        result: .registered,
+        at: 92
+    )
+    #expect(lateSecond.effects == [.withdrawNotification])
 }
