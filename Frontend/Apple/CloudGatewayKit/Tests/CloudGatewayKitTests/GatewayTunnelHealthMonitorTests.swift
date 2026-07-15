@@ -449,6 +449,24 @@ private func makeMonitor(
     #expect(scheduler.activeCount == 0)
 }
 
+@Test func sessionQualifiedStopCannotCloseReplacementSession() async throws {
+    let monitor = makeMonitor()
+    let oldSession = try #require(
+        await monitor.start(tunnelIdentifier: "client-1")
+    )
+    let oldToken = try #require(monitor.prepareToStop(session: oldSession))
+    await monitor.stop(oldToken) {}
+
+    let replacement = try #require(
+        await monitor.start(tunnelIdentifier: "client-1")
+    )
+    #expect(monitor.prepareToStop(session: oldSession) == nil)
+    let replacementToken = try #require(
+        monitor.prepareToStop(session: replacement)
+    )
+    await monitor.stop(replacementToken) {}
+}
+
 @Test func monitorNormalStopDrainsOldArtifactAndFinalRepair() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
@@ -473,6 +491,11 @@ private func makeMonitor(
     try await persistence.complete(2)
     #expect(stopped.value)
     #expect(notifications.calls.filter { $0 == .withdraw }.count >= 2)
+    let persistenceCallCount = persistence.calls.count
+    let notificationCallCount = notifications.calls.count
+    token.bestEffortDeadlineCleanup()
+    #expect(persistence.calls.count == persistenceCallCount)
+    #expect(notifications.calls.count == notificationCallCount)
 }
 
 @Test func stopDeadlineCleanupIsSynchronousAndIdempotent() async throws {
@@ -740,6 +763,35 @@ private func makeMonitor(
 
     try await notifications.complete(0, result: .registered)
     #expect(notifications.calls == [.register, .withdraw])
+}
+
+@Test func monitorRejectsOutOfOrderPathRouteID() async throws {
+    let runtime = ControllableRuntimeAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let scheduler = ManualHealthScheduler()
+    let monitor = makeMonitor(
+        runtime: runtime,
+        notifications: notifications,
+        scheduler: scheduler
+    )
+    let session = try #require(
+        await monitor.start(tunnelIdentifier: "client-1")
+    )
+
+    await monitor.pathChanged(
+        .init(isSatisfied: false, routeID: 2),
+        session: session
+    )
+    await monitor.pathChanged(
+        .init(isSatisfied: true, routeID: 1),
+        session: session
+    )
+    for seconds in stride(from: 5, through: 30, by: 5) {
+        try await scheduler.fireNext(at: seconds)
+    }
+
+    #expect(runtime.readCount == 1)
+    #expect(!notifications.calls.contains(.register))
 }
 
 @Test func lostNotificationRepairDoesNotBlockNewestSnapshotRepair() async throws {

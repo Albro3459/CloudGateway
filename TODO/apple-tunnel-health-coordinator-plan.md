@@ -77,7 +77,13 @@ required.
   - [x] Add the synchronously closable generation gate and serialized artifact reconciler.
   - [x] Cover wake replacement, callback disorder, stop/restart, closed-generation repair, and unsupported restart.
   - [x] Pass the Apple gate and Stage 4 reviewer loop.
-- [ ] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.
+- [x] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.
+  - [x] Add queue-confined WireGuard runtime/recovery adapter mapping.
+  - [x] Add stable-ID User Notifications registration and reconciliation adapter.
+  - [x] Map `NWPathMonitor` updates to session-qualified shared descriptors.
+  - [x] Bridge start and bounded two-signal stop lifecycle to the shared monitor.
+  - [x] Remove the provider-owned timer, policies, flags, generations, and notification edges.
+  - [x] Pass the Apple gate and Stage 5 reviewer loop.
 - [ ] Stage 6: update durable architecture and tunnel-health documentation.
 - [ ] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.
 

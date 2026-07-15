@@ -180,6 +180,14 @@ public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
         return generation
     }
 
+    func close(generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen, self.generation == generation else { return false }
+        isOpen = false
+        return true
+    }
+
     @discardableResult
     func performIfOpen(
         generation: UInt64,
@@ -219,6 +227,12 @@ public final class GatewayTunnelHealthStopToken: @unchecked Sendable {
         lock.unlock()
         cleanup?()
     }
+
+    public func disarmDeadlineCleanup() {
+        lock.lock()
+        cleanup = nil
+        lock.unlock()
+    }
 }
 
 public actor GatewayTunnelHealthMonitor {
@@ -238,6 +252,7 @@ public actor GatewayTunnelHealthMonitor {
     private var nextGeneration: UInt64 = 0
     private var nextScheduleToken: UInt64 = 0
     private var activeGeneration: UInt64?
+    private var latestPathRouteID: UInt64 = 0
     private var coordinatorWake: GatewayTunnelHealthWake?
     private var scheduledWake: ScheduledWake?
 
@@ -287,6 +302,7 @@ public actor GatewayTunnelHealthMonitor {
         nextGeneration &+= 1
         let generation = nextGeneration
         activeGeneration = generation
+        latestPathRouteID = 0
         let moment = scheduler.now()
         let transition = coordinator.start(
             session: GatewayTunnelHealthSessionID(rawValue: generation),
@@ -315,7 +331,9 @@ public actor GatewayTunnelHealthMonitor {
         session: GatewayTunnelHealthSession
     ) async {
         let generation = session.generation
-        guard activeGeneration == generation else { return }
+        guard activeGeneration == generation,
+              descriptor.routeID > latestPathRouteID else { return }
+        latestPathRouteID = descriptor.routeID
         let moment = scheduler.now()
         let transition = coordinator.handle(
             .pathChanged(descriptor),
@@ -330,6 +348,19 @@ public actor GatewayTunnelHealthMonitor {
 
     public nonisolated func prepareToStop() -> GatewayTunnelHealthStopToken? {
         guard let generation = effectGate.closeCurrent() else { return nil }
+        return makeStopToken(generation: generation)
+    }
+
+    public nonisolated func prepareToStop(
+        session: GatewayTunnelHealthSession
+    ) -> GatewayTunnelHealthStopToken? {
+        guard effectGate.close(generation: session.generation) else { return nil }
+        return makeStopToken(generation: session.generation)
+    }
+
+    private nonisolated func makeStopToken(
+        generation: UInt64
+    ) -> GatewayTunnelHealthStopToken {
         return GatewayTunnelHealthStopToken(
             generation: generation,
             cleanup: { self.deadlineCleanup(generation) }
@@ -351,7 +382,10 @@ public actor GatewayTunnelHealthMonitor {
         _ = coordinator.handle(.stop, at: scheduler.now())
         await artifactDriver.stop(
             generation: token.generation,
-            completion: completion
+            completion: {
+                token.disarmDeadlineCleanup()
+                completion()
+            }
         )
     }
 

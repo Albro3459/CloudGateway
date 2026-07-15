@@ -1,0 +1,47 @@
+import Foundation
+import Testing
+@testable import CloudGatewayKit
+
+@Test func pendingStartHoldsStopUntilStartCleanupCompletes() {
+    let barrier = GatewayTunnelPendingStartBarrier()
+    let stopped = LockedPendingStartFlag()
+    let startID = barrier.begin()
+
+    #expect(barrier.prepareToStop { stopped.set() })
+    #expect(!stopped.value)
+    barrier.complete(startID)
+
+    #expect(stopped.value)
+}
+
+@Test func staleStartCannotReleaseReplacementStop() {
+    let barrier = GatewayTunnelPendingStartBarrier()
+    let oldStartID = barrier.begin()
+    let replacementStartID = barrier.begin()
+    let stopped = LockedPendingStartFlag()
+
+    #expect(barrier.prepareToStop { stopped.set() })
+    barrier.complete(oldStartID)
+    #expect(!stopped.value)
+    barrier.complete(replacementStartID)
+
+    #expect(stopped.value)
+}
+
+private final class LockedPendingStartFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = false
+
+    var value: Bool {
+        lock.lock()
+        let value = storage
+        lock.unlock()
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        storage = true
+        lock.unlock()
+    }
+}

@@ -11,31 +11,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         os_log("%{private}@", log: .default, type: logType, message)
     }
 
-    // Tunnel-health polling. Runs entirely inside the extension so it keeps
-    // working when the app is backgrounded, closed, or signed out.
-    private let healthQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health")
-    private let healthTiming = GatewayTunnelHealthTiming.production
-    private let healthClock = ContinuousClock()
+    private let healthPathQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health.path")
+    private let healthLifecycle = IOSTunnelHealthLifecycle()
+    private lazy var healthRuntime = IOSTunnelHealthRuntimeAdapter(adapter: adapter)
+    private let healthNotifications = IOSTunnelHealthNotificationAdapter()
     private let adapterStopCompletionDeadline: DispatchTimeInterval = .seconds(5)
-    // Persist on every state transition, and otherwise at most once per heartbeat
-    // so the stored snapshot stays inside GatewayTunnelHealthStore.freshnessWindow
-    // (30s) without rewriting the protected file on every 5s poll.
-    private var healthTimer: DispatchSourceTimer?
-    private var healthEvaluator: GatewayTunnelHealthEvaluator?
-    private var recoveryPolicy = GatewayTunnelRecoveryPolicy()
-    private var healthStore: GatewayTunnelHealthStore?
-    private var healthTunnelIdentifier: String?
-    private var lastPublishedHealth: GatewayTunnelHealth?
-    private var healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
-    private var healthReadInFlight = false
-    private var healthReadStartedAt: ContinuousClock.Instant?
-    private var healthReadTimedOut = false
-    private var recoveryRequestInFlight = false
-    private var healthSessionGeneration: UInt64 = 0
-    private var healthSessionStartedAt: ContinuousClock.Instant?
-    private var tunnelPathPolicy = GatewayTunnelPathPolicy()
-    private var pathFingerprint: HealthPathFingerprint?
-    private var pathMonitor: NWPathMonitor?
 
     override func startTunnel(
         options: [String: NSObject]?,
@@ -44,10 +24,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         do {
             let tunnelConfiguration = try makeTunnelConfiguration()
             adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
-                if error == nil {
-                    self?.startHealthMonitoring()
+                guard let self, error == nil else {
+                    completionHandler(error)
+                    return
                 }
-                completionHandler(error)
+                self.startHealthMonitoring(completionHandler: completionHandler)
             }
         } catch {
             completionHandler(error)
@@ -58,13 +39,81 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        stopHealthMonitoring()
         let stopCompletion = GatewayTunnelStopCompletion(completion: completionHandler)
-        healthQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+        let healthStop = healthLifecycle.prepareToStop {
+            stopCompletion.healthStopped()
+        }
+        healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+            healthStop.token?.bestEffortDeadlineCleanup()
             stopCompletion.deadlineExceeded()
+        }
+        if let monitor = healthStop.monitor, let token = healthStop.token {
+            Task {
+                await monitor.stop(token) {
+                    stopCompletion.healthStopped()
+                }
+            }
+        } else if !healthStop.waitsForPendingStart {
+            stopCompletion.healthStopped()
         }
         adapter.stop { _ in
             stopCompletion.adapterStopped()
+        }
+    }
+
+    private func startHealthMonitoring(
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
+              let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
+              let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
+            completionHandler(nil)
+            return
+        }
+        let start = healthLifecycle.beginStart(
+            appGroupIdentifier: appGroupIdentifier,
+            runtime: healthRuntime,
+            notifications: healthNotifications
+        )
+        Task { [weak self] in
+            guard let session = await start.monitor.start(tunnelIdentifier: tunnelIdentifier) else {
+                start.lifecycle.pendingStartDidStop(startID: start.id)
+                completionHandler(GatewayVPNError.missingTunnelSession)
+                return
+            }
+            guard let self else {
+                if let token = start.monitor.prepareToStop(session: session) {
+                    await start.monitor.stop(token) {
+                        start.lifecycle.pendingStartDidStop(startID: start.id)
+                    }
+                } else {
+                    start.lifecycle.pendingStartDidStop(startID: start.id)
+                }
+                completionHandler(nil)
+                return
+            }
+            let pathSession = IOSTunnelHealthPathSession(
+                monitor: start.monitor,
+                session: session,
+                queue: self.healthPathQueue
+            )
+            guard self.healthLifecycle.install(
+                pathSession: pathSession,
+                startID: start.id
+            ) else {
+                pathSession.cancel()
+                if let token = start.monitor.prepareToStop(session: session) {
+                    await start.monitor.stop(token) {
+                        start.lifecycle.pendingStartDidStop(startID: start.id)
+                    }
+                } else {
+                    start.lifecycle.pendingStartDidStop(startID: start.id)
+                }
+                completionHandler(nil)
+                return
+            }
+            pathSession.start()
+            completionHandler(nil)
         }
     }
 
@@ -88,286 +137,315 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return try GatewayWireGuardConfigParser.parse(wireGuardConfig, named: tunnelName).wireGuardTunnelConfiguration()
     }
 
-    private func startHealthMonitoring() {
-        guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
-              let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
-              let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
-            return
-        }
-        healthQueue.async { [weak self] in
-            guard let self else { return }
-            // Clear any notification left over from a prior process: iOS can kill
-            // and relaunch the extension without a stopTunnel, and the fresh
-            // evaluator warms up through .unknown, so recovery alone would not
-            // withdraw a stale "not responding" notification.
-            self.withdrawDeadTunnelNotification()
-            self.healthTunnelIdentifier = tunnelIdentifier
-            self.healthStore = GatewayTunnelHealthStore(appGroupIdentifier: appGroupIdentifier)
-            // Do not let a fresh extension session inherit a dead verdict from
-            // the previous process. The first new runtime sample will publish
-            // .unknown, .passingTraffic, or .notPassingTraffic for this session.
-            try? self.healthStore?.clear()
-            self.healthSessionStartedAt = self.healthClock.now
-            let moment = self.healthMoment()
-            self.healthEvaluator = GatewayTunnelHealthEvaluator(
-                startedAt: moment,
-                timing: self.healthTiming
-            )
-            self.recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: self.healthTiming)
-            self.lastPublishedHealth = nil
-            self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy(
-                timing: self.healthTiming
-            )
-            self.healthReadInFlight = false
-            self.healthReadStartedAt = nil
-            self.healthReadTimedOut = false
-            self.recoveryRequestInFlight = false
-            self.healthSessionGeneration &+= 1
-            self.tunnelPathPolicy = GatewayTunnelPathPolicy(timing: self.healthTiming)
-            self.pathFingerprint = nil
+}
 
-            let pathMonitor = NWPathMonitor()
-            pathMonitor.pathUpdateHandler = { [weak self] path in
-                self?.receivePathUpdate(path)
-            }
-            self.pathMonitor = pathMonitor
-            pathMonitor.start(queue: self.healthQueue)
+private final class IOSTunnelHealthRuntimeAdapter:
+    GatewayTunnelHealthRuntimeAdapter,
+    @unchecked Sendable
+{
+    let backendRestartCapability = GatewayTunnelBackendRestartCapability.supported
+    private let adapter: WireGuardAdapter
 
-            let timer = DispatchSource.makeTimerSource(queue: self.healthQueue)
-            let pollInterval = self.healthTiming.runtimePollInterval.gatewayTimeInterval
-            timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval)
-            timer.setEventHandler { [weak self] in
-                self?.pollTunnelHealth()
-            }
-            self.healthTimer = timer
-            timer.resume()
+    init(adapter: WireGuardAdapter) {
+        self.adapter = adapter
+    }
+
+    // WireGuardAdapter confines every public operation and callback to its
+    // private work queue. This wrapper never reads or mutates the adapter state.
+    func readRuntime(
+        completion: @escaping @Sendable (GatewayTunnelRuntimeStats?) async -> Void
+    ) {
+        adapter.getRuntimeConfiguration { configuration in
+            let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
+            Task { await completion(stats) }
         }
     }
 
-    // Synchronous so the stale health flag is guaranteed cleared before
-    // stopTunnel's completion fires - iOS may suspend/terminate the extension
-    // immediately after, and an enqueued clear could otherwise never run.
-    private func stopHealthMonitoring() {
-        healthQueue.sync {
-            healthTimer?.cancel()
-            healthTimer = nil
-            pathMonitor?.cancel()
-            pathMonitor = nil
-            healthEvaluator = nil
-            recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: healthTiming)
-            try? healthStore?.clear()
-            healthStore = nil
-            healthTunnelIdentifier = nil
-            lastPublishedHealth = nil
-            healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy(timing: healthTiming)
-            healthReadInFlight = false
-            healthReadStartedAt = nil
-            healthReadTimedOut = false
-            recoveryRequestInFlight = false
-            healthSessionGeneration &+= 1
-            healthSessionStartedAt = nil
-            tunnelPathPolicy = GatewayTunnelPathPolicy(timing: healthTiming)
-            pathFingerprint = nil
+    func refreshBinding(
+        completion: @escaping @Sendable (GatewayTunnelRecoveryResult) async -> Void
+    ) {
+        adapter.refreshNetworkBinding { error in
+            Task { await completion(error == nil ? .accepted : .rejected) }
         }
-        withdrawDeadTunnelNotification()
     }
 
-    // Called on healthQueue. Reads the tunnel's runtime stats, updates the
-    // evaluator, and publishes the verdict to the shared app group.
-    private func pollTunnelHealth() {
-        let moment = healthMoment()
-        if healthReadInFlight {
-            if healthReadTimedOut {
-                // Keep the shared snapshot fresh while the adapter queue is
-                // stalled. The stable health edge prevents re-notification.
-                publishHealth(.notPassingTraffic, at: moment)
-            } else if let healthReadStartedAt,
-                      healthReadStartedAt.duration(to: healthClock.now) >= healthTiming.runtimeReadDeadline,
-                      pathAvailability(at: moment.monotonic) == .satisfied {
-                // Do not clear the in-flight flag or enqueue recovery behind a
-                // stalled runtime read. Confirm the outage so the user retains
-                // the fail-closed escape hatch, then wait for this read to
-                // return or for the extension session to end.
-                healthReadTimedOut = true
-                let action = recoveryPolicy.runtimeReadTimedOut(
-                    routeGeneration: tunnelPathPolicy.policyGeneration
-                )
-                publishHealth(action.health, at: moment)
+    func restartBackend(
+        completion: @escaping @Sendable (GatewayTunnelRecoveryResult) async -> Void
+    ) {
+        adapter.restartBackend { error in
+            Task { await completion(error == nil ? .accepted : .rejected) }
+        }
+    }
+}
+
+private final class IOSTunnelHealthNotificationAdapter:
+    GatewayTunnelHealthNotificationAdapter,
+    @unchecked Sendable
+{
+    private let center = UNUserNotificationCenter.current()
+
+    func register(
+        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+    ) {
+        withAuthorization(completion: completion) { [center] in
+            let content = UNMutableNotificationContent()
+            content.title = GatewayTunnelHealthNotification.title
+            content.body = GatewayTunnelHealthNotification.body
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: GatewayTunnelHealthNotification.identifier,
+                content: content,
+                trigger: nil
+            )
+            center.add(request) { error in
+                let result: GatewayTunnelNotificationResult
+                if error == nil {
+                    result = .registered
+                } else if Self.notificationsAreNotAllowed(error) {
+                    result = .terminalFailure
+                } else {
+                    result = .retryableFailure
+                }
+                Task { await completion(result) }
             }
+        }
+    }
+
+    func reconcile(
+        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+    ) {
+        withAuthorization(completion: completion) { [center] in
+            let reconciliation = IOSTunnelHealthNotificationReconciliation(
+                completion: completion
+            )
+            center.getPendingNotificationRequests { requests in
+                reconciliation.recordPending(requests.contains {
+                    $0.identifier == GatewayTunnelHealthNotification.identifier
+                })
+            }
+            center.getDeliveredNotifications { notifications in
+                reconciliation.recordDelivered(notifications.contains {
+                    $0.request.identifier == GatewayTunnelHealthNotification.identifier
+                })
+            }
+        }
+    }
+
+    func withdraw() {
+        let identifiers = [GatewayTunnelHealthNotification.identifier]
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    private func withAuthorization(
+        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void,
+        authorized: @escaping @Sendable () -> Void
+    ) {
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                authorized()
+            case .denied:
+                Task { await completion(.terminalFailure) }
+            case .notDetermined:
+                Task { await completion(.retryableFailure) }
+            @unknown default:
+                Task { await completion(.retryableFailure) }
+            }
+        }
+    }
+
+    private static func notificationsAreNotAllowed(_ error: Error?) -> Bool {
+        guard let error else { return false }
+        let nsError = error as NSError
+        return nsError.domain == UNErrorDomain &&
+            nsError.code == UNError.Code.notificationsNotAllowed.rawValue
+    }
+}
+
+private final class IOSTunnelHealthNotificationReconciliation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: Bool?
+    private var delivered: Bool?
+    private var completion: (@Sendable (GatewayTunnelNotificationResult) async -> Void)?
+
+    init(
+        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+    ) {
+        self.completion = completion
+    }
+
+    func recordPending(_ isPresent: Bool) {
+        record(isPresent, pendingResult: true)
+    }
+
+    func recordDelivered(_ isPresent: Bool) {
+        record(isPresent, pendingResult: false)
+    }
+
+    private func record(_ isPresent: Bool, pendingResult: Bool) {
+        lock.lock()
+        if pendingResult {
+            pending = isPresent
+        } else {
+            delivered = isPresent
+        }
+        guard let pending, let delivered, let completion else {
+            lock.unlock()
             return
         }
-        healthReadInFlight = true
-        healthReadStartedAt = healthClock.now
-        let sessionGeneration = healthSessionGeneration
-        adapter.getRuntimeConfiguration { [weak self] configuration in
-            self?.healthQueue.async {
-                guard let self, sessionGeneration == self.healthSessionGeneration else {
-                    return
-                }
-                self.healthReadInFlight = false
-                self.healthReadStartedAt = nil
-                self.healthReadTimedOut = false
-                let moment = self.healthMoment()
-                let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
-                var evidence: GatewayTunnelHealthEvidence?
-                if let stats, var evaluator = self.healthEvaluator {
-                    evidence = evaluator.evaluateEvidence(stats, at: moment)
-                    self.healthEvaluator = evaluator
-                }
-                let action = self.recoveryPolicy.update(
-                    stats: stats,
-                    evidence: evidence,
-                    path: self.pathAvailability(at: moment.monotonic),
-                    routeGeneration: self.tunnelPathPolicy.policyGeneration,
-                    at: moment.monotonic
-                )
-                self.publishHealth(action.health, at: moment)
-                if let request = action.recoveryRequest {
-                    guard !self.recoveryRequestInFlight else {
-                        // A path-policy reset can create a new request while the
-                        // adapter is still finishing the prior one. Keep only
-                        // one operation in flight and retry from observing after
-                        // its callback arrives.
-                        self.recoveryPolicy.invalidatePendingRecoveryAttempt()
-                        return
-                    }
-                    self.requestRecovery(
-                        request,
-                        sessionGeneration: sessionGeneration,
-                        baseline: stats
+        self.completion = nil
+        lock.unlock()
+        let result: GatewayTunnelNotificationResult = pending || delivered
+            ? .registered
+            : .absent
+        Task { await completion(result) }
+    }
+}
+
+private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
+    struct Start: Sendable {
+        let id: UInt64
+        let monitor: GatewayTunnelHealthMonitor
+        let lifecycle: IOSTunnelHealthLifecycle
+    }
+
+    struct Stop: Sendable {
+        let monitor: GatewayTunnelHealthMonitor?
+        let token: GatewayTunnelHealthStopToken?
+        let waitsForPendingStart: Bool
+    }
+
+    private let lock = NSLock()
+    private var monitor: GatewayTunnelHealthMonitor?
+    private var activeStartID: UInt64?
+    private var stopping = false
+    private var pathSession: IOSTunnelHealthPathSession?
+    private let pendingStartBarrier = GatewayTunnelPendingStartBarrier()
+
+    func beginStart(
+        appGroupIdentifier: String,
+        runtime: IOSTunnelHealthRuntimeAdapter,
+        notifications: IOSTunnelHealthNotificationAdapter
+    ) -> Start {
+        lock.lock()
+        if monitor == nil {
+            monitor = GatewayTunnelHealthMonitor(
+                runtime: runtime,
+                persistence: GatewayTunnelHealthStoreAdapter(
+                    store: GatewayTunnelHealthStore(
+                        appGroupIdentifier: appGroupIdentifier
                     )
-                }
-            }
+                ),
+                notifications: notifications
+            )
+        }
+        let startID = pendingStartBarrier.begin()
+        activeStartID = startID
+        stopping = false
+        let start = Start(
+            id: startID,
+            monitor: monitor!,
+            lifecycle: self
+        )
+        lock.unlock()
+        return start
+    }
+
+    func install(
+        pathSession: IOSTunnelHealthPathSession,
+        startID: UInt64
+    ) -> Bool {
+        lock.lock()
+        guard activeStartID == startID, !stopping else {
+            lock.unlock()
+            return false
+        }
+        let oldPathSession = self.pathSession
+        self.pathSession = pathSession
+        lock.unlock()
+        pendingStartBarrier.complete(startID)
+        oldPathSession?.cancel()
+        return true
+    }
+
+    func prepareToStop(
+        pendingStartStopped: @escaping @Sendable () -> Void
+    ) -> Stop {
+        lock.lock()
+        stopping = true
+        let pathSession = pathSession
+        self.pathSession = nil
+        let monitor = monitor
+        let token = monitor?.prepareToStop()
+        let waitsForPendingStart = token == nil && pendingStartBarrier.prepareToStop(
+            completion: pendingStartStopped
+        )
+        lock.unlock()
+        pathSession?.cancel()
+        return Stop(
+            monitor: monitor,
+            token: token,
+            waitsForPendingStart: waitsForPendingStart
+        )
+    }
+
+    func pendingStartDidStop(startID: UInt64) {
+        pendingStartBarrier.complete(startID)
+    }
+}
+
+private final class IOSTunnelHealthPathSession: @unchecked Sendable {
+    private let lock = NSLock()
+    private let monitor: GatewayTunnelHealthMonitor
+    private let session: GatewayTunnelHealthSession
+    private let queue: DispatchQueue
+    private let pathMonitor = NWPathMonitor()
+    private var active = true
+    private var fingerprint: HealthPathFingerprint?
+    private var routeID: UInt64 = 0
+
+    init(
+        monitor: GatewayTunnelHealthMonitor,
+        session: GatewayTunnelHealthSession,
+        queue: DispatchQueue
+    ) {
+        self.monitor = monitor
+        self.session = session
+        self.queue = queue
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            self?.receive(path)
         }
     }
 
-    private func receivePathUpdate(_ path: Network.NWPath) {
-        let moment = healthMoment()
-        let fingerprint = HealthPathFingerprint(path)
-        guard fingerprint != pathFingerprint else { return }
+    func start() {
+        pathMonitor.start(queue: queue)
+    }
 
-        pathFingerprint = fingerprint
-        tunnelPathPolicy.recordPathChange(
+    func cancel() {
+        lock.lock()
+        active = false
+        lock.unlock()
+        pathMonitor.cancel()
+    }
+
+    private func receive(_ path: Network.NWPath) {
+        let nextFingerprint = HealthPathFingerprint(path)
+        lock.lock()
+        guard active, fingerprint != nextFingerprint else {
+            lock.unlock()
+            return
+        }
+        fingerprint = nextFingerprint
+        routeID &+= 1
+        let descriptor = GatewayTunnelPathDescriptor(
             isSatisfied: path.status == .satisfied,
-            at: moment.monotonic
+            routeID: routeID
         )
-    }
-
-    private func pathAvailability(at now: Duration) -> GatewayTunnelPathAvailability {
-        tunnelPathPolicy.availability(at: now)
-    }
-
-    private func requestRecovery(
-        _ request: GatewayTunnelRecoveryRequest,
-        sessionGeneration: UInt64,
-        baseline: GatewayTunnelRuntimeStats?
-    ) {
-        let routeGeneration = tunnelPathPolicy.recoveryRouteGeneration
-        let policyGeneration = tunnelPathPolicy.policyGeneration
-        recoveryRequestInFlight = true
-        let completionHandler: (WireGuardAdapterError?) -> Void = { [weak self] error in
-            self?.healthQueue.async {
-                guard let self, sessionGeneration == self.healthSessionGeneration else {
-                    return
-                }
-                self.recoveryRequestInFlight = false
-                let accepted = error == nil
-                let moment = self.healthMoment()
-                if accepted, request == .backendRestart {
-                    // The backend was recreated even if the route changed while
-                    // the request was running, so its evaluator session is new.
-                    self.healthEvaluator?.resetSession(at: moment)
-                }
-                let routeMatches = routeGeneration == self.tunnelPathPolicy.recoveryRouteGeneration
-                if accepted, request == .bindingRefresh {
-                    // Never carry a one-way latch across the refresh. The
-                    // captured sample can seed the new window only while its
-                    // route is still current.
-                    self.healthEvaluator?.resetTrafficEvidence(
-                        baseline: routeMatches ? baseline : nil,
-                        at: moment
-                    )
-                }
-                guard routeMatches || policyGeneration == self.tunnelPathPolicy.policyGeneration else {
-                    return
-                }
-                self.recoveryPolicy.recoveryAttemptCompleted(
-                    accepted: accepted,
-                    at: moment.monotonic
-                )
-            }
+        lock.unlock()
+        Task {
+            await monitor.pathChanged(descriptor, session: session)
         }
-
-        switch request {
-        case .bindingRefresh:
-            adapter.refreshNetworkBinding(completionHandler: completionHandler)
-        case .backendRestart:
-            adapter.restartBackend(completionHandler: completionHandler)
-        }
-    }
-
-    private func publishHealth(
-        _ health: GatewayTunnelHealth,
-        at moment: GatewayTunnelHealthMoment
-    ) {
-        guard let store = healthStore, let tunnelIdentifier = healthTunnelIdentifier else { return }
-        if healthPersistencePolicy.shouldPersist(health, at: moment.monotonic) {
-            do {
-                try store.write(GatewayTunnelHealthSnapshot(
-                    tunnelIdentifier: tunnelIdentifier,
-                    health: health,
-                    updatedAt: moment.wall
-                ))
-                healthPersistencePolicy.recordPersisted(health, at: moment.monotonic)
-            } catch {
-                // Leave the policy unchanged so the next poll retries.
-            }
-        }
-
-        let previous = lastPublishedHealth
-        lastPublishedHealth = health
-        if GatewayTunnelHealthNotification.shouldNotify(previous: previous, current: health) {
-            postDeadTunnelNotification()
-        } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
-            withdrawDeadTunnelNotification()
-        }
-    }
-
-    private func healthMoment() -> GatewayTunnelHealthMoment {
-        let now = healthClock.now
-        return GatewayTunnelHealthMoment(
-            monotonic: healthSessionStartedAt?.duration(to: now) ?? .zero,
-            wall: Date()
-        )
-    }
-
-    private func postDeadTunnelNotification() {
-        let content = UNMutableNotificationContent()
-        content.title = GatewayTunnelHealthNotification.title
-        content.body = GatewayTunnelHealthNotification.body
-        content.sound = .default
-        let request = UNNotificationRequest(
-            identifier: GatewayTunnelHealthNotification.identifier,
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request) { _ in
-            self.healthQueue.async {
-                // Registration is asynchronous, so recovery or stop can finish
-                // before this request lands. A newer dead session still needs
-                // the same stable notification and deliberately keeps it.
-                guard self.lastPublishedHealth != .notPassingTraffic else {
-                    return
-                }
-                self.withdrawDeadTunnelNotification()
-            }
-        }
-    }
-
-    private func withdrawDeadTunnelNotification() {
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
-        center.removeDeliveredNotifications(withIdentifiers: [GatewayTunnelHealthNotification.identifier])
     }
 }
 
