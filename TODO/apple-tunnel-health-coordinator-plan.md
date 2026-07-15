@@ -1,7 +1,7 @@
 # Apple Tunnel Health Coordinator Plan
 
-Research and implementation plan only. No production behavior is changed by
-this document.
+Implementation plan and completion record for the shared tunnel-health
+extraction.
 
 ## Goal
 
@@ -84,7 +84,10 @@ required.
   - [x] Bridge start and bounded two-signal stop lifecycle to the shared monitor.
   - [x] Remove the provider-owned timer, policies, flags, generations, and notification edges.
   - [x] Pass the Apple gate and Stage 5 reviewer loop.
-- [ ] Stage 6: update durable architecture and tunnel-health documentation.
+- [x] Stage 6: update durable architecture and tunnel-health documentation.
+  - [x] Document the shared coordinator, monitor, adapter, lifecycle, and macOS reuse boundaries.
+  - [x] Preserve explicit real-device and macOS implementation exclusions.
+  - [ ] Complete signed real-device validation (excluded from this agent implementation).
 - [ ] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.
 
 ## Current Architecture And Root Cause

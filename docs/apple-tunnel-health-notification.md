@@ -1,7 +1,8 @@
 # Apple Tunnel Health Detection And Outage Notification
 
-The iOS packet tunnel extension detects a dead VPN tunnel and raises one local
-notification plus an in-app warning so the user can act. This document
+The iOS packet tunnel extension detects a dead VPN tunnel and, when notification
+permission is available, raises one local notification plus an in-app warning
+so the user can act. This document
 describes why the feature exists, how detection and recovery work, and the
 guardrails that keep it from producing false alarms.
 
@@ -26,11 +27,13 @@ auto-disconnects or routes traffic outside the VPN; it only tells the user so
 
 * A likely-dead tunnel is first repaired silently (see recovery below). A
   transient problem that recovers produces nothing.
-* A persistent failure produces exactly one local notification and one in-app
-  banner per episode: "VPN connection interrupted - Your internet connection may be weak, or the VPN server may be down for maintenance for a few minutes. You can wait, or disconnect to use this network without the VPN."
-* Users are normally notified about 30-55 seconds after meaningful traffic
-  starts failing (measured 50-55 seconds on device for a full blackhole with
-  continuing traffic). Episodes that begin during a network transition can
+* A persistent failure produces one stable-ID local notification per continuous
+  episode when notification permission is available, plus one in-app banner:
+  "VPN connection interrupted - Your internet connection may be weak, or the VPN server may be down for maintenance for a few minutes. You can wait, or disconnect to use this network without the VPN." Denied authorization is terminal for that tunnel session, but the app can still consume the shared snapshot and show the banner.
+* Users are expected to be notified about 30-55 seconds after meaningful traffic
+  starts failing. Historical, pre-coordinator device evidence measured 50-55
+  seconds for a full blackhole with continuing traffic; the shared-monitor
+  cutover still requires real-device verification. Episodes that begin during a network transition can
   take up to ~30 seconds longer while the new path settles.
 * The in-app banner's action is "Disconnect & Reload": it stops the tunnel and
   waits up to 30 seconds for iOS to report the tunnel fully disconnected, then
@@ -53,9 +56,15 @@ hostname.
 ## How Detection Works
 
 Everything runs inside the packet tunnel extension so it keeps working when
-the app is backgrounded, closed, or signed out. The extension polls WireGuard
-runtime stats every 5 seconds and feeds two pure, unit-tested types in
-`CloudGatewayKit`:
+the app is backgrounded, closed, or signed out. The extension's platform
+adapters feed a shared `GatewayTunnelHealthMonitor` in `CloudGatewayKit`. The
+monitor owns one cancellable wake, reads WireGuard runtime stats every 5
+seconds, and sends plain events through the pure
+`GatewayTunnelHealthCoordinator`. The coordinator composes these unit-tested
+policies:
+
+This composition runs in the iOS packet-extension process today. The shared
+types build for macOS, but no macOS app or packet-extension target exists yet.
 
 1. `GatewayTunnelHealthEvaluator` turns raw counters into evidence. Failure
    evidence is one of:
@@ -100,10 +109,29 @@ Before any warning, the policy attempts recovery:
   result. After a 20-second read deadline on a satisfied path, the extension
   confirms the outage directly and keeps its health heartbeat fresh without
   queuing more reads or recovery work behind the stalled WireGuard adapter
-  queue. Tunnel shutdown completes through a separate five-second fallback if
-  that same queue cannot run the adapter stop callback. If the original read
-  eventually returns, the normal two-poll healthy probation is required before
-  the warning withdraws.
+  queue. If the original read eventually returns, the normal two-poll healthy
+  probation is required before the warning withdraws.
+
+Runtime reads and recovery operations remain callback-driven and are never
+awaited by the monitor. Each operation has a bounded logical deadline and a
+session-qualified token. A missing callback therefore cannot stop path,
+heartbeat, notification, or recovery deadlines, and a late or duplicate
+callback cannot mutate a replacement tunnel session. The monitor also rejects
+out-of-order path route generations before they reach the coordinator.
+
+Snapshot writes and notification operations run through a serialized artifact
+reconciler. It tracks desired state separately from completed state, retries
+failed snapshot writes, and checks both pending and delivered notifications
+before retrying an ambiguous add. Notification denial is terminal for the
+session; transient failures and missing callbacks use bounded retry and
+reconciliation deadlines. Late work from a stopped session repairs toward the
+newest session's desired snapshot and stable notification instead of clearing
+newer state.
+
+All elapsed deadlines use injected monotonic time. Wall-clock `Date` is limited
+to WireGuard handshake epochs and snapshot `updatedAt`; app-side freshness also
+bounds future-dated snapshots so a clock correction cannot keep them fresh
+indefinitely.
 
 ## How False Positives Are Prevented
 
@@ -159,9 +187,11 @@ recorded in the TODO plan.
 ## Boundaries And Privacy
 
 * The app and UI consume only the outward health snapshot (tunnel identifier,
-  health enum, update time) from the app group store. Raw counters, recovery
-  state, and path fingerprints never leave the extension and are never
-  persisted or logged.
+  health enum, update time) from the app group store. Raw counters enter shared
+  in-process code but never leave the packet-extension process. Recovery state
+  and counters are never persisted or logged. Fingerprint details stay in the
+  iOS path adapter; only path satisfaction and an opaque route generation reach
+  the shared monitor.
 * While the app is running, a fresh dead-tunnel snapshot triggers one silent
   local VPN-status reconciliation for that snapshot update. This lets the
   banner reflect VPN changes made in Settings or Control Center without a
@@ -172,15 +202,21 @@ recorded in the TODO plan.
   stays imperfect by choice.
 * Notification and banner share one copy source
   (`GatewayTunnelHealthNotification`); posting is edge-triggered on the
-  transition into `notPassingTraffic` and replaces any prior notification by
-  stable identifier.
+  transition into `notPassingTraffic`. Registration and ambiguous-add
+  reconciliation use one stable identifier across pending and delivered
+  notifications.
+* Tunnel shutdown synchronously closes the current session's effect gate. The
+  normal path waits for artifact reconciliation and WireGuard shutdown; a
+  five-second outer fallback performs idempotent best-effort clear/withdraw and
+  completes without claiming durable cleanup succeeded.
 
 ## Related Documents
 
-* Health evidence and recovery policy: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealth.swift`, `GatewayTunnelRecoveryPolicy.swift`, `GatewayTunnelPathPolicy.swift`.
+* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealthCoordinator.swift`, `GatewayTunnelHealthMonitor.swift`, and `GatewayTunnelHealthArtifactDriver.swift`.
+* Health evidence and policies: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealth.swift`, `GatewayTunnelRecoveryPolicy.swift`, `GatewayTunnelPathPolicy.swift`, and `GatewayTunnelHealthPersistencePolicy.swift`.
 * Extension orchestration: `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift`.
 * Fork recovery APIs: `wireguard-apple` `WireGuardAdapter.refreshNetworkBinding` / `restartBackend`.
-* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthTests.swift`.
+* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthCoordinatorTests.swift` and `GatewayTunnelHealthMonitorTests.swift`.
 
-The original design plans and device-evidence log live in git history (see the
-`TODO/apple-tunnel-*` docs removed after the feature shipped).
+The staged extraction and remaining device-validation matrix are recorded in
+`TODO/apple-tunnel-health-coordinator-plan.md`.
