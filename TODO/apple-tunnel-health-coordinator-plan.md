@@ -99,12 +99,12 @@ required.
   - [x] Keep normal stop pending until side-effecting registrations and resulting repair finish.
   - [x] Cover missing callbacks, repair registrations, deadline abandonment, and newer-generation intent.
   - [x] Pass 202 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
-- [ ] Post-review hardening B: join stop with the entire start continuation.
-  - [ ] Add failing traces for stop after monitor activation and before start completion delivery.
-  - [ ] Add a shared framework-free start/monitor completion join.
-  - [ ] Keep the pending-start barrier active through path startup and start completion delivery.
-  - [ ] Prevent a cancelled path session from subsequently starting.
-  - [ ] Pass the Apple gate and GPT-5.5 reviewer loop.
+- [x] Post-review hardening B: join stop with the entire start continuation.
+  - [x] Add failing traces for stop after monitor activation and before start completion delivery.
+  - [x] Add a shared framework-free start/monitor completion join.
+  - [x] Keep the pending-start barrier active through adapter submission, path startup, and start completion delivery.
+  - [x] Prevent a cancelled path session from subsequently starting.
+  - [x] Pass 209 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
 - [ ] Post-review final validation: GPT-5.6 Sol review loop and full Apple gate.
 
 ## Current Architecture And Root Cause

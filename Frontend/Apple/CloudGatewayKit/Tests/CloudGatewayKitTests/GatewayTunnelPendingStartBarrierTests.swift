@@ -42,6 +42,26 @@ import Testing
     #expect(stopped.value)
 }
 
+@Test func adapterStartSubmissionIsRejectedAfterStopReservation() {
+    let barrier = GatewayTunnelPendingStartBarrier()
+    let startID = barrier.begin()
+    let submitted = LockedPendingStartFlag()
+
+    #expect(barrier.prepareToStop {})
+    #expect(!barrier.performIfCanContinue(startID) { submitted.set() })
+    #expect(!submitted.value)
+}
+
+@Test func acceptedAdapterStartSubmissionPrecedesStopReservation() {
+    let barrier = GatewayTunnelPendingStartBarrier()
+    let startID = barrier.begin()
+    let submitted = LockedPendingStartFlag()
+
+    #expect(barrier.performIfCanContinue(startID) { submitted.set() })
+    #expect(submitted.value)
+    #expect(barrier.prepareToStop {})
+}
+
 private final class LockedPendingStartFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = false

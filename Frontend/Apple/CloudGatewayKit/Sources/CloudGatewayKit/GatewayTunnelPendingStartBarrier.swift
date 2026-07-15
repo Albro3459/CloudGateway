@@ -41,6 +41,34 @@ public final class GatewayTunnelPendingStartBarrier: @unchecked Sendable {
         return canContinue
     }
 
+    @discardableResult
+    public func performIfCanContinue(
+        _ id: UInt64,
+        _ action: () -> Void
+    ) -> Bool {
+        lock.lock()
+        guard pendingID == id, !stopping else {
+            lock.unlock()
+            return false
+        }
+        action()
+        lock.unlock()
+        return true
+    }
+
+    public func prepareJoinedStop(
+        completion: @escaping @Sendable () -> Void
+    ) -> GatewayTunnelStartStopJoin {
+        let join = GatewayTunnelStartStopJoin(completion: completion)
+        let waitsForPendingStart = prepareToStop {
+            join.startFinished()
+        }
+        if !waitsForPendingStart {
+            join.startFinished()
+        }
+        return join
+    }
+
     public func complete(_ id: UInt64) {
         lock.lock()
         guard pendingID == id else {

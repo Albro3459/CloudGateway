@@ -21,26 +21,33 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        let startID = healthLifecycle.beginStartAttempt()
         do {
             let tunnelConfiguration = try makeTunnelConfiguration()
-            let startID = healthLifecycle.beginStartAttempt()
-            adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
-                guard let self else {
-                    completionHandler(error)
-                    return
+            let submitted = healthLifecycle.submitAdapterStart(startID: startID) {
+                adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
+                    guard let self else {
+                        completionHandler(error)
+                        return
+                    }
+                    guard error == nil else {
+                        completionHandler(error)
+                        self.healthLifecycle.pendingStartDidStop(startID: startID)
+                        return
+                    }
+                    self.startHealthMonitoring(
+                        startID: startID,
+                        completionHandler: completionHandler
+                    )
                 }
-                guard error == nil else {
-                    self.healthLifecycle.pendingStartDidStop(startID: startID)
-                    completionHandler(error)
-                    return
-                }
-                self.startHealthMonitoring(
-                    startID: startID,
-                    completionHandler: completionHandler
-                )
+            }
+            if !submitted {
+                completionHandler(nil)
+                healthLifecycle.pendingStartDidStop(startID: startID)
             }
         } catch {
             completionHandler(error)
+            healthLifecycle.pendingStartDidStop(startID: startID)
         }
     }
 
@@ -63,11 +70,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let monitor = healthStop.monitor, let token = healthStop.token {
             Task {
                 await monitor.stop(token) {
-                    stopCompletion.healthStopped()
+                    healthStop.join.monitorStopped()
                 }
             }
-        } else if !healthStop.waitsForPendingStart {
-            stopCompletion.healthStopped()
         }
         adapter.stop { _ in
             stopCompletion.adapterStopped()
@@ -81,8 +86,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
               let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
               let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
-            healthLifecycle.pendingStartDidStop(startID: startID)
             completionHandler(nil)
+            healthLifecycle.pendingStartDidStop(startID: startID)
             return
         }
         guard let start = healthLifecycle.continueStart(
@@ -91,17 +96,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             runtime: healthRuntime,
             notifications: healthNotifications
         ) else {
-            healthLifecycle.pendingStartDidStop(startID: startID)
             completionHandler(nil)
+            healthLifecycle.pendingStartDidStop(startID: startID)
             return
         }
         Task { [weak self] in
             guard let session = await start.monitor.start(tunnelIdentifier: tunnelIdentifier) else {
-                start.lifecycle.pendingStartDidStop(startID: start.id)
                 completionHandler(GatewayVPNError.missingTunnelSession)
+                start.lifecycle.pendingStartDidStop(startID: start.id)
                 return
             }
             guard let self else {
+                completionHandler(nil)
                 if let token = start.monitor.prepareToStop(session: session) {
                     await start.monitor.stop(token) {
                         start.lifecycle.pendingStartDidStop(startID: start.id)
@@ -109,7 +115,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 } else {
                     start.lifecycle.pendingStartDidStop(startID: start.id)
                 }
-                completionHandler(nil)
                 return
             }
             let pathSession = IOSTunnelHealthPathSession(
@@ -122,6 +127,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 startID: start.id
             ) else {
                 pathSession.cancel()
+                completionHandler(nil)
                 if let token = start.monitor.prepareToStop(session: session) {
                     await start.monitor.stop(token) {
                         start.lifecycle.pendingStartDidStop(startID: start.id)
@@ -129,11 +135,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 } else {
                     start.lifecycle.pendingStartDidStop(startID: start.id)
                 }
-                completionHandler(nil)
                 return
             }
             pathSession.start()
             completionHandler(nil)
+            self.healthLifecycle.pendingStartDidStop(startID: start.id)
         }
     }
 
@@ -333,7 +339,7 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
     struct Stop: Sendable {
         let monitor: GatewayTunnelHealthMonitor?
         let token: GatewayTunnelHealthStopToken?
-        let waitsForPendingStart: Bool
+        let join: GatewayTunnelStartStopJoin
     }
 
     private let lock = NSLock()
@@ -385,6 +391,23 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
         return start
     }
 
+    func submitAdapterStart(
+        startID: UInt64,
+        submission: () -> Void
+    ) -> Bool {
+        lock.lock()
+        guard activeStartID == startID, !stopping else {
+            lock.unlock()
+            return false
+        }
+        let submitted = pendingStartBarrier.performIfCanContinue(
+            startID,
+            submission
+        )
+        lock.unlock()
+        return submitted
+    }
+
     func install(
         pathSession: IOSTunnelHealthPathSession,
         startID: UInt64
@@ -397,7 +420,6 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
         let oldPathSession = self.pathSession
         self.pathSession = pathSession
         lock.unlock()
-        pendingStartBarrier.complete(startID)
         oldPathSession?.cancel()
         return true
     }
@@ -411,15 +433,18 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
         self.pathSession = nil
         let monitor = monitor
         let token = monitor?.prepareToStop()
-        let waitsForPendingStart = token == nil && pendingStartBarrier.prepareToStop(
+        let join = pendingStartBarrier.prepareJoinedStop(
             completion: pendingStartStopped
         )
         lock.unlock()
         pathSession?.cancel()
+        if token == nil {
+            join.monitorStopped()
+        }
         return Stop(
             monitor: monitor,
             token: token,
-            waitsForPendingStart: waitsForPendingStart
+            join: join
         )
     }
 
@@ -452,7 +477,13 @@ private final class IOSTunnelHealthPathSession: @unchecked Sendable {
     }
 
     func start() {
+        lock.lock()
+        guard active else {
+            lock.unlock()
+            return
+        }
         pathMonitor.start(queue: queue)
+        lock.unlock()
     }
 
     func cancel() {
