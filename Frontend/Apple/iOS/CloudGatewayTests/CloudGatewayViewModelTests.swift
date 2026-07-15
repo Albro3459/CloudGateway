@@ -163,6 +163,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
         let tunnelManager = FakeTunnelManager(status: .connected)
         await tunnelManager.setStopResultStatus(.disconnecting)
+        await tunnelManager.setAllStatusesReadDelay(.seconds(60))
         let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
@@ -176,22 +177,63 @@ final class CloudGatewayViewModelTests: XCTestCase {
                 secretStore: FakeConfigSecretStore()
             ),
             healthReader: healthReader,
-            deadTunnelDisconnectTimeout: .zero,
-            deadTunnelDisconnectPollInterval: .zero
+            deadTunnelDisconnectTimeout: .milliseconds(20),
+            deadTunnelDisconnectPollInterval: .milliseconds(1)
         )
 
         await viewModel.refresh()
         await waitForLocalState(viewModel)
         await viewModel.refreshTunnelHealthAndStatus()
         let fetchCountBeforeDisconnect = service.fetchRegionsCallCount
+        let clock = ContinuousClock()
+        let startedAt = clock.now
 
         await viewModel.disconnectDeadTunnel()
 
         let stopRequests = await tunnelManager.stopRequests()
+        XCTAssertTrue(startedAt.duration(to: clock.now) < .seconds(1))
         XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.deadTunnelDisconnectTimeoutMessage)
         XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnecting)
         XCTAssertEqual(service.fetchRegionsCallCount, fetchCountBeforeDisconnect)
         XCTAssertEqual(stopRequests, ["c1"])
+    }
+
+    func testDeadTunnelDisconnectTimeoutBoundsStopRequest() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager(status: .connected)
+        await tunnelManager.setStopDelay(.seconds(60))
+        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            deadTunnelDisconnectTimeout: .milliseconds(20),
+            deadTunnelDisconnectPollInterval: .milliseconds(1)
+        )
+
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+        await viewModel.refreshTunnelHealthAndStatus()
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        await viewModel.disconnectDeadTunnel()
+
+        let stopRequests = await tunnelManager.stopRequests()
+        XCTAssertTrue(startedAt.duration(to: clock.now) < .seconds(1))
+        XCTAssertEqual(viewModel.errorText, CloudGatewayViewModel.deadTunnelDisconnectTimeoutMessage)
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .connected)
+        XCTAssertEqual(stopRequests, ["c1"])
+        XCTAssertFalse(viewModel.isWorking)
     }
 
     func testStaleDeadTunnelSnapshotDoesNotShowWarning() async {

@@ -36,7 +36,9 @@ auto-disconnects or routes traffic outside the VPN; it only tells the user so
   waits up to 30 seconds for iOS to report the tunnel fully disconnected, then
   reloads app state over the now-direct Internet connection, so the user lands
   on an up-to-date dashboard instead of sending the reload through a route that
-  is still tearing down. Normal VPN toggles remain optimistic and do not wait.
+  is still tearing down. The 30-second deadline covers the stop request and
+  status reads, so a stalled system API cannot hold the app indefinitely. Normal
+  VPN toggles remain optimistic and do not wait.
 * The warning withdraws automatically once traffic verifiably resumes or the
   tunnel is stopped. There is no separate "recovered" notification.
 * The copy is causal-neutral on purpose: transport evidence cannot prove
@@ -98,8 +100,10 @@ Before any warning, the policy attempts recovery:
   result. After a 20-second read deadline on a satisfied path, the extension
   confirms the outage directly and keeps its health heartbeat fresh without
   queuing more reads or recovery work behind the stalled WireGuard adapter
-  queue. If the original read eventually returns, the normal two-poll healthy
-  probation is required before the warning withdraws.
+  queue. Tunnel shutdown completes through a separate five-second fallback if
+  that same queue cannot run the adapter stop callback. If the original read
+  eventually returns, the normal two-poll healthy probation is required before
+  the warning withdraws.
 
 ## How False Positives Are Prevented
 

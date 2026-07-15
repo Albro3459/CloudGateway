@@ -17,6 +17,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let healthPollInterval: TimeInterval = 5
     private let healthReadDeadline: Duration = .seconds(20)
     private let healthClock = ContinuousClock()
+    private let adapterStopCompletionDeadline: DispatchTimeInterval = .seconds(5)
     // Persist on every state transition, and otherwise at most once per heartbeat
     // so the stored snapshot stays inside GatewayTunnelHealthStore.freshnessWindow
     // (30s) without rewriting the protected file on every 5s poll.
@@ -58,8 +59,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping () -> Void
     ) {
         stopHealthMonitoring()
+        let stopCompletion = GatewayTunnelStopCompletion(completion: completionHandler)
+        healthQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+            stopCompletion.deadlineExceeded()
+        }
         adapter.stop { _ in
-            completionHandler()
+            stopCompletion.adapterStopped()
         }
     }
 

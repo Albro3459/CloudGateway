@@ -22,6 +22,8 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var startError: Error?
     private var stopError: Error?
     private var statusReadError: Error?
+    private var allStatusesReadDelay: Duration?
+    private var stopDelay: Duration?
     private var stopResultStatus: GatewayTunnelStatus = .disconnected
     private var stoppedIdentifiers = [String]()
 
@@ -49,6 +51,9 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+        if let allStatusesReadDelay {
+            try await ContinuousClock().sleep(for: allStatusesReadDelay)
+        }
         if let statusReadError {
             throw statusReadError
         }
@@ -75,6 +80,9 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
             throw stopError
         }
         stoppedIdentifiers.append(identifier)
+        if let stopDelay {
+            try await ContinuousClock().sleep(for: stopDelay)
+        }
         statuses[identifier] = stopResultStatus
     }
 
@@ -96,6 +104,14 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 
     func setStatusReadError(_ error: Error?) {
         statusReadError = error
+    }
+
+    func setAllStatusesReadDelay(_ delay: Duration?) {
+        allStatusesReadDelay = delay
+    }
+
+    func setStopDelay(_ delay: Duration?) {
+        stopDelay = delay
     }
 
     func setStopResultStatus(_ status: GatewayTunnelStatus) {

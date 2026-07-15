@@ -526,19 +526,33 @@ final class CloudGatewayViewModel: ObservableObject {
               let state = try? await configManager.loadLocalState() else {
             return
         }
+        guard !Task.isCancelled else { return }
         applyLocal(state)
         lastDeadTunnelStatusRefreshKey = refreshKey
     }
 
     func disconnectDeadTunnel() async {
-        await refreshTunnelHealthAndStatus()
-        guard shouldShowDeadTunnelWarning,
-              let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
+        refreshTunnelHealth()
+        guard tunnelHealthSnapshot?.health == .notPassingTraffic else {
             return
         }
         await run {
-            apply(try await configManager.stopTunnel(identifier: tunnelIdentifier))
-            try await waitForDeadTunnelDisconnect(identifier: tunnelIdentifier)
+            var didDisconnect = false
+            try await withDeadTunnelDisconnectTimeout {
+                await self.refreshTunnelHealthAndStatus()
+                try Task.checkCancellation()
+                guard self.shouldShowDeadTunnelWarning,
+                      let tunnelIdentifier = self.tunnelHealthSnapshot?.tunnelIdentifier else {
+                    return
+                }
+                let state = try await self.configManager.stopTunnel(identifier: tunnelIdentifier)
+                try Task.checkCancellation()
+                self.apply(state)
+                try await self.waitForDeadTunnelDisconnect(identifier: tunnelIdentifier)
+                try Task.checkCancellation()
+                didDisconnect = true
+            }
+            guard didDisconnect else { return }
             tunnelHealthSnapshot = nil
             // The tunnel is down, so the device now has direct internet. Reload
             // fresh state over the real network, mirroring pull-to-refresh, so
@@ -548,14 +562,12 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func waitForDeadTunnelDisconnect(identifier: String) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: deadTunnelDisconnectTimeout)
-
         while true {
             let statuses = try await configManager.allInstalledStatuses()
+            try Task.checkCancellation()
             switch statuses[identifier] {
             case .invalid, .disconnected, nil:
-                if let state = try? await configManager.loadLocalState() {
+                if let state = try? await configManager.loadLocalState(), !Task.isCancelled {
                     applyLocal(state)
                 }
                 return
@@ -563,11 +575,46 @@ final class CloudGatewayViewModel: ObservableObject {
                 break
             }
 
-            guard clock.now < deadline else {
-                throw CloudGatewayAppError.accessDenied(Self.deadTunnelDisconnectTimeoutMessage)
-            }
-            try await clock.sleep(for: deadTunnelDisconnectPollInterval)
+            try await ContinuousClock().sleep(for: deadTunnelDisconnectPollInterval)
         }
+    }
+
+    private func withDeadTunnelDisconnectTimeout(
+        operation: @escaping @MainActor () async throws -> Void
+    ) async throws {
+        let race = CloudGatewayAsyncResult<Void>()
+        let operationTask = Task { @MainActor in
+            do {
+                try await operation()
+                await race.resolve(.success(()))
+            } catch {
+                await race.resolve(.failure(error))
+            }
+        }
+        let timeout = deadTunnelDisconnectTimeout
+        let timeoutTask = Task {
+            do {
+                try await ContinuousClock().sleep(for: timeout)
+                await race.resolve(.failure(
+                    CloudGatewayAppError.accessDenied(Self.deadTunnelDisconnectTimeoutMessage)
+                ))
+            } catch is CancellationError {
+            } catch {
+                await race.resolve(.failure(error))
+            }
+        }
+        let result = await withTaskCancellationHandler {
+            await race.value()
+        } onCancel: {
+            operationTask.cancel()
+            timeoutTask.cancel()
+            Task {
+                await race.resolve(.failure(CancellationError()))
+            }
+        }
+        operationTask.cancel()
+        timeoutTask.cancel()
+        try result.get()
     }
 
     func pullToRefresh() async {
@@ -1333,6 +1380,27 @@ final class CloudGatewayViewModel: ObservableObject {
     private func isRequestTimeout(_ error: Error) -> Bool {
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
+    }
+}
+
+private actor CloudGatewayAsyncResult<Success: Sendable> {
+    private var result: Result<Success, Error>?
+    private var continuation: CheckedContinuation<Result<Success, Error>, Never>?
+
+    func resolve(_ result: Result<Success, Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+
+    func value() async -> Result<Success, Error> {
+        if let result {
+            return result
+        }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
     }
 }
 
