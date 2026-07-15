@@ -115,12 +115,21 @@ final class CloudGatewayViewModel: ObservableObject {
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
     private let healthReader: CloudGatewayTunnelHealthReading
+    private let deadTunnelDisconnectTimeout: Duration
+    private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
     private var authHandle: Any?
+    private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
     static let deadTunnelMessage = GatewayTunnelHealthNotification.body
+    static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
     static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
     static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
+
+    private struct DeadTunnelStatusRefreshKey: Equatable {
+        let tunnelIdentifier: String
+        let updatedAt: Date
+    }
 
     var isSignedIn: Bool {
         appMode == .signedIn
@@ -342,11 +351,15 @@ final class CloudGatewayViewModel: ObservableObject {
     init(
         service: CloudGatewayServicing,
         configManager: CloudGatewayConfigManager,
-        healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader()
+        healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader(),
+        deadTunnelDisconnectTimeout: Duration = .seconds(30),
+        deadTunnelDisconnectPollInterval: Duration = .milliseconds(250)
     ) {
         self.service = service
         self.configManager = configManager
         self.healthReader = healthReader
+        self.deadTunnelDisconnectTimeout = deadTunnelDisconnectTimeout
+        self.deadTunnelDisconnectPollInterval = deadTunnelDisconnectPollInterval
         authHandle = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)
@@ -494,21 +507,66 @@ final class CloudGatewayViewModel: ObservableObject {
     func refreshTunnelHealth() {
         let snapshot = healthReader.currentSnapshot()
         tunnelHealthSnapshot = snapshot?.isFresh() == true ? snapshot : nil
+        if tunnelHealthSnapshot?.health != .notPassingTraffic {
+            lastDeadTunnelStatusRefreshKey = nil
+        }
+    }
+
+    func refreshTunnelHealthAndStatus() async {
+        refreshTunnelHealth()
+        guard let snapshot = tunnelHealthSnapshot,
+              snapshot.health == .notPassingTraffic else {
+            return
+        }
+        let refreshKey = DeadTunnelStatusRefreshKey(
+            tunnelIdentifier: snapshot.tunnelIdentifier,
+            updatedAt: snapshot.updatedAt
+        )
+        guard refreshKey != lastDeadTunnelStatusRefreshKey,
+              let state = try? await configManager.loadLocalState() else {
+            return
+        }
+        applyLocal(state)
+        lastDeadTunnelStatusRefreshKey = refreshKey
     }
 
     func disconnectDeadTunnel() async {
-        refreshTunnelHealth()
+        await refreshTunnelHealthAndStatus()
         guard shouldShowDeadTunnelWarning,
               let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
             return
         }
         await run {
             apply(try await configManager.stopTunnel(identifier: tunnelIdentifier))
+            try await waitForDeadTunnelDisconnect(identifier: tunnelIdentifier)
             tunnelHealthSnapshot = nil
             // The tunnel is down, so the device now has direct internet. Reload
             // fresh state over the real network, mirroring pull-to-refresh, so
             // the user lands on an up-to-date dashboard instead of stale data.
             await reloadCurrentState(showsWorkingOverlay: false)
+        }
+    }
+
+    private func waitForDeadTunnelDisconnect(identifier: String) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: deadTunnelDisconnectTimeout)
+
+        while true {
+            let statuses = try await configManager.allInstalledStatuses()
+            switch statuses[identifier] {
+            case .invalid, .disconnected, nil:
+                if let state = try? await configManager.loadLocalState() {
+                    applyLocal(state)
+                }
+                return
+            case .connecting, .connected, .reasserting, .disconnecting:
+                break
+            }
+
+            guard clock.now < deadline else {
+                throw CloudGatewayAppError.accessDenied(Self.deadTunnelDisconnectTimeoutMessage)
+            }
+            try await clock.sleep(for: deadTunnelDisconnectPollInterval)
         }
     }
 

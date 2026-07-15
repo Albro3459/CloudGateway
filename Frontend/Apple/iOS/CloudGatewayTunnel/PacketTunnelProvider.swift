@@ -15,6 +15,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // working when the app is backgrounded, closed, or signed out.
     private let healthQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health")
     private let healthPollInterval: TimeInterval = 5
+    private let healthReadDeadline: Duration = .seconds(20)
+    private let healthClock = ContinuousClock()
     // Persist on every state transition, and otherwise at most once per heartbeat
     // so the stored snapshot stays inside GatewayTunnelHealthStore.freshnessWindow
     // (30s) without rewriting the protected file on every 5s poll.
@@ -26,6 +28,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastPublishedHealth: GatewayTunnelHealth?
     private var healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
     private var healthReadInFlight = false
+    private var healthReadStartedAt: ContinuousClock.Instant?
+    private var healthReadTimedOut = false
     private var recoveryRequestInFlight = false
     private var healthSessionGeneration: UInt64 = 0
     private var tunnelPathPolicy = GatewayTunnelPathPolicy()
@@ -103,6 +107,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.lastPublishedHealth = nil
             self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
             self.healthReadInFlight = false
+            self.healthReadStartedAt = nil
+            self.healthReadTimedOut = false
             self.recoveryRequestInFlight = false
             self.healthSessionGeneration &+= 1
             self.tunnelPathPolicy = GatewayTunnelPathPolicy()
@@ -142,6 +148,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             lastPublishedHealth = nil
             healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
             healthReadInFlight = false
+            healthReadStartedAt = nil
+            healthReadTimedOut = false
             recoveryRequestInFlight = false
             healthSessionGeneration &+= 1
             tunnelPathPolicy = GatewayTunnelPathPolicy()
@@ -153,8 +161,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // Called on healthQueue. Reads the tunnel's runtime stats, updates the
     // evaluator, and publishes the verdict to the shared app group.
     private func pollTunnelHealth() {
-        guard !healthReadInFlight else { return }
+        let now = Date()
+        if healthReadInFlight {
+            if healthReadTimedOut {
+                // Keep the shared snapshot fresh while the adapter queue is
+                // stalled. The stable health edge prevents re-notification.
+                publishHealth(.notPassingTraffic, at: now)
+            } else if let healthReadStartedAt,
+                      healthReadStartedAt.duration(to: healthClock.now) >= healthReadDeadline,
+                      pathAvailability(at: now) == .satisfied {
+                // Do not clear the in-flight flag or enqueue recovery behind a
+                // stalled runtime read. Confirm the outage so the user retains
+                // the fail-closed escape hatch, then wait for this read to
+                // return or for the extension session to end.
+                healthReadTimedOut = true
+                let action = recoveryPolicy.runtimeReadTimedOut(
+                    routeGeneration: tunnelPathPolicy.policyGeneration
+                )
+                publishHealth(action.health, at: now)
+            }
+            return
+        }
         healthReadInFlight = true
+        healthReadStartedAt = healthClock.now
         let sessionGeneration = healthSessionGeneration
         adapter.getRuntimeConfiguration { [weak self] configuration in
             self?.healthQueue.async {
@@ -162,6 +191,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     return
                 }
                 self.healthReadInFlight = false
+                self.healthReadStartedAt = nil
+                self.healthReadTimedOut = false
                 let now = Date()
                 let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
                 var evidence: GatewayTunnelHealthEvidence?

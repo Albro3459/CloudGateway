@@ -67,7 +67,7 @@ struct ContentView: View {
         }
         .task {
             while !Task.isCancelled {
-                viewModel.refreshTunnelHealth()
+                await viewModel.refreshTunnelHealthAndStatus()
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }

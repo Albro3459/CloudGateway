@@ -33,8 +33,10 @@ auto-disconnects or routes traffic outside the VPN; it only tells the user so
   continuing traffic). Episodes that begin during a network transition can
   take up to ~30 seconds longer while the new path settles.
 * The in-app banner's action is "Disconnect & Reload": it stops the tunnel and
-  then reloads app state over the now-direct Internet connection, so the user
-  lands on an up-to-date dashboard instead of stale data.
+  waits up to 30 seconds for iOS to report the tunnel fully disconnected, then
+  reloads app state over the now-direct Internet connection, so the user lands
+  on an up-to-date dashboard instead of sending the reload through a route that
+  is still tearing down. Normal VPN toggles remain optimistic and do not wait.
 * The warning withdraws automatically once traffic verifiably resumes or the
   tunnel is stopped. There is no separate "recovered" notification.
 * The copy is causal-neutral on purpose: transport evidence cannot prove
@@ -92,6 +94,12 @@ Before any warning, the policy attempts recovery:
   seconds it requests the backend restart, and only 20 seconds of continued
   unavailability after that confirms a failure. A missing runtime sample can
   never bypass recovery and notify immediately.
+* A runtime read that does not return is handled separately from a `nil` runtime
+  result. After a 20-second read deadline on a satisfied path, the extension
+  confirms the outage directly and keeps its health heartbeat fresh without
+  queuing more reads or recovery work behind the stalled WireGuard adapter
+  queue. If the original read eventually returns, the normal two-poll healthy
+  probation is required before the warning withdraws.
 
 ## How False Positives Are Prevented
 
@@ -150,6 +158,11 @@ recorded in the TODO plan.
   health enum, update time) from the app group store. Raw counters, recovery
   state, and path fingerprints never leave the extension and are never
   persisted or logged.
+* While the app is running, a fresh dead-tunnel snapshot triggers one silent
+  local VPN-status reconciliation for that snapshot update. This lets the
+  banner reflect VPN changes made in Settings or Control Center without a
+  loading overlay, network request, persistent background subscription, or any
+  dependency on the app process for detection and notification.
 * There is no external reachability probe: probing from the tunnel would
   expose the user's real IP and timing to the probe endpoint. Attribution
   stays imperfect by choice.

@@ -810,6 +810,29 @@ private func driveRecovery(
     #expect(policy.update(stats: healthy, evidence: .healthy, path: .satisfied, routeGeneration: 3, at: now.addingTimeInterval(75)).health == .passingTraffic)
 }
 
+@Test func runtimeReadTimeoutConfirmsAndRequiresHealthyProbation() {
+    var policy = GatewayTunnelRecoveryPolicy()
+
+    let timedOut = policy.runtimeReadTimedOut(routeGeneration: 1)
+    #expect(timedOut == GatewayTunnelRecoveryAction(health: .notPassingTraffic))
+
+    let healthy = stats(handshakeSecondsAgo: 1, rx: 10, tx: 10)
+    #expect(policy.update(
+        stats: healthy,
+        evidence: .healthy,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now
+    ).health == .notPassingTraffic)
+    #expect(policy.update(
+        stats: healthy,
+        evidence: .healthy,
+        path: .satisfied,
+        routeGeneration: 1,
+        at: now.addingTimeInterval(5)
+    ).health == .passingTraffic)
+}
+
 // MARK: - Confirmed-outage network-change re-arm
 
 // Drives a policy to a confirmed outage on routeGeneration 1 via the

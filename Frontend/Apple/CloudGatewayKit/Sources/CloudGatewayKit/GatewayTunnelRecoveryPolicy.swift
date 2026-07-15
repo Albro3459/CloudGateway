@@ -289,6 +289,20 @@ public struct GatewayTunnelRecoveryPolicy {
         state = .observing
     }
 
+    /// Confirms an outage when the local WireGuard runtime reader itself has
+    /// exceeded its deadline. Adapter recovery cannot be requested from this
+    /// condition because it shares the stalled serial queue. Keeping the normal
+    /// confirmed state preserves the two-poll recovery probation if the read
+    /// eventually completes.
+    public mutating func runtimeReadTimedOut(
+        routeGeneration: UInt64
+    ) -> GatewayTunnelRecoveryAction {
+        self.routeGeneration = routeGeneration
+        runtimeUnavailableSince = nil
+        state = .confirmed
+        return emit(.notPassingTraffic)
+    }
+
     private mutating func handleRuntimeUnavailable(
         at now: Date
     ) -> GatewayTunnelRecoveryAction {

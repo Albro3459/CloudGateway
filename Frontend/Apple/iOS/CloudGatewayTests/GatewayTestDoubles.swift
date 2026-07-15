@@ -21,6 +21,8 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var knownIdentifiers = Set<String>()
     private var startError: Error?
     private var stopError: Error?
+    private var statusReadError: Error?
+    private var stopResultStatus: GatewayTunnelStatus = .disconnected
     private var stoppedIdentifiers = [String]()
 
     init(status: GatewayTunnelStatus? = nil) {
@@ -35,6 +37,9 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
+        if let statusReadError {
+            throw statusReadError
+        }
         knownIdentifiers.formUnion(identifiers)
         return identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
             if let status = statuses[identifier] ?? status {
@@ -44,7 +49,10 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
-        knownIdentifiers.reduce(into: statuses) { result, identifier in
+        if let statusReadError {
+            throw statusReadError
+        }
+        return knownIdentifiers.reduce(into: statuses) { result, identifier in
             if let status {
                 result[identifier] = result[identifier] ?? status
             }
@@ -67,7 +75,7 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
             throw stopError
         }
         stoppedIdentifiers.append(identifier)
-        statuses[identifier] = .disconnected
+        statuses[identifier] = stopResultStatus
     }
 
     func removeTunnel(identifier: String) async throws {
@@ -84,6 +92,14 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 
     func setStopError(_ error: Error?) {
         stopError = error
+    }
+
+    func setStatusReadError(_ error: Error?) {
+        statusReadError = error
+    }
+
+    func setStopResultStatus(_ status: GatewayTunnelStatus) {
+        stopResultStatus = status
     }
 
     func stopRequests() -> [String] {
