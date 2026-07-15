@@ -314,11 +314,7 @@ actor GatewayTunnelHealthArtifactDriver {
         generation: UInt64,
         completion: @escaping @Sendable () -> Void
     ) {
-        if activeGeneration == generation {
-            activeGeneration = nil
-            desired = .empty
-            intent.deactivate(generation: generation)
-        }
+        retire(generation: generation)
         if deferredNotification?.generation == generation {
             deferredNotification = nil
         }
@@ -339,6 +335,7 @@ actor GatewayTunnelHealthArtifactDriver {
     }
 
     func abandonStop(generation: UInt64) {
+        retire(generation: generation)
         physicalNotificationRegistrationCounts[generation] = nil
         pending = pending.filter { $0.value.generation != generation }
         if deferredNotification?.generation == generation {
@@ -347,6 +344,15 @@ actor GatewayTunnelHealthArtifactDriver {
         stopWaiters.removeAll { $0.generation == generation }
         drainNotificationLane()
         finishStopWaitersIfPossible()
+    }
+
+    private func retire(generation: UInt64) {
+        guard activeGeneration == generation else { return }
+        if snapshotRepairInFlight != nil { snapshotRepairDirty = true }
+        if notificationRepairInFlight != nil { notificationRepairDirty = true }
+        activeGeneration = nil
+        desired = .empty
+        intent.deactivate(generation: generation)
     }
 
     private func nextPendingKey(generation: UInt64) -> PendingKey {
@@ -602,7 +608,9 @@ actor GatewayTunnelHealthArtifactDriver {
         case .absent where registrationAllowed:
             guard desired.notificationDesired,
                   desired.notificationRegistrationAllowed,
-                  desired.notificationOperationID == nil else {
+                  desired.notificationOperationID == nil,
+                  let generation = activeGeneration,
+                  gate.isCurrentAndOpen(generation: generation) else {
                 finishNotificationRepair(sequence: sequence, succeeded: true)
                 return
             }
@@ -612,10 +620,6 @@ actor GatewayTunnelHealthArtifactDriver {
                 phase: .registering
             )
             notifyDeadlineChanged()
-            guard let generation = activeGeneration else {
-                finishNotificationRepair(sequence: sequence, succeeded: false)
-                return
-            }
             let physicalRegistration = beginPhysicalNotificationRegistration(
                 generation: generation
             )

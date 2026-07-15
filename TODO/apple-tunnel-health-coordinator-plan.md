@@ -108,6 +108,11 @@ required.
 - [x] Post-review final validation: GPT-5.6 Sol review loop and full Apple gate.
   - [x] Pass 209 shared-package tests, unsigned no-device iOS build, and host-less view-model tests.
   - [x] Complete the combined Sol High review with no actionable issues.
+- [x] Post-review hardening C: make deadline abandonment a complete generation retirement.
+  - [x] Add failing traces for pending reconciliation and late persistence after abandonment overtakes actor stop.
+  - [x] Retire active desired artifacts and shared intent when abandoning the current generation.
+  - [x] Prevent repair registration through a closed generation gate.
+  - [x] Pass 213 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
 
 ## Current Architecture And Root Cause
 

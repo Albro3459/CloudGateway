@@ -1484,6 +1484,135 @@ private func makeMonitor(
     #expect(notifications.calls.last == .reconcile)
 }
 
+@Test func artifactDriverAbandonmentRetiresPendingNotificationReconciliation() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    #expect(notifications.calls == [.reconcile])
+
+    _ = gate.closeCurrent()
+    await driver.abandonStop(generation: 1)
+    try await notifications.complete(0, result: .absent)
+
+    #expect(notifications.calls == [.reconcile, .withdraw])
+}
+
+@Test func artifactDriverAbandonmentRepairsLatePersistenceTowardEmptyIntent() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let snapshot = GatewayTunnelHealthSnapshot(
+        tunnelIdentifier: "client-1",
+        health: .notPassingTraffic,
+        updatedAt: Date(timeIntervalSince1970: 1)
+    )
+    let id = GatewayTunnelHealthOperationID(
+        session: GatewayTunnelHealthSessionID(rawValue: 1),
+        sequence: 1
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: snapshot,
+            notificationDesired: false,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.execute(.persist(id, snapshot), generation: 1) { _ in }
+
+    _ = gate.closeCurrent()
+    await driver.abandonStop(generation: 1)
+    try await persistence.complete(0)
+
+    #expect(persistence.calls == [.write(snapshot), .clear])
+}
+
+@Test func artifactDriverAbandonmentRepairsInFlightSnapshotWriteAfterDeadlineClear() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    let snapshot = GatewayTunnelHealthSnapshot(
+        tunnelIdentifier: "client-1",
+        health: .notPassingTraffic,
+        updatedAt: Date(timeIntervalSince1970: 1)
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: snapshot,
+            notificationDesired: false,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    #expect(persistence.calls == [.write(snapshot)])
+
+    _ = gate.closeCurrent()
+    await driver.abandonStop(generation: 1)
+    persistence.clear { _ in }
+    try await persistence.complete(1)
+    try await persistence.complete(0)
+
+    #expect(persistence.calls == [.write(snapshot), .clear, .clear])
+}
+
+@Test func artifactDriverAbandonmentRepairsInFlightNotificationRegistration() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let notifications = ControllableNotificationAdapter()
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: notifications,
+        gate: gate
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    try await notifications.complete(0, result: .absent)
+    #expect(notifications.calls == [.reconcile, .register])
+
+    _ = gate.closeCurrent()
+    await driver.abandonStop(generation: 1)
+    notifications.withdraw()
+    try await notifications.complete(1, result: .registered)
+
+    #expect(notifications.calls == [.reconcile, .register, .withdraw, .withdraw])
+}
+
 @Test func unsupportedBackendRestartConfirmsWithoutCallingAdapter() async throws {
     let runtime = ControllableRuntimeAdapter(capability: .unsupported)
     let notifications = ControllableNotificationAdapter()
