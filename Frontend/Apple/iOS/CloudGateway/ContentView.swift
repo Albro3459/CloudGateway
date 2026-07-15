@@ -9,8 +9,22 @@ private enum PendingAccountAction {
     case deleteAccount
 }
 
+struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func requestAuthorizationIfUndetermined() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            requestAuthorization()
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var viewModel: CloudGatewayViewModel
+    private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var activeTunnelDeleteMessage: String?
@@ -32,10 +46,15 @@ struct ContentView: View {
     @MainActor
     init() {
         _viewModel = StateObject(wrappedValue: CloudGatewayViewModel())
+        notificationAuthorizer = SystemCloudGatewayNotificationAuthorizer()
     }
 
-    init(viewModel: CloudGatewayViewModel) {
+    init(
+        viewModel: CloudGatewayViewModel,
+        notificationAuthorizer: CloudGatewayNotificationAuthorizing = SystemCloudGatewayNotificationAuthorizer()
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.notificationAuthorizer = notificationAuthorizer
     }
 
     var body: some View {
@@ -219,14 +238,6 @@ struct ContentView: View {
             .scrollDismissesKeyboard(.immediately)
             .refreshable {
                 await viewModel.pullToRefresh()
-            }
-        }
-        .onAppear {
-            requestNotificationAuthorizationForExistingInstall()
-        }
-        .onChange(of: viewModel.hasInstalledConfig) { _, hasInstalled in
-            if hasInstalled {
-                requestNotificationAuthorizationForExistingInstall()
             }
         }
     }
@@ -826,19 +837,7 @@ struct ContentView: View {
     // connects a VPN - the dead-tunnel alert only matters once a tunnel exists.
     // iOS prompts only once; later calls are no-ops that keep the current status.
     private func requestNotificationAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
-
-    // Covers users who upgraded from a build that never asked: if they already
-    // have a config installed but have never been prompted, ask once now. Anyone
-    // who already allowed or denied is `.notDetermined == false`, so this never
-    // re-prompts them.
-    private func requestNotificationAuthorizationForExistingInstall() {
-        guard viewModel.hasInstalledConfig else { return }
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            guard settings.authorizationStatus == .notDetermined else { return }
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        }
+        notificationAuthorizer.requestAuthorization()
     }
 
     // The account sheet must finish dismissing before another sheet is

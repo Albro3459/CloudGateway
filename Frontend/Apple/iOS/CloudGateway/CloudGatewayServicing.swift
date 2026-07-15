@@ -1,6 +1,28 @@
 import CloudGatewayKit
 import Foundation
 
+protocol CloudGatewayNotificationAuthorizing {
+    func requestAuthorization()
+    func requestAuthorizationIfUndetermined()
+}
+
+struct NoopCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    nonisolated init() {}
+
+    func requestAuthorization() {}
+    func requestAuthorizationIfUndetermined() {}
+}
+
+enum CloudGatewayExistingInstallNotificationAuthorization {
+    static func requestIfNeeded(
+        hasInstalledConfig: Bool,
+        authorizer: CloudGatewayNotificationAuthorizing
+    ) {
+        guard hasInstalledConfig else { return }
+        authorizer.requestAuthorizationIfUndetermined()
+    }
+}
+
 enum CloudGatewayAppError: LocalizedError {
     case missingCurrentUser
     case noEnabledRegions

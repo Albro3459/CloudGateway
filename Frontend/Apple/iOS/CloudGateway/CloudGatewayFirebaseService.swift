@@ -31,7 +31,8 @@ extension CloudGatewayViewModel {
             ),
             healthReader: CloudGatewayTunnelHealthReader(
                 store: GatewayTunnelHealthStore(appGroupIdentifier: platform.appGroupIdentifier)
-            )
+            ),
+            notificationAuthorizer: SystemCloudGatewayNotificationAuthorizer()
         )
     }
 

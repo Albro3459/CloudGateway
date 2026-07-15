@@ -74,6 +74,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
             health: .notPassingTraffic,
             updatedAt: Date()
         ))
+        let notificationAuthorizer = FakeNotificationAuthorizer()
         let viewModel = CloudGatewayViewModel(
             service: service,
             configManager: CloudGatewayConfigManager(
@@ -81,7 +82,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
                 cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
                 secretStore: FakeConfigSecretStore()
             ),
-            healthReader: healthReader
+            healthReader: healthReader,
+            notificationAuthorizer: notificationAuthorizer
         )
 
         await viewModel.refresh()
@@ -91,11 +93,23 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.appMode, .guest)
         XCTAssertTrue(viewModel.shouldShowDeadTunnelWarning)
         XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertEqual(notificationAuthorizer.undeterminedAuthorizationRequestCount, 1)
 
         await viewModel.disconnectDeadTunnel()
 
         XCTAssertFalse(viewModel.shouldShowDeadTunnelWarning)
         XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+    }
+
+    func testExistingInstallNotificationAuthorizationSkipsDevicesWithoutConfigs() {
+        let notificationAuthorizer = FakeNotificationAuthorizer()
+
+        CloudGatewayExistingInstallNotificationAuthorization.requestIfNeeded(
+            hasInstalledConfig: false,
+            authorizer: notificationAuthorizer
+        )
+
+        XCTAssertEqual(notificationAuthorizer.undeterminedAuthorizationRequestCount, 0)
     }
 
     func testDeadTunnelRefreshReconcilesExternallyStartedStatusWithoutOverlay() async {
@@ -1719,5 +1733,15 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // Online and refresh succeeded, so the removed client must not linger.
         XCTAssertFalse(viewModel.remoteRefreshUnavailable)
         XCTAssertTrue(viewModel.displayedClientOptions.isEmpty)
+    }
+}
+
+private final class FakeNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    private(set) var undeterminedAuthorizationRequestCount = 0
+
+    func requestAuthorization() {}
+
+    func requestAuthorizationIfUndetermined() {
+        undeterminedAuthorizationRequestCount += 1
     }
 }

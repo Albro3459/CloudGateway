@@ -115,6 +115,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
     private let healthReader: CloudGatewayTunnelHealthReading
+    private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
     private let deadTunnelDisconnectTimeout: Duration
     private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
@@ -352,12 +353,14 @@ final class CloudGatewayViewModel: ObservableObject {
         service: CloudGatewayServicing,
         configManager: CloudGatewayConfigManager,
         healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader(),
+        notificationAuthorizer: CloudGatewayNotificationAuthorizing = NoopCloudGatewayNotificationAuthorizer(),
         deadTunnelDisconnectTimeout: Duration = .seconds(30),
         deadTunnelDisconnectPollInterval: Duration = .milliseconds(250)
     ) {
         self.service = service
         self.configManager = configManager
         self.healthReader = healthReader
+        self.notificationAuthorizer = notificationAuthorizer
         self.deadTunnelDisconnectTimeout = deadTunnelDisconnectTimeout
         self.deadTunnelDisconnectPollInterval = deadTunnelDisconnectPollInterval
         authHandle = service.addAuthStateListener { [weak self] user in
@@ -1116,6 +1119,10 @@ final class CloudGatewayViewModel: ObservableObject {
     private func loadLocalState() async {
         do {
             applyLocal(try await configManager.loadLocalState())
+            CloudGatewayExistingInstallNotificationAuthorization.requestIfNeeded(
+                hasInstalledConfig: hasInstalledConfig,
+                authorizer: notificationAuthorizer
+            )
             refreshTunnelHealth()
         } catch {
             errorText = error.localizedDescription
