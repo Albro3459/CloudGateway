@@ -23,12 +23,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     ) {
         do {
             let tunnelConfiguration = try makeTunnelConfiguration()
+            let startID = healthLifecycle.beginStartAttempt()
             adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
-                guard let self, error == nil else {
+                guard let self else {
                     completionHandler(error)
                     return
                 }
-                self.startHealthMonitoring(completionHandler: completionHandler)
+                guard error == nil else {
+                    self.healthLifecycle.pendingStartDidStop(startID: startID)
+                    completionHandler(error)
+                    return
+                }
+                self.startHealthMonitoring(
+                    startID: startID,
+                    completionHandler: completionHandler
+                )
             }
         } catch {
             completionHandler(error)
@@ -40,12 +49,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping () -> Void
     ) {
         let stopCompletion = GatewayTunnelStopCompletion(completion: completionHandler)
+        healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+            stopCompletion.deadlineExceeded()
+        }
         let healthStop = healthLifecycle.prepareToStop {
             stopCompletion.healthStopped()
         }
-        healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
-            healthStop.token?.bestEffortDeadlineCleanup()
-            stopCompletion.deadlineExceeded()
+        if let token = healthStop.token {
+            stopCompletion.setDeadlineCleanup {
+                token.bestEffortDeadlineCleanup()
+            }
         }
         if let monitor = healthStop.monitor, let token = healthStop.token {
             Task {
@@ -62,19 +75,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func startHealthMonitoring(
+        startID: UInt64,
         completionHandler: @escaping (Error?) -> Void
     ) {
         guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
               let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
               let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
+            healthLifecycle.pendingStartDidStop(startID: startID)
             completionHandler(nil)
             return
         }
-        let start = healthLifecycle.beginStart(
+        guard let start = healthLifecycle.continueStart(
+            startID: startID,
             appGroupIdentifier: appGroupIdentifier,
             runtime: healthRuntime,
             notifications: healthNotifications
-        )
+        ) else {
+            healthLifecycle.pendingStartDidStop(startID: startID)
+            completionHandler(nil)
+            return
+        }
         Task { [weak self] in
             guard let session = await start.monitor.start(tunnelIdentifier: tunnelIdentifier) else {
                 start.lifecycle.pendingStartDidStop(startID: start.id)
@@ -323,12 +343,28 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
     private var pathSession: IOSTunnelHealthPathSession?
     private let pendingStartBarrier = GatewayTunnelPendingStartBarrier()
 
-    func beginStart(
+    func beginStartAttempt() -> UInt64 {
+        lock.lock()
+        let startID = pendingStartBarrier.begin()
+        activeStartID = startID
+        stopping = false
+        lock.unlock()
+        return startID
+    }
+
+    func continueStart(
+        startID: UInt64,
         appGroupIdentifier: String,
         runtime: IOSTunnelHealthRuntimeAdapter,
         notifications: IOSTunnelHealthNotificationAdapter
-    ) -> Start {
+    ) -> Start? {
         lock.lock()
+        guard activeStartID == startID,
+              !stopping,
+              pendingStartBarrier.canContinue(startID) else {
+            lock.unlock()
+            return nil
+        }
         if monitor == nil {
             monitor = GatewayTunnelHealthMonitor(
                 runtime: runtime,
@@ -340,9 +376,6 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
                 notifications: notifications
             )
         }
-        let startID = pendingStartBarrier.begin()
-        activeStartID = startID
-        stopping = false
         let start = Start(
             id: startID,
             monitor: monitor!,

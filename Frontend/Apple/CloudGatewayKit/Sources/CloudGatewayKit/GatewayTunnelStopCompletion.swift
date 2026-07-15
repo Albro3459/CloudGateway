@@ -5,6 +5,8 @@ public final class GatewayTunnelStopCompletion: @unchecked Sendable {
     private var completion: (() -> Void)?
     private var adapterHasStopped = false
     private var healthHasStopped = false
+    private var deadlineHasExceeded = false
+    private var deadlineCleanup: (@Sendable () -> Void)?
 
     public init(completion: @escaping () -> Void) {
         self.completion = completion
@@ -19,7 +21,25 @@ public final class GatewayTunnelStopCompletion: @unchecked Sendable {
     }
 
     public func deadlineExceeded() {
+        lock.lock()
+        deadlineHasExceeded = true
+        let cleanup = deadlineCleanup
+        deadlineCleanup = nil
+        lock.unlock()
+        cleanup?()
         complete()
+    }
+
+    public func setDeadlineCleanup(
+        _ cleanup: @escaping @Sendable () -> Void
+    ) {
+        lock.lock()
+        let runImmediately = deadlineHasExceeded
+        if !runImmediately {
+            deadlineCleanup = cleanup
+        }
+        lock.unlock()
+        if runImmediately { cleanup() }
     }
 
     private func signal(adapter: Bool) {
@@ -38,6 +58,7 @@ public final class GatewayTunnelStopCompletion: @unchecked Sendable {
         lock.lock()
         let completion = self.completion
         self.completion = nil
+        deadlineCleanup = nil
         lock.unlock()
         completion?()
     }

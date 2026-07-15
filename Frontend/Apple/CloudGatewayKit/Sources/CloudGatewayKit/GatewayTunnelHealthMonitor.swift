@@ -198,8 +198,8 @@ public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
             lock.unlock()
             return false
         }
-        action()
         lock.unlock()
+        action()
         return true
     }
 

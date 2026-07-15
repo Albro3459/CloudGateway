@@ -5,6 +5,7 @@ public final class GatewayTunnelPendingStartBarrier: @unchecked Sendable {
     private var nextID: UInt64 = 0
     private var pendingID: UInt64?
     private var stopCompletion: (@Sendable () -> Void)?
+    private var stopping = false
 
     public init() {}
 
@@ -13,6 +14,7 @@ public final class GatewayTunnelPendingStartBarrier: @unchecked Sendable {
         nextID &+= 1
         pendingID = nextID
         stopCompletion = nil
+        stopping = false
         let id = nextID
         lock.unlock()
         return id
@@ -22,6 +24,7 @@ public final class GatewayTunnelPendingStartBarrier: @unchecked Sendable {
         completion: @escaping @Sendable () -> Void
     ) -> Bool {
         lock.lock()
+        stopping = true
         guard pendingID != nil else {
             lock.unlock()
             return false
@@ -29,6 +32,13 @@ public final class GatewayTunnelPendingStartBarrier: @unchecked Sendable {
         stopCompletion = completion
         lock.unlock()
         return true
+    }
+
+    public func canContinue(_ id: UInt64) -> Bool {
+        lock.lock()
+        let canContinue = pendingID == id && !stopping
+        lock.unlock()
+        return canContinue
     }
 
     public func complete(_ id: UInt64) {

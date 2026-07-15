@@ -28,6 +28,20 @@ import Testing
     #expect(stopped.value)
 }
 
+@Test func stopRejectsAdapterStartCompletionRegisteredBeforeIt() {
+    let barrier = GatewayTunnelPendingStartBarrier()
+    let stopped = LockedPendingStartFlag()
+    let adapterStartID = barrier.begin()
+
+    #expect(barrier.canContinue(adapterStartID))
+    #expect(barrier.prepareToStop { stopped.set() })
+    #expect(!barrier.canContinue(adapterStartID))
+    #expect(!stopped.value)
+
+    barrier.complete(adapterStartID)
+    #expect(stopped.value)
+}
+
 private final class LockedPendingStartFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var storage = false

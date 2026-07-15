@@ -540,19 +540,22 @@ private func makeMonitor(
     #expect(notifications.calls.last == .withdraw)
 }
 
-@Test func effectGateClosesAtomicallyWithEffectInitiation() async throws {
+@Test func effectGateReservationDoesNotBlockSynchronousClose() async throws {
     let gate = GatewayTunnelHealthEffectGate()
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
+    let effectFinished = DispatchSemaphore(value: 0)
     let closeAttempted = DispatchSemaphore(value: 0)
     let closed = DispatchSemaphore(value: 0)
     gate.open(generation: 1)
 
     let effect = Task.detached {
-        gate.performIfOpen(generation: 1) {
+        let started = gate.performIfOpen(generation: 1) {
             entered.signal()
             release.wait()
         }
+        effectFinished.signal()
+        return started
     }
     await Task.detached { waitForHealthSemaphore(entered) }.value
     let close = Task.detached {
@@ -562,15 +565,22 @@ private func makeMonitor(
         return generation
     }
     await Task.detached { waitForHealthSemaphore(closeAttempted) }.value
-    let closeWasBlocked = await Task.detached {
-        healthSemaphoreIsBlocked(closed, milliseconds: 20)
+    let closeCompleted = await Task.detached {
+        !healthSemaphoreIsBlocked(closed, milliseconds: 20)
     }.value
-    #expect(closeWasBlocked)
+    #expect(closeCompleted)
+
+    let laterEffectStarted = gate.performIfOpen(generation: 1, {})
+    #expect(!laterEffectStarted)
+
+    let effectWasStillRunning = await Task.detached {
+        healthSemaphoreIsBlocked(effectFinished, milliseconds: 20)
+    }.value
+    #expect(effectWasStillRunning)
 
     release.signal()
     #expect(await effect.value)
     #expect(await close.value == 1)
-    #expect(!gate.performIfOpen(generation: 1, {}))
 }
 
 @Test func monitorRestartRejectsPriorSessionRuntimeCallback() async throws {
