@@ -105,7 +105,9 @@ required.
   - [x] Keep the pending-start barrier active through adapter submission, path startup, and start completion delivery.
   - [x] Prevent a cancelled path session from subsequently starting.
   - [x] Pass 209 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
-- [ ] Post-review final validation: GPT-5.6 Sol review loop and full Apple gate.
+- [x] Post-review final validation: GPT-5.6 Sol review loop and full Apple gate.
+  - [x] Pass 209 shared-package tests, unsigned no-device iOS build, and host-less view-model tests.
+  - [x] Complete the combined Sol High review with no actionable issues.
 
 ## Current Architecture And Root Cause
 
