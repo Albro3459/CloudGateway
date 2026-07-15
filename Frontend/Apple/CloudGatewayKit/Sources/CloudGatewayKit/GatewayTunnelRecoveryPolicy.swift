@@ -28,33 +28,51 @@ public struct GatewayTunnelRecoveryAction: Equatable, Sendable {
 /// Feed this type from one serial queue.
 public struct GatewayTunnelRecoveryPolicy: Sendable {
     public struct Thresholds: Equatable, Sendable {
-        public var verificationDuration: TimeInterval
-        public var runtimeUnavailableDuration: TimeInterval
+        public var verificationDuration: Duration
+        public var runtimeUnavailableDuration: Duration
         public var healthyPollsToRecover: Int
 
         public init(
-            verificationDuration: TimeInterval = 10,
-            runtimeUnavailableDuration: TimeInterval = 20,
-            healthyPollsToRecover: Int = 2
+            verificationDuration: Duration,
+            runtimeUnavailableDuration: Duration,
+            healthyPollsToRecover: Int
         ) {
             self.verificationDuration = verificationDuration
             self.runtimeUnavailableDuration = runtimeUnavailableDuration
             self.healthyPollsToRecover = healthyPollsToRecover
         }
+
+        public init(timing: GatewayTunnelHealthTiming = .production) {
+            self.init(
+                verificationDuration: timing.recoveryVerificationDuration,
+                runtimeUnavailableDuration: timing.runtimeUnavailableDuration,
+                healthyPollsToRecover: timing.healthyPollsToRecover
+            )
+        }
+
+        public init(runtimeUnavailableDuration: TimeInterval) {
+            self.init(
+                verificationDuration: GatewayTunnelHealthTiming.production
+                    .recoveryVerificationDuration,
+                runtimeUnavailableDuration: .seconds(runtimeUnavailableDuration),
+                healthyPollsToRecover: GatewayTunnelHealthTiming.production
+                    .healthyPollsToRecover
+            )
+        }
     }
 
     private enum State: Sendable {
         case observing
-        case runtimeUnavailable(attempt: Int, since: Date)
+        case runtimeUnavailable(attempt: Int, since: Duration)
         case recoveryPending(attempt: Int)
-        case awaitingBaseline(attempt: Int, acceptedAt: Date)
-        case verifying(attempt: Int, since: Date, baseline: GatewayTunnelRuntimeStats)
+        case awaitingBaseline(attempt: Int, acceptedAt: Duration)
+        case verifying(attempt: Int, since: Duration, baseline: GatewayTunnelRuntimeStats)
         case confirmed
         case probation(
             confirmed: Bool,
             attempt: Int?,
             healthyPolls: Int,
-            failureSince: Date?,
+            failureSince: Duration?,
             failureBaseline: GatewayTunnelRuntimeStats?
         )
     }
@@ -62,7 +80,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
     private let thresholds: Thresholds
     private var state: State = .observing
     private var routeGeneration: UInt64?
-    private var runtimeUnavailableSince: Date?
+    private var runtimeUnavailableSince: Duration?
     // Set whenever the policy confirms an outage; cleared only when traffic is
     // proven flowing again. While set it floors any `.unknown` report to
     // `.notPassingTraffic` (see `emit`) so a re-armed recovery ladder can run
@@ -70,8 +88,12 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
     // notification, which is edge-triggered on the health transitions.
     private var confirmedOutageLatched = false
 
-    public init(thresholds: Thresholds = Thresholds()) {
+    public init(thresholds: Thresholds = Thresholds(timing: .production)) {
         self.thresholds = thresholds
+    }
+
+    public init(timing: GatewayTunnelHealthTiming) {
+        thresholds = Thresholds(timing: timing)
     }
 
     public mutating func update(
@@ -79,7 +101,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
         evidence: GatewayTunnelHealthEvidence?,
         path: GatewayTunnelPathAvailability,
         routeGeneration: UInt64,
-        at now: Date
+        at now: Duration
     ) -> GatewayTunnelRecoveryAction {
         let generationChanged = self.routeGeneration != routeGeneration
         self.routeGeneration = routeGeneration
@@ -187,7 +209,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
                 )
                 return emit(.unknown)
             }
-            guard now.timeIntervalSince(since) >= thresholds.verificationDuration,
+            guard now - since >= thresholds.verificationDuration,
                   hasFreshFailureActivity(stats, evidence: evidence, since: baseline) else {
                 return emit(.unknown)
             }
@@ -273,7 +295,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
 
     public mutating func recoveryAttemptCompleted(
         accepted: Bool,
-        at now: Date
+        at now: Duration
     ) {
         guard case let .recoveryPending(attempt) = state else { return }
         runtimeUnavailableSince = nil
@@ -304,7 +326,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
     }
 
     private mutating func handleRuntimeUnavailable(
-        at now: Date
+        at now: Duration
     ) -> GatewayTunnelRecoveryAction {
         if isConfirmed {
             return emit(.notPassingTraffic)
@@ -313,7 +335,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
             return emit(.unknown)
         }
 
-        let unavailableSince: Date
+        let unavailableSince: Duration
         if case let .runtimeUnavailable(_, since) = state {
             unavailableSince = since
         } else if let runtimeUnavailableSince {
@@ -323,7 +345,7 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
             return emit(.unknown)
         }
 
-        guard now.timeIntervalSince(unavailableSince) >= thresholds.runtimeUnavailableDuration else {
+        guard now - unavailableSince >= thresholds.runtimeUnavailableDuration else {
             return emit(.unknown)
         }
         runtimeUnavailableSince = nil
@@ -339,6 +361,29 @@ public struct GatewayTunnelRecoveryPolicy: Sendable {
             state = .confirmed
             return emit(.notPassingTraffic)
         }
+    }
+
+    public mutating func update(
+        stats: GatewayTunnelRuntimeStats?,
+        evidence: GatewayTunnelHealthEvidence?,
+        path: GatewayTunnelPathAvailability,
+        routeGeneration: UInt64,
+        at now: Date
+    ) -> GatewayTunnelRecoveryAction {
+        update(
+            stats: stats,
+            evidence: evidence,
+            path: path,
+            routeGeneration: routeGeneration,
+            at: .seconds(now.timeIntervalSinceReferenceDate)
+        )
+    }
+
+    public mutating func recoveryAttemptCompleted(accepted: Bool, at now: Date) {
+        recoveryAttemptCompleted(
+            accepted: accepted,
+            at: .seconds(now.timeIntervalSinceReferenceDate)
+        )
     }
 
     private var currentAttempt: Int? {

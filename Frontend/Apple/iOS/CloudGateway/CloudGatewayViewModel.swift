@@ -509,7 +509,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     func refreshTunnelHealth() {
         let snapshot = healthReader.currentSnapshot()
-        tunnelHealthSnapshot = snapshot?.isFresh() == true ? snapshot : nil
+        tunnelHealthSnapshot = snapshot?.isFresh(timing: .production) == true ? snapshot : nil
         if tunnelHealthSnapshot?.health != .notPassingTraffic {
             lastDeadTunnelStatusRefreshKey = nil
         }

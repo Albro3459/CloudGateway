@@ -14,8 +14,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // Tunnel-health polling. Runs entirely inside the extension so it keeps
     // working when the app is backgrounded, closed, or signed out.
     private let healthQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.tunnel.health")
-    private let healthPollInterval: TimeInterval = 5
-    private let healthReadDeadline: Duration = .seconds(20)
+    private let healthTiming = GatewayTunnelHealthTiming.production
     private let healthClock = ContinuousClock()
     private let adapterStopCompletionDeadline: DispatchTimeInterval = .seconds(5)
     // Persist on every state transition, and otherwise at most once per heartbeat
@@ -33,6 +32,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var healthReadTimedOut = false
     private var recoveryRequestInFlight = false
     private var healthSessionGeneration: UInt64 = 0
+    private var healthSessionStartedAt: ContinuousClock.Instant?
     private var tunnelPathPolicy = GatewayTunnelPathPolicy()
     private var pathFingerprint: HealthPathFingerprint?
     private var pathMonitor: NWPathMonitor?
@@ -107,16 +107,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // the previous process. The first new runtime sample will publish
             // .unknown, .passingTraffic, or .notPassingTraffic for this session.
             try? self.healthStore?.clear()
-            self.healthEvaluator = GatewayTunnelHealthEvaluator(startedAt: Date())
-            self.recoveryPolicy = GatewayTunnelRecoveryPolicy()
+            self.healthSessionStartedAt = self.healthClock.now
+            let moment = self.healthMoment()
+            self.healthEvaluator = GatewayTunnelHealthEvaluator(
+                startedAt: moment,
+                timing: self.healthTiming
+            )
+            self.recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: self.healthTiming)
             self.lastPublishedHealth = nil
-            self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
+            self.healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy(
+                timing: self.healthTiming
+            )
             self.healthReadInFlight = false
             self.healthReadStartedAt = nil
             self.healthReadTimedOut = false
             self.recoveryRequestInFlight = false
             self.healthSessionGeneration &+= 1
-            self.tunnelPathPolicy = GatewayTunnelPathPolicy()
+            self.tunnelPathPolicy = GatewayTunnelPathPolicy(timing: self.healthTiming)
             self.pathFingerprint = nil
 
             let pathMonitor = NWPathMonitor()
@@ -127,7 +134,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             pathMonitor.start(queue: self.healthQueue)
 
             let timer = DispatchSource.makeTimerSource(queue: self.healthQueue)
-            timer.schedule(deadline: .now() + self.healthPollInterval, repeating: self.healthPollInterval)
+            let pollInterval = self.healthTiming.runtimePollInterval.gatewayTimeInterval
+            timer.schedule(deadline: .now() + pollInterval, repeating: pollInterval)
             timer.setEventHandler { [weak self] in
                 self?.pollTunnelHealth()
             }
@@ -146,18 +154,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             pathMonitor?.cancel()
             pathMonitor = nil
             healthEvaluator = nil
-            recoveryPolicy = GatewayTunnelRecoveryPolicy()
+            recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: healthTiming)
             try? healthStore?.clear()
             healthStore = nil
             healthTunnelIdentifier = nil
             lastPublishedHealth = nil
-            healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy()
+            healthPersistencePolicy = GatewayTunnelHealthPersistencePolicy(timing: healthTiming)
             healthReadInFlight = false
             healthReadStartedAt = nil
             healthReadTimedOut = false
             recoveryRequestInFlight = false
             healthSessionGeneration &+= 1
-            tunnelPathPolicy = GatewayTunnelPathPolicy()
+            healthSessionStartedAt = nil
+            tunnelPathPolicy = GatewayTunnelPathPolicy(timing: healthTiming)
             pathFingerprint = nil
         }
         withdrawDeadTunnelNotification()
@@ -166,15 +175,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // Called on healthQueue. Reads the tunnel's runtime stats, updates the
     // evaluator, and publishes the verdict to the shared app group.
     private func pollTunnelHealth() {
-        let now = Date()
+        let moment = healthMoment()
         if healthReadInFlight {
             if healthReadTimedOut {
                 // Keep the shared snapshot fresh while the adapter queue is
                 // stalled. The stable health edge prevents re-notification.
-                publishHealth(.notPassingTraffic, at: now)
+                publishHealth(.notPassingTraffic, at: moment)
             } else if let healthReadStartedAt,
-                      healthReadStartedAt.duration(to: healthClock.now) >= healthReadDeadline,
-                      pathAvailability(at: now) == .satisfied {
+                      healthReadStartedAt.duration(to: healthClock.now) >= healthTiming.runtimeReadDeadline,
+                      pathAvailability(at: moment.monotonic) == .satisfied {
                 // Do not clear the in-flight flag or enqueue recovery behind a
                 // stalled runtime read. Confirm the outage so the user retains
                 // the fail-closed escape hatch, then wait for this read to
@@ -183,7 +192,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let action = recoveryPolicy.runtimeReadTimedOut(
                     routeGeneration: tunnelPathPolicy.policyGeneration
                 )
-                publishHealth(action.health, at: now)
+                publishHealth(action.health, at: moment)
             }
             return
         }
@@ -198,21 +207,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.healthReadInFlight = false
                 self.healthReadStartedAt = nil
                 self.healthReadTimedOut = false
-                let now = Date()
+                let moment = self.healthMoment()
                 let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
                 var evidence: GatewayTunnelHealthEvidence?
                 if let stats, var evaluator = self.healthEvaluator {
-                    evidence = evaluator.evaluateEvidence(stats, at: now)
+                    evidence = evaluator.evaluateEvidence(stats, at: moment)
                     self.healthEvaluator = evaluator
                 }
                 let action = self.recoveryPolicy.update(
                     stats: stats,
                     evidence: evidence,
-                    path: self.pathAvailability(at: now),
+                    path: self.pathAvailability(at: moment.monotonic),
                     routeGeneration: self.tunnelPathPolicy.policyGeneration,
-                    at: now
+                    at: moment.monotonic
                 )
-                self.publishHealth(action.health, at: now)
+                self.publishHealth(action.health, at: moment)
                 if let request = action.recoveryRequest {
                     guard !self.recoveryRequestInFlight else {
                         // A path-policy reset can create a new request while the
@@ -233,15 +242,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func receivePathUpdate(_ path: Network.NWPath) {
-        let now = Date()
+        let moment = healthMoment()
         let fingerprint = HealthPathFingerprint(path)
         guard fingerprint != pathFingerprint else { return }
 
         pathFingerprint = fingerprint
-        tunnelPathPolicy.recordPathChange(isSatisfied: path.status == .satisfied, at: now)
+        tunnelPathPolicy.recordPathChange(
+            isSatisfied: path.status == .satisfied,
+            at: moment.monotonic
+        )
     }
 
-    private func pathAvailability(at now: Date) -> GatewayTunnelPathAvailability {
+    private func pathAvailability(at now: Duration) -> GatewayTunnelPathAvailability {
         tunnelPathPolicy.availability(at: now)
     }
 
@@ -260,11 +272,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
                 self.recoveryRequestInFlight = false
                 let accepted = error == nil
-                let now = Date()
+                let moment = self.healthMoment()
                 if accepted, request == .backendRestart {
                     // The backend was recreated even if the route changed while
                     // the request was running, so its evaluator session is new.
-                    self.healthEvaluator?.resetSession(at: now)
+                    self.healthEvaluator?.resetSession(at: moment)
                 }
                 let routeMatches = routeGeneration == self.tunnelPathPolicy.recoveryRouteGeneration
                 if accepted, request == .bindingRefresh {
@@ -273,13 +285,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     // route is still current.
                     self.healthEvaluator?.resetTrafficEvidence(
                         baseline: routeMatches ? baseline : nil,
-                        at: now
+                        at: moment
                     )
                 }
                 guard routeMatches || policyGeneration == self.tunnelPathPolicy.policyGeneration else {
                     return
                 }
-                self.recoveryPolicy.recoveryAttemptCompleted(accepted: accepted, at: now)
+                self.recoveryPolicy.recoveryAttemptCompleted(
+                    accepted: accepted,
+                    at: moment.monotonic
+                )
             }
         }
 
@@ -291,16 +306,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func publishHealth(_ health: GatewayTunnelHealth, at now: Date) {
+    private func publishHealth(
+        _ health: GatewayTunnelHealth,
+        at moment: GatewayTunnelHealthMoment
+    ) {
         guard let store = healthStore, let tunnelIdentifier = healthTunnelIdentifier else { return }
-        if healthPersistencePolicy.shouldPersist(health, at: now) {
+        if healthPersistencePolicy.shouldPersist(health, at: moment.monotonic) {
             do {
                 try store.write(GatewayTunnelHealthSnapshot(
                     tunnelIdentifier: tunnelIdentifier,
                     health: health,
-                    updatedAt: now
+                    updatedAt: moment.wall
                 ))
-                healthPersistencePolicy.recordPersisted(health, at: now)
+                healthPersistencePolicy.recordPersisted(health, at: moment.monotonic)
             } catch {
                 // Leave the policy unchanged so the next poll retries.
             }
@@ -313,6 +331,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
             withdrawDeadTunnelNotification()
         }
+    }
+
+    private func healthMoment() -> GatewayTunnelHealthMoment {
+        let now = healthClock.now
+        return GatewayTunnelHealthMoment(
+            monotonic: healthSessionStartedAt?.duration(to: now) ?? .zero,
+            wall: Date()
+        )
     }
 
     private func postDeadTunnelNotification() {

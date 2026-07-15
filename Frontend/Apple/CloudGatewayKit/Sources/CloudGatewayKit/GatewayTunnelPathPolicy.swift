@@ -6,17 +6,22 @@ public struct GatewayTunnelPathPolicy: Sendable {
     public private(set) var policyGeneration: UInt64 = 0
     public private(set) var recoveryRouteGeneration: UInt64 = 0
 
+    private let quietPeriod: Duration
+    private let settlingCap: Duration
     private var isSatisfied = false
-    private var settlingStartedAt: Date?
-    private var lastPathChangeAt: Date?
+    private var settlingStartedAt: Duration?
+    private var lastPathChangeAt: Duration?
 
-    public init() {}
+    public init(timing: GatewayTunnelHealthTiming = .production) {
+        quietPeriod = timing.pathQuietPeriod
+        settlingCap = timing.pathSettlingCap
+    }
 
-    public mutating func recordPathChange(isSatisfied: Bool, at now: Date) {
+    public mutating func recordPathChange(isSatisfied: Bool, at now: Duration) {
         if self.isSatisfied,
            settlingStartedAt != nil,
            let lastPathChangeAt,
-           now.timeIntervalSince(lastPathChangeAt) >= 10 {
+           now - lastPathChangeAt >= quietPeriod {
             settlingStartedAt = nil
         }
 
@@ -33,12 +38,12 @@ public struct GatewayTunnelPathPolicy: Sendable {
         if settlingStartedAt == nil {
             settlingStartedAt = now
         }
-        if now.timeIntervalSince(settlingStartedAt ?? now) < 30 {
+        if now - (settlingStartedAt ?? now) < settlingCap {
             policyGeneration &+= 1
         }
     }
 
-    public mutating func availability(at now: Date) -> GatewayTunnelPathAvailability {
+    public mutating func availability(at now: Duration) -> GatewayTunnelPathAvailability {
         guard isSatisfied, let lastPathChangeAt else {
             return .unavailable
         }
@@ -46,14 +51,25 @@ public struct GatewayTunnelPathPolicy: Sendable {
             return .satisfied
         }
 
-        let quietAge = now.timeIntervalSince(lastPathChangeAt)
-        if quietAge >= 10 {
+        let quietAge = now - lastPathChangeAt
+        if quietAge >= quietPeriod {
             self.settlingStartedAt = nil
             return .satisfied
         }
-        if now.timeIntervalSince(settlingStartedAt) >= 30 {
+        if now - settlingStartedAt >= settlingCap {
             return .satisfied
         }
         return .settling
+    }
+
+    public mutating func recordPathChange(isSatisfied: Bool, at now: Date) {
+        recordPathChange(
+            isSatisfied: isSatisfied,
+            at: .seconds(now.timeIntervalSinceReferenceDate)
+        )
+    }
+
+    public mutating func availability(at now: Date) -> GatewayTunnelPathAvailability {
+        availability(at: .seconds(now.timeIntervalSinceReferenceDate))
     }
 }

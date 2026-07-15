@@ -582,6 +582,42 @@ private func containsWithdrawal(_ transition: GatewayTunnelHealthTransition) -> 
     }
 }
 
+@Test func coordinatorPersistsSupersedingHealthAfterOlderWriteCompletes() throws {
+    var harness = CoordinatorHarness()
+    _ = harness.start()
+    _ = harness.path(satisfied: true, routeID: 1, at: 0)
+
+    let firstWake = try harness.wake(at: 5)
+    let firstRead = try #require(runtimeReadID(in: firstWake))
+    let first = harness.completeRead(
+        firstRead,
+        stats: harness.stats(at: 5, handshakeAge: 1, rx: 10, tx: 10),
+        at: 5
+    )
+    let firstWrite = try #require(persistenceID(in: first))
+
+    let secondWake = try harness.wake(at: 10)
+    let secondRead = try #require(runtimeReadID(in: secondWake))
+    let second = harness.completeRead(
+        secondRead,
+        stats: harness.stats(at: 10, handshakeAge: 1, rx: 20, tx: 20),
+        at: 10
+    )
+    #expect(second.health == .passingTraffic)
+    #expect(persistenceID(in: second) == nil)
+
+    let reconciled = harness.completePersistence(firstWrite, result: .success, at: 10)
+    let secondWrite = try #require(persistenceID(in: reconciled))
+    #expect(secondWrite != firstWrite)
+    #expect(reconciled.effects.contains { effect in
+        guard case let .persist(_, snapshot) = effect else { return false }
+        return snapshot.health == .passingTraffic
+    })
+
+    let stale = harness.completePersistence(firstWrite, result: .success, at: 11)
+    #expect(stale.effects.isEmpty)
+}
+
 @Test func coordinatorReconcilesNotificationRegisteredAfterRecoveryOrStop() throws {
     func driveToConfirmation(
         _ harness: inout CoordinatorHarness,

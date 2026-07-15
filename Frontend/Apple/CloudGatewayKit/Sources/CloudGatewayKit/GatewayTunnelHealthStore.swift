@@ -7,7 +7,9 @@ public struct GatewayTunnelHealthSnapshot: Codable, Equatable, Sendable {
     /// The extension periodically rewrites this file. A bounded
     /// window prevents a dead verdict from surviving an extension crash or a
     /// long suspension and misleading the app later.
-    public static let freshnessWindow: TimeInterval = 30
+    public static var freshnessWindow: TimeInterval {
+        GatewayTunnelHealthTiming.production.snapshotFreshness.gatewayTimeInterval
+    }
 
     public let tunnelIdentifier: String
     public let health: GatewayTunnelHealth
@@ -19,8 +21,13 @@ public struct GatewayTunnelHealthSnapshot: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
     }
 
-    public func isFresh(at now: Date = Date()) -> Bool {
-        now.timeIntervalSince(updatedAt) <= Self.freshnessWindow
+    public func isFresh(
+        at now: Date = Date(),
+        timing: GatewayTunnelHealthTiming = .production
+    ) -> Bool {
+        let age = now.timeIntervalSince(updatedAt)
+        return age >= -timing.snapshotFutureTolerance.gatewayTimeInterval
+            && age <= timing.snapshotFreshness.gatewayTimeInterval
     }
 }
 

@@ -57,7 +57,13 @@ required.
   - [x] Characterize lifecycle, recovery, path, persistence, notification, and stale-completion traces.
   - [x] Pass the Apple test and unsigned-build target.
   - [x] Complete the Stage 1 reviewer loop.
-- [ ] Stage 2: centralize timing and move elapsed-time decisions to monotonic time.
+- [x] Stage 2: centralize timing and move elapsed-time decisions to monotonic time.
+  - [x] Add the validated shared production timing configuration.
+  - [x] Move evaluator, recovery, path, and persistence elapsed time to monotonic inputs.
+  - [x] Share production heartbeat/freshness values and bound future snapshots.
+  - [x] Track desired versus completed persistence and notification state.
+  - [x] Migrate the current iOS producer to monotonic policy inputs.
+  - [x] Pass the Apple gate and Stage 2 reviewer loop.
 - [ ] Stage 3: close callback, path, notification, and persistence gaps.
 - [ ] Stage 4: add the shared runtime monitor and adapters.
 - [ ] Stage 5: cut the iOS packet-tunnel provider over to the shared monitor.

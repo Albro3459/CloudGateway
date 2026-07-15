@@ -14,9 +14,14 @@ struct GatewayTunnelHealthOperationID: Hashable, Sendable {
     let sequence: UInt64
 }
 
-struct GatewayTunnelHealthMoment: Equatable, Sendable {
-    let monotonic: Duration
-    let wall: Date
+public struct GatewayTunnelHealthMoment: Equatable, Sendable {
+    public let monotonic: Duration
+    public let wall: Date
+
+    public init(monotonic: Duration, wall: Date) {
+        self.monotonic = monotonic
+        self.wall = wall
+    }
 }
 
 struct GatewayTunnelPathDescriptor: Equatable, Sendable {
@@ -88,18 +93,22 @@ struct GatewayTunnelHealthTransition: Equatable, Sendable {
 
 struct GatewayTunnelHealthCoordinator: Sendable {
     private enum PhysicalOperation: Sendable {
-        case runtimeRead(id: GatewayTunnelHealthOperationID)
+        case runtimeRead(
+            id: GatewayTunnelHealthOperationID,
+            deadline: Duration
+        )
         case recovery(
             id: GatewayTunnelHealthOperationID,
             request: GatewayTunnelRecoveryRequest,
             baseline: GatewayTunnelRuntimeStats?,
             recoveryRouteGeneration: UInt64,
-            policyGeneration: UInt64
+            policyGeneration: UInt64,
+            deadline: Duration
         )
 
         var id: GatewayTunnelHealthOperationID {
             switch self {
-            case let .runtimeRead(id), let .recovery(id, _, _, _, _):
+            case let .runtimeRead(id, _), let .recovery(id, _, _, _, _, _):
                 id
             }
         }
@@ -108,10 +117,10 @@ struct GatewayTunnelHealthCoordinator: Sendable {
     private struct PendingPersistence: Sendable {
         let id: GatewayTunnelHealthOperationID
         let snapshot: GatewayTunnelHealthSnapshot
+        let requestedAt: Duration
     }
 
-    private static let pollInterval: Duration = .seconds(5)
-
+    private let timing: GatewayTunnelHealthTiming
     private var activeSession: GatewayTunnelHealthSessionID?
     private var tunnelIdentifier: String?
     private var nextSequence: UInt64 = 0
@@ -126,6 +135,12 @@ struct GatewayTunnelHealthCoordinator: Sendable {
     private var physicalOperation: PhysicalOperation?
     private var pendingPersistence: PendingPersistence?
     private var outstandingNotificationRegistrations: Set<GatewayTunnelHealthOperationID> = []
+    private var notificationDesired = false
+    private var notificationRegistered = false
+
+    init(timing: GatewayTunnelHealthTiming = .production) {
+        self.timing = timing
+    }
 
     mutating func start(
         session: GatewayTunnelHealthSessionID,
@@ -135,16 +150,18 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         activeSession = session
         self.tunnelIdentifier = tunnelIdentifier
         nextSequence = 0
-        evaluator = GatewayTunnelHealthEvaluator(startedAt: moment.wall)
-        recoveryPolicy = GatewayTunnelRecoveryPolicy()
-        pathPolicy = GatewayTunnelPathPolicy()
-        persistencePolicy = GatewayTunnelHealthPersistencePolicy()
+        evaluator = GatewayTunnelHealthEvaluator(startedAt: moment, timing: timing)
+        recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: timing)
+        pathPolicy = GatewayTunnelPathPolicy(timing: timing)
+        persistencePolicy = GatewayTunnelHealthPersistencePolicy(timing: timing)
         lastPathDescriptor = nil
         lastPublishedHealth = nil
         desiredSnapshot = nil
         physicalOperation = nil
         pendingPersistence = nil
-        currentWake = makeWake(deadline: moment.monotonic + Self.pollInterval)
+        notificationDesired = false
+        notificationRegistered = false
+        currentWake = makeWake(deadline: moment.monotonic + timing.runtimePollInterval)
         return transition(effects: [.withdrawNotification, .clearSnapshot])
     }
 
@@ -169,7 +186,7 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         case let .recoveryCompleted(id, result):
             return handleRecoveryCompleted(id, result: result, at: moment)
         case let .persistenceCompleted(id, result):
-            return handlePersistenceCompleted(id, result: result)
+            return handlePersistenceCompleted(id, result: result, at: moment)
         case .notificationCompleted:
             return transition()
         case .stop:
@@ -184,12 +201,15 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         guard currentWake?.id == id else {
             return transition()
         }
-        currentWake = makeWake(deadline: moment.monotonic + Self.pollInterval)
+        currentWake = makeWake(deadline: moment.monotonic + timing.runtimePollInterval)
         guard physicalOperation == nil else {
             return transition()
         }
         let operationID = makeOperationID()
-        physicalOperation = .runtimeRead(id: operationID)
+        physicalOperation = .runtimeRead(
+            id: operationID,
+            deadline: moment.monotonic + timing.runtimeReadDeadline
+        )
         return transition(effects: [.readRuntime(operationID)])
     }
 
@@ -201,7 +221,7 @@ struct GatewayTunnelHealthCoordinator: Sendable {
             return transition()
         }
         lastPathDescriptor = descriptor
-        pathPolicy.recordPathChange(isSatisfied: descriptor.isSatisfied, at: moment.wall)
+        pathPolicy.recordPathChange(isSatisfied: descriptor.isSatisfied, at: moment.monotonic)
         return transition()
     }
 
@@ -210,7 +230,7 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         stats: GatewayTunnelRuntimeStats?,
         at moment: GatewayTunnelHealthMoment
     ) -> GatewayTunnelHealthTransition {
-        guard case let .runtimeRead(operationID) = physicalOperation,
+        guard case let .runtimeRead(operationID, _) = physicalOperation,
               operationID == id else {
             return transition()
         }
@@ -218,15 +238,15 @@ struct GatewayTunnelHealthCoordinator: Sendable {
 
         var evidence: GatewayTunnelHealthEvidence?
         if let stats, var evaluator {
-            evidence = evaluator.evaluateEvidence(stats, at: moment.wall)
+            evidence = evaluator.evaluateEvidence(stats, at: moment)
             self.evaluator = evaluator
         }
         let action = recoveryPolicy.update(
             stats: stats,
             evidence: evidence,
-            path: pathPolicy.availability(at: moment.wall),
+            path: pathPolicy.availability(at: moment.monotonic),
             routeGeneration: pathPolicy.policyGeneration,
-            at: moment.wall
+            at: moment.monotonic
         )
 
         var effects = publish(action.health, at: moment)
@@ -237,7 +257,8 @@ struct GatewayTunnelHealthCoordinator: Sendable {
                 request: request,
                 baseline: stats,
                 recoveryRouteGeneration: pathPolicy.recoveryRouteGeneration,
-                policyGeneration: pathPolicy.policyGeneration
+                policyGeneration: pathPolicy.policyGeneration,
+                deadline: moment.monotonic + timing.recoveryOperationDeadline
             )
             switch request {
             case .bindingRefresh:
@@ -259,7 +280,8 @@ struct GatewayTunnelHealthCoordinator: Sendable {
             request,
             baseline,
             recoveryRouteGeneration,
-            policyGeneration
+            policyGeneration,
+            _
         ) = physicalOperation,
               operationID == id else {
             return transition()
@@ -269,25 +291,26 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         let routeMatches = recoveryRouteGeneration == pathPolicy.recoveryRouteGeneration
 
         if accepted, request == .backendRestart {
-            evaluator?.resetSession(at: moment.wall)
+            evaluator?.resetSession(at: moment)
         }
         if accepted, request == .bindingRefresh {
             evaluator?.resetTrafficEvidence(
                 baseline: routeMatches ? baseline : nil,
-                at: moment.wall
+                at: moment
             )
         }
 
         guard routeMatches || policyGeneration == pathPolicy.policyGeneration else {
             return transition()
         }
-        recoveryPolicy.recoveryAttemptCompleted(accepted: accepted, at: moment.wall)
+        recoveryPolicy.recoveryAttemptCompleted(accepted: accepted, at: moment.monotonic)
         return transition()
     }
 
     private mutating func handlePersistenceCompleted(
         _ id: GatewayTunnelHealthOperationID,
-        result: GatewayTunnelEffectResult
+        result: GatewayTunnelEffectResult,
+        at moment: GatewayTunnelHealthMoment
     ) -> GatewayTunnelHealthTransition {
         guard let pendingPersistence, pendingPersistence.id == id else {
             return transition()
@@ -296,8 +319,9 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         if result == .success {
             persistencePolicy.recordPersisted(
                 pendingPersistence.snapshot.health,
-                at: pendingPersistence.snapshot.updatedAt
+                at: pendingPersistence.requestedAt
             )
+            return transition(effects: makePersistenceEffects(at: moment))
         }
         return transition()
     }
@@ -309,10 +333,14 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         guard outstandingNotificationRegistrations.remove(id) != nil else {
             return transition()
         }
-        guard result == .registered,
-              lastPublishedHealth != .notPassingTraffic else {
+        guard result == .registered else {
             return transition()
         }
+        guard !notificationDesired else {
+            notificationRegistered = true
+            return transition()
+        }
+        notificationRegistered = false
         return transition(effects: [.withdrawNotification])
     }
 
@@ -327,22 +355,20 @@ struct GatewayTunnelHealthCoordinator: Sendable {
             updatedAt: moment.wall
         )
 
-        var effects: [GatewayTunnelHealthEffect] = []
-        if pendingPersistence == nil,
-           persistencePolicy.shouldPersist(health, at: moment.wall),
-           let desiredSnapshot {
-            let operationID = makeOperationID()
-            pendingPersistence = PendingPersistence(id: operationID, snapshot: desiredSnapshot)
-            effects.append(.persist(operationID, desiredSnapshot))
-        }
+        var effects = makePersistenceEffects(at: moment)
 
         let previous = lastPublishedHealth
         lastPublishedHealth = health
         if GatewayTunnelHealthNotification.shouldNotify(previous: previous, current: health) {
-            let operationID = makeOperationID()
-            outstandingNotificationRegistrations.insert(operationID)
-            effects.append(.registerNotification(operationID))
+            notificationDesired = true
+            if !notificationRegistered {
+                let operationID = makeOperationID()
+                outstandingNotificationRegistrations.insert(operationID)
+                effects.append(.registerNotification(operationID))
+            }
         } else if GatewayTunnelHealthNotification.shouldWithdraw(previous: previous, current: health) {
+            notificationDesired = false
+            notificationRegistered = false
             effects.append(.withdrawNotification)
         }
         return effects
@@ -353,14 +379,16 @@ struct GatewayTunnelHealthCoordinator: Sendable {
         tunnelIdentifier = nil
         currentWake = nil
         evaluator = nil
-        recoveryPolicy = GatewayTunnelRecoveryPolicy()
-        pathPolicy = GatewayTunnelPathPolicy()
-        persistencePolicy = GatewayTunnelHealthPersistencePolicy()
+        recoveryPolicy = GatewayTunnelRecoveryPolicy(timing: timing)
+        pathPolicy = GatewayTunnelPathPolicy(timing: timing)
+        persistencePolicy = GatewayTunnelHealthPersistencePolicy(timing: timing)
         lastPathDescriptor = nil
         lastPublishedHealth = nil
         desiredSnapshot = nil
         physicalOperation = nil
         pendingPersistence = nil
+        notificationDesired = false
+        notificationRegistered = false
         return GatewayTunnelHealthTransition(
             effects: [.clearSnapshot, .withdrawNotification],
             health: nil,
@@ -375,6 +403,26 @@ struct GatewayTunnelHealthCoordinator: Sendable {
             sequence: takeSequence()
         )
         return GatewayTunnelHealthWake(id: id, deadline: deadline)
+    }
+
+    private mutating func makePersistenceEffects(
+        at moment: GatewayTunnelHealthMoment
+    ) -> [GatewayTunnelHealthEffect] {
+        guard pendingPersistence == nil,
+              let desiredSnapshot,
+              persistencePolicy.shouldPersist(
+                  desiredSnapshot.health,
+                  at: moment.monotonic
+              ) else {
+            return []
+        }
+        let operationID = makeOperationID()
+        pendingPersistence = PendingPersistence(
+            id: operationID,
+            snapshot: desiredSnapshot,
+            requestedAt: moment.monotonic
+        )
+        return [.persist(operationID, desiredSnapshot)]
     }
 
     private mutating func makeOperationID() -> GatewayTunnelHealthOperationID {

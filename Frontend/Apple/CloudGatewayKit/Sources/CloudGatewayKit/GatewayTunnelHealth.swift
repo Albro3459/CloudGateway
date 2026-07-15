@@ -19,15 +19,15 @@ public enum GatewayTunnelHealthEvidence: Equatable, Sendable {
 }
 
 public struct GatewayTunnelHealthThresholds: Equatable, Sendable {
-    public var neverHandshakeGrace: TimeInterval
-    public var staleHandshake: TimeInterval
-    public var oneWayFlatDuration: TimeInterval
+    public var neverHandshakeGrace: Duration
+    public var staleHandshake: Duration
+    public var oneWayFlatDuration: Duration
     public var oneWayMinTxGrowth: UInt64
 
     public init(
-        neverHandshakeGrace: TimeInterval = 10,
-        staleHandshake: TimeInterval = 180,
-        oneWayFlatDuration: TimeInterval = 10,
+        neverHandshakeGrace: Duration,
+        staleHandshake: Duration,
+        oneWayFlatDuration: Duration,
         oneWayMinTxGrowth: UInt64 = 4096
     ) {
         self.neverHandshakeGrace = neverHandshakeGrace
@@ -36,17 +36,29 @@ public struct GatewayTunnelHealthThresholds: Equatable, Sendable {
         self.oneWayMinTxGrowth = oneWayMinTxGrowth
     }
 
-    public static let `default` = GatewayTunnelHealthThresholds()
+    public init(
+        timing: GatewayTunnelHealthTiming = .production,
+        oneWayMinTxGrowth: UInt64 = 4096
+    ) {
+        self.init(
+            neverHandshakeGrace: timing.neverHandshakeGrace,
+            staleHandshake: timing.staleHandshake,
+            oneWayFlatDuration: timing.oneWayFlatDuration,
+            oneWayMinTxGrowth: oneWayMinTxGrowth
+        )
+    }
+
+    public static let `default` = GatewayTunnelHealthThresholds(timing: .production)
 }
 
 /// Produces raw transport evidence. User-visible outage policy intentionally
 /// lives in `GatewayTunnelRecoveryPolicy`.
 public struct GatewayTunnelHealthEvaluator: Sendable {
     private let thresholds: GatewayTunnelHealthThresholds
-    private var startedAt: Date
+    private var startedAt: Duration
     private var previousSample: GatewayTunnelRuntimeStats?
-    private var previousSampleAt: Date?
-    private var oneWayCandidate: (startedAt: Date, startingTx: UInt64)?
+    private var previousSampleAt: Duration?
+    private var oneWayCandidate: (startedAt: Duration, startingTx: UInt64)?
     // Once a one-way window concludes failed, stay failed while RX remains flat.
     // Without this the evaluator would blink `.healthy` between candidate windows
     // during a continuous blackhole, which reads as recovery and flaps the outage.
@@ -54,35 +66,47 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
 
     public init(startedAt: Date, thresholds: GatewayTunnelHealthThresholds = .default) {
         self.thresholds = thresholds
-        self.startedAt = startedAt
+        self.startedAt = .seconds(startedAt.timeIntervalSinceReferenceDate)
+    }
+
+    public init(
+        startedAt moment: GatewayTunnelHealthMoment,
+        timing: GatewayTunnelHealthTiming = .production,
+        oneWayMinTxGrowth: UInt64 = 4096
+    ) {
+        thresholds = GatewayTunnelHealthThresholds(
+            timing: timing,
+            oneWayMinTxGrowth: oneWayMinTxGrowth
+        )
+        startedAt = moment.monotonic
     }
 
     public mutating func evaluateEvidence(
         _ stats: GatewayTunnelRuntimeStats,
-        at now: Date
+        at moment: GatewayTunnelHealthMoment
     ) -> GatewayTunnelHealthEvidence {
         var sessionReset = false
-        if let previousSampleAt, now < previousSampleAt {
-            resetSession(at: now)
+        if let previousSampleAt, moment.monotonic < previousSampleAt {
+            resetSession(at: moment)
             sessionReset = true
         }
 
         if let previousSample,
            stats.rxBytes < previousSample.rxBytes || stats.txBytes < previousSample.txBytes {
-            resetSession(at: now)
+            resetSession(at: moment)
             sessionReset = true
         }
 
         if sessionReset {
             previousSample = stats
-            previousSampleAt = now
+            previousSampleAt = moment.monotonic
             return .warmingUp
         }
 
         let prior = previousSample
         defer {
             previousSample = stats
-            previousSampleAt = now
+            previousSampleAt = moment.monotonic
         }
 
         if let prior {
@@ -92,18 +116,19 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
                 oneWayLatched = false
             } else if stats.rxBytes == prior.rxBytes, stats.txBytes > prior.txBytes,
                       oneWayCandidate == nil {
-                oneWayCandidate = (now, prior.txBytes)
+                oneWayCandidate = (moment.monotonic, prior.txBytes)
             }
         }
 
         if stats.latestHandshakeEpochSeconds <= 0 {
-            return now.timeIntervalSince(startedAt) >= thresholds.neverHandshakeGrace
+            return moment.monotonic - startedAt >= thresholds.neverHandshakeGrace
                 ? .failed(.neverHandshaked)
                 : .warmingUp
         }
 
-        let handshakeAge = now.timeIntervalSince1970 - Double(stats.latestHandshakeEpochSeconds)
-        if handshakeAge > thresholds.staleHandshake {
+        let handshakeAge = moment.wall.timeIntervalSince1970
+            - Double(stats.latestHandshakeEpochSeconds)
+        if handshakeAge > thresholds.staleHandshake.gatewayTimeInterval {
             return .failed(.staleHandshake)
         }
 
@@ -112,7 +137,7 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
         }
 
         if let candidate = oneWayCandidate,
-           now.timeIntervalSince(candidate.startedAt) >= thresholds.oneWayFlatDuration {
+           moment.monotonic - candidate.startedAt >= thresholds.oneWayFlatDuration {
             oneWayCandidate = nil
             if stats.txBytes >= candidate.startingTx,
                stats.txBytes - candidate.startingTx >= thresholds.oneWayMinTxGrowth {
@@ -122,6 +147,19 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
         }
 
         return .healthy
+    }
+
+    public mutating func evaluateEvidence(
+        _ stats: GatewayTunnelRuntimeStats,
+        at now: Date
+    ) -> GatewayTunnelHealthEvidence {
+        evaluateEvidence(
+            stats,
+            at: GatewayTunnelHealthMoment(
+                monotonic: .seconds(now.timeIntervalSinceReferenceDate),
+                wall: now
+            )
+        )
     }
 
     /// Starts a new traffic observation window after a binding refresh while
@@ -134,6 +172,17 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
         oneWayLatched = false
         previousSample = baseline
         previousSampleAt = baseline == nil ? nil : now
+            .map { .seconds($0.timeIntervalSinceReferenceDate) }
+    }
+
+    public mutating func resetTrafficEvidence(
+        baseline: GatewayTunnelRuntimeStats? = nil,
+        at moment: GatewayTunnelHealthMoment
+    ) {
+        oneWayCandidate = nil
+        oneWayLatched = false
+        previousSample = baseline
+        previousSampleAt = baseline == nil ? nil : moment.monotonic
     }
 
     public mutating func evaluate(_ stats: GatewayTunnelRuntimeStats, at now: Date) -> GatewayTunnelHealth {
@@ -147,7 +196,15 @@ public struct GatewayTunnelHealthEvaluator: Sendable {
     /// Starts a fresh backend session, including handshake warmup and traffic
     /// baselines. Use when WireGuard's backend is intentionally recreated.
     public mutating func resetSession(at now: Date) {
-        startedAt = now
+        startedAt = .seconds(now.timeIntervalSinceReferenceDate)
+        previousSample = nil
+        previousSampleAt = nil
+        oneWayCandidate = nil
+        oneWayLatched = false
+    }
+
+    public mutating func resetSession(at moment: GatewayTunnelHealthMoment) {
+        startedAt = moment.monotonic
         previousSample = nil
         previousSampleAt = nil
         oneWayCandidate = nil
