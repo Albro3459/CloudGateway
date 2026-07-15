@@ -88,7 +88,11 @@ required.
   - [x] Document the shared coordinator, monitor, adapter, lifecycle, and macOS reuse boundaries.
   - [x] Preserve explicit real-device and macOS implementation exclusions.
   - [ ] Complete signed real-device validation (excluded from this agent implementation).
-- [ ] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.
+- [x] Final implementation review: GPT-5.6 Sol review loop and full Apple validation.
+  - [x] Register adapter start before asynchronous WireGuard startup so stop cannot be overtaken by a late start continuation.
+  - [x] Arm bounded stop before gate work and keep effect-gate locking limited to reservation.
+  - [x] Pass 198 shared-package tests, unsigned no-device iOS build, and host-less view-model tests.
+  - [x] Complete the final Sol re-review with no actionable issues.
 
 ## Current Architecture And Root Cause
 
