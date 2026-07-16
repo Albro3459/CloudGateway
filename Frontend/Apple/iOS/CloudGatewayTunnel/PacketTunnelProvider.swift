@@ -56,8 +56,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping () -> Void
     ) {
         let stopCompletion = GatewayTunnelStopCompletion(completion: completionHandler)
+        let adapterStop = GatewayTunnelStopSubmission(
+            targetQueue: healthPathQueue,
+            submission: { [weak self] in
+                guard let self else {
+                    stopCompletion.adapterStopped()
+                    return
+                }
+                self.adapter.stop { _ in
+                    stopCompletion.adapterStopped()
+                }
+            }
+        )
         healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
-            stopCompletion.deadlineExceeded()
+            adapterStop.submit {
+                stopCompletion.deadlineExceeded()
+            }
         }
         let healthStop = healthLifecycle.prepareToStop {
             stopCompletion.healthStopped()
@@ -74,8 +88,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
         }
-        adapter.stop { _ in
-            stopCompletion.adapterStopped()
+        if let token = healthStop.token {
+            token.whenEffectSubmissionsDrained {
+                adapterStop.submit()
+            }
+        } else {
+            adapterStop.submit()
         }
     }
 

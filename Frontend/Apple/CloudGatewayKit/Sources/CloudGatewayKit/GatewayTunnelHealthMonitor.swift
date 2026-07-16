@@ -162,6 +162,8 @@ public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
     private let lock = NSLock()
     private var generation: UInt64?
     private var isOpen = false
+    private var reservationCounts: [UInt64: Int] = [:]
+    private var drainWaiters: [UInt64: [@Sendable () -> Void]] = [:]
 
     public init() {}
 
@@ -198,7 +200,9 @@ public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
             lock.unlock()
             return false
         }
+        reservationCounts[generation, default: 0] += 1
         lock.unlock()
+        defer { finishReservation(generation: generation) }
         action()
         return true
     }
@@ -208,15 +212,67 @@ public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
         defer { lock.unlock() }
         return isOpen && self.generation == generation
     }
+
+    func notifyWhenDrained(
+        generation: UInt64,
+        _ action: @escaping @Sendable () -> Void
+    ) {
+        lock.lock()
+        guard reservationCounts[generation, default: 0] > 0 else {
+            lock.unlock()
+            action()
+            return
+        }
+        drainWaiters[generation, default: []].append(action)
+        lock.unlock()
+    }
+
+    func notifyAfterOutstandingReservations(
+        generation: UInt64,
+        _ action: @escaping @Sendable () -> Void
+    ) {
+        lock.lock()
+        guard reservationCounts[generation, default: 0] > 0 else {
+            lock.unlock()
+            return
+        }
+        drainWaiters[generation, default: []].append(action)
+        lock.unlock()
+    }
+
+    private func finishReservation(generation: UInt64) {
+        lock.lock()
+        guard let count = reservationCounts[generation] else {
+            lock.unlock()
+            return
+        }
+        if count > 1 {
+            reservationCounts[generation] = count - 1
+            lock.unlock()
+            return
+        }
+        reservationCounts[generation] = nil
+        let waiters = drainWaiters.removeValue(forKey: generation) ?? []
+        lock.unlock()
+        for waiter in waiters {
+            waiter()
+        }
+    }
 }
 
 public final class GatewayTunnelHealthStopToken: @unchecked Sendable {
     let generation: UInt64
+    private let effectGate: GatewayTunnelHealthEffectGate
     private let lock = NSLock()
     private var cleanup: (@Sendable () -> Void)?
 
-    init(generation: UInt64, cleanup: @escaping @Sendable () -> Void) {
+    init(
+        generation: UInt64,
+        effectGate: GatewayTunnelHealthEffectGate,
+        cleanup: @escaping @Sendable () -> Void
+    ) {
         self.generation = generation
+        self.effectGate = effectGate
         self.cleanup = cleanup
     }
 
@@ -225,7 +281,21 @@ public final class GatewayTunnelHealthStopToken: @unchecked Sendable {
         let cleanup = cleanup
         self.cleanup = nil
         lock.unlock()
-        cleanup?()
+        guard let cleanup else { return }
+        effectGate.notifyAfterOutstandingReservations(
+            generation: generation,
+            cleanup
+        )
+        cleanup()
+    }
+
+    public func whenEffectSubmissionsDrained(
+        _ action: @escaping @Sendable () -> Void
+    ) {
+        effectGate.notifyWhenDrained(
+            generation: generation,
+            action
+        )
     }
 
     public func disarmDeadlineCleanup() {
@@ -364,6 +434,7 @@ public actor GatewayTunnelHealthMonitor {
     ) -> GatewayTunnelHealthStopToken {
         return GatewayTunnelHealthStopToken(
             generation: generation,
+            effectGate: effectGate,
             cleanup: { self.deadlineCleanup(generation) }
         )
     }

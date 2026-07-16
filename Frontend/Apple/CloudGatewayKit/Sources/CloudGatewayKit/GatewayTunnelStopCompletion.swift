@@ -1,5 +1,32 @@
 import Foundation
 
+public final class GatewayTunnelStopSubmission: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private var submission: (() -> Void)?
+
+    public init(
+        targetQueue: DispatchQueue? = nil,
+        submission: @escaping () -> Void
+    ) {
+        queue = DispatchQueue(
+            label: "com.gocloudlaunch.gateway.tunnel.stop-submission",
+            target: targetQueue
+        )
+        self.submission = submission
+    }
+
+    public func submit(
+        then completion: (@Sendable () -> Void)? = nil
+    ) {
+        queue.async { [self] in
+            let submission = self.submission
+            self.submission = nil
+            submission?()
+            completion?()
+        }
+    }
+}
+
 public final class GatewayTunnelStopCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completion: (() -> Void)?

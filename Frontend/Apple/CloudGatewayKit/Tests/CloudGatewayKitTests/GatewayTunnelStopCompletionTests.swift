@@ -60,6 +60,69 @@ import Testing
     #expect(cleanupCount.value == 1)
 }
 
+@Test func stopSubmissionSerializesDeadlineBehindClaimedSubmission() async {
+    let queue = DispatchQueue(
+        label: "GatewayTunnelStopSubmissionTests",
+        attributes: .concurrent
+    )
+    let entered = AsyncStopSignal()
+    let release = DispatchSemaphore(value: 0)
+    let deadlineFinished = AsyncStopSignal()
+    let submissionCount = LockedStopCounter()
+    let deadlineCount = LockedStopCounter()
+    let submission = GatewayTunnelStopSubmission(targetQueue: queue) {
+        entered.signal()
+        release.wait()
+        submissionCount.increment()
+    }
+
+    submission.submit()
+    await entered.wait()
+    submission.submit {
+        deadlineCount.increment()
+        deadlineFinished.signal()
+    }
+
+    #expect(deadlineCount.value == 0)
+    release.signal()
+    await deadlineFinished.wait()
+
+    #expect(submissionCount.value == 1)
+    #expect(deadlineCount.value == 1)
+}
+
+private final class AsyncStopSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var signaled = false
+
+    func signal() {
+        lock.lock()
+        guard let continuation else {
+            signaled = true
+            lock.unlock()
+            return
+        }
+        self.continuation = nil
+        lock.unlock()
+        continuation.resume()
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            guard !signaled else {
+                signaled = false
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+}
+
 private final class LockedStopCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0

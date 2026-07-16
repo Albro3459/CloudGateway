@@ -231,18 +231,30 @@ private final class ControllablePersistenceAdapter:
 
     typealias Completion = @Sendable (GatewayTunnelEffectResult) async -> Void
     private let lock = NSLock()
+    private let writeSubmission: @Sendable () -> Void
+    private let clearSubmission: @Sendable () -> Void
     private var storage: [(Kind, Completion)] = []
+
+    init(
+        writeSubmission: @escaping @Sendable () -> Void = {},
+        clearSubmission: @escaping @Sendable () -> Void = {}
+    ) {
+        self.writeSubmission = writeSubmission
+        self.clearSubmission = clearSubmission
+    }
 
     func write(
         _ snapshot: GatewayTunnelHealthSnapshot,
         completion: @escaping Completion
     ) {
+        writeSubmission()
         lock.lock()
         storage.append((.write(snapshot), completion))
         lock.unlock()
     }
 
     func clear(completion: @escaping Completion) {
+        clearSubmission()
         lock.lock()
         storage.append((.clear, completion))
         lock.unlock()
@@ -279,9 +291,20 @@ private final class ControllableNotificationAdapter:
     enum Kind: Equatable, Sendable { case register, reconcile, withdraw }
     typealias Completion = @Sendable (GatewayTunnelNotificationResult) async -> Void
     private let lock = NSLock()
+    private let registerSubmission: @Sendable () -> Void
+    private let withdrawSubmission: @Sendable () -> Void
     private var storage: [(Kind, Completion?)] = []
 
+    init(
+        registerSubmission: @escaping @Sendable () -> Void = {},
+        withdrawSubmission: @escaping @Sendable () -> Void = {}
+    ) {
+        self.registerSubmission = registerSubmission
+        self.withdrawSubmission = withdrawSubmission
+    }
+
     func register(completion: @escaping Completion) {
+        registerSubmission()
         lock.lock()
         storage.append((.register, completion))
         lock.unlock()
@@ -294,6 +317,7 @@ private final class ControllableNotificationAdapter:
     }
 
     func withdraw() {
+        withdrawSubmission()
         lock.lock()
         storage.append((.withdraw, nil))
         lock.unlock()
@@ -337,6 +361,12 @@ private final class LockedFlag: @unchecked Sendable {
     func set() {
         lock.lock()
         storage = true
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        storage = false
         lock.unlock()
     }
 }
@@ -581,6 +611,233 @@ private func makeMonitor(
     release.signal()
     #expect(await effect.value)
     #expect(await close.value == 1)
+}
+
+@Test func effectGateDrainsApprovedSubmissionBeforeStopWork() async throws {
+    let gate = GatewayTunnelHealthEffectGate()
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let submitted = LockedFlag()
+    let stopWorkStarted = LockedFlag()
+    gate.open(generation: 1)
+
+    let effect = Task.detached {
+        gate.performIfOpen(generation: 1) {
+            entered.signal()
+            release.wait()
+            submitted.set()
+        }
+    }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+
+    let generation = try #require(gate.closeCurrent())
+    gate.notifyWhenDrained(generation: generation) {
+        stopWorkStarted.set()
+    }
+
+    #expect(!stopWorkStarted.value)
+    release.signal()
+    #expect(await effect.value)
+    #expect(submitted.value)
+    #expect(stopWorkStarted.value)
+}
+
+@Test func deadlineCleanupRepeatsAfterApprovedSubmissionDrains() async throws {
+    let gate = GatewayTunnelHealthEffectGate()
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let artifactPresent = LockedFlag()
+    gate.open(generation: 1)
+
+    let effect = Task.detached {
+        gate.performIfOpen(generation: 1) {
+            entered.signal()
+            release.wait()
+            artifactPresent.set()
+        }
+    }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+
+    let generation = try #require(gate.closeCurrent())
+    let token = GatewayTunnelHealthStopToken(
+        generation: generation,
+        effectGate: gate,
+        cleanup: { artifactPresent.clear() }
+    )
+    token.bestEffortDeadlineCleanup()
+    #expect(!artifactPresent.value)
+
+    release.signal()
+    #expect(await effect.value)
+    #expect(!artifactPresent.value)
+}
+
+@Test func effectGateDrainsGenerationsIndependently() async throws {
+    let gate = GatewayTunnelHealthEffectGate()
+    let firstEntered = DispatchSemaphore(value: 0)
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let firstDrained = LockedFlag()
+    let secondDrained = LockedFlag()
+    gate.open(generation: 1)
+
+    let firstEffect = Task.detached {
+        gate.performIfOpen(generation: 1) {
+            firstEntered.signal()
+            releaseFirst.wait()
+        }
+    }
+    await Task.detached { waitForHealthSemaphore(firstEntered) }.value
+    _ = gate.closeCurrent()
+    gate.notifyWhenDrained(generation: 1) { firstDrained.set() }
+
+    gate.open(generation: 2)
+    _ = gate.closeCurrent()
+    gate.notifyWhenDrained(generation: 2) { secondDrained.set() }
+
+    #expect(!firstDrained.value)
+    #expect(secondDrained.value)
+    releaseFirst.signal()
+    #expect(await firstEffect.value)
+    #expect(firstDrained.value)
+}
+
+@Test func activeSnapshotRepairSubmissionIsReservedUntilSubmitted() async throws {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let persistence = ControllablePersistenceAdapter {
+        entered.signal()
+        release.wait()
+    }
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: ControllableNotificationAdapter(),
+        gate: gate
+    )
+    let snapshot = GatewayTunnelHealthSnapshot(
+        tunnelIdentifier: "client-1",
+        health: .notPassingTraffic,
+        updatedAt: Date(timeIntervalSince1970: 1)
+    )
+    let drained = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: snapshot,
+            notificationDesired: false,
+            notificationRegistrationAllowed: true
+        )
+    )
+
+    let repair = Task { await driver.requestCurrentRepair() }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+    let generation = try #require(gate.closeCurrent())
+    gate.notifyWhenDrained(generation: generation) { drained.set() }
+
+    #expect(!drained.value)
+    release.signal()
+    await repair.value
+    #expect(drained.value)
+    #expect(persistence.calls == [.write(snapshot)])
+}
+
+@Test func activeSnapshotClearRepairIsReservedUntilSubmitted() async throws {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let persistence = ControllablePersistenceAdapter(clearSubmission: {
+        entered.signal()
+        release.wait()
+    })
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: persistence,
+        notifications: ControllableNotificationAdapter(),
+        gate: gate
+    )
+    let drained = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(generation: 1, desired: .empty)
+
+    let repair = Task { await driver.requestCurrentRepair() }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+    let generation = try #require(gate.closeCurrent())
+    gate.notifyWhenDrained(generation: generation) { drained.set() }
+
+    #expect(!drained.value)
+    release.signal()
+    await repair.value
+    #expect(drained.value)
+    #expect(persistence.calls == [.clear])
+}
+
+@Test func notificationRepairRegistrationIsReservedUntilSubmitted() async throws {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let notifications = ControllableNotificationAdapter {
+        entered.signal()
+        release.wait()
+    }
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: ControllablePersistenceAdapter(),
+        notifications: notifications,
+        gate: gate
+    )
+    let drained = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+    await driver.requestCurrentRepair()
+    #expect(notifications.calls == [.reconcile])
+
+    let reconciliation = Task.detached {
+        try await notifications.complete(0, result: .absent)
+    }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+    let generation = try #require(gate.closeCurrent())
+    gate.notifyWhenDrained(generation: generation) { drained.set() }
+
+    #expect(!drained.value)
+    release.signal()
+    try await reconciliation.value
+    #expect(drained.value)
+    #expect(notifications.calls == [.reconcile, .register])
+}
+
+@Test func activeNotificationWithdrawRepairIsReservedUntilSubmitted() async throws {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let notifications = ControllableNotificationAdapter(withdrawSubmission: {
+        entered.signal()
+        release.wait()
+    })
+    let gate = GatewayTunnelHealthEffectGate()
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: ControllablePersistenceAdapter(),
+        notifications: notifications,
+        gate: gate
+    )
+    let drained = LockedFlag()
+    gate.open(generation: 1)
+    await driver.activate(generation: 1, desired: .empty)
+
+    let repair = Task { await driver.requestCurrentRepair() }
+    await Task.detached { waitForHealthSemaphore(entered) }.value
+    let generation = try #require(gate.closeCurrent())
+    gate.notifyWhenDrained(generation: generation) { drained.set() }
+
+    #expect(!drained.value)
+    release.signal()
+    await repair.value
+    #expect(drained.value)
+    #expect(notifications.calls == [.withdraw])
 }
 
 @Test func monitorRestartRejectsPriorSessionRuntimeCallback() async throws {

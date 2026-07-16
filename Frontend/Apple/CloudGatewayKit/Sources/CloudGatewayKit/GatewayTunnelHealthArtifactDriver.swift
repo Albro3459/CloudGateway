@@ -523,9 +523,28 @@ actor GatewayTunnelHealthArtifactDriver {
             await self?.snapshotRepairCompleted(result, sequence: sequence)
         }
         if let snapshot = desired.snapshot {
-            persistence.write(snapshot, completion: callback)
+            guard let generation = activeGeneration,
+                  gate.performIfOpen(generation: generation, {
+                      persistence.write(snapshot, completion: callback)
+                  }) else {
+                snapshotRepairInFlight = nil
+                snapshotRepairDirty = true
+                finishStopWaitersIfPossible()
+                return
+            }
         } else {
-            persistence.clear(completion: callback)
+            if let generation = activeGeneration {
+                guard gate.performIfOpen(generation: generation, {
+                    persistence.clear(completion: callback)
+                }) else {
+                    snapshotRepairInFlight = nil
+                    snapshotRepairDirty = true
+                    finishStopWaitersIfPossible()
+                    return
+                }
+            } else {
+                persistence.clear(completion: callback)
+            }
         }
     }
 
@@ -578,7 +597,19 @@ actor GatewayTunnelHealthArtifactDriver {
         )
         notifyDeadlineChanged()
         guard desired.notificationDesired else {
-            notifications.withdraw()
+            if let generation = activeGeneration {
+                guard gate.performIfOpen(generation: generation, {
+                    notifications.withdraw()
+                }) else {
+                    notificationRepairInFlight = nil
+                    notificationRepairDirty = true
+                    notifyDeadlineChanged()
+                    finishStopWaitersIfPossible()
+                    return
+                }
+            } else {
+                notifications.withdraw()
+            }
             notificationRepairInFlight = nil
             notifyDeadlineChanged()
             if notificationRepairDirty { drainNotificationLane() }
@@ -609,26 +640,30 @@ actor GatewayTunnelHealthArtifactDriver {
             guard desired.notificationDesired,
                   desired.notificationRegistrationAllowed,
                   desired.notificationOperationID == nil,
-                  let generation = activeGeneration,
-                  gate.isCurrentAndOpen(generation: generation) else {
+                  let generation = activeGeneration else {
                 finishNotificationRepair(sequence: sequence, succeeded: true)
                 return
             }
-            notificationRepairInFlight = NotificationRepairOperation(
-                sequence: sequence,
-                deadline: now() + notificationRepairDeadline,
-                phase: .registering
-            )
-            notifyDeadlineChanged()
-            let physicalRegistration = beginPhysicalNotificationRegistration(
-                generation: generation
-            )
-            notifications.register { [weak self] result in
-                await self?.notificationRepairRegistered(
-                    result,
+            let started = gate.performIfOpen(generation: generation) {
+                notificationRepairInFlight = NotificationRepairOperation(
                     sequence: sequence,
-                    physicalRegistration: physicalRegistration
+                    deadline: now() + notificationRepairDeadline,
+                    phase: .registering
                 )
+                notifyDeadlineChanged()
+                let physicalRegistration = beginPhysicalNotificationRegistration(
+                    generation: generation
+                )
+                notifications.register { [weak self] result in
+                    await self?.notificationRepairRegistered(
+                        result,
+                        sequence: sequence,
+                        physicalRegistration: physicalRegistration
+                    )
+                }
+            }
+            if !started {
+                finishNotificationRepair(sequence: sequence, succeeded: true)
             }
         case .absent, .terminalFailure:
             if result == .terminalFailure {
