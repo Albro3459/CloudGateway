@@ -292,14 +292,17 @@ private final class ControllableNotificationAdapter:
     typealias Completion = @Sendable (GatewayTunnelNotificationResult) async -> Void
     private let lock = NSLock()
     private let registerSubmission: @Sendable () -> Void
+    private let reconcileSubmission: @Sendable () -> Void
     private let withdrawSubmission: @Sendable () -> Void
     private var storage: [(Kind, Completion?)] = []
 
     init(
         registerSubmission: @escaping @Sendable () -> Void = {},
+        reconcileSubmission: @escaping @Sendable () -> Void = {},
         withdrawSubmission: @escaping @Sendable () -> Void = {}
     ) {
         self.registerSubmission = registerSubmission
+        self.reconcileSubmission = reconcileSubmission
         self.withdrawSubmission = withdrawSubmission
     }
 
@@ -311,6 +314,7 @@ private final class ControllableNotificationAdapter:
     }
 
     func reconcile(completion: @escaping Completion) {
+        reconcileSubmission()
         lock.lock()
         storage.append((.reconcile, completion))
         lock.unlock()
@@ -809,6 +813,39 @@ private func makeMonitor(
     try await reconciliation.value
     #expect(drained.value)
     #expect(notifications.calls == [.reconcile, .register])
+}
+
+@Test func notificationRepairReconciliationIsReservedUntilSubmitted() async throws {
+    let gate = GatewayTunnelHealthEffectGate()
+    let drained = LockedFlag()
+    let drainWasDeferred = LockedFlag()
+    let notifications = ControllableNotificationAdapter(
+        reconcileSubmission: {
+            guard let generation = gate.closeCurrent() else { return }
+            gate.notifyWhenDrained(generation: generation) { drained.set() }
+            if !drained.value { drainWasDeferred.set() }
+        }
+    )
+    let driver = GatewayTunnelHealthArtifactDriver(
+        persistence: ControllablePersistenceAdapter(),
+        notifications: notifications,
+        gate: gate
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+
+    await driver.requestCurrentRepair()
+
+    #expect(drainWasDeferred.value)
+    #expect(drained.value)
+    #expect(notifications.calls == [.reconcile])
 }
 
 @Test func activeNotificationWithdrawRepairIsReservedUntilSubmitted() async throws {

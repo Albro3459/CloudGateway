@@ -617,12 +617,21 @@ actor GatewayTunnelHealthArtifactDriver {
             return
         }
         let registrationAllowed = desired.notificationRegistrationAllowed
-        notifications.reconcile { [weak self] result in
-            await self?.notificationRepairReconciled(
-                result,
-                registrationAllowed: registrationAllowed,
-                sequence: sequence
-            )
+        guard let generation = activeGeneration,
+              gate.performIfOpen(generation: generation, {
+                  notifications.reconcile { [weak self] result in
+                      await self?.notificationRepairReconciled(
+                          result,
+                          registrationAllowed: registrationAllowed,
+                          sequence: sequence
+                      )
+                  }
+              }) else {
+            notificationRepairInFlight = nil
+            notificationRepairDirty = true
+            notifyDeadlineChanged()
+            finishStopWaitersIfPossible()
+            return
         }
     }
 
