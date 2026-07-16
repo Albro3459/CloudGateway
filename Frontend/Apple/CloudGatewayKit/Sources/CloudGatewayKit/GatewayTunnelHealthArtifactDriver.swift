@@ -295,9 +295,9 @@ actor GatewayTunnelHealthArtifactDriver {
                     Task { await self?.cancelPendingSubmission(key: key) }
                 }
             ) { [persistence, weak self] ticket in
-                persistence.clear { [weak self] _ in
+                persistence.clear { [weak self] result in
                     ticket.drain()
-                    await self?.completeClear(key: key)
+                    await self?.completeClear(key: key, result: result)
                 }
             }
             if !accepted { pending.removeValue(forKey: key) }
@@ -520,13 +520,18 @@ actor GatewayTunnelHealthArtifactDriver {
         finishStopWaitersIfPossible()
     }
 
-    private func completeClear(key: PendingKey) {
+    private func completeClear(
+        key: PendingKey,
+        result: GatewayTunnelEffectResult
+    ) {
         guard pending.removeValue(forKey: key) != nil else {
             requestRepair()
             finishStopWaitersIfPossible()
             return
         }
-        if activeGeneration != key.generation || desired.snapshot != nil {
+        if result == .failure ||
+            activeGeneration != key.generation ||
+            desired.snapshot != nil {
             requestRepair()
         }
         finishStopWaitersIfPossible()

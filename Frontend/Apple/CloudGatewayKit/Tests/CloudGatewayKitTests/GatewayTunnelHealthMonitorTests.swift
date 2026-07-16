@@ -485,6 +485,20 @@ private func makeMonitor(
     #expect(scheduler.activeCount == 0)
 }
 
+@Test func failedInitialSnapshotClearRequestsRepair() async throws {
+    let persistence = ControllablePersistenceAdapter()
+    let monitor = makeMonitor(persistence: persistence)
+
+    _ = await monitor.start(tunnelIdentifier: "client-1")
+    #expect(persistence.calls == [.clear])
+
+    try await persistence.complete(0, result: .failure)
+    #expect(persistence.calls == [.clear, .clear])
+
+    try await persistence.complete(1)
+    #expect(persistence.calls == [.clear, .clear])
+}
+
 @Test func sessionQualifiedStopCannotCloseReplacementSession() async throws {
     let monitor = makeMonitor()
     let oldSession = try #require(
