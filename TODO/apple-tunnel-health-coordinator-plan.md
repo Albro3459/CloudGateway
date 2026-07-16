@@ -113,6 +113,15 @@ required.
   - [x] Retire active desired artifacts and shared intent when abandoning the current generation.
   - [x] Prevent repair registration through a closed generation gate.
   - [x] Pass 213 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
+- [ ] Post-review hardening D: make effect admission cancellable and deadline-safe.
+  - [x] Reserve active-generation notification repair reconciliation and add a deterministic drain trace.
+  - [ ] Replace approval-only reservations with explicit queued, started, cancelled, and drained submission states.
+  - [ ] Cancel approved-but-not-started effects when stop closes the generation or reaches its deadline.
+  - [ ] Make persistence submission enqueue-only and FIFO so disk I/O cannot block the submission boundary.
+  - [ ] Fence notification registration so a withdrawal or retired generation prevents a delayed add.
+  - [ ] Preserve normal-stop FIFO ordering and the bounded deadline path without letting late work contaminate artifacts.
+  - [ ] Add deterministic inverse-deadline, cancellation, stalled-submission, FIFO, and notification-epoch traces.
+  - [ ] Pass the Apple gate and GPT-5.5 reviewer loop, then complete a final GPT-5.6 Sol review.
 
 ## Current Architecture And Root Cause
 
@@ -163,6 +172,17 @@ This leaves concrete gaps even while all policy tests pass:
    future-dated snapshots can remain fresh incorrectly.
 5. The orchestration is iOS target code. Reusing it for macOS would require
    copying its timer and callback state machine, recreating the same risks.
+
+The completed extraction exposed one additional shutdown boundary gap. The
+generation gate currently distinguishes open from closed and counts synchronous
+reservations, but approval is not the same event as adapter submission. A
+thread may be admitted and then paused before it invokes persistence or User
+Notifications. The five-second fallback can submit `adapter.stop` during that
+window, after which the admitted effect can begin and recreate an artifact.
+Waiting indefinitely for every reservation is not a valid fix because an
+arbitrary synchronous adapter call can stall and defeat bounded stop. The
+shared boundary therefore needs cancellable submission identity and adapters
+with a bounded enqueue point.
 
 ## Locked Decisions
 
@@ -215,6 +235,16 @@ This leaves concrete gaps even while all policy tests pass:
     completes without claiming durable cleanup succeeded. Monitor shutdown never
     waits for a WireGuard callback; all waiting remains bounded by the outer stop
     fallback.
+14. **Approval is not submission.** Every health side effect admitted through
+    the generation boundary has an explicit submission lifecycle: queued,
+    started, cancelled, and drained. Closing a generation rejects new work and
+    cancels admitted work that has not crossed its adapter submission boundary.
+    Normal stop submits `adapter.stop` after admitted effects cross that boundary.
+    Deadline stop cancels queued work, does not wait for a physically stalled
+    operation to finish, and still performs immediate plus post-drain artifact
+    repair. Production persistence is enqueue-only on a private FIFO executor;
+    notification registration rechecks a generation epoch before adding its
+    stable request.
 
 ## Target Architecture
 
@@ -351,10 +381,14 @@ on a narrowly scoped serial executor; the monitor never imports, stores, or
 captures `WireGuardAdapter` directly. If an `@unchecked Sendable` wrapper is
 unavoidable, document and test its queue-confinement invariant at that wrapper.
 The platform effect wrapper also owns a synchronously closable session-generation
-gate. A persistence or notification completion that discovers its generation is
-closed reports a possible stale-artifact write to a shared, serialized artifact
-reconciler rather than directly clearing or withdrawing anything. The reconciler
-consults the newest session's desired snapshot and notification state:
+gate and cancellable submission arbiter. Admission creates a ticket rather than
+assuming the adapter call has already started. Gate closure atomically rejects
+new tickets and cancels admitted tickets that have not crossed the adapter's
+bounded submission point. A persistence or notification completion that
+discovers its generation is closed reports a possible stale-artifact write to a
+shared, serialized artifact reconciler rather than directly clearing or
+withdrawing anything. The reconciler consults the newest session's desired
+snapshot and notification state:
 
 * with no newer active session, it clears/withdraws;
 * with a newer active session, it rewrites that session's desired snapshot or
@@ -753,6 +787,54 @@ Acceptance:
 * `git diff --check` passes;
 * the unsigned generic iOS extension build passes Swift 6 concurrency checks.
 
+### Post-review Hardening D - Bound Effect Submission
+
+Replace the synchronous reservation-only boundary with a cancellable submission
+arbiter shared by the monitor, artifact driver, and platform stop bridge.
+
+The arbiter must:
+
+* assign every admitted effect a generation-qualified ticket;
+* distinguish queued, started, cancelled, and drained tickets;
+* reject tickets after generation closure;
+* cancel tickets that have not started when the deadline fires;
+* preserve effect-before-`adapter.stop` FIFO on normal stop;
+* let deadline stop proceed once queued work is cancelled, without waiting for
+  a started physical operation to complete;
+* schedule final artifact reconciliation after any started operation drains.
+
+Make `GatewayTunnelHealthStoreAdapter` enqueue writes and clears on one private
+serial executor and return immediately after enqueue. Preserve callback order
+and keep the final clear behind an already-started write. Give notification
+registration a generation epoch that is invalidated by withdrawal, abandonment,
+or replacement; recheck it after asynchronous authorization and immediately
+before adding the stable request.
+
+Required deterministic traces:
+
+* hold an admitted ticket before start, fire the deadline, and prove the effect
+  is cancelled while adapter stop and stop completion remain bounded;
+* stall a ticket after its bounded submission point, fire the deadline, and
+  prove ordering is submission then adapter stop, with one stop and later repair;
+* queue a second effect behind a stalled submission and prove the deadline
+  cancels the second effect;
+* prove normal stop preserves effect-submission FIFO before adapter stop;
+* prove persistence write/clear FIFO while caller-side submission stays bounded;
+* delay notification authorization across withdrawal and prove no late add;
+* reserve notification repair reconciliation and prove stop drain cannot
+  overtake its submission.
+
+Acceptance:
+
+* no approved-but-not-started effect can begin after generation closure;
+* the five-second fallback remains a hard bound for stop completion and adapter
+  stop submission;
+* started work completing after stop always triggers generation-aware final
+  reconciliation, without claiming deadline cleanup durably succeeded;
+* all tests are deterministic and use no real five-second sleeps;
+* `./scripts/test.sh apple` and `git diff --check` pass;
+* GPT-5.5 and final GPT-5.6 Sol review loops report no remaining actionable issue.
+
 ### Stage 6 - iOS Device Validation And Documentation
 
 Run the real-device matrix below. Fix orchestration defects behind coordinator
@@ -840,6 +922,10 @@ Acceptance:
 * old notification completion after a new healthy session starts;
 * old notification completion while a new session legitimately needs the stable
   outage notification.
+* approved effect paused before submission when normal stop and deadline stop
+  race;
+* queued effect cancellation behind a started, stalled submission;
+* normal effect-submission FIFO before adapter stop.
 
 ### Persistence and notification
 
@@ -852,6 +938,8 @@ Acceptance:
 * denied/terminal authorization result without retry loop;
 * recovery before notification add completion;
 * stop before notification add completion;
+* delayed notification authorization completing after withdrawal;
+* enqueue-only persistence write followed by final clear;
 * bounded withdrawal idempotence, including repeated startup/stop/late-request
   reconciliation removals without a second registration.
 
