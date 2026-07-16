@@ -171,7 +171,7 @@ actor GatewayTunnelHealthArtifactDriver {
 
     private let persistence: any GatewayTunnelHealthPersistenceAdapter
     private let notifications: any GatewayTunnelHealthNotificationAdapter
-    private let gate: GatewayTunnelHealthEffectGate
+    private let arbiter: GatewayTunnelHealthEffectSubmissionArbiter
     private let intent: GatewayTunnelHealthArtifactIntent
     private let notificationRepairDeadline: Duration
     private let now: @Sendable () -> Duration
@@ -194,14 +194,14 @@ actor GatewayTunnelHealthArtifactDriver {
     init(
         persistence: any GatewayTunnelHealthPersistenceAdapter,
         notifications: any GatewayTunnelHealthNotificationAdapter,
-        gate: GatewayTunnelHealthEffectGate,
+        gate: GatewayTunnelHealthEffectSubmissionArbiter,
         intent: GatewayTunnelHealthArtifactIntent = GatewayTunnelHealthArtifactIntent(),
         notificationRepairDeadline: Duration = .seconds(10),
         now: @escaping @Sendable () -> Duration = { .zero }
     ) {
         self.persistence = persistence
         self.notifications = notifications
-        self.gate = gate
+        arbiter = gate
         self.intent = intent
         self.notificationRepairDeadline = notificationRepairDeadline
         self.now = now
@@ -262,12 +262,18 @@ actor GatewayTunnelHealthArtifactDriver {
         switch effect {
         case let .persist(id, snapshot):
             let key = nextPendingKey(generation: generation)
-            gate.performIfOpen(generation: generation) {
-                pending[key] = PendingOperation(
-                    generation: generation,
-                    kind: .persistence
-                )
+            pending[key] = PendingOperation(
+                generation: generation,
+                kind: .persistence
+            )
+            let accepted = arbiter.submit(
+                generation: generation,
+                onCancelled: { [weak self] in
+                    Task { await self?.cancelPendingSubmission(key: key) }
+                }
+            ) { [persistence, weak self] ticket in
                 persistence.write(snapshot) { [weak self] result in
+                    ticket.drain()
                     await self?.completePersistence(
                         key: key,
                         id: id,
@@ -276,17 +282,25 @@ actor GatewayTunnelHealthArtifactDriver {
                     )
                 }
             }
+            if !accepted { pending.removeValue(forKey: key) }
         case .clearSnapshot:
             let key = nextPendingKey(generation: generation)
-            gate.performIfOpen(generation: generation) {
-                pending[key] = PendingOperation(
-                    generation: generation,
-                    kind: .clear
-                )
+            pending[key] = PendingOperation(
+                generation: generation,
+                kind: .clear
+            )
+            let accepted = arbiter.submit(
+                generation: generation,
+                onCancelled: { [weak self] in
+                    Task { await self?.cancelPendingSubmission(key: key) }
+                }
+            ) { [persistence, weak self] ticket in
                 persistence.clear { [weak self] _ in
+                    ticket.drain()
                     await self?.completeClear(key: key)
                 }
             }
+            if !accepted { pending.removeValue(forKey: key) }
         case let .registerNotification(id):
             enqueueNotification(
                 kind: .register,
@@ -302,8 +316,9 @@ actor GatewayTunnelHealthArtifactDriver {
                 completion: completion
             )
         case .withdrawNotification:
-            gate.performIfOpen(generation: generation) {
+            arbiter.submit(generation: generation) { [notifications] ticket in
                 notifications.withdraw()
+                ticket.drain()
             }
         case .readRuntime, .refreshBinding, .restartBackend:
             break
@@ -353,6 +368,7 @@ actor GatewayTunnelHealthArtifactDriver {
         activeGeneration = nil
         desired = .empty
         intent.deactivate(generation: generation)
+        notifications.suspendRegistrations()
     }
 
     private func nextPendingKey(generation: UInt64) -> PendingKey {
@@ -361,41 +377,46 @@ actor GatewayTunnelHealthArtifactDriver {
         return key
     }
 
+    private func cancelPendingSubmission(key: PendingKey) {
+        guard pending.removeValue(forKey: key) != nil else { return }
+        requestRepair()
+        finishStopWaitersIfPossible()
+    }
+
     private func enqueueNotification(
         kind: NotificationOperationKind,
         id: GatewayTunnelHealthOperationID,
         generation: UInt64,
         completion: @escaping @Sendable (GatewayTunnelHealthEvent) async -> Void
     ) {
-        gate.performIfOpen(generation: generation) {
-            guard desired.notificationOperationID == id else { return }
-            let operation = DeferredNotificationOperation(
-                generation: generation,
-                id: id,
-                kind: kind,
-                completion: completion
-            )
-            if notificationRepairInFlight != nil {
-                deferredNotification = operation
-            } else {
-                var operationToStart = operation
-                if let entry = pending.first(where: {
-                    $0.value.kind == .notification
-                }) {
-                    guard entry.value.notificationID != id else { return }
-                    pending.removeValue(forKey: entry.key)
-                    if entry.value.notificationKind == .register,
-                       kind == .register {
-                        operationToStart = DeferredNotificationOperation(
-                            generation: generation,
-                            id: id,
-                            kind: .reconcileAmbiguousRegistration,
-                            completion: completion
-                        )
-                    }
+        guard arbiter.isCurrentAndOpen(generation: generation),
+              desired.notificationOperationID == id else { return }
+        let operation = DeferredNotificationOperation(
+            generation: generation,
+            id: id,
+            kind: kind,
+            completion: completion
+        )
+        if notificationRepairInFlight != nil {
+            deferredNotification = operation
+        } else {
+            var operationToStart = operation
+            if let entry = pending.first(where: {
+                $0.value.kind == .notification
+            }) {
+                guard entry.value.notificationID != id else { return }
+                pending.removeValue(forKey: entry.key)
+                if entry.value.notificationKind == .register,
+                   kind == .register {
+                    operationToStart = DeferredNotificationOperation(
+                        generation: generation,
+                        id: id,
+                        kind: .reconcileAmbiguousRegistration,
+                        completion: completion
+                    )
                 }
-                startNotification(operationToStart)
             }
+            startNotification(operationToStart)
         }
     }
 
@@ -421,29 +442,62 @@ actor GatewayTunnelHealthArtifactDriver {
         } else {
             physicalRegistration = nil
         }
-        let callback: @Sendable (GatewayTunnelNotificationResult) async -> Void = {
-            [weak self] result in
-            let reportedResult: GatewayTunnelNotificationResult
-            if operation.kind == .reconcileAmbiguousRegistration,
-               result == .retryableFailure || result == .failed {
-                reportedResult = .unknown
-            } else {
-                reportedResult = result
+        let accepted = arbiter.submit(
+            generation: operation.generation,
+            onCancelled: { [weak self] in
+                Task {
+                    await self?.cancelNotificationSubmission(
+                        key: key,
+                        physicalRegistration: physicalRegistration
+                    )
+                }
             }
-            await self?.completeNotification(
-                key: key,
-                id: operation.id,
-                result: reportedResult,
-                physicalRegistration: physicalRegistration,
-                completion: operation.completion
-            )
+        ) { [notifications, weak self] ticket in
+            let callback: @Sendable (GatewayTunnelNotificationResult) async -> Void = {
+                [weak self] result in
+                ticket.drain()
+                let reportedResult: GatewayTunnelNotificationResult
+                if operation.kind == .reconcileAmbiguousRegistration,
+                   result == .retryableFailure || result == .failed {
+                    reportedResult = .unknown
+                } else {
+                    reportedResult = result
+                }
+                await self?.completeNotification(
+                    key: key,
+                    id: operation.id,
+                    result: reportedResult,
+                    physicalRegistration: physicalRegistration,
+                    completion: operation.completion
+                )
+            }
+            switch operation.kind {
+            case .register:
+                notifications.register(completion: callback)
+            case .reconcile, .reconcileAmbiguousRegistration:
+                notifications.reconcile(completion: callback)
+            }
         }
-        switch operation.kind {
-        case .register:
-            notifications.register(completion: callback)
-        case .reconcile, .reconcileAmbiguousRegistration:
-            notifications.reconcile(completion: callback)
+        if !accepted {
+            pending.removeValue(forKey: key)
+            if let physicalRegistration {
+                _ = finishPhysicalNotificationRegistration(physicalRegistration)
+            }
+            notificationRepairDirty = true
         }
+    }
+
+    private func cancelNotificationSubmission(
+        key: PendingKey,
+        physicalRegistration: GatewayTunnelHealthNotificationRegistrationToken?
+    ) {
+        pending.removeValue(forKey: key)
+        if let physicalRegistration {
+            _ = finishPhysicalNotificationRegistration(physicalRegistration)
+        }
+        notificationRepairDirty = true
+        drainNotificationLane()
+        finishStopWaitersIfPossible()
     }
 
     private func completePersistence(
@@ -458,7 +512,7 @@ actor GatewayTunnelHealthArtifactDriver {
             return
         }
         if activeGeneration == key.generation,
-           gate.isCurrentAndOpen(generation: key.generation) {
+           arbiter.isCurrentAndOpen(generation: key.generation) {
             await completion(.persistenceCompleted(id, result))
         } else {
             requestRepair()
@@ -496,7 +550,7 @@ actor GatewayTunnelHealthArtifactDriver {
             return
         }
         if activeGeneration == key.generation,
-           gate.isCurrentAndOpen(generation: key.generation) {
+           arbiter.isCurrentAndOpen(generation: key.generation) {
             await completion(.notificationCompleted(id, result))
         } else {
             requestRepair()
@@ -523,29 +577,49 @@ actor GatewayTunnelHealthArtifactDriver {
             await self?.snapshotRepairCompleted(result, sequence: sequence)
         }
         if let snapshot = desired.snapshot {
-            guard let generation = activeGeneration,
-                  gate.performIfOpen(generation: generation, {
-                      persistence.write(snapshot, completion: callback)
-                  }) else {
+            guard let generation = activeGeneration else {
                 snapshotRepairInFlight = nil
                 snapshotRepairDirty = true
                 finishStopWaitersIfPossible()
                 return
             }
+            let accepted = arbiter.submit(
+                generation: generation,
+                onCancelled: { [weak self] in
+                    Task { await self?.cancelSnapshotRepair(sequence: sequence) }
+                }
+            ) { [persistence] ticket in
+                persistence.write(snapshot) { result in
+                    ticket.drain()
+                    await callback(result)
+                }
+            }
+            if !accepted { cancelSnapshotRepair(sequence: sequence) }
         } else {
             if let generation = activeGeneration {
-                guard gate.performIfOpen(generation: generation, {
-                    persistence.clear(completion: callback)
-                }) else {
-                    snapshotRepairInFlight = nil
-                    snapshotRepairDirty = true
-                    finishStopWaitersIfPossible()
-                    return
+                let accepted = arbiter.submit(
+                    generation: generation,
+                    onCancelled: { [weak self] in
+                        Task { await self?.cancelSnapshotRepair(sequence: sequence) }
+                    }
+                ) { [persistence] ticket in
+                    persistence.clear { result in
+                        ticket.drain()
+                        await callback(result)
+                    }
                 }
+                if !accepted { cancelSnapshotRepair(sequence: sequence) }
             } else {
                 persistence.clear(completion: callback)
             }
         }
+    }
+
+    private func cancelSnapshotRepair(sequence: UInt64) {
+        guard snapshotRepairInFlight == sequence else { return }
+        snapshotRepairInFlight = nil
+        snapshotRepairDirty = true
+        finishStopWaitersIfPossible()
     }
 
     private func snapshotRepairCompleted(
@@ -570,11 +644,8 @@ actor GatewayTunnelHealthArtifactDriver {
                 startNotificationRepairIfNeeded()
                 return
             }
-            let started = gate.performIfOpen(generation: operation.generation) {
-                startNotification(operation)
-            }
-            if started { return }
-            notificationRepairDirty = true
+            startNotification(operation)
+            return
         }
         startNotificationRepairIfNeeded()
     }
@@ -598,9 +669,18 @@ actor GatewayTunnelHealthArtifactDriver {
         notifyDeadlineChanged()
         guard desired.notificationDesired else {
             if let generation = activeGeneration {
-                guard gate.performIfOpen(generation: generation, {
+                let accepted = arbiter.submit(
+                    generation: generation,
+                    onCancelled: { [weak self] in
+                        Task {
+                            await self?.cancelNotificationRepair(sequence: sequence)
+                        }
+                    }
+                ) { [notifications] ticket in
                     notifications.withdraw()
-                }) else {
+                    ticket.drain()
+                }
+                if !accepted {
                     notificationRepairInFlight = nil
                     notificationRepairDirty = true
                     notifyDeadlineChanged()
@@ -617,22 +697,37 @@ actor GatewayTunnelHealthArtifactDriver {
             return
         }
         let registrationAllowed = desired.notificationRegistrationAllowed
-        guard let generation = activeGeneration,
-              gate.performIfOpen(generation: generation, {
-                  notifications.reconcile { [weak self] result in
-                      await self?.notificationRepairReconciled(
-                          result,
-                          registrationAllowed: registrationAllowed,
-                          sequence: sequence
-                      )
-                  }
-              }) else {
+        guard let generation = activeGeneration else {
             notificationRepairInFlight = nil
             notificationRepairDirty = true
             notifyDeadlineChanged()
             finishStopWaitersIfPossible()
             return
         }
+        let accepted = arbiter.submit(
+            generation: generation,
+            onCancelled: { [weak self] in
+                Task { await self?.cancelNotificationRepair(sequence: sequence) }
+            }
+        ) { [notifications, weak self] ticket in
+            notifications.reconcile { [weak self] result in
+                ticket.drain()
+                await self?.notificationRepairReconciled(
+                    result,
+                    registrationAllowed: registrationAllowed,
+                    sequence: sequence
+                )
+            }
+        }
+        if !accepted { cancelNotificationRepair(sequence: sequence) }
+    }
+
+    private func cancelNotificationRepair(sequence: UInt64) {
+        guard notificationRepairInFlight?.sequence == sequence else { return }
+        notificationRepairInFlight = nil
+        notificationRepairDirty = true
+        notifyDeadlineChanged()
+        finishStopWaitersIfPossible()
     }
 
     private func notificationRepairReconciled(
@@ -653,17 +748,28 @@ actor GatewayTunnelHealthArtifactDriver {
                 finishNotificationRepair(sequence: sequence, succeeded: true)
                 return
             }
-            let started = gate.performIfOpen(generation: generation) {
-                notificationRepairInFlight = NotificationRepairOperation(
-                    sequence: sequence,
-                    deadline: now() + notificationRepairDeadline,
-                    phase: .registering
-                )
-                notifyDeadlineChanged()
-                let physicalRegistration = beginPhysicalNotificationRegistration(
-                    generation: generation
-                )
+            notificationRepairInFlight = NotificationRepairOperation(
+                sequence: sequence,
+                deadline: now() + notificationRepairDeadline,
+                phase: .registering
+            )
+            notifyDeadlineChanged()
+            let physicalRegistration = beginPhysicalNotificationRegistration(
+                generation: generation
+            )
+            let accepted = arbiter.submit(
+                generation: generation,
+                onCancelled: { [weak self] in
+                    Task {
+                        await self?.cancelNotificationRepairRegistration(
+                            sequence: sequence,
+                            physicalRegistration: physicalRegistration
+                        )
+                    }
+                }
+            ) { [notifications, weak self] ticket in
                 notifications.register { [weak self] result in
+                    ticket.drain()
                     await self?.notificationRepairRegistered(
                         result,
                         sequence: sequence,
@@ -671,8 +777,11 @@ actor GatewayTunnelHealthArtifactDriver {
                     )
                 }
             }
-            if !started {
-                finishNotificationRepair(sequence: sequence, succeeded: true)
+            if !accepted {
+                cancelNotificationRepairRegistration(
+                    sequence: sequence,
+                    physicalRegistration: physicalRegistration
+                )
             }
         case .absent, .terminalFailure:
             if result == .terminalFailure {
@@ -682,6 +791,14 @@ actor GatewayTunnelHealthArtifactDriver {
         case .retryableFailure, .unknown, .failed:
             finishNotificationRepair(sequence: sequence, succeeded: false)
         }
+    }
+
+    private func cancelNotificationRepairRegistration(
+        sequence: UInt64,
+        physicalRegistration: GatewayTunnelHealthNotificationRegistrationToken
+    ) {
+        _ = finishPhysicalNotificationRegistration(physicalRegistration)
+        cancelNotificationRepair(sequence: sequence)
     }
 
     private func notificationRepairRegistered(
@@ -713,7 +830,7 @@ actor GatewayTunnelHealthArtifactDriver {
         guard let operation = deferredNotification,
               activeGeneration == operation.generation,
               desired.notificationOperationID == operation.id,
-              gate.isCurrentAndOpen(generation: operation.generation) else {
+              arbiter.isCurrentAndOpen(generation: operation.generation) else {
             return
         }
         deferredNotification = nil
@@ -753,10 +870,8 @@ actor GatewayTunnelHealthArtifactDriver {
                     completion: operation.completion
                 )
             }
-            let started = gate.performIfOpen(generation: operation.generation) {
-                startNotification(operation)
-            }
-            if started { return }
+            startNotification(operation)
+            return
         }
         startNotificationRepairIfNeeded()
         finishStopWaitersIfPossible()

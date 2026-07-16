@@ -68,14 +68,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
         )
-        healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+        let stopDeadline = IOSTunnelHealthStopDeadline {
             adapterStop.submit {
                 stopCompletion.deadlineExceeded()
             }
         }
+        healthPathQueue.asyncAfter(deadline: .now() + adapterStopCompletionDeadline) {
+            stopDeadline.fire()
+        }
         let healthStop = healthLifecycle.prepareToStop {
             stopCompletion.healthStopped()
         }
+        stopDeadline.install(token: healthStop.token)
         if let token = healthStop.token {
             stopCompletion.setDeadlineCleanup {
                 token.bestEffortDeadlineCleanup()
@@ -89,7 +93,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
         if let token = healthStop.token {
-            token.whenEffectSubmissionsDrained {
+            token.enqueueAfterSubmittedEffects {
                 adapterStop.submit()
             }
         } else {
@@ -227,32 +231,65 @@ private final class IOSTunnelHealthNotificationAdapter:
     @unchecked Sendable
 {
     private let center = UNUserNotificationCenter.current()
+    private let registrationFence = GatewayTunnelHealthNotificationRegistrationFence()
+
+    func resumeRegistrations() {
+        registrationFence.resume()
+    }
+
+    func suspendRegistrations() {
+        registrationFence.suspend()
+    }
+
+    func invalidateRegistrations() {
+        registrationFence.invalidate()
+    }
 
     func register(
         completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
     ) {
-        withAuthorization(completion: completion) { [center] in
-            let content = UNMutableNotificationContent()
-            content.title = GatewayTunnelHealthNotification.title
-            content.body = GatewayTunnelHealthNotification.body
-            content.sound = .default
-            let request = UNNotificationRequest(
-                identifier: GatewayTunnelHealthNotification.identifier,
-                content: content,
-                trigger: nil
-            )
-            center.add(request) { error in
-                let result: GatewayTunnelNotificationResult
-                if error == nil {
-                    result = .registered
-                } else if Self.notificationsAreNotAllowed(error) {
-                    result = .terminalFailure
-                } else {
-                    result = .retryableFailure
+        registrationFence.register(
+            authorization: { [center] callback in
+                center.getNotificationSettings { settings in
+                    let result: GatewayTunnelHealthNotificationAuthorizationResult
+                    switch settings.authorizationStatus {
+                    case .authorized, .provisional, .ephemeral:
+                        result = .allowed
+                    case .denied:
+                        result = .terminalFailure
+                    case .notDetermined:
+                        result = .retryableFailure
+                    @unknown default:
+                        result = .retryableFailure
+                    }
+                    callback(result)
                 }
-                Task { await completion(result) }
-            }
-        }
+            },
+            add: { [center] callback in
+                let content = UNMutableNotificationContent()
+                content.title = GatewayTunnelHealthNotification.title
+                content.body = GatewayTunnelHealthNotification.body
+                content.sound = .default
+                let request = UNNotificationRequest(
+                    identifier: GatewayTunnelHealthNotification.identifier,
+                    content: content,
+                    trigger: nil
+                )
+                center.add(request) { error in
+                    if error == nil {
+                        callback(.registered)
+                    } else if Self.notificationsAreNotAllowed(error) {
+                        callback(.terminalFailure)
+                    } else {
+                        callback(.retryableFailure)
+                    }
+                }
+            },
+            remove: { [center] in
+                Self.removeStableNotification(from: center)
+            },
+            completion: completion
+        )
     }
 
     func reconcile(
@@ -276,9 +313,9 @@ private final class IOSTunnelHealthNotificationAdapter:
     }
 
     func withdraw() {
-        let identifiers = [GatewayTunnelHealthNotification.identifier]
-        center.removePendingNotificationRequests(withIdentifiers: identifiers)
-        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        registrationFence.withdraw { [center] in
+            Self.removeStableNotification(from: center)
+        }
     }
 
     private func withAuthorization(
@@ -304,6 +341,14 @@ private final class IOSTunnelHealthNotificationAdapter:
         let nsError = error as NSError
         return nsError.domain == UNErrorDomain &&
             nsError.code == UNError.Code.notificationsNotAllowed.rawValue
+    }
+
+    private static func removeStableNotification(
+        from center: UNUserNotificationCenter
+    ) {
+        let identifiers = [GatewayTunnelHealthNotification.identifier]
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 }
 
@@ -468,6 +513,51 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
 
     func pendingStartDidStop(startID: UInt64) {
         pendingStartBarrier.complete(startID)
+    }
+}
+
+private final class IOSTunnelHealthStopDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private let deadlineStop: @Sendable () -> Void
+    private var token: GatewayTunnelHealthStopToken?
+    private var installed = false
+    private var fired = false
+
+    init(deadlineStop: @escaping @Sendable () -> Void) {
+        self.deadlineStop = deadlineStop
+    }
+
+    func install(token: GatewayTunnelHealthStopToken?) {
+        lock.lock()
+        self.token = token
+        installed = true
+        let deadlineAlreadyFired = fired
+        lock.unlock()
+        if deadlineAlreadyFired {
+            if let token {
+                token.cancelQueuedEffectsAndEnqueue(deadlineStop)
+            } else {
+                deadlineStop()
+            }
+        }
+    }
+
+    func fire() {
+        lock.lock()
+        guard !fired else {
+            lock.unlock()
+            return
+        }
+        fired = true
+        let installed = installed
+        let token = token
+        lock.unlock()
+        guard installed else { return }
+        if let token {
+            token.cancelQueuedEffectsAndEnqueue(deadlineStop)
+        } else {
+            deadlineStop()
+        }
     }
 }
 

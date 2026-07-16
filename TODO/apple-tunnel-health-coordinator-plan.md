@@ -113,15 +113,16 @@ required.
   - [x] Retire active desired artifacts and shared intent when abandoning the current generation.
   - [x] Prevent repair registration through a closed generation gate.
   - [x] Pass 213 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
-- [ ] Post-review hardening D: make effect admission cancellable and deadline-safe.
+- [x] Post-review hardening D: make effect admission cancellable and deadline-safe.
   - [x] Reserve active-generation notification repair reconciliation and add a deterministic drain trace.
-  - [ ] Replace approval-only reservations with explicit queued, started, cancelled, and drained submission states.
-  - [ ] Cancel approved-but-not-started effects when stop closes the generation or reaches its deadline.
-  - [ ] Make persistence submission enqueue-only and FIFO so disk I/O cannot block the submission boundary.
-  - [ ] Fence notification registration so a withdrawal or retired generation prevents a delayed add.
-  - [ ] Preserve normal-stop FIFO ordering and the bounded deadline path without letting late work contaminate artifacts.
-  - [ ] Add deterministic inverse-deadline, cancellation, stalled-submission, FIFO, and notification-epoch traces.
-  - [ ] Pass the Apple gate and GPT-5.5 reviewer loop, then complete a final GPT-5.6 Sol review.
+  - [x] Replace approval-only reservations with explicit queued, started, cancelled, and drained submission states.
+  - [x] Reject new effects when stop closes the generation and cancel queued effects if the deadline fires.
+  - [x] Make persistence submission enqueue-only and FIFO so disk I/O cannot block the submission boundary.
+  - [x] Fence notification registration so a withdrawal or retired generation prevents a delayed add.
+  - [x] Preserve normal-stop FIFO ordering and the bounded deadline path without letting late work contaminate artifacts.
+  - [x] Add deterministic inverse-deadline, cancellation, stalled-submission, FIFO, and notification-epoch traces.
+  - [x] Pass 230 shared-package tests, the Apple gate, and the GPT-5.5 reviewer loop.
+  - [x] Complete the final GPT-5.6 Sol review loop with no actionable issues.
 
 ## Current Architecture And Root Cause
 
@@ -383,8 +384,9 @@ unavoidable, document and test its queue-confinement invariant at that wrapper.
 The platform effect wrapper also owns a synchronously closable session-generation
 gate and cancellable submission arbiter. Admission creates a ticket rather than
 assuming the adapter call has already started. Gate closure atomically rejects
-new tickets and cancels admitted tickets that have not crossed the adapter's
-bounded submission point. A persistence or notification completion that
+new tickets. Normal stop preserves admitted ticket FIFO through the bounded
+adapter-submission point before `adapter.stop`; the deadline path cancels
+admitted tickets that have not reached that point. A persistence or notification completion that
 discovers its generation is closed reports a possible stale-artifact write to a
 shared, serialized artifact reconciler rather than directly clearing or
 withdrawing anything. The reconciler consults the newest session's desired
@@ -797,7 +799,8 @@ The arbiter must:
 * assign every admitted effect a generation-qualified ticket;
 * distinguish queued, started, cancelled, and drained tickets;
 * reject tickets after generation closure;
-* cancel tickets that have not started when the deadline fires;
+* cancel tickets that have not started when the deadline fires, while normal
+  stop preserves already-admitted FIFO submission ordering;
 * preserve effect-before-`adapter.stop` FIFO on normal stop;
 * let deadline stop proceed once queued work is cancelled, without waiting for
   a started physical operation to complete;
@@ -826,7 +829,9 @@ Required deterministic traces:
 
 Acceptance:
 
-* no approved-but-not-started effect can begin after generation closure;
+* no new effect can be admitted after generation closure; effects admitted
+  before normal closure submit before `adapter.stop`, while the deadline
+  cancels any that remain queued;
 * the five-second fallback remains a hard bound for stop completion and adapter
   stop submission;
 * started work completing after stop always triggers generation-aware final

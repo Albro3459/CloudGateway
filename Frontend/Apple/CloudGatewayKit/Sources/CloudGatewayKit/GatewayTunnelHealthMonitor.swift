@@ -41,6 +41,10 @@ public protocol GatewayTunnelHealthPersistenceAdapter: Sendable {
 }
 
 public protocol GatewayTunnelHealthNotificationAdapter: Sendable {
+    func resumeRegistrations()
+    func suspendRegistrations()
+    func invalidateRegistrations()
+
     func register(
         completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
     )
@@ -50,6 +54,11 @@ public protocol GatewayTunnelHealthNotificationAdapter: Sendable {
     )
 
     func withdraw()
+}
+
+public extension GatewayTunnelHealthNotificationAdapter {
+    func resumeRegistrations() {}
+    func suspendRegistrations() { invalidateRegistrations() }
 }
 
 public protocol GatewayTunnelHealthWakeCancellation: Sendable {
@@ -66,37 +75,121 @@ public protocol GatewayTunnelHealthScheduling: Sendable {
 }
 
 public struct GatewayTunnelHealthStoreAdapter: GatewayTunnelHealthPersistenceAdapter {
-    private let store: GatewayTunnelHealthStore
+    private let lane: GatewayTunnelHealthStoreLane
 
     public init(store: GatewayTunnelHealthStore) {
-        self.store = store
+        lane = GatewayTunnelHealthStoreLane(
+            write: { try store.write($0) },
+            clear: { try store.clear() }
+        )
+    }
+
+    init(
+        write: @escaping @Sendable (GatewayTunnelHealthSnapshot) throws -> Void,
+        clear: @escaping @Sendable () throws -> Void,
+        executor: any GatewayTunnelHealthStoreExecuting =
+            GatewayTunnelHealthStoreSerialExecutor()
+    ) {
+        lane = GatewayTunnelHealthStoreLane(
+            write: write,
+            clear: clear,
+            executor: executor
+        )
     }
 
     public func write(
         _ snapshot: GatewayTunnelHealthSnapshot,
         completion: @escaping @Sendable (GatewayTunnelEffectResult) async -> Void
     ) {
-        let result: GatewayTunnelEffectResult
-        do {
-            try store.write(snapshot)
-            result = .success
-        } catch {
-            result = .failure
-        }
-        Task { await completion(result) }
+        lane.write(snapshot, completion: completion)
     }
 
     public func clear(
         completion: @escaping @Sendable (GatewayTunnelEffectResult) async -> Void
     ) {
-        let result: GatewayTunnelEffectResult
-        do {
-            try store.clear()
-            result = .success
-        } catch {
-            result = .failure
+        lane.clear(completion: completion)
+    }
+}
+
+protocol GatewayTunnelHealthStoreExecuting: Sendable {
+    func enqueue(_ action: @escaping @Sendable () -> Void)
+}
+
+private final class GatewayTunnelHealthStoreSerialExecutor:
+    GatewayTunnelHealthStoreExecuting,
+    @unchecked Sendable
+{
+    private let queue = DispatchQueue(
+        label: "com.gocloudlaunch.gateway.tunnel.health.persistence"
+    )
+
+    func enqueue(_ action: @escaping @Sendable () -> Void) {
+        queue.async(execute: action)
+    }
+}
+
+private final class GatewayTunnelHealthStoreLane: @unchecked Sendable {
+    private let executor: any GatewayTunnelHealthStoreExecuting
+    private let writeOperation: @Sendable (GatewayTunnelHealthSnapshot) throws -> Void
+    private let clearOperation: @Sendable () throws -> Void
+    private let callbackLock = NSLock()
+    private var callbackTail: Task<Void, Never>?
+
+    init(
+        write: @escaping @Sendable (GatewayTunnelHealthSnapshot) throws -> Void,
+        clear: @escaping @Sendable () throws -> Void,
+        executor: any GatewayTunnelHealthStoreExecuting =
+            GatewayTunnelHealthStoreSerialExecutor()
+    ) {
+        writeOperation = write
+        clearOperation = clear
+        self.executor = executor
+    }
+
+    func write(
+        _ snapshot: GatewayTunnelHealthSnapshot,
+        completion: @escaping @Sendable (GatewayTunnelEffectResult) async -> Void
+    ) {
+        executor.enqueue { [self] in
+            let result: GatewayTunnelEffectResult
+            do {
+                try writeOperation(snapshot)
+                result = .success
+            } catch {
+                result = .failure
+            }
+            deliver(result, completion: completion)
         }
-        Task { await completion(result) }
+    }
+
+    func clear(
+        completion: @escaping @Sendable (GatewayTunnelEffectResult) async -> Void
+    ) {
+        executor.enqueue { [self] in
+            let result: GatewayTunnelEffectResult
+            do {
+                try clearOperation()
+                result = .success
+            } catch {
+                result = .failure
+            }
+            deliver(result, completion: completion)
+        }
+    }
+
+    private func deliver(
+        _ result: GatewayTunnelEffectResult,
+        completion: @escaping @Sendable (GatewayTunnelEffectResult) async -> Void
+    ) {
+        callbackLock.lock()
+        let previous = callbackTail
+        callbackTail = Task {
+            if let previous {
+                await previous.value
+            }
+            await completion(result)
+        }
+        callbackLock.unlock()
     }
 }
 
@@ -158,122 +251,32 @@ private final class GatewayTunnelHealthTaskCancellation:
     }
 }
 
-public final class GatewayTunnelHealthEffectGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var generation: UInt64?
-    private var isOpen = false
-    private var reservationCounts: [UInt64: Int] = [:]
-    private var drainWaiters: [UInt64: [@Sendable () -> Void]] = [:]
-
-    public init() {}
-
-    func open(generation: UInt64) {
-        lock.lock()
-        self.generation = generation
-        isOpen = true
-        lock.unlock()
-    }
-
-    public func closeCurrent() -> UInt64? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isOpen else { return nil }
-        isOpen = false
-        return generation
-    }
-
-    func close(generation: UInt64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isOpen, self.generation == generation else { return false }
-        isOpen = false
-        return true
-    }
-
-    @discardableResult
-    func performIfOpen(
-        generation: UInt64,
-        _ action: () -> Void
-    ) -> Bool {
-        lock.lock()
-        guard isOpen, self.generation == generation else {
-            lock.unlock()
-            return false
-        }
-        reservationCounts[generation, default: 0] += 1
-        lock.unlock()
-        defer { finishReservation(generation: generation) }
-        action()
-        return true
-    }
-
-    func isCurrentAndOpen(generation: UInt64) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isOpen && self.generation == generation
-    }
-
-    func notifyWhenDrained(
-        generation: UInt64,
-        _ action: @escaping @Sendable () -> Void
-    ) {
-        lock.lock()
-        guard reservationCounts[generation, default: 0] > 0 else {
-            lock.unlock()
-            action()
-            return
-        }
-        drainWaiters[generation, default: []].append(action)
-        lock.unlock()
-    }
-
-    func notifyAfterOutstandingReservations(
-        generation: UInt64,
-        _ action: @escaping @Sendable () -> Void
-    ) {
-        lock.lock()
-        guard reservationCounts[generation, default: 0] > 0 else {
-            lock.unlock()
-            return
-        }
-        drainWaiters[generation, default: []].append(action)
-        lock.unlock()
-    }
-
-    private func finishReservation(generation: UInt64) {
-        lock.lock()
-        guard let count = reservationCounts[generation] else {
-            lock.unlock()
-            return
-        }
-        if count > 1 {
-            reservationCounts[generation] = count - 1
-            lock.unlock()
-            return
-        }
-        reservationCounts[generation] = nil
-        let waiters = drainWaiters.removeValue(forKey: generation) ?? []
-        lock.unlock()
-        for waiter in waiters {
-            waiter()
-        }
-    }
-}
-
 public final class GatewayTunnelHealthStopToken: @unchecked Sendable {
     let generation: UInt64
-    private let effectGate: GatewayTunnelHealthEffectGate
+    private let effectArbiter: GatewayTunnelHealthEffectSubmissionArbiter
     private let lock = NSLock()
     private var cleanup: (@Sendable () -> Void)?
 
     init(
         generation: UInt64,
-        effectGate: GatewayTunnelHealthEffectGate,
+        effectArbiter: GatewayTunnelHealthEffectSubmissionArbiter,
         cleanup: @escaping @Sendable () -> Void
     ) {
         self.generation = generation
-        self.effectGate = effectGate
+        self.effectArbiter = effectArbiter
         self.cleanup = cleanup
+    }
+
+    convenience init(
+        generation: UInt64,
+        effectGate: GatewayTunnelHealthEffectGate,
+        cleanup: @escaping @Sendable () -> Void
+    ) {
+        self.init(
+            generation: generation,
+            effectArbiter: effectGate,
+            cleanup: cleanup
+        )
     }
 
     public func bestEffortDeadlineCleanup() {
@@ -282,17 +285,26 @@ public final class GatewayTunnelHealthStopToken: @unchecked Sendable {
         self.cleanup = nil
         lock.unlock()
         guard let cleanup else { return }
-        effectGate.notifyAfterOutstandingReservations(
+        effectArbiter.addPostDrainRepair(
             generation: generation,
             cleanup
         )
         cleanup()
     }
 
-    public func whenEffectSubmissionsDrained(
+    public func enqueueAfterSubmittedEffects(
         _ action: @escaping @Sendable () -> Void
     ) {
-        effectGate.notifyWhenDrained(
+        effectArbiter.enqueueNormalStop(
+            generation: generation,
+            action
+        )
+    }
+
+    public func cancelQueuedEffectsAndEnqueue(
+        _ action: @escaping @Sendable () -> Void
+    ) {
+        effectArbiter.cancelQueuedAndEnqueueDeadlineStop(
             generation: generation,
             action
         )
@@ -315,7 +327,8 @@ public actor GatewayTunnelHealthMonitor {
     private let runtime: any GatewayTunnelHealthRuntimeAdapter
     private let scheduler: any GatewayTunnelHealthScheduling
     private let artifactDriver: GatewayTunnelHealthArtifactDriver
-    private nonisolated let effectGate: GatewayTunnelHealthEffectGate
+    private nonisolated let effectArbiter: GatewayTunnelHealthEffectSubmissionArbiter
+    private nonisolated let notifications: any GatewayTunnelHealthNotificationAdapter
     private nonisolated let artifactIntent: GatewayTunnelHealthArtifactIntent
     private nonisolated let deadlineCleanup: @Sendable (UInt64) -> Void
     private var coordinator: GatewayTunnelHealthCoordinator
@@ -333,19 +346,20 @@ public actor GatewayTunnelHealthMonitor {
         scheduler: any GatewayTunnelHealthScheduling = GatewayTunnelHealthTaskScheduler(),
         timing: GatewayTunnelHealthTiming = .production
     ) {
-        let gate = GatewayTunnelHealthEffectGate()
+        let arbiter = GatewayTunnelHealthEffectSubmissionArbiter()
         let intent = GatewayTunnelHealthArtifactIntent()
         let artifactDriver = GatewayTunnelHealthArtifactDriver(
             persistence: persistence,
             notifications: notifications,
-            gate: gate,
+            gate: arbiter,
             intent: intent,
             notificationRepairDeadline: timing.notificationOperationDeadline,
             now: { scheduler.now().monotonic }
         )
         self.runtime = runtime
+        self.notifications = notifications
         self.scheduler = scheduler
-        effectGate = gate
+        effectArbiter = arbiter
         artifactIntent = intent
         self.artifactDriver = artifactDriver
         coordinator = GatewayTunnelHealthCoordinator(timing: timing)
@@ -384,7 +398,8 @@ public actor GatewayTunnelHealthMonitor {
             generation: generation,
             desired: coordinator.desiredArtifacts
         )
-        effectGate.open(generation: generation)
+        notifications.resumeRegistrations()
+        effectArbiter.open(generation: generation)
         await artifactDriver.activate(
             generation: generation,
             desired: coordinator.desiredArtifacts
@@ -418,14 +433,19 @@ public actor GatewayTunnelHealthMonitor {
     }
 
     public nonisolated func prepareToStop() -> GatewayTunnelHealthStopToken? {
-        guard let generation = effectGate.closeCurrent() else { return nil }
+        guard let generation = effectArbiter.closeCurrent(
+            onClose: notifications.suspendRegistrations
+        ) else { return nil }
         return makeStopToken(generation: generation)
     }
 
     public nonisolated func prepareToStop(
         session: GatewayTunnelHealthSession
     ) -> GatewayTunnelHealthStopToken? {
-        guard effectGate.close(generation: session.generation) else { return nil }
+        guard effectArbiter.close(
+            generation: session.generation,
+            onClose: notifications.suspendRegistrations
+        ) else { return nil }
         return makeStopToken(generation: session.generation)
     }
 
@@ -434,12 +454,26 @@ public actor GatewayTunnelHealthMonitor {
     ) -> GatewayTunnelHealthStopToken {
         return GatewayTunnelHealthStopToken(
             generation: generation,
-            effectGate: effectGate,
+            effectArbiter: effectArbiter,
             cleanup: { self.deadlineCleanup(generation) }
         )
     }
 
     public func stop(
+        _ token: GatewayTunnelHealthStopToken,
+        completion: @escaping @Sendable () -> Void
+    ) async {
+        await withCheckedContinuation { continuation in
+            token.enqueueAfterSubmittedEffects { [self] in
+                Task {
+                    await finishStop(token, completion: completion)
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private func finishStop(
         _ token: GatewayTunnelHealthStopToken,
         completion: @escaping @Sendable () -> Void
     ) async {
@@ -553,10 +587,12 @@ public actor GatewayTunnelHealthMonitor {
         _ effect: GatewayTunnelHealthEffect,
         generation: UInt64
     ) async {
+        let runtime = runtime
         switch effect {
         case let .readRuntime(id):
-            effectGate.performIfOpen(generation: generation) {
+            effectArbiter.submit(generation: generation) { ticket in
                 runtime.readRuntime { [weak self] stats in
+                    ticket.drain()
                     await self?.receive(
                         .runtimeReadCompleted(id, stats),
                         generation: generation
@@ -564,8 +600,9 @@ public actor GatewayTunnelHealthMonitor {
                 }
             }
         case let .refreshBinding(id):
-            effectGate.performIfOpen(generation: generation) {
+            effectArbiter.submit(generation: generation) { ticket in
                 runtime.refreshBinding { [weak self] result in
+                    ticket.drain()
                     await self?.receive(
                         .recoveryCompleted(id, result),
                         generation: generation
@@ -574,15 +611,20 @@ public actor GatewayTunnelHealthMonitor {
             }
         case let .restartBackend(id):
             guard runtime.backendRestartCapability == .supported else {
-                guard effectGate.performIfOpen(generation: generation, {}) else { return }
-                await receive(
-                    .recoveryCompleted(id, .unsupported),
-                    generation: generation
-                )
+                effectArbiter.submit(generation: generation) { [weak self] ticket in
+                    ticket.drain()
+                    Task {
+                        await self?.receive(
+                            .recoveryCompleted(id, .unsupported),
+                            generation: generation
+                        )
+                    }
+                }
                 return
             }
-            effectGate.performIfOpen(generation: generation) {
+            effectArbiter.submit(generation: generation) { ticket in
                 runtime.restartBackend { [weak self] result in
+                    ticket.drain()
                     await self?.receive(
                         .recoveryCompleted(id, result),
                         generation: generation
