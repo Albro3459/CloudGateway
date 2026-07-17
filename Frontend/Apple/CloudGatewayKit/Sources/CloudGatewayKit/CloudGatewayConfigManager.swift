@@ -13,7 +13,7 @@ public actor CloudGatewayConfigManager {
         tunnelManager: CloudGatewayTunnelManaging,
         cache: CloudGatewayConfigCaching,
         secretStore: CloudGatewayConfigSecretStoring,
-        configSecretServiceName: String = GatewayConfigSecretDefaults.serviceName,
+        configSecretServiceName: String = CloudGatewayConfigSecretDefaults.serviceName,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.tunnelManager = tunnelManager
@@ -181,7 +181,7 @@ public actor CloudGatewayConfigManager {
         return state
     }
 
-    public func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+    public func allInstalledStatuses() async throws -> [String: CloudGatewayTunnelStatus] {
         try await tunnelManager.allInstalledStatuses()
     }
 

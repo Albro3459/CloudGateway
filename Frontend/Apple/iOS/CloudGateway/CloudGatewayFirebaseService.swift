@@ -12,7 +12,7 @@ extension CloudGatewayViewModel {
     /// so the view model can be unit-tested against a mock service.
     convenience init() {
         let keychainAccessGroupIdentifier = Self.cloudGatewayKeychainAccessGroup()
-        let platform = GatewayPlatformConfiguration(
+        let platform = CloudGatewayPlatformConfiguration(
             appGroupIdentifier: "group.com.gocloudlaunch.gateway",
             appBundleIdentifier: "com.gocloudlaunch.gateway",
             providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
@@ -22,15 +22,15 @@ extension CloudGatewayViewModel {
         self.init(
             service: CloudGatewayFirebaseService(),
             configManager: CloudGatewayConfigManager(
-                tunnelManager: GatewayVPNManager(platform: platform),
+                tunnelManager: CloudGatewayVPNManager(platform: platform),
                 cache: CloudGatewayConfigCache(platform: platform),
-                secretStore: GatewayKeychainConfigSecretStore(
+                secretStore: CloudGatewayKeychainConfigSecretStore(
                     accessGroup: platform.keychainAccessGroupIdentifier
                 ),
                 configSecretServiceName: platform.configSecretServiceName
             ),
             healthReader: CloudGatewayTunnelHealthReader(
-                store: GatewayTunnelHealthStore(appGroupIdentifier: platform.appGroupIdentifier)
+                store: CloudGatewayTunnelHealthStore(appGroupIdentifier: platform.appGroupIdentifier)
             ),
             notificationAuthorizer: SystemCloudGatewayNotificationAuthorizer()
         )
@@ -48,9 +48,9 @@ extension CloudGatewayViewModel {
 }
 
 struct CloudGatewayTunnelHealthReader: CloudGatewayTunnelHealthReading {
-    let store: GatewayTunnelHealthStore
+    let store: CloudGatewayTunnelHealthStore
 
-    func currentSnapshot() -> GatewayTunnelHealthSnapshot? {
+    func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot? {
         try? store.read()
     }
 }
@@ -86,8 +86,8 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let db = Firestore.firestore()
     private let apiOriginHost = "gocloudlaunch.com"
     // Bounded request timeout so a dead/blackholing tunnel fails in ~10s instead
-    // of URLSession's 60s default (see GatewayAPISession).
-    private let apiSession = GatewayAPISession.makeSession()
+    // of URLSession's 60s default (see CloudGatewayAPISession).
+    private let apiSession = CloudGatewayAPISession.makeSession()
 
     var currentUser: AuthenticatedUser? {
         guard let user = Auth.auth().currentUser else {

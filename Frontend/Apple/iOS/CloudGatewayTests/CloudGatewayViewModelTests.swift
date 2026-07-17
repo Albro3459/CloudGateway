@@ -23,7 +23,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
     private func makeViewModel(
         _ service: MockGatewayService,
         installedSnapshots: [CloudGatewayConfigSnapshot],
-        tunnelStatus: GatewayTunnelStatus,
+        tunnelStatus: CloudGatewayTunnelStatus,
         healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader()
     ) -> CloudGatewayViewModel {
         CloudGatewayViewModel(
@@ -47,7 +47,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
         service.fetchRegionsError = URLError(.timedOut)
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -69,7 +69,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
     func testLoggedOutUserCanSeeAndDisconnectDeadTunnelWarning() async {
         let service = MockGatewayService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -115,7 +115,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
     func testDeadTunnelRefreshReconcilesExternallyStartedStatusWithoutOverlay() async {
         let service = MockGatewayService()
         let tunnelManager = FakeTunnelManager(status: .disconnected)
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -144,7 +144,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
     func testDeadTunnelRefreshRetriesAfterStatusReadFailure() async {
         let service = MockGatewayService()
         let tunnelManager = FakeTunnelManager(status: .disconnected)
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -178,7 +178,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         let tunnelManager = FakeTunnelManager(status: .connected)
         await tunnelManager.setStopResultStatus(.disconnecting)
         await tunnelManager.setAllStatusesReadDelay(.seconds(60))
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -217,7 +217,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
         let tunnelManager = FakeTunnelManager(status: .connected)
         await tunnelManager.setStopDelay(.seconds(60))
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
             updatedAt: Date()
@@ -252,10 +252,10 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
     func testStaleDeadTunnelSnapshotDoesNotShowWarning() async {
         let service = signedInService()
-        let healthReader = FakeTunnelHealthReader(snapshot: GatewayTunnelHealthSnapshot(
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
             tunnelIdentifier: "c1",
             health: .notPassingTraffic,
-            updatedAt: Date(timeIntervalSinceNow: -GatewayTunnelHealthSnapshot.freshnessWindow - 1)
+            updatedAt: Date(timeIntervalSinceNow: -CloudGatewayTunnelHealthSnapshot.freshnessWindow - 1)
         ))
         let viewModel = makeViewModel(
             service,
@@ -1153,7 +1153,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isInstalled(option))
 
         await tunnelManager.setStatus(nil, for: "c1")
-        await tunnelManager.setStartError(GatewayVPNError.missingInstalledTunnel)
+        await tunnelManager.setStartError(CloudGatewayVPNError.missingInstalledTunnel)
         await viewModel.startTunnel(for: option)
 
         XCTAssertEqual(
@@ -1187,7 +1187,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isInstalled(option))
 
         await tunnelManager.setStatus(nil, for: "c1")
-        await tunnelManager.setStopError(GatewayVPNError.missingInstalledTunnel)
+        await tunnelManager.setStopError(CloudGatewayVPNError.missingInstalledTunnel)
         await viewModel.stopTunnel(for: option)
 
         XCTAssertEqual(
@@ -1230,7 +1230,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isInstalled(nextOption))
 
         await tunnelManager.setStatus(nil, for: "c1")
-        await tunnelManager.setStopError(GatewayVPNError.missingInstalledTunnel)
+        await tunnelManager.setStopError(CloudGatewayVPNError.missingInstalledTunnel)
         await viewModel.switchTunnel(to: nextOption)
 
         XCTAssertEqual(
@@ -1274,7 +1274,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.isInstalled(nextOption))
 
         await tunnelManager.setStatus(nil, for: "c2")
-        await tunnelManager.setStartError(GatewayVPNError.missingInstalledTunnel)
+        await tunnelManager.setStartError(CloudGatewayVPNError.missingInstalledTunnel)
         await viewModel.switchTunnel(to: nextOption)
 
         XCTAssertEqual(

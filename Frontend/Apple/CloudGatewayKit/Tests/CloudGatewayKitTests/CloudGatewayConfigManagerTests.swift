@@ -481,44 +481,44 @@ private func makeManager(
 }
 
 private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
-    private var status: GatewayTunnelStatus?
+    private var status: CloudGatewayTunnelStatus?
     private let installError: (any Error)?
-    private var installedTunnels = [String: GatewayTunnelConfiguration]()
-    private var statuses = [String: GatewayTunnelStatus]()
+    private var installedTunnels = [String: CloudGatewayTunnelConfiguration]()
+    private var statuses = [String: CloudGatewayTunnelStatus]()
     private var statusRequests = [[String]]()
     private var starts = [String]()
     private var stops = [String]()
     private var removes = [String]()
 
     init(
-        status: GatewayTunnelStatus? = nil,
+        status: CloudGatewayTunnelStatus? = nil,
         installError: (any Error)? = nil
     ) {
         self.status = status
         self.installError = installError
     }
 
-    func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
+    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
         guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw GatewayVPNError.missingInstalledTunnel
+            throw CloudGatewayVPNError.missingInstalledTunnel
         }
         return status
     }
 
-    func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
+    func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
         statusRequests.append(identifiers)
-        return identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
+        return identifiers.reduce(into: [String: CloudGatewayTunnelStatus]()) { result, identifier in
             if let status = statuses[identifier] ?? status {
                 result[identifier] = status
             }
         }
     }
 
-    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+    func allInstalledStatuses() async throws -> [String: CloudGatewayTunnelStatus] {
         statuses
     }
 
-    func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
+    func installTunnel(_ tunnel: CloudGatewayTunnelConfiguration) async throws {
         if let installError {
             throw installError
         }
@@ -627,28 +627,28 @@ private actor MemoryConfigCache: CloudGatewayConfigCaching {
 }
 
 private final class MemoryConfigSecretStore: CloudGatewayConfigSecretStoring, @unchecked Sendable {
-    private var configs = [GatewayConfigSecretReference: GatewayWireGuardConfig]()
-    private var saved = [GatewayConfigSecretReference]()
-    private var deleted = [GatewayConfigSecretReference]()
+    private var configs = [CloudGatewayConfigSecretReference: CloudGatewayWireGuardConfig]()
+    private var saved = [CloudGatewayConfigSecretReference]()
+    private var deleted = [CloudGatewayConfigSecretReference]()
     private let deleteError: (any Error)?
 
     init(deleteError: (any Error)? = nil) {
         self.deleteError = deleteError
     }
 
-    func saveConfig(_ config: GatewayWireGuardConfig, for reference: GatewayConfigSecretReference) throws {
+    func saveConfig(_ config: CloudGatewayWireGuardConfig, for reference: CloudGatewayConfigSecretReference) throws {
         configs[reference] = config
         saved.append(reference)
     }
 
-    func loadConfig(for reference: GatewayConfigSecretReference) throws -> GatewayWireGuardConfig {
+    func loadConfig(for reference: CloudGatewayConfigSecretReference) throws -> CloudGatewayWireGuardConfig {
         guard let config = configs[reference] else {
-            throw GatewayVPNError.keychainReadFailed(errSecItemNotFound)
+            throw CloudGatewayVPNError.keychainReadFailed(errSecItemNotFound)
         }
         return config
     }
 
-    func deleteConfig(for reference: GatewayConfigSecretReference) throws {
+    func deleteConfig(for reference: CloudGatewayConfigSecretReference) throws {
         if let deleteError {
             throw deleteError
         }
@@ -656,11 +656,11 @@ private final class MemoryConfigSecretStore: CloudGatewayConfigSecretStoring, @u
         deleted.append(reference)
     }
 
-    func savedReferences() -> [GatewayConfigSecretReference] {
+    func savedReferences() -> [CloudGatewayConfigSecretReference] {
         saved
     }
 
-    func deletedReferences() -> [GatewayConfigSecretReference] {
+    func deletedReferences() -> [CloudGatewayConfigSecretReference] {
         deleted
     }
 }

@@ -149,7 +149,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
     public let regionDisplayName: String
     public let status: CloudGatewayClientStatus
     public let configHash: String
-    public let secretReference: GatewayConfigSecretReference
+    public let secretReference: CloudGatewayConfigSecretReference
     public let readAt: Date
     public let updatedAt: Date?
     public let assignedTunnelIpv4: String?
@@ -163,7 +163,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         regionDisplayName: String,
         status: CloudGatewayClientStatus,
         configHash: String,
-        secretReference: GatewayConfigSecretReference,
+        secretReference: CloudGatewayConfigSecretReference,
         readAt: Date,
         updatedAt: Date?,
         assignedTunnelIpv4: String? = nil,
@@ -193,10 +193,10 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         wireGuardConfig: String,
         readAt: Date,
         updatedAt: Date?,
-        serviceName: String = GatewayConfigSecretDefaults.serviceName
+        serviceName: String = CloudGatewayConfigSecretDefaults.serviceName
     ) throws {
-        let config = try GatewayWireGuardConfig(wireGuardConfig)
-        let configHash = GatewayConfigHash.make(for: config)
+        let config = try CloudGatewayWireGuardConfig(wireGuardConfig)
+        let configHash = CloudGatewayConfigHash.make(for: config)
         self.init(
             clientId: clientId,
             regionId: regionId,
@@ -204,7 +204,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
             regionDisplayName: regionDisplayName,
             status: status,
             configHash: configHash,
-            secretReference: GatewayConfigSecretReference.make(
+            secretReference: CloudGatewayConfigSecretReference.make(
                 clientId: clientId,
                 configHash: configHash,
                 service: serviceName
@@ -222,8 +222,8 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         return clientName
     }
 
-    public func tunnelConfiguration() throws -> GatewayTunnelConfiguration {
-        GatewayTunnelConfiguration(
+    public func tunnelConfiguration() throws -> CloudGatewayTunnelConfiguration {
+        CloudGatewayTunnelConfiguration(
             identifier: clientId,
             displayName: "\(regionDisplayName) - \(clientDisplayName)",
             configHash: configHash,
@@ -420,10 +420,10 @@ public enum CloudGatewayConfigSelection {
     public static func snapshot(
         from option: CloudGatewayClientOption,
         readAt: Date = Date(),
-        serviceName: String = GatewayConfigSecretDefaults.serviceName
+        serviceName: String = CloudGatewayConfigSecretDefaults.serviceName
     ) throws -> CloudGatewayConfigSnapshot {
         let wireGuardConfig = try wireGuardConfig(from: option)
-        let configHash = GatewayConfigHash.make(for: wireGuardConfig)
+        let configHash = CloudGatewayConfigHash.make(for: wireGuardConfig)
 
         return CloudGatewayConfigSnapshot(
             clientId: option.client.clientId,
@@ -432,7 +432,7 @@ public enum CloudGatewayConfigSelection {
             regionDisplayName: option.regionDisplayName,
             status: option.client.status,
             configHash: configHash,
-            secretReference: GatewayConfigSecretReference.make(
+            secretReference: CloudGatewayConfigSecretReference.make(
                 clientId: option.client.clientId,
                 configHash: configHash,
                 service: serviceName
@@ -445,12 +445,12 @@ public enum CloudGatewayConfigSelection {
         )
     }
 
-    public static func wireGuardConfig(from option: CloudGatewayClientOption) throws -> GatewayWireGuardConfig {
+    public static func wireGuardConfig(from option: CloudGatewayClientOption) throws -> CloudGatewayWireGuardConfig {
         guard let wireGuardConfig = option.client.wireGuardConfig?.trimmingCharacters(in: .whitespacesAndNewlines),
               !wireGuardConfig.isEmpty else {
-            throw GatewayVPNError.missingWireGuardConfiguration
+            throw CloudGatewayVPNError.missingWireGuardConfiguration
         }
-        return try GatewayWireGuardConfig(wireGuardConfig)
+        return try CloudGatewayWireGuardConfig(wireGuardConfig)
     }
 
     public static func containsUsableClient(
@@ -480,7 +480,7 @@ public enum CloudGatewayConfigSelection {
               let remoteConfig = try? wireGuardConfig(from: option) else {
             return false
         }
-        return GatewayConfigHash.make(for: remoteConfig) == snapshot.configHash
+        return CloudGatewayConfigHash.make(for: remoteConfig) == snapshot.configHash
     }
 
     private static func compareOptions(

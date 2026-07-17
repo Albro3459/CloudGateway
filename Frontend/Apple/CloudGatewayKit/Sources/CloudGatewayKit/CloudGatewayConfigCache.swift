@@ -1,11 +1,11 @@
 import Foundation
 
 public actor CloudGatewayConfigCache {
-    private let platform: GatewayPlatformConfiguration
+    private let platform: CloudGatewayPlatformConfiguration
     private let fileName: String
 
     public init(
-        platform: GatewayPlatformConfiguration,
+        platform: CloudGatewayPlatformConfiguration,
         fileName: String = "installed-configs.json"
     ) {
         self.platform = platform
@@ -57,7 +57,7 @@ public actor CloudGatewayConfigCache {
         guard let containerURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: platform.appGroupIdentifier
         ) else {
-            throw GatewayVPNError.missingAppGroupContainer
+            throw CloudGatewayVPNError.missingAppGroupContainer
         }
         return containerURL
             .appendingPathComponent("CloudGateway", isDirectory: true)

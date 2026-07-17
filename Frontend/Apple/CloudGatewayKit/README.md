@@ -10,20 +10,20 @@ extension and is hidden behind the kit's plain `Sendable` adapter contracts.
 
 Current shared responsibilities:
 
-* `GatewayVPNManager` owns install/update/remove/start/stop/status around `NETunnelProviderManager`.
-* `GatewayWireGuardConfig` validates raw WireGuard config text before install.
+* `CloudGatewayVPNManager` owns install/update/remove/start/stop/status around `NETunnelProviderManager`.
+* `CloudGatewayWireGuardConfig` validates raw WireGuard config text before install.
 * `CloudGatewayRegion`, `CloudGatewayRegionCapacity`, `CloudGatewayClient`, and `CloudGatewayConfigSelection` provide Firebase/API-derived sorting, filtering, capacity display state, all-owned config options, and installable config options without importing Firebase.
 * `CloudGatewayConfigCache` stores installed config metadata in the app group; full WireGuard configs live in shared Keychain secret storage so local tunnels remain usable when Firestore/API is temporarily unavailable without duplicating private keys in app-group files.
 * `CloudGatewayConfigManager` owns user-selected install orchestration, local/remote reconciliation, cache update ordering, per-config stale state, and start/stop/remove decisions through protocol-backed tunnel and cache dependencies. It can also remove the matching local installed tunnel/cache when the app successfully deletes a remote config.
-* `GatewayTunnelHealthCoordinator` composes the evaluator, recovery, path,
+* `CloudGatewayTunnelHealthCoordinator` composes the evaluator, recovery, path,
   persistence, and notification policies as a pure reducer with explicit
   session, wake, and operation tokens.
-* `GatewayTunnelHealthMonitor` owns one cancellable wake and callback-driven
+* `CloudGatewayTunnelHealthMonitor` owns one cancellable wake and callback-driven
   runtime effects without awaiting WireGuard callbacks. Its generation-aware
   artifact reconciler and cancellable FIFO effect-submission arbiter keep
   stop/restart cleanup bounded, order admitted effects ahead of normal adapter
   stop, and prevent prior-session completions from erasing newer shared state.
-* `GatewayTunnelHealthTiming.production` is the single timing contract for the
+* `CloudGatewayTunnelHealthTiming.production` is the single timing contract for the
   extension producer and app-side snapshot freshness checks.
 
 The health monitor uses injected monotonic time and a manual scheduler in

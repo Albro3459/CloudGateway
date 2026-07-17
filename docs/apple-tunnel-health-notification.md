@@ -57,16 +57,16 @@ hostname.
 
 Everything runs inside the packet tunnel extension so it keeps working when
 the app is backgrounded, closed, or signed out. The extension's platform
-adapters feed a shared `GatewayTunnelHealthMonitor` in `CloudGatewayKit`. The
+adapters feed a shared `CloudGatewayTunnelHealthMonitor` in `CloudGatewayKit`. The
 monitor owns one cancellable wake, reads WireGuard runtime stats every 5
 seconds, and sends plain events through the pure
-`GatewayTunnelHealthCoordinator`. The coordinator composes these unit-tested
+`CloudGatewayTunnelHealthCoordinator`. The coordinator composes these unit-tested
 policies:
 
 This composition runs in the iOS packet-extension process today. The shared
 types build for macOS, but no macOS app or packet-extension target exists yet.
 
-1. `GatewayTunnelHealthEvaluator` turns raw counters into evidence. Failure
+1. `CloudGatewayTunnelHealthEvaluator` turns raw counters into evidence. Failure
    evidence is one of:
    * **Never handshaked**: no handshake 10 seconds after tunnel start.
    * **Stale handshake**: newest handshake older than 180 seconds.
@@ -74,7 +74,7 @@ types build for macOS, but no macOS app or packet-extension target exists yet.
      a bounded 10-second window that starts only when new outbound traffic
      appears. Once concluded, one-way failure stays latched until RX actually
      advances, so a continuous blackhole cannot blink healthy between windows.
-2. `GatewayTunnelRecoveryPolicy` converts that evidence into the outward
+2. `CloudGatewayTunnelRecoveryPolicy` converts that evidence into the outward
    health verdict (`unknown` / `passingTraffic` / `notPassingTraffic`) and
    drives recovery. Only entry into `notPassingTraffic` posts the
    notification.
@@ -216,7 +216,7 @@ reason. Detection constants may be tightened only with signed-device evidence.
   expose the user's real IP and timing to the probe endpoint. Attribution
   stays imperfect by choice.
 * Notification and banner share one copy source
-  (`GatewayTunnelHealthNotification`); posting is edge-triggered on the
+  (`CloudGatewayTunnelHealthNotification`); posting is edge-triggered on the
   transition into `notPassingTraffic`. Registration and ambiguous-add
   reconciliation use one stable identifier across pending and delivered
   notifications.
@@ -249,8 +249,8 @@ validation remain separate future work.
 
 ## Related Documents
 
-* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealthCoordinator.swift`, `GatewayTunnelHealthMonitor.swift`, `GatewayTunnelHealthArtifactDriver.swift`, `GatewayTunnelHealthEffectSubmissionArbiter.swift`, and `GatewayTunnelHealthNotificationRegistrationFence.swift`.
-* Health evidence and policies: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealth.swift`, `GatewayTunnelRecoveryPolicy.swift`, `GatewayTunnelPathPolicy.swift`, and `GatewayTunnelHealthPersistencePolicy.swift`.
+* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/CloudGatewayTunnelHealthCoordinator.swift`, `CloudGatewayTunnelHealthMonitor.swift`, `CloudGatewayTunnelHealthArtifactDriver.swift`, `CloudGatewayTunnelHealthEffectSubmissionArbiter.swift`, and `CloudGatewayTunnelHealthNotificationRegistrationFence.swift`.
+* Health evidence and policies: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/CloudGatewayTunnelHealth.swift`, `CloudGatewayTunnelRecoveryPolicy.swift`, `CloudGatewayTunnelPathPolicy.swift`, and `CloudGatewayTunnelHealthPersistencePolicy.swift`.
 * Extension orchestration: `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift`.
 * Fork recovery APIs: `wireguard-apple` `WireGuardAdapter.refreshNetworkBinding` / `restartBackend`.
-* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthCoordinatorTests.swift`, `GatewayTunnelHealthMonitorTests.swift`, `GatewayTunnelHealthEffectSubmissionArbiterTests.swift`, and `GatewayTunnelHealthAdapterTests.swift`.
+* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/CloudGatewayTunnelHealthCoordinatorTests.swift`, `CloudGatewayTunnelHealthMonitorTests.swift`, `CloudGatewayTunnelHealthEffectSubmissionArbiterTests.swift`, and `CloudGatewayTunnelHealthAdapterTests.swift`.

@@ -241,9 +241,9 @@ extension CloudGatewayServicing {
 /// extension writes, so the view model can read it without a network round-trip
 /// (and be exercised with a fake in tests).
 protocol CloudGatewayTunnelHealthReading {
-    func currentSnapshot() -> GatewayTunnelHealthSnapshot?
+    func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot?
 }
 
 struct NoopTunnelHealthReader: CloudGatewayTunnelHealthReading {
-    func currentSnapshot() -> GatewayTunnelHealthSnapshot? { nil }
+    func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot? { nil }
 }

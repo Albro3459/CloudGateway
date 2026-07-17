@@ -80,7 +80,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var clientOptions = [CloudGatewayClientOption]()
     @Published private(set) var configOptions = [CloudGatewayClientOption]()
     @Published private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
-    @Published private(set) var tunnelStatuses = [String: GatewayTunnelStatus]()
+    @Published private(set) var tunnelStatuses = [String: CloudGatewayTunnelStatus]()
     @Published private(set) var isWorking = false
     // Client whose VPN toggle is mid-flight, so its row can show a spinner while
     // the tunnel starts/stops instead of looking frozen.
@@ -90,7 +90,7 @@ final class CloudGatewayViewModel: ObservableObject {
     @Published private(set) var staleText: String?
     @Published private(set) var lastRefreshText: String?
     @Published private(set) var syncResult: CloudGatewaySyncResult?
-    @Published private(set) var tunnelHealthSnapshot: GatewayTunnelHealthSnapshot?
+    @Published private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
     @Published private(set) var remoteInvalidInstalledConfig = false
     // True when the last remote refresh failed (offline / API error). Gates the
     // cached-row fallback so a client removed remotely while online does not
@@ -122,7 +122,7 @@ final class CloudGatewayViewModel: ObservableObject {
     private var authHandle: Any?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
-    static let deadTunnelMessage = GatewayTunnelHealthNotification.body
+    static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
     static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
     static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
     static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
@@ -157,7 +157,7 @@ final class CloudGatewayViewModel: ObservableObject {
         isSignedIn ? selectedInstalledSnapshot : nil
     }
 
-    var visibleTunnelStatus: GatewayTunnelStatus? {
+    var visibleTunnelStatus: CloudGatewayTunnelStatus? {
         isSignedIn ? selectedTunnelStatus : nil
     }
 
@@ -205,7 +205,7 @@ final class CloudGatewayViewModel: ObservableObject {
         return configState.installedSnapshot(clientId: selectedClientId)
     }
 
-    var selectedTunnelStatus: GatewayTunnelStatus? {
+    var selectedTunnelStatus: CloudGatewayTunnelStatus? {
         guard let selectedClientId else {
             return nil
         }
@@ -1051,7 +1051,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func ensureDestructiveOperationAllowed(clientId: String? = nil, message: String) async throws {
         let statuses = try await configManager.allInstalledStatuses()
-        let statusValues: [GatewayTunnelStatus]
+        let statusValues: [CloudGatewayTunnelStatus]
         if let clientId {
             // Per-client delete only cares about that client's own tunnel. If it
             // has no installed tunnel, there is nothing to block on.
@@ -1369,7 +1369,7 @@ final class CloudGatewayViewModel: ObservableObject {
         } catch is CancellationError {
         } catch CloudGatewayAppError.cancelled {
         } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
-        } catch GatewayVPNError.missingInstalledTunnel {
+        } catch CloudGatewayVPNError.missingInstalledTunnel {
             errorText = Self.missingInstalledTunnelMessage
             if let state = try? await configManager.loadLocalState() {
                 apply(state)
@@ -1411,12 +1411,12 @@ private actor CloudGatewayAsyncResult<Success: Sendable> {
     }
 }
 
-private extension GatewayTunnelStatus {
+private extension CloudGatewayTunnelStatus {
     // .connecting and .disconnecting deliberately show the optimistic final
     // state: Apple can report the transition for 10-15s after the toggle even
     // though Control Center flips in about a second. Matching Control Center
     // avoids a status label that looks stuck (see
-    // GatewayTunnelStatus.blocksDestructiveOperation for the same reasoning).
+    // CloudGatewayTunnelStatus.blocksDestructiveOperation for the same reasoning).
     var displayName: String {
         switch self {
         case .invalid:

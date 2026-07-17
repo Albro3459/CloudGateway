@@ -20,7 +20,7 @@ simulator.
 1. **File > New > Target… > Unit Testing Bundle.** Name it `CloudGatewayTests`.
    Set **Host Application: None** (a logic test bundle).
 2. Point the target's folder at this directory so the synchronized group picks up the
-   three source files here (`GatewayTestDoubles.swift`, `MockGatewayService.swift`,
+   three source files here (`CloudGatewayTestDoubles.swift`, `MockGatewayService.swift`,
    `CloudGatewayViewModelTests.swift`).
 3. Add the **`CloudGatewayKit`** package product to the target
    (General > Frameworks and Libraries, or the Frameworks build phase).

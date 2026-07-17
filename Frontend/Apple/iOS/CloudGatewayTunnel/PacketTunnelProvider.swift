@@ -55,8 +55,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        let stopCompletion = GatewayTunnelStopCompletion(completion: completionHandler)
-        let adapterStop = GatewayTunnelStopSubmission(
+        let stopCompletion = CloudGatewayTunnelStopCompletion(completion: completionHandler)
+        let adapterStop = CloudGatewayTunnelStopSubmission(
             targetQueue: healthPathQueue,
             submission: { [weak self] in
                 guard let self else {
@@ -106,8 +106,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping (Error?) -> Void
     ) {
         guard let providerConfiguration = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
-              let appGroupIdentifier = providerConfiguration[GatewayProviderConfigurationKey.appGroupIdentifier] as? String,
-              let tunnelIdentifier = providerConfiguration[GatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
+              let appGroupIdentifier = providerConfiguration[CloudGatewayProviderConfigurationKey.appGroupIdentifier] as? String,
+              let tunnelIdentifier = providerConfiguration[CloudGatewayProviderConfigurationKey.tunnelIdentifier] as? String else {
             completionHandler(nil)
             healthLifecycle.pendingStartDidStop(startID: startID)
             return
@@ -124,7 +124,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         Task { [weak self] in
             guard let session = await start.monitor.start(tunnelIdentifier: tunnelIdentifier) else {
-                completionHandler(GatewayVPNError.missingTunnelSession)
+                completionHandler(CloudGatewayVPNError.missingTunnelSession)
                 start.lifecycle.pendingStartDidStop(startID: start.id)
                 return
             }
@@ -168,30 +168,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func makeTunnelConfiguration() throws -> TunnelConfiguration {
         guard let protocolConfiguration = protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
-              let keychainService = providerConfiguration[GatewayProviderConfigurationKey.keychainService] as? String,
-              let keychainAccount = providerConfiguration[GatewayProviderConfigurationKey.keychainAccount] as? String else {
-            throw GatewayVPNError.missingConfigSecretReference
+              let keychainService = providerConfiguration[CloudGatewayProviderConfigurationKey.keychainService] as? String,
+              let keychainAccount = providerConfiguration[CloudGatewayProviderConfigurationKey.keychainAccount] as? String else {
+            throw CloudGatewayVPNError.missingConfigSecretReference
         }
 
-        let secretStore = GatewayKeychainConfigSecretStore(
-            accessGroup: providerConfiguration[GatewayProviderConfigurationKey.keychainAccessGroup] as? String
+        let secretStore = CloudGatewayKeychainConfigSecretStore(
+            accessGroup: providerConfiguration[CloudGatewayProviderConfigurationKey.keychainAccessGroup] as? String
         )
-        let secretReference = GatewayConfigSecretReference(
+        let secretReference = CloudGatewayConfigSecretReference(
             service: keychainService,
             account: keychainAccount
         )
         let wireGuardConfig = try secretStore.loadConfig(for: secretReference).rawValue
         let tunnelName = protocolConfiguration.serverAddress ?? "CloudGateway"
-        return try GatewayWireGuardConfigParser.parse(wireGuardConfig, named: tunnelName).wireGuardTunnelConfiguration()
+        return try CloudGatewayWireGuardConfigParser.parse(wireGuardConfig, named: tunnelName).wireGuardTunnelConfiguration()
     }
 
 }
 
 private final class IOSTunnelHealthRuntimeAdapter:
-    GatewayTunnelHealthRuntimeAdapter,
+    CloudGatewayTunnelHealthRuntimeAdapter,
     @unchecked Sendable
 {
-    let backendRestartCapability = GatewayTunnelBackendRestartCapability.supported
+    let backendRestartCapability = CloudGatewayTunnelBackendRestartCapability.supported
     private let adapter: WireGuardAdapter
 
     init(adapter: WireGuardAdapter) {
@@ -201,16 +201,16 @@ private final class IOSTunnelHealthRuntimeAdapter:
     // WireGuardAdapter confines every public operation and callback to its
     // private work queue. This wrapper never reads or mutates the adapter state.
     func readRuntime(
-        completion: @escaping @Sendable (GatewayTunnelRuntimeStats?) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelRuntimeStats?) async -> Void
     ) {
         adapter.getRuntimeConfiguration { configuration in
-            let stats = configuration.flatMap(GatewayTunnelRuntimeStats.parse)
+            let stats = configuration.flatMap(CloudGatewayTunnelRuntimeStats.parse)
             Task { await completion(stats) }
         }
     }
 
     func refreshBinding(
-        completion: @escaping @Sendable (GatewayTunnelRecoveryResult) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelRecoveryResult) async -> Void
     ) {
         adapter.refreshNetworkBinding { error in
             Task { await completion(error == nil ? .accepted : .rejected) }
@@ -218,7 +218,7 @@ private final class IOSTunnelHealthRuntimeAdapter:
     }
 
     func restartBackend(
-        completion: @escaping @Sendable (GatewayTunnelRecoveryResult) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelRecoveryResult) async -> Void
     ) {
         adapter.restartBackend { error in
             Task { await completion(error == nil ? .accepted : .rejected) }
@@ -227,11 +227,11 @@ private final class IOSTunnelHealthRuntimeAdapter:
 }
 
 private final class IOSTunnelHealthNotificationAdapter:
-    GatewayTunnelHealthNotificationAdapter,
+    CloudGatewayTunnelHealthNotificationAdapter,
     @unchecked Sendable
 {
     private let center = UNUserNotificationCenter.current()
-    private let registrationFence = GatewayTunnelHealthNotificationRegistrationFence()
+    private let registrationFence = CloudGatewayTunnelHealthNotificationRegistrationFence()
 
     func resumeRegistrations() {
         registrationFence.resume()
@@ -246,12 +246,12 @@ private final class IOSTunnelHealthNotificationAdapter:
     }
 
     func register(
-        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelNotificationResult) async -> Void
     ) {
         registrationFence.register(
             authorization: { [center] callback in
                 center.getNotificationSettings { settings in
-                    let result: GatewayTunnelHealthNotificationAuthorizationResult
+                    let result: CloudGatewayTunnelHealthNotificationAuthorizationResult
                     switch settings.authorizationStatus {
                     case .authorized, .provisional, .ephemeral:
                         result = .allowed
@@ -267,11 +267,11 @@ private final class IOSTunnelHealthNotificationAdapter:
             },
             add: { [center] callback in
                 let content = UNMutableNotificationContent()
-                content.title = GatewayTunnelHealthNotification.title
-                content.body = GatewayTunnelHealthNotification.body
+                content.title = CloudGatewayTunnelHealthNotification.title
+                content.body = CloudGatewayTunnelHealthNotification.body
                 content.sound = .default
                 let request = UNNotificationRequest(
-                    identifier: GatewayTunnelHealthNotification.identifier,
+                    identifier: CloudGatewayTunnelHealthNotification.identifier,
                     content: content,
                     trigger: nil
                 )
@@ -293,7 +293,7 @@ private final class IOSTunnelHealthNotificationAdapter:
     }
 
     func reconcile(
-        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelNotificationResult) async -> Void
     ) {
         withAuthorization(completion: completion) { [center] in
             let reconciliation = IOSTunnelHealthNotificationReconciliation(
@@ -301,12 +301,12 @@ private final class IOSTunnelHealthNotificationAdapter:
             )
             center.getPendingNotificationRequests { requests in
                 reconciliation.recordPending(requests.contains {
-                    $0.identifier == GatewayTunnelHealthNotification.identifier
+                    $0.identifier == CloudGatewayTunnelHealthNotification.identifier
                 })
             }
             center.getDeliveredNotifications { notifications in
                 reconciliation.recordDelivered(notifications.contains {
-                    $0.request.identifier == GatewayTunnelHealthNotification.identifier
+                    $0.request.identifier == CloudGatewayTunnelHealthNotification.identifier
                 })
             }
         }
@@ -319,7 +319,7 @@ private final class IOSTunnelHealthNotificationAdapter:
     }
 
     private func withAuthorization(
-        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void,
+        completion: @escaping @Sendable (CloudGatewayTunnelNotificationResult) async -> Void,
         authorized: @escaping @Sendable () -> Void
     ) {
         center.getNotificationSettings { settings in
@@ -346,7 +346,7 @@ private final class IOSTunnelHealthNotificationAdapter:
     private static func removeStableNotification(
         from center: UNUserNotificationCenter
     ) {
-        let identifiers = [GatewayTunnelHealthNotification.identifier]
+        let identifiers = [CloudGatewayTunnelHealthNotification.identifier]
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
@@ -356,10 +356,10 @@ private final class IOSTunnelHealthNotificationReconciliation: @unchecked Sendab
     private let lock = NSLock()
     private var pending: Bool?
     private var delivered: Bool?
-    private var completion: (@Sendable (GatewayTunnelNotificationResult) async -> Void)?
+    private var completion: (@Sendable (CloudGatewayTunnelNotificationResult) async -> Void)?
 
     init(
-        completion: @escaping @Sendable (GatewayTunnelNotificationResult) async -> Void
+        completion: @escaping @Sendable (CloudGatewayTunnelNotificationResult) async -> Void
     ) {
         self.completion = completion
     }
@@ -385,7 +385,7 @@ private final class IOSTunnelHealthNotificationReconciliation: @unchecked Sendab
         }
         self.completion = nil
         lock.unlock()
-        let result: GatewayTunnelNotificationResult = pending || delivered
+        let result: CloudGatewayTunnelNotificationResult = pending || delivered
             ? .registered
             : .absent
         Task { await completion(result) }
@@ -395,22 +395,22 @@ private final class IOSTunnelHealthNotificationReconciliation: @unchecked Sendab
 private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
     struct Start: Sendable {
         let id: UInt64
-        let monitor: GatewayTunnelHealthMonitor
+        let monitor: CloudGatewayTunnelHealthMonitor
         let lifecycle: IOSTunnelHealthLifecycle
     }
 
     struct Stop: Sendable {
-        let monitor: GatewayTunnelHealthMonitor?
-        let token: GatewayTunnelHealthStopToken?
-        let join: GatewayTunnelStartStopJoin
+        let monitor: CloudGatewayTunnelHealthMonitor?
+        let token: CloudGatewayTunnelHealthStopToken?
+        let join: CloudGatewayTunnelStartStopJoin
     }
 
     private let lock = NSLock()
-    private var monitor: GatewayTunnelHealthMonitor?
+    private var monitor: CloudGatewayTunnelHealthMonitor?
     private var activeStartID: UInt64?
     private var stopping = false
     private var pathSession: IOSTunnelHealthPathSession?
-    private let pendingStartBarrier = GatewayTunnelPendingStartBarrier()
+    private let pendingStartBarrier = CloudGatewayTunnelPendingStartBarrier()
 
     func beginStartAttempt() -> UInt64 {
         lock.lock()
@@ -435,10 +435,10 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
             return nil
         }
         if monitor == nil {
-            monitor = GatewayTunnelHealthMonitor(
+            monitor = CloudGatewayTunnelHealthMonitor(
                 runtime: runtime,
-                persistence: GatewayTunnelHealthStoreAdapter(
-                    store: GatewayTunnelHealthStore(
+                persistence: CloudGatewayTunnelHealthStoreAdapter(
+                    store: CloudGatewayTunnelHealthStore(
                         appGroupIdentifier: appGroupIdentifier
                     )
                 ),
@@ -519,7 +519,7 @@ private final class IOSTunnelHealthLifecycle: @unchecked Sendable {
 private final class IOSTunnelHealthStopDeadline: @unchecked Sendable {
     private let lock = NSLock()
     private let deadlineStop: @Sendable () -> Void
-    private var token: GatewayTunnelHealthStopToken?
+    private var token: CloudGatewayTunnelHealthStopToken?
     private var installed = false
     private var fired = false
 
@@ -527,7 +527,7 @@ private final class IOSTunnelHealthStopDeadline: @unchecked Sendable {
         self.deadlineStop = deadlineStop
     }
 
-    func install(token: GatewayTunnelHealthStopToken?) {
+    func install(token: CloudGatewayTunnelHealthStopToken?) {
         lock.lock()
         self.token = token
         installed = true
@@ -563,8 +563,8 @@ private final class IOSTunnelHealthStopDeadline: @unchecked Sendable {
 
 private final class IOSTunnelHealthPathSession: @unchecked Sendable {
     private let lock = NSLock()
-    private let monitor: GatewayTunnelHealthMonitor
-    private let session: GatewayTunnelHealthSession
+    private let monitor: CloudGatewayTunnelHealthMonitor
+    private let session: CloudGatewayTunnelHealthSession
     private let queue: DispatchQueue
     private let pathMonitor = NWPathMonitor()
     private var active = true
@@ -572,8 +572,8 @@ private final class IOSTunnelHealthPathSession: @unchecked Sendable {
     private var routeID: UInt64 = 0
 
     init(
-        monitor: GatewayTunnelHealthMonitor,
-        session: GatewayTunnelHealthSession,
+        monitor: CloudGatewayTunnelHealthMonitor,
+        session: CloudGatewayTunnelHealthSession,
         queue: DispatchQueue
     ) {
         self.monitor = monitor
@@ -610,7 +610,7 @@ private final class IOSTunnelHealthPathSession: @unchecked Sendable {
         }
         fingerprint = nextFingerprint
         routeID &+= 1
-        let descriptor = GatewayTunnelPathDescriptor(
+        let descriptor = CloudGatewayTunnelPathDescriptor(
             isSatisfied: path.status == .satisfied,
             routeID: routeID
         )
@@ -650,7 +650,7 @@ private struct HealthPathFingerprint: Equatable {
     }
 }
 
-private extension GatewayParsedWireGuardConfig {
+private extension CloudGatewayParsedWireGuardConfig {
     func wireGuardTunnelConfiguration() throws -> TunnelConfiguration {
         TunnelConfiguration(
             name: name,
@@ -660,23 +660,23 @@ private extension GatewayParsedWireGuardConfig {
     }
 }
 
-private extension GatewayParsedWireGuardInterface {
+private extension CloudGatewayParsedWireGuardInterface {
     func wireGuardInterfaceConfiguration() throws -> InterfaceConfiguration {
         guard let privateKey = PrivateKey(base64Key: privateKey) else {
-            throw GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey
+            throw CloudGatewayWireGuardConfigParser.ParseError.interfaceHasInvalidPrivateKey
         }
 
         var configuration = InterfaceConfiguration(privateKey: privateKey)
         configuration.listenPort = listenPort
         configuration.addresses = try addresses.map { address in
             guard let addressRange = IPAddressRange(from: address) else {
-                throw GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidAddress(address)
+                throw CloudGatewayWireGuardConfigParser.ParseError.interfaceHasInvalidAddress(address)
             }
             return addressRange
         }
         configuration.dns = try dns.map { dnsValue in
             guard let dnsServer = DNSServer(from: dnsValue) else {
-                throw GatewayWireGuardConfigParser.ParseError.interfaceHasInvalidDNS(dnsValue)
+                throw CloudGatewayWireGuardConfigParser.ParseError.interfaceHasInvalidDNS(dnsValue)
             }
             return dnsServer
         }
@@ -686,28 +686,28 @@ private extension GatewayParsedWireGuardInterface {
     }
 }
 
-private extension GatewayParsedWireGuardPeer {
+private extension CloudGatewayParsedWireGuardPeer {
     func wireGuardPeerConfiguration() throws -> PeerConfiguration {
         guard let publicKey = PublicKey(base64Key: publicKey) else {
-            throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidPublicKey(self.publicKey)
+            throw CloudGatewayWireGuardConfigParser.ParseError.peerHasInvalidPublicKey(self.publicKey)
         }
 
         var configuration = PeerConfiguration(publicKey: publicKey)
         if let preSharedKey {
             guard let wireGuardPreSharedKey = PreSharedKey(base64Key: preSharedKey) else {
-                throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidPreSharedKey
+                throw CloudGatewayWireGuardConfigParser.ParseError.peerHasInvalidPreSharedKey
             }
             configuration.preSharedKey = wireGuardPreSharedKey
         }
         configuration.allowedIPs = try allowedIPs.map { allowedIP in
             guard let allowedIPRange = IPAddressRange(from: allowedIP) else {
-                throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidAllowedIP(allowedIP)
+                throw CloudGatewayWireGuardConfigParser.ParseError.peerHasInvalidAllowedIP(allowedIP)
             }
             return allowedIPRange
         }
         if let endpoint {
             guard let wireGuardEndpoint = Endpoint(from: endpoint) else {
-                throw GatewayWireGuardConfigParser.ParseError.peerHasInvalidEndpoint(endpoint)
+                throw CloudGatewayWireGuardConfigParser.ParseError.peerHasInvalidEndpoint(endpoint)
             }
             configuration.endpoint = wireGuardEndpoint
         }

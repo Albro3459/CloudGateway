@@ -1,0 +1,136 @@
+import Foundation
+import NetworkExtension
+
+public final class CloudGatewayVPNManager {
+    public let platform: CloudGatewayPlatformConfiguration
+
+    public init(platform: CloudGatewayPlatformConfiguration) {
+        self.platform = platform
+    }
+
+    public func makeProtocolConfiguration(
+        for tunnel: CloudGatewayTunnelConfiguration
+    ) -> NETunnelProviderProtocol {
+        let protocolConfiguration = NETunnelProviderProtocol()
+        protocolConfiguration.providerBundleIdentifier = platform.providerBundleIdentifier
+        protocolConfiguration.serverAddress = tunnel.displayName
+        protocolConfiguration.providerConfiguration = CloudGatewayProviderConfiguration(
+            platform: platform,
+            tunnel: tunnel
+        ).values
+        return protocolConfiguration
+    }
+
+    public func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
+        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
+            throw CloudGatewayVPNError.missingInstalledTunnel
+        }
+        return status
+    }
+
+    public func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
+        let identifiers = Set(identifiers)
+        guard !identifiers.isEmpty else {
+            return [:]
+        }
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        return managers.reduce(into: [String: CloudGatewayTunnelStatus]()) { statuses, manager in
+            guard let identifier = tunnelIdentifier(of: manager),
+                  identifiers.contains(identifier),
+                  matches(manager, identifier: identifier) else {
+                return
+            }
+            statuses[identifier] = CloudGatewayTunnelStatus(manager.connection.status)
+        }
+    }
+
+    public func allInstalledStatuses() async throws -> [String: CloudGatewayTunnelStatus] {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        return managers.reduce(into: [String: CloudGatewayTunnelStatus]()) { statuses, manager in
+            guard let identifier = tunnelIdentifier(of: manager),
+                  matches(manager, identifier: identifier) else {
+                return
+            }
+            statuses[identifier] = CloudGatewayTunnelStatus(manager.connection.status)
+        }
+    }
+
+    public func installTunnel(_ tunnel: CloudGatewayTunnelConfiguration) async throws {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        let manager = managers.first { matches($0, identifier: tunnel.identifier) } ?? NETunnelProviderManager()
+        manager.localizedDescription = tunnel.displayName
+        manager.protocolConfiguration = makeProtocolConfiguration(for: tunnel)
+        let activeTunnelIdentifiers = Set(managers.compactMap { other -> String? in
+            guard isActive(other.connection.status) else { return nil }
+            return tunnelIdentifier(of: other)
+        })
+        manager.isEnabled = CloudGatewayInstallEnablePolicy.shouldEnableOnInstall(
+            installing: tunnel.identifier,
+            activeTunnelIdentifiers: activeTunnelIdentifiers
+        )
+        try await manager.saveToPreferences()
+        try await manager.loadFromPreferences()
+    }
+
+    public func removeTunnel(identifier: String) async throws {
+        let manager = try await installedManager(for: identifier)
+        try await manager.removeFromPreferences()
+    }
+
+    public func startTunnel(identifier: String) async throws {
+        let manager = try await installedManager(for: identifier)
+        // iOS refuses to start a manager that is not currently enabled (another
+        // profile may hold the enabled slot). Re-enable and reload so the session
+        // is ready, instead of requiring a manual sync/re-install first.
+        if !manager.isEnabled {
+            manager.isEnabled = true
+            try await manager.saveToPreferences()
+        }
+        try await manager.loadFromPreferences()
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            throw CloudGatewayVPNError.missingTunnelSession
+        }
+        try session.startTunnel()
+    }
+
+    public func stopTunnel(identifier: String) async throws {
+        let manager = try await installedManager(for: identifier)
+        manager.connection.stopVPNTunnel()
+    }
+
+    public func installedManager(for identifier: String) async throws -> NETunnelProviderManager {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        guard let manager = managers.first(where: { matches($0, identifier: identifier) }) else {
+            throw CloudGatewayVPNError.missingInstalledTunnel
+        }
+        return manager
+    }
+
+    private func matches(_ manager: NETunnelProviderManager, identifier: String) -> Bool {
+        guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol,
+              protocolConfiguration.providerBundleIdentifier == platform.providerBundleIdentifier else {
+            return false
+        }
+        return tunnelIdentifier(of: manager) == identifier
+    }
+
+    private func tunnelIdentifier(of manager: NETunnelProviderManager) -> String? {
+        guard let protocolConfiguration = manager.protocolConfiguration as? NETunnelProviderProtocol else {
+            return nil
+        }
+        return protocolConfiguration.providerConfiguration?[CloudGatewayProviderConfigurationKey.tunnelIdentifier] as? String
+    }
+
+    private func isActive(_ status: NEVPNStatus) -> Bool {
+        switch status {
+        case .connecting, .connected, .reasserting:
+            return true
+        case .disconnecting, .disconnected, .invalid:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
+extension CloudGatewayVPNManager: CloudGatewayTunnelManaging {}

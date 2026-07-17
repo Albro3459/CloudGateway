@@ -32,20 +32,20 @@ Both the app and packet tunnel extension use the app group for nonsecret shared 
 
 Current shared responsibilities:
 
-* `GatewayPlatformConfiguration` carries injected platform identifiers: app group ID, app bundle ID, provider bundle ID, tunnel display name, Keychain access group, and config-secret service name.
-* `GatewayVPNManager` wraps `NETunnelProviderManager` install, update, remove, start, stop, profile lookup, and status checks.
-* `GatewayTunnelConfiguration` and `GatewayProviderConfiguration` build metadata-only Network Extension provider preferences.
-* `GatewayWireGuardConfig`, `GatewayWireGuardConfigParser`, and related parsed models validate and parse raw WireGuard configs behind a kit boundary.
+* `CloudGatewayPlatformConfiguration` carries injected platform identifiers: app group ID, app bundle ID, provider bundle ID, tunnel display name, Keychain access group, and config-secret service name.
+* `CloudGatewayVPNManager` wraps `NETunnelProviderManager` install, update, remove, start, stop, profile lookup, and status checks.
+* `CloudGatewayTunnelConfiguration` and `CloudGatewayProviderConfiguration` build metadata-only Network Extension provider preferences.
+* `CloudGatewayWireGuardConfig`, `CloudGatewayWireGuardConfigParser`, and related parsed models validate and parse raw WireGuard configs behind a kit boundary.
 * `CloudGatewayRegion`, `CloudGatewayClient`, `CloudGatewayClientOption`, `CloudGatewayConfigSelection`, and capacity types provide Firebase/API-derived sorting, filtering, selection, merge, and installability logic without importing Firebase.
 * `CloudGatewayConfigManager` owns install orchestration, local/remote reconciliation, stale-state detection, per-client start/stop/remove behavior, and cache update ordering.
 * `CloudGatewayConfigCache` stores installed config metadata in the app group.
-* `GatewayKeychainConfigSecretStore` stores the full WireGuard config in the shared Keychain.
-* `GatewayTunnelHealthCoordinator` owns the deterministic detection, recovery, persistence, and notification reducer.
-* `GatewayTunnelHealthMonitor` owns the single shared wake, callback tokens,
+* `CloudGatewayKeychainConfigSecretStore` stores the full WireGuard config in the shared Keychain.
+* `CloudGatewayTunnelHealthCoordinator` owns the deterministic detection, recovery, persistence, and notification reducer.
+* `CloudGatewayTunnelHealthMonitor` owns the single shared wake, callback tokens,
   generation-aware artifact reconciliation, and cancellable FIFO effect
   submission used by packet-tunnel extensions.
-* `GatewayTunnelHealthTiming`, the evaluator/recovery/path/persistence policies,
-  and `GatewayTunnelHealthStore` define one monotonic timing and snapshot
+* `CloudGatewayTunnelHealthTiming`, the evaluator/recovery/path/persistence policies,
+  and `CloudGatewayTunnelHealthStore` define one monotonic timing and snapshot
   contract for the extension producer and app consumer.
 * Plain callback adapter protocols isolate WireGuard runtime operations,
   session-qualified path events, snapshot persistence, notification
@@ -104,7 +104,7 @@ On startup, `PacketTunnelProvider`:
 1. Reads `NETunnelProviderProtocol.providerConfiguration`.
 2. Extracts the Keychain service, Keychain account, and optional Keychain access group.
 3. Loads the full WireGuard config from the shared Keychain.
-4. Parses it through `GatewayWireGuardConfigParser`.
+4. Parses it through `CloudGatewayWireGuardConfigParser`.
 5. Converts the parsed config into WireGuardKit `TunnelConfiguration`, `InterfaceConfiguration`, and `PeerConfiguration`.
 6. Starts WireGuard through `WireGuardAdapter`.
 7. Uses the app-group ID and tunnel ID to compose queue-confined WireGuard,
@@ -149,8 +149,8 @@ The tunnel extension links WireGuardKit and depends on the external `WireGuardGo
 CloudGateway's own WireGuard boundary is:
 
 * Raw config text is accepted only from authenticated remote state during install/update.
-* `GatewayWireGuardConfig` validates non-empty config text.
-* `GatewayWireGuardConfigParser` handles CloudGateway-owned parsing into a platform-neutral parsed representation.
+* `CloudGatewayWireGuardConfig` validates non-empty config text.
+* `CloudGatewayWireGuardConfigParser` handles CloudGateway-owned parsing into a platform-neutral parsed representation.
 * `PacketTunnelProvider` maps parsed values into WireGuardKit types at tunnel start.
 
 SwiftUI and Firebase code should not perform WireGuardKit mapping directly.
@@ -209,7 +209,7 @@ Full WireGuard configs contain private key material and must live only in the sh
 
 Allowed durable full-config storage:
 
-* Shared Keychain generic password item through `GatewayKeychainConfigSecretStore`.
+* Shared Keychain generic password item through `CloudGatewayKeychainConfigSecretStore`.
 
 Not allowed:
 
@@ -277,11 +277,11 @@ Expected macOS shape:
 * macOS app target owns AppKit/SwiftUI lifecycle, Firebase setup, provider sign-in, API adapter, and UI.
 * macOS packet tunnel extension owns runtime startup and links WireGuardKit.
 * Both macOS targets share an app group for nonsecret metadata and a Keychain access group for WireGuard config secrets.
-* The macOS composition passes macOS bundle IDs, provider bundle ID, app group, display name, and Keychain access group into `GatewayPlatformConfiguration`.
-* `GatewayKeychainConfigSecretStore` already has a macOS path that uses `kSecUseDataProtectionKeychain`.
+* The macOS composition passes macOS bundle IDs, provider bundle ID, app group, display name, and Keychain access group into `CloudGatewayPlatformConfiguration`.
+* `CloudGatewayKeychainConfigSecretStore` already has a macOS path that uses `kSecUseDataProtectionKeychain`.
 * The macOS packet-tunnel extension should reuse
-  `GatewayTunnelHealthCoordinator`, `GatewayTunnelHealthMonitor`,
-  `GatewayTunnelHealthArtifactDriver`, the effect-submission arbiter, the
+  `CloudGatewayTunnelHealthCoordinator`, `CloudGatewayTunnelHealthMonitor`,
+  `CloudGatewayTunnelHealthArtifactDriver`, the effect-submission arbiter, the
   notification-registration fence, the shared timing/store/notification
   contract, and the same trace tests. It should add only WireGuardKit,
   `NWPathMonitor`, notification, persistence, and lifecycle adapters.

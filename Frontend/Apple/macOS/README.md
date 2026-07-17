@@ -5,10 +5,10 @@ Future native macOS app project home.
 No macOS app or packet-tunnel targets exist yet.
 
 The future macOS app should share VPN configuration through `CloudGatewayKit`.
-Its packet-tunnel extension should reuse `GatewayTunnelHealthCoordinator`,
-`GatewayTunnelHealthMonitor`, `GatewayTunnelHealthArtifactDriver`, the
+Its packet-tunnel extension should reuse `CloudGatewayTunnelHealthCoordinator`,
+`CloudGatewayTunnelHealthMonitor`, `CloudGatewayTunnelHealthArtifactDriver`, the
 effect-submission arbiter, notification-registration fence,
-`GatewayTunnelHealthTiming`, `GatewayTunnelHealthStore`, and the shared
+`CloudGatewayTunnelHealthTiming`, `CloudGatewayTunnelHealthStore`, and the shared
 notification contract without forking the iOS detector or adding another
 health timer.
 

@@ -1,10 +1,10 @@
 import Foundation
 
 public protocol CloudGatewayTunnelManaging: Sendable {
-    func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus
-    func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus]
-    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus]
-    func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws
+    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus
+    func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus]
+    func allInstalledStatuses() async throws -> [String: CloudGatewayTunnelStatus]
+    func installTunnel(_ tunnel: CloudGatewayTunnelConfiguration) async throws
     func startTunnel(identifier: String) async throws
     func stopTunnel(identifier: String) async throws
     func removeTunnel(identifier: String) async throws
@@ -26,7 +26,7 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
     public var clientOptions: [CloudGatewayClientOption]
     public var configOptions: [CloudGatewayClientOption]
     public var installedSnapshots: [CloudGatewayConfigSnapshot]
-    public var tunnelStatuses: [String: GatewayTunnelStatus]
+    public var tunnelStatuses: [String: CloudGatewayTunnelStatus]
     public var staleTexts: [String: String]
     public var lastRefreshDate: Date?
     public var remoteInvalidInstalledConfigIds: Set<String>
@@ -36,7 +36,7 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
         clientOptions: [CloudGatewayClientOption] = [],
         configOptions: [CloudGatewayClientOption] = [],
         installedSnapshots: [CloudGatewayConfigSnapshot] = [],
-        tunnelStatuses: [String: GatewayTunnelStatus] = [:],
+        tunnelStatuses: [String: CloudGatewayTunnelStatus] = [:],
         staleTexts: [String: String] = [:],
         lastRefreshDate: Date? = nil,
         remoteInvalidInstalledConfigIds: Set<String> = []
@@ -76,7 +76,7 @@ public struct CloudGatewayConfigManagerState: Equatable, Sendable {
         }
     }
 
-    public func tunnelStatus(for clientId: String) -> GatewayTunnelStatus? {
+    public func tunnelStatus(for clientId: String) -> CloudGatewayTunnelStatus? {
         tunnelStatuses[clientId]
     }
 

@@ -8,7 +8,7 @@ extension CloudGatewayViewModel {
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: CloudGatewayScreenshotTunnelManager(
-                    statuses: service.clients.reduce(into: [String: GatewayTunnelStatus]()) { statuses, client in
+                    statuses: service.clients.reduce(into: [String: CloudGatewayTunnelStatus]()) { statuses, client in
                         statuses[client.clientId] = .disconnected
                     }
                 ),
@@ -73,7 +73,7 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         clientOptions.compactMap { try? CloudGatewayConfigSelection.snapshot(from: $0, readAt: Self.fixtureDate) }
     }
 
-    var configsByReference: [GatewayConfigSecretReference: GatewayWireGuardConfig] {
+    var configsByReference: [CloudGatewayConfigSecretReference: CloudGatewayWireGuardConfig] {
         Dictionary(uniqueKeysWithValues: clientOptions.compactMap { option in
             guard let snapshot = try? CloudGatewayConfigSelection.snapshot(from: option, readAt: Self.fixtureDate),
                   let config = try? CloudGatewayConfigSelection.wireGuardConfig(from: option) else {
@@ -221,32 +221,32 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
 }
 
 actor CloudGatewayScreenshotTunnelManager: CloudGatewayTunnelManaging {
-    private var statuses: [String: GatewayTunnelStatus]
+    private var statuses: [String: CloudGatewayTunnelStatus]
 
-    init(statuses: [String: GatewayTunnelStatus]) {
+    init(statuses: [String: CloudGatewayTunnelStatus]) {
         self.statuses = statuses
     }
 
-    func installedStatus(for identifier: String) async throws -> GatewayTunnelStatus {
+    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
         guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw GatewayVPNError.missingInstalledTunnel
+            throw CloudGatewayVPNError.missingInstalledTunnel
         }
         return status
     }
 
-    func installedStatuses(for identifiers: [String]) async throws -> [String: GatewayTunnelStatus] {
-        identifiers.reduce(into: [String: GatewayTunnelStatus]()) { result, identifier in
+    func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
+        identifiers.reduce(into: [String: CloudGatewayTunnelStatus]()) { result, identifier in
             if let status = statuses[identifier] {
                 result[identifier] = status
             }
         }
     }
 
-    func allInstalledStatuses() async throws -> [String: GatewayTunnelStatus] {
+    func allInstalledStatuses() async throws -> [String: CloudGatewayTunnelStatus] {
         statuses
     }
 
-    func installTunnel(_ tunnel: GatewayTunnelConfiguration) async throws {
+    func installTunnel(_ tunnel: CloudGatewayTunnelConfiguration) async throws {
         statuses[tunnel.identifier] = .disconnected
     }
 
@@ -285,24 +285,24 @@ actor CloudGatewayScreenshotConfigCache: CloudGatewayConfigCaching {
 }
 
 final class CloudGatewayScreenshotSecretStore: CloudGatewayConfigSecretStoring, @unchecked Sendable {
-    private var configs: [GatewayConfigSecretReference: GatewayWireGuardConfig]
+    private var configs: [CloudGatewayConfigSecretReference: CloudGatewayWireGuardConfig]
 
-    init(configs: [GatewayConfigSecretReference: GatewayWireGuardConfig]) {
+    init(configs: [CloudGatewayConfigSecretReference: CloudGatewayWireGuardConfig]) {
         self.configs = configs
     }
 
-    func saveConfig(_ config: GatewayWireGuardConfig, for reference: GatewayConfigSecretReference) throws {
+    func saveConfig(_ config: CloudGatewayWireGuardConfig, for reference: CloudGatewayConfigSecretReference) throws {
         configs[reference] = config
     }
 
-    func loadConfig(for reference: GatewayConfigSecretReference) throws -> GatewayWireGuardConfig {
+    func loadConfig(for reference: CloudGatewayConfigSecretReference) throws -> CloudGatewayWireGuardConfig {
         guard let config = configs[reference] else {
-            throw GatewayVPNError.keychainReadFailed(-25300)
+            throw CloudGatewayVPNError.keychainReadFailed(-25300)
         }
         return config
     }
 
-    func deleteConfig(for reference: GatewayConfigSecretReference) throws {
+    func deleteConfig(for reference: CloudGatewayConfigSecretReference) throws {
         configs[reference] = nil
     }
 }
