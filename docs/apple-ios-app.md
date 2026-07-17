@@ -1,6 +1,10 @@
 # Apple iOS App Architecture
 
-The CloudGateway iOS app is the first native Apple client, but the Apple code is intentionally split so the reusable VPN/config core lives in `Frontend/Apple/CloudGatewayKit` and can be used by a future macOS app. The iOS target should stay responsible for app lifecycle, SwiftUI, Firebase/Auth/API wiring, and platform composition. `CloudGatewayKit` should stay responsible for Apple-platform VPN configuration, WireGuard config validation/parsing, local config metadata, secret storage, and tunnel lifecycle orchestration.
+The CloudGateway iOS app is the first native Apple client, but its reusable code
+is split into two Swift products for a future macOS app. `CloudGatewayKit` owns
+VPN/configuration and packet-tunnel behavior. `CloudGatewayAppCore` owns
+Firebase-free app workflows and presentation refresh. The iOS target owns only
+native UI/lifecycle and platform/vendor composition.
 
 ## Layout
 
@@ -15,9 +19,30 @@ Frontend/Apple/CloudGatewayKit/
   Tests/CloudGatewayKitTests/   shared model, cache, reconciliation tests
   Tests/CloudGatewayAppCoreTests/ shared app-model tests
 
+Frontend/Apple/CloudGatewayFirebaseAdapter/
+  Sources/CloudGatewayFirebaseAuthAdapter/ Firebase Auth protocol adapter
+  Tests/CloudGatewayFirebaseAuthAdapterTests/ native error-mapping tests
+
 Frontend/Apple/macOS/
   README.md                     future macOS app placeholder
 ```
+
+The implemented dependency graph is:
+
+```text
+iOS app -> CloudGatewayAppCore + CloudGatewayKit
+iOS screenshot fixture -> CloudGatewayAppCore + CloudGatewayKit
+CloudGatewayAppCore -> CloudGatewayKit
+iOS app -> CloudGatewayFirebaseAuthAdapter
+CloudGatewayFirebaseAuthAdapter -> CloudGatewayAppCore + FirebaseAuth
+iOS app -> FirebaseCore + FirebaseFirestore + GoogleSignIn
+iOS packet extension -> CloudGatewayKit + WireGuardKit only
+```
+
+`CloudGatewayAppCore` depends on `CloudGatewayKit`; the reverse dependency does
+not exist. Neither shared product imports Firebase, Google Sign-In, SwiftUI,
+UIKit, or AppKit. The Firebase-auth adapter is a separate package so vendor SDK
+availability cannot leak into the shared package graph.
 
 The production iOS bundle IDs are:
 
@@ -27,11 +52,12 @@ The production iOS bundle IDs are:
 
 Both the app and packet tunnel extension use the app group for nonsecret shared metadata. Full WireGuard configs are stored in the shared Keychain, not in app-group files.
 
-## Shared Core Boundary
+## Shared Product Boundaries
 
-`CloudGatewayKit` is a Swift package targeting iOS 17 and macOS 14. Its API is deliberately not named or shaped around iOS-only concepts.
+The package targets iOS 17 and macOS 14. Its APIs are deliberately not named or
+shaped around iOS-only concepts.
 
-Current shared responsibilities:
+`CloudGatewayKit` responsibilities:
 
 * `CloudGatewayPlatformConfiguration` carries injected platform identifiers: app group ID, app bundle ID, provider bundle ID, tunnel display name, Keychain access group, and config-secret service name.
 * `CloudGatewayVPNManager` wraps `NETunnelProviderManager` install, update, remove, start, stop, profile lookup, and status checks.
@@ -41,10 +67,10 @@ Current shared responsibilities:
 * `CloudGatewayConfigManager` owns install orchestration, local/remote reconciliation, stale-state detection, per-client start/stop/remove behavior, and cache update ordering.
 * `CloudGatewayConfigCache` stores installed config metadata in the app group.
 * `CloudGatewayKeychainConfigSecretStore` stores the full WireGuard config in the shared Keychain.
-* `CloudGatewayTunnelHealthCoordinator` owns the deterministic detection, recovery, persistence, and notification reducer.
 * `CloudGatewayTunnelHealthMonitor` owns the single shared wake, callback tokens,
-  generation-aware artifact reconciliation, and cancellable FIFO effect
-  submission used by packet-tunnel extensions.
+  deterministic coordinator and recovery policies, generation-aware artifact
+  reconciliation, and cancellable FIFO effect submission used by packet-tunnel
+  extensions.
 * `CloudGatewayTunnelHealthTiming`, the evaluator/recovery/path/persistence policies,
   and `CloudGatewayTunnelHealthStore` define one monotonic timing and snapshot
   contract for the extension producer and app consumer.
@@ -52,7 +78,21 @@ Current shared responsibilities:
   session-qualified path events, snapshot persistence, notification
   registration, and backend-restart capability from the coordinator.
 
-Do not import Firebase, SwiftUI, or app lifecycle code into `CloudGatewayKit`.
+`CloudGatewayAppCore` responsibilities:
+
+* Firebase-free auth, repository, control-plane, provider-presentation,
+  notification, health-reader, and presentation-sleeper contracts;
+* request/response DTOs, URL validation, bounded URLSession construction, and
+  the apex/regional `CloudGatewayControlPlaneClient`;
+* `CloudGatewayAppServiceFacade`, which composes those narrow services behind
+  `CloudGatewayServicing`;
+* `CloudGatewayViewModel`, including guest/auth startup, access/role and
+  region/client workflows, VPN command orchestration, destructive-operation
+  guards, dead-tunnel presentation, notification policy, and the cancellable
+  five-second presentation refresh loop.
+
+Do not import Firebase, Google Sign-In, SwiftUI, UIKit, AppKit, or native app
+lifecycle code into either shared product.
 The tunnel-health coordinator and monitor also import neither WireGuardKit,
 Network, nor User Notifications; the packet extension maps those frameworks at
 the platform boundary. The kit can depend on Apple platform frameworks needed
@@ -61,13 +101,17 @@ CryptoKit.
 
 ## iOS App Responsibilities
 
-The iOS app target composes the shared core with product services and UI:
+The iOS app target composes the shared products with vendor services and UI:
 
 * Configures Firebase on launch.
-* Implements email/password, Sign in with Apple, and Google sign-in through Firebase Auth.
-* Reads roles and client data from Firestore.
-* Calls the apex and regional APIs with Firebase ID tokens.
-* Maps remote data into `CloudGatewayKit` models.
+* Uses the separate `CloudGatewayFirebaseAuthAdapter` package for
+  email/password, Sign in with Apple, Google credentials, provider linking,
+  reauthentication, token refresh, and sign-out through Firebase Auth.
+* Implements the Firestore client/role repository and iOS Google Sign-In
+  presenter behind AppCore protocols.
+* Uses the AppCore control-plane client for apex and regional APIs with Firebase
+  ID tokens.
+* Maps remote config state into Kit VPN/config types at the composition boundary.
 * Owns SwiftUI views, theme tokens, navigation, loading/guest/signed-in modes, admin screens, banners, dialogs, and share/export UI.
 * Hides installed/cached VPN controls when signed out or in guest mode.
 * Loads installed local state before auth-dependent remote state and requests
@@ -75,7 +119,13 @@ The iOS app target composes the shared core with product services and UI:
   existing install while signed out; install/connect actions retain their
   in-context authorization request.
 
-The Firebase and API adapter is `CloudGatewayFirebaseService`, behind the Firebase-free `CloudGatewayServicing` protocol. `CloudGatewayViewModel` depends on the protocol plus `CloudGatewayConfigManager`, which keeps the view model testable without Firebase or network calls.
+`CloudGatewayIOSCompositionRoot` explicitly creates the Firebase-auth adapter,
+iOS Firestore repository, shared control-plane client, iOS Google presenter,
+`CloudGatewayAppServiceFacade`, Kit config/health dependencies, and shared view
+model. `ContentView` receives that model and only starts
+`presentationDidAppear()` plus the model's cancellable presentation monitor
+from its existing lifecycle hooks. App workflows stay testable without
+Firebase, network, or UI targets.
 
 Global/read traffic uses the apex API:
 
@@ -271,20 +321,25 @@ Admins can see visible users' VPN clients, grant access, delete clients they are
 
 ## macOS Reuse Guidance
 
-The future macOS app should reuse `CloudGatewayKit` rather than duplicating iOS VPN/config logic.
+The future macOS GUI app should import both `CloudGatewayAppCore` and
+`CloudGatewayKit` rather than duplicating iOS workflows or VPN/config logic. It
+should not compile sources from the iOS app target.
 
 Expected macOS shape:
 
-* macOS app target owns AppKit/SwiftUI lifecycle, Firebase setup, provider sign-in, API adapter, and UI.
+* macOS app target owns AppKit/SwiftUI lifecycle, Firebase/Firestore setup,
+  provider-sign-in presentation, notification authorization, identifiers, and
+  UI. It reuses the AppCore control-plane client, service facade, app model, and
+  presentation refresh instead of rebuilding them.
 * macOS packet tunnel extension owns runtime startup and links WireGuardKit.
 * Both macOS targets share an app group for nonsecret metadata and a Keychain access group for WireGuard config secrets.
 * The macOS composition passes macOS bundle IDs, provider bundle ID, app group, display name, and Keychain access group into `CloudGatewayPlatformConfiguration`.
 * `CloudGatewayKeychainConfigSecretStore` already has a macOS path that uses `kSecUseDataProtectionKeychain`.
-* The macOS packet-tunnel extension should reuse
-  `CloudGatewayTunnelHealthCoordinator`, `CloudGatewayTunnelHealthMonitor`,
-  `CloudGatewayTunnelHealthArtifactDriver`, the effect-submission arbiter, the
-  notification-registration fence, the shared timing/store/notification
-  contract, and the same trace tests. It should add only WireGuardKit,
+* The macOS packet-tunnel extension imports only Kit plus WireGuardKit and Apple
+  system frameworks. It instantiates the public
+  `CloudGatewayTunnelHealthMonitor`, which encapsulates the internal
+  coordinator, artifact driver, and effect arbiter, and reuses the public
+  timing/store/notification/start-stop contracts. It adds only WireGuardKit,
   `NWPathMonitor`, notification, persistence, and lifecycle adapters.
 * Backend restart is an explicit runtime capability. The current macOS adapter
   should report it unsupported until the pinned WireGuard fork exposes and
@@ -292,7 +347,9 @@ Expected macOS shape:
   confirmation and notification.
 
 No macOS target, entitlement, signing, UI/Firebase composition, platform
-adapter, or device validation was implemented by the shared-health extraction.
+adapter, or signed-device validation was implemented by this refactor. The
+exact packet-extension ownership map and parity checklist live in
+`Frontend/Apple/macOS/README.md`.
 
 When adding macOS, keep platform-specific behavior in composition/configuration or small adapters. Do not fork `CloudGatewayConfigManager`, selection logic, WireGuard parsing, cache metadata shape, or secret-reference model unless macOS exposes a real API difference that cannot be injected.
 
@@ -305,7 +362,15 @@ Docs-only changes can be manually reviewed. Apple code changes should use the ex
 ./scripts/test.sh apple --signed
 ```
 
-The unsigned gate covers `CloudGatewayKit` and `CloudGatewayAppCore` tests on
-macOS plus no-device iOS build health. Signed/device validation is still
-required for Network Extension installation, App Group and Keychain Sharing
-entitlements, provider sign-in UI, and live WireGuard start/stop behavior.
+The unsigned gate checks release-script syntax, runs `CloudGatewayKit` and
+`CloudGatewayAppCore` tests, runs native `CloudGatewayFirebaseAuthAdapter`
+tests, lists the Xcode project, and builds the full iOS app and extension graph
+for a generic device without signing. The `--signed` variant validates generic
+device provisioning, but no signed build or real-device check was performed as
+part of this refactor.
+
+Signed real-device validation remains outstanding for Network Extension
+installation, App Group and Keychain Sharing entitlements, provider sign-in UI,
+notification authorization/delivery, sleep/wake and network changes, live
+WireGuard start/stop/recovery, and bounded stop behavior with late or missing
+callbacks.

@@ -59,7 +59,7 @@ VPN behavior change is intended.
 - [x] Stage 5: replace implicit iOS construction with explicit platform composition.
 - [x] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
 - [x] Stage 7: document the packet-extension reuse and thin-adapter boundary.
-- [ ] Stage 8: update validation, architecture documentation, and macOS handoff notes.
+- [x] Stage 8: update validation, architecture documentation, and macOS handoff notes.
 
 ## Current Architecture
 
@@ -677,10 +677,13 @@ Completion record:
   adapter tests, while facade tests cover Google presentation and revocation
   ordering, Apple revocation forwarding, local Google sign-out ordering,
   repository delegation, and post-create owner decoration;
-* the pinned Firebase 11.15 binary Firestore product excludes macOS, so the
-  Firestore repository remains a small iOS conformer; it normalizes `Timestamp`
-  to `Date` before calling the shared pure document mapper, without changing the
-  app lifecycle's memory-only cache configuration;
+* the package extraction kept Firestore as a small iOS conformer while moving
+  its repository contract and pure document mapping into AppCore; Firebase
+  11.15 advertises macOS Firestore support, but this refactor did not compile or
+  integration-test a macOS repository, so that remains a macOS composition
+  task rather than a claimed incompatibility;
+* the iOS repository normalizes `Timestamp` to `Date` before calling the shared
+  mapper, without changing the app lifecycle's memory-only cache configuration;
 * Google Sign-In presentation is now an injected iOS UIKit presenter, leaving
   the future macOS app to provide its native presentation anchor without
   duplicating auth or facade logic;
@@ -860,7 +863,7 @@ Completion record:
   and the unsigned generic-device iOS build;
 * GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
-### Stage 8 - Documentation And macOS Handoff
+### ✅ Stage 8 - Documentation And macOS Handoff
 
 Update:
 
@@ -882,6 +885,34 @@ Acceptance:
 * durable docs match target dependencies and actual test commands;
 * the TODO can be archived only after all automated gates and required manual
   checks are complete.
+
+Completion record:
+
+* the shared-package README now defines the one-way
+  `CloudGatewayAppCore -> CloudGatewayKit` product boundary, workflow ownership,
+  Firebase isolation, and native composition seams;
+* the iOS README and architecture guide now match the actual Xcode/package
+  graph, explicit composition root, presentation-loop ownership, Firebase Auth
+  adapter isolation, Firestore/Google platform adapters, packet-extension
+  exclusions, and raw validation commands;
+* the macOS handoff maps every non-UI GUI workflow and packet-extension concern
+  to its reusable product, public contract, and remaining native adapter without
+  copying iOS sources or sharing app views;
+* the test entry point now labels the combined Kit/AppCore package gate
+  accurately; it already ran the separate adapter package, project listing, and
+  generic-device build, so no behavioral script or obsolete Xcode wiring change
+  was required;
+* signed builds and real-device checks remain explicitly outstanding, and the
+  screenshot/simulator inspection remains waived by user direction;
+* Terra review caught an inherited claim that Firebase 11.15 Firestore excluded
+  macOS. Local package metadata and the resolved artifact advertise macOS
+  support, so the docs now state only the proven limitation: this refactor did
+  not compile or integration-test a macOS Firestore repository;
+* `./scripts/test.sh apple` passed with 99 app-model XCTest cases, 246 Swift
+  Testing cases, 2 native macOS Firebase-adapter tests, Xcode project listing,
+  and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved the corrected stage with no remaining
+  findings.
 
 ## Automated Test Matrix
 
@@ -961,9 +992,12 @@ That gate must continue to include:
 
 * `CloudGatewayKit` tests;
 * `CloudGatewayAppCore` tests on the macOS host;
+* `CloudGatewayFirebaseAuthAdapter` tests on the macOS host;
 * project listing/integrity;
-* unsigned generic iOS build;
-* any remaining host-less iOS-only logic tests.
+* unsigned generic iOS build.
+
+The obsolete host-less Xcode logic-test target and one-time wiring instructions
+are no longer part of the project or durable documentation.
 
 Use the signed Apple gate and manual device matrix only when credentials,
 entitlements, and a device are available. Do not replace the prescribed Apple

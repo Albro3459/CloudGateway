@@ -1,7 +1,20 @@
-# CloudGatewayKit
+# CloudGateway Apple Shared Packages
 
-Shared Apple VPN and tunnel-health core for CloudGateway iOS and future macOS
-apps and packet-tunnel extensions.
+This package exports two products for the CloudGateway iOS app and future macOS
+app. They deliberately share workflows and VPN behavior without sharing app UI:
+
+* `CloudGatewayKit` owns VPN/configuration, app-group cache metadata, Keychain
+  config secrets, and packet-tunnel health. Both containing apps and both
+  packet-tunnel extensions may import it.
+* `CloudGatewayAppCore` owns Firebase-free app contracts and DTOs, the regional
+  control-plane client, service facade, observable app model, and presentation
+  refresh lifecycle. Containing apps import it; packet-tunnel extensions do
+  not.
+
+`CloudGatewayAppCore` depends on `CloudGatewayKit`. Neither product imports
+Firebase, Google Sign-In, SwiftUI, UIKit, or AppKit.
+
+## CloudGatewayKit
 
 CloudGatewayKit owns common tunnel configuration, app-group storage,
 platform-neutral VPN control APIs, and the deterministic tunnel-health state
@@ -15,14 +28,13 @@ Current shared responsibilities:
 * `CloudGatewayRegion`, `CloudGatewayRegionCapacity`, `CloudGatewayClient`, and `CloudGatewayConfigSelection` provide Firebase/API-derived sorting, filtering, capacity display state, all-owned config options, and installable config options without importing Firebase.
 * `CloudGatewayConfigCache` stores installed config metadata in the app group; full WireGuard configs live in shared Keychain secret storage so local tunnels remain usable when Firestore/API is temporarily unavailable without duplicating private keys in app-group files.
 * `CloudGatewayConfigManager` owns user-selected install orchestration, local/remote reconciliation, cache update ordering, per-config stale state, and start/stop/remove decisions through protocol-backed tunnel and cache dependencies. It can also remove the matching local installed tunnel/cache when the app successfully deletes a remote config.
-* `CloudGatewayTunnelHealthCoordinator` composes the evaluator, recovery, path,
-  persistence, and notification policies as a pure reducer with explicit
-  session, wake, and operation tokens.
 * `CloudGatewayTunnelHealthMonitor` owns one cancellable wake and callback-driven
-  runtime effects without awaiting WireGuard callbacks. Its generation-aware
-  artifact reconciler and cancellable FIFO effect-submission arbiter keep
-  stop/restart cleanup bounded, order admitted effects ahead of normal adapter
-  stop, and prevent prior-session completions from erasing newer shared state.
+  runtime effects without awaiting WireGuard callbacks. It encapsulates the
+  coordinator, evaluator/recovery/path/persistence policies, generation-aware
+  artifact reconciler, and cancellable FIFO effect-submission arbiter. Together
+  they keep stop/restart cleanup bounded, order admitted effects ahead of
+  normal adapter stop, and prevent prior-session completions from erasing newer
+  shared state.
 * `CloudGatewayTunnelHealthTiming.production` is the single timing contract for the
   extension producer and app-side snapshot freshness checks.
 
@@ -38,14 +50,41 @@ replacement session invalidate stale work synchronously.
 The package builds for iOS 17 and macOS 14; that compatibility does not imply a
 macOS app integration exists.
 
+## CloudGatewayAppCore
+
+Current shared app responsibilities:
+
+* `CloudGatewayServicing` and the narrower auth, repository, control-plane,
+  Google-presentation, notification, health-reader, and sleeper protocols form
+  Firebase-free platform seams.
+* `CloudGatewayControlPlaneClient` owns apex/regional URL construction, DTO
+  encoding and decoding, authenticated request plumbing, error mapping, and
+  bounded URL sessions.
+* `CloudGatewayAppServiceFacade` composes auth, client persistence, control-plane
+  access, and provider presentation behind the service consumed by the model.
+* `CloudGatewayViewModel` owns guest/authenticated startup, role/access and
+  region/client workflows, VPN command orchestration, destructive-operation
+  guards, dead-tunnel presentation, and notification-authorization policy.
+* `CloudGatewayViewModel`'s presentation monitor owns the immediate
+  health/status refresh and the cancellable five-second presentation loop.
+  Native views only start and cancel that operation from their platform
+  lifecycle.
+
+AppCore tests use protocol-backed doubles. They require no Firebase project,
+credentials, network access, app host, packet extension, or UI target.
+
 ## Firebase Boundary
 
-CloudGatewayKit should stay platform-neutral and should not import Firebase SDK products directly.
+Both shared products stay platform-neutral and do not import Firebase SDK
+products directly.
 
-Firebase belongs in the app targets as an adapter:
+Firebase belongs behind containing-app adapters:
 
-* iOS app: configures Firebase, signs users in, reads Firestore, calls regional access APIs, and maps remote data into CloudGatewayKit models.
-* Future macOS app: uses the same CloudGatewayKit models and manager APIs, with its own UI and Firebase setup.
+* iOS app: configures Firebase, composes the shared AppCore workflows with the
+  local Firebase Auth package, iOS Firestore repository, and iOS Google
+  presenter, and maps remote config data into Kit VPN/config types.
+* Future macOS app: imports both shared products and supplies native Firebase,
+  provider-presentation, lifecycle, notification, and UI composition.
 * Packet tunnel extension: stays VPN-only and must not link Firebase unless a later product decision explicitly requires it.
 
 Platform packet-tunnel extensions retain only lifecycle, WireGuardKit mapping,
@@ -53,4 +92,9 @@ Platform packet-tunnel extensions retain only lifecycle, WireGuardKit mapping,
 Notifications mapping, and bounded stop composition. They must not duplicate
 the evaluator/recovery state machine or add a second polling timer.
 
-The shared config manager lives in CloudGatewayKit and depends on small protocols instead of concrete Firebase types. That keeps config selection, stale-state reconciliation, cache updates, and install ordering reusable across iOS and macOS while keeping Firebase, SwiftUI, and app lifecycle code outside the shared core.
+The shared config manager lives in CloudGatewayKit and depends on small
+protocols instead of concrete Firebase types. AppCore depends on those Kit APIs
+for VPN workflows. This keeps selection, stale-state reconciliation, cache
+updates, install ordering, authentication/control-plane orchestration, and
+presentation refresh reusable while native views and lifecycle policy remain
+platform-owned.

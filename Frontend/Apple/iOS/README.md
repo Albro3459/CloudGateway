@@ -9,7 +9,25 @@ Targets:
 
 Both targets should use the app group `group.com.gocloudlaunch.gateway`.
 
-## Firebase Config Manager
+## App Composition
+
+The app target is a thin native composition layer:
+
+* `CloudGatewayAppCore` supplies the shared service contracts, control-plane
+  client, service facade, app model, and presentation-refresh lifecycle;
+* `CloudGatewayKit` supplies VPN/config, cache, Keychain, and tunnel-health APIs;
+* `CloudGatewayFirebaseAuthAdapter` is a local Swift package that alone wraps
+  Firebase Auth behind the AppCore auth protocol;
+* the iOS target supplies Firebase Core setup, the Firestore repository, Google
+  Sign-In presentation, notification authorization, injected production
+  identifiers, SwiftUI views, and app lifecycle.
+
+`CloudGatewayIOSCompositionRoot` constructs this graph explicitly. The shared
+`CloudGatewayViewModel` owns the immediate presentation refresh and its
+cancellable five-second status/health loop; `ContentView` only starts those
+operations from its existing appearance and task lifecycle.
+
+## Firebase And Control Plane
 
 The app target uses Firebase email/password auth, reads client and role state from Firestore, fetches enabled regions from the apex API, and verifies access through the apex API endpoint:
 
@@ -35,23 +53,35 @@ and can show/share the full peer audit log. Treat that log as admin-only
 operational data: it can include user emails, client names, client IDs, public
 keys, tunnel IPs, statuses, and removed-peer details.
 
-Firebase packages are linked to the app target only:
+The app target directly links:
 
 * `FirebaseCore`
-* `FirebaseAuth`
 * `FirebaseFirestore`
+* `GoogleSignIn`
+* `CloudGatewayAppCore`
+* `CloudGatewayKit`
+* `CloudGatewayFirebaseAuthAdapter`
 
-Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receives the installed provider configuration from the containing app.
+`CloudGatewayFirebaseAuthAdapter` links `FirebaseAuth` behind its
+`CloudGatewayAuthServicing` implementation. The app supplies the Firestore and
+Google presentation adapters; the shared control-plane client owns URLSession
+and API request behavior.
+
+Do not link Firebase, Google Sign-In, or AppCore to `CloudGatewayTunnel`. The
+packet tunnel extension links only `CloudGatewayKit`, WireGuardKit, its iOS Go
+bridge, and Apple system frameworks, and receives installed provider
+configuration from the containing app.
 
 ## Tunnel Health
 
-The packet tunnel extension uses the shared `CloudGatewayKit` coordinator and
-monitor to detect a blackholed full tunnel, attempt binding-refresh and backend
-restart recovery, persist the app warning, and post at most one stable local
-notification per continuous outage. Detection remains active while the app is
-backgrounded, closed, or signed out. Persistence, notification registration,
-and stop ordering are generation-fenced so late work cannot overwrite a newer
-session. See [Apple tunnel health detection](../../../docs/apple-tunnel-health-notification.md).
+The packet tunnel extension uses the shared `CloudGatewayTunnelHealthMonitor`,
+which encapsulates the Kit's coordinator and recovery policies, to detect a
+blackholed full tunnel, attempt binding-refresh and backend restart recovery,
+persist the app warning, and post at most one stable local notification per
+continuous outage. Detection remains active while the app is backgrounded,
+closed, or signed out. Persistence, notification registration, and stop
+ordering are generation-fenced so late work cannot overwrite a newer session.
+See [Apple tunnel health detection](../../../docs/apple-tunnel-health-notification.md).
 
 `GoogleService-Info.plist` belongs under `CloudGateway/` and must be included in the app bundle only. It contains Firebase app identifiers, not service account credentials.
 
@@ -84,13 +114,14 @@ After archiving, confirm the archive no longer embeds the binary Firestore depen
 
 ## Current Limitations
 
-Shared sorting, filtering, reconciliation, selection/merge, and cache behavior
-are covered by `CloudGatewayKit` tests. View-model orchestration (remote-load
-sequencing, sign-out branching, capacity gating, and selection pruning) is
-covered by `CloudGatewayAppCoreTests`, wired against a mock
-`CloudGatewayServicing` so no Firebase or network is involved. Both suites run
-natively on macOS through `swift test`; the thin iOS Firebase adapter remains
-build-validated only.
+Shared sorting, filtering, reconciliation, selection/merge, cache, VPN, and
+tunnel-health behavior are covered by `CloudGatewayKitTests`. App workflows,
+control-plane transport, service composition, view-model orchestration, and the
+presentation loop are covered by `CloudGatewayAppCoreTests` against protocol
+doubles, so no Firebase project or network is involved. Both suites run in the
+`CloudGatewayKit` package gate. The separate Firebase-auth-adapter package also
+runs native macOS mapping tests; iOS Firestore and Google presentation adapters
+are covered by compilation in the full app build.
 
 Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
 
@@ -103,14 +134,17 @@ From the repo root:
 ./scripts/test.sh apple --signed
 ```
 
-The unsigned Apple target runs the shared package and app-core tests, then the
-no-device app build. The signed variant checks explicit provisioning for the
-app and tunnel extension.
+The unsigned Apple target validates the release-script syntax, runs the
+CloudGatewayKit/AppCore package tests, runs the Firebase-auth-adapter package
+tests, lists the Xcode project, and performs the no-device app build. The signed
+variant replaces only the unsigned build with explicit provisioning for the app
+and tunnel extension.
 
 Equivalent raw commands:
 
 ```sh
 swift test --package-path Frontend/Apple/CloudGatewayKit
+swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter
 xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS build
