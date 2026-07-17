@@ -40,8 +40,23 @@ Current shared responsibilities:
 * `CloudGatewayConfigManager` owns install orchestration, local/remote reconciliation, stale-state detection, per-client start/stop/remove behavior, and cache update ordering.
 * `CloudGatewayConfigCache` stores installed config metadata in the app group.
 * `GatewayKeychainConfigSecretStore` stores the full WireGuard config in the shared Keychain.
+* `GatewayTunnelHealthCoordinator` owns the deterministic detection, recovery, persistence, and notification reducer.
+* `GatewayTunnelHealthMonitor` owns the single shared wake, callback tokens,
+  generation-aware artifact reconciliation, and cancellable FIFO effect
+  submission used by packet-tunnel extensions.
+* `GatewayTunnelHealthTiming`, the evaluator/recovery/path/persistence policies,
+  and `GatewayTunnelHealthStore` define one monotonic timing and snapshot
+  contract for the extension producer and app consumer.
+* Plain callback adapter protocols isolate WireGuard runtime operations,
+  session-qualified path events, snapshot persistence, notification
+  registration, and backend-restart capability from the coordinator.
 
-Do not import Firebase, SwiftUI, or app lifecycle code into `CloudGatewayKit`. The kit can depend on Apple platform frameworks needed for VPN and secret storage, such as NetworkExtension, Security, Foundation, and CryptoKit.
+Do not import Firebase, SwiftUI, or app lifecycle code into `CloudGatewayKit`.
+The tunnel-health coordinator and monitor also import neither WireGuardKit,
+Network, nor User Notifications; the packet extension maps those frameworks at
+the platform boundary. The kit can depend on Apple platform frameworks needed
+for VPN and secret storage, such as NetworkExtension, Security, Foundation, and
+CryptoKit.
 
 ## iOS App Responsibilities
 
@@ -54,6 +69,10 @@ The iOS app target composes the shared core with product services and UI:
 * Maps remote data into `CloudGatewayKit` models.
 * Owns SwiftUI views, theme tokens, navigation, loading/guest/signed-in modes, admin screens, banners, dialogs, and share/export UI.
 * Hides installed/cached VPN controls when signed out or in guest mode.
+* Loads installed local state before auth-dependent remote state and requests
+  notification authorization if it is undetermined. This also covers an
+  existing install while signed out; install/connect actions retain their
+  in-context authorization request.
 
 The Firebase and API adapter is `CloudGatewayFirebaseService`, behind the Firebase-free `CloudGatewayServicing` protocol. `CloudGatewayViewModel` depends on the protocol plus `CloudGatewayConfigManager`, which keeps the view model testable without Firebase or network calls.
 
@@ -83,15 +102,37 @@ The app never asks normal users to paste WireGuard configs, import QR codes, use
 On startup, `PacketTunnelProvider`:
 
 1. Reads `NETunnelProviderProtocol.providerConfiguration`.
-2. Extracts the tunnel identifier, config hash, Keychain service, Keychain account, and optional Keychain access group.
+2. Extracts the Keychain service, Keychain account, and optional Keychain access group.
 3. Loads the full WireGuard config from the shared Keychain.
 4. Parses it through `GatewayWireGuardConfigParser`.
 5. Converts the parsed config into WireGuardKit `TunnelConfiguration`, `InterfaceConfiguration`, and `PeerConfiguration`.
 6. Starts WireGuard through `WireGuardAdapter`.
+7. Uses the app-group ID and tunnel ID to compose queue-confined WireGuard,
+   app-group snapshot, User Notifications, and `NWPathMonitor` adapters around
+   the shared tunnel-health monitor.
+8. Waits for the monitor's opaque health session, starts the session-qualified
+   path adapter, and only then reports tunnel startup complete.
+
+On shutdown, the provider arms a five-second deadline immediately, closes the
+session's effect admission, cancels its path session, and joins a start that is
+still installing health monitoring. Normal completion preserves every
+already-admitted persistence and notification submission ahead of WireGuard
+stop, then waits for durable artifact reconciliation and the adapter stop
+callback. If the deadline wins, still-queued health effects are cancelled,
+WireGuard stop is submitted after the bounded submission point, and the
+Network Extension completion runs after idempotent best-effort cleanup without
+waiting for physical callbacks or claiming durable cleanup succeeded.
 
 The extension logs WireGuardKit messages with private formatting and does not log VPN traffic, DNS queries, destination metadata, private keys, full configs, auth tokens, or Firebase credentials.
 
-The extension also monitors tunnel health, silently attempts binding-refresh recovery, and raises one "VPN connection interrupted" notification for a persistently dead tunnel (a blackholed full tunnel on otherwise working Internet, e.g. during a server deployment). See `docs/apple-tunnel-health-notification.md`.
+The extension also monitors tunnel health, silently attempts binding-refresh
+and backend-restart recovery, and raises one "VPN connection interrupted"
+notification for a persistently dead tunnel (a blackholed full tunnel on
+otherwise working Internet, e.g. during a server deployment). Detection and
+notification remain active while the app is backgrounded, closed, in guest
+mode, or signed out. The provider contains lifecycle and platform translation;
+the detection state machine lives in `CloudGatewayKit`. See
+`docs/apple-tunnel-health-notification.md`.
 
 ## WireGuardKit Integration
 
@@ -221,6 +262,10 @@ Guests can browse enabled regions from the apex `GET /regions` endpoint. They ca
 
 Signed-in users go through Firebase Auth plus `check-access`. Provisioning still comes from CloudGateway user/role records; a newly authenticated provider user is not considered provisioned until access is granted.
 
+Dead-tunnel detection and notification do not depend on Firebase auth or the
+app process. An already-installed tunnel can therefore notify while the user is
+signed out, provided notification permission is available.
+
 Admins can see visible users' VPN clients, grant access, delete clients they are authorized to manage, and run selected-region peer sync. The admin sync result can include operational audit data such as user emails, client names, client IDs, public keys, tunnel IPs, statuses, and removed-peer details. Treat it as admin-only operational data.
 
 ## macOS Reuse Guidance
@@ -234,6 +279,19 @@ Expected macOS shape:
 * Both macOS targets share an app group for nonsecret metadata and a Keychain access group for WireGuard config secrets.
 * The macOS composition passes macOS bundle IDs, provider bundle ID, app group, display name, and Keychain access group into `GatewayPlatformConfiguration`.
 * `GatewayKeychainConfigSecretStore` already has a macOS path that uses `kSecUseDataProtectionKeychain`.
+* The macOS packet-tunnel extension should reuse
+  `GatewayTunnelHealthCoordinator`, `GatewayTunnelHealthMonitor`,
+  `GatewayTunnelHealthArtifactDriver`, the effect-submission arbiter, the
+  notification-registration fence, the shared timing/store/notification
+  contract, and the same trace tests. It should add only WireGuardKit,
+  `NWPathMonitor`, notification, persistence, and lifecycle adapters.
+* Backend restart is an explicit runtime capability. The current macOS adapter
+  should report it unsupported until the pinned WireGuard fork exposes and
+  validates that public API on macOS; the bounded policy still reaches outage
+  confirmation and notification.
+
+No macOS target, entitlement, signing, UI/Firebase composition, platform
+adapter, or device validation was implemented by the shared-health extraction.
 
 When adding macOS, keep platform-specific behavior in composition/configuration or small adapters. Do not fork `CloudGatewayConfigManager`, selection logic, WireGuard parsing, cache metadata shape, or secret-reference model unless macOS exposes a real API difference that cannot be injected.
 

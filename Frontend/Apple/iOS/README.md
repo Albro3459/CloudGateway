@@ -43,6 +43,16 @@ Firebase packages are linked to the app target only:
 
 Do not link Firebase to `CloudGatewayTunnel`. The packet tunnel extension receives the installed provider configuration from the containing app.
 
+## Tunnel Health
+
+The packet tunnel extension uses the shared `CloudGatewayKit` coordinator and
+monitor to detect a blackholed full tunnel, attempt binding-refresh and backend
+restart recovery, persist the app warning, and post at most one stable local
+notification per continuous outage. Detection remains active while the app is
+backgrounded, closed, or signed out. Persistence, notification registration,
+and stop ordering are generation-fenced so late work cannot overwrite a newer
+session. See [Apple tunnel health detection](../../../docs/apple-tunnel-health-notification.md).
+
 `GoogleService-Info.plist` belongs under `CloudGateway/` and must be included in the app bundle only. It contains Firebase app identifiers, not service account credentials.
 
 ## App Store Archive Symbols
@@ -76,7 +86,14 @@ After archiving, confirm the archive no longer embeds the binary Firestore depen
 
 Shared sorting, filtering, reconciliation, selection/merge, and cache behavior are covered by `CloudGatewayKit` tests (run under `swift test`). View-model orchestration (remote-load sequencing, sign-out branching, capacity gating, selection prune) has tests in `CloudGatewayTests/`, wired against a mock `CloudGatewayServicing` so no Firebase or network is involved.
 
-That test target is a host-less logic bundle because the app scheme cannot build for the iOS Simulator - the `CloudGatewayTunnel` extension links WireGuard's device-only `libwg-go.a`. It therefore is not part of the `./scripts/test.sh apple` gate (which stays `swift test` + the unsigned no-device build); see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for the one-time Xcode wiring and the `xcodebuild test` command. The thin `CloudGatewayFirebaseService` URLSession/Firestore adapter remains build-validated only.
+That test target is a host-less logic bundle because the app scheme cannot
+build for the iOS Simulator - the `CloudGatewayTunnel` extension links
+WireGuard's device-only `libwg-go.a`. It is part of the
+`./scripts/test.sh apple` gate without building the app host or packet-tunnel
+extension; see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for
+the Xcode wiring and direct `xcodebuild test` command. The thin
+`CloudGatewayFirebaseService` URLSession/Firestore adapter remains
+build-validated only.
 
 Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
 
@@ -89,7 +106,9 @@ From the repo root:
 ./scripts/test.sh apple --signed
 ```
 
-The unsigned Apple target proves compile health and package resolution. The signed variant checks explicit provisioning for the app and tunnel extension.
+The unsigned Apple target runs shared package tests, host-less view-model
+tests, and the no-device app build. The signed variant checks explicit
+provisioning for the app and tunnel extension.
 
 Equivalent raw commands:
 
