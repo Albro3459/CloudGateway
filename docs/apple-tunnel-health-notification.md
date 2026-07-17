@@ -121,12 +121,28 @@ out-of-order path route generations before they reach the coordinator.
 
 Snapshot writes and notification operations run through a serialized artifact
 reconciler. It tracks desired state separately from completed state, retries
-failed snapshot writes, and checks both pending and delivered notifications
-before retrying an ambiguous add. Notification denial is terminal for the
-session; transient failures and missing callbacks use bounded retry and
-reconciliation deadlines. Late work from a stopped session repairs toward the
-newest session's desired snapshot and stable notification instead of clearing
-newer state.
+failed writes and clears (including the startup clear), and checks both pending
+and delivered notifications before retrying an ambiguous add. The app-group
+store adapter enqueues writes and clears on one private FIFO lane, so submitting
+an operation never blocks the monitor and a later clear cannot overtake an
+earlier write.
+
+Every persistence or notification submission also crosses a generation-aware
+effect-submission arbiter. Admission and FIFO queue insertion are one atomic
+operation. Normal stop rejects new effects but lets already-admitted effects
+reach their platform adapters before `adapter.stop` is submitted. If the
+five-second stop deadline wins, effects that have not started submission are
+cancelled and adapter stop is queued after the bounded submission point;
+already-started effects may finish later and request a final repair toward the
+newest session's desired artifacts.
+
+Notification registration has a second, platform-boundary fence. Each request
+gets an epoch that is checked after asynchronous authorization and immediately
+before `UNUserNotificationCenter.add`. Withdrawal, stop, or replacement
+invalidates the old epoch, preventing delayed authorization or add callbacks
+from posting or removing a newer session's stable notification. Notification
+denial remains terminal for the session; transient failures and missing
+callbacks use bounded retry and reconciliation deadlines.
 
 All elapsed deadlines use injected monotonic time. Wall-clock `Date` is limited
 to WireGuard handshake epochs and snapshot `updatedAt`; app-side freshness also
@@ -181,8 +197,7 @@ The deliberate cost of these gates is latency: roughly 30-55 seconds to
 notify instead of seconds. That trade is intentional - a warning that fires
 during ordinary network transitions trains users to ignore it, and a user who
 disconnects because of a false alarm exposes traffic outside the VPN for no
-reason. Detection constants may be tightened only with device evidence
-recorded in the TODO plan.
+reason. Detection constants may be tightened only with signed-device evidence.
 
 ## Boundaries And Privacy
 
@@ -205,18 +220,37 @@ recorded in the TODO plan.
   transition into `notPassingTraffic`. Registration and ambiguous-add
   reconciliation use one stable identifier across pending and delivered
   notifications.
-* Tunnel shutdown synchronously closes the current session's effect gate. The
-  normal path waits for artifact reconciliation and WireGuard shutdown; a
-  five-second outer fallback performs idempotent best-effort clear/withdraw and
-  completes without claiming durable cleanup succeeded.
+* Tunnel shutdown arms its five-second deadline on entry, synchronously closes
+  effect admission, cancels the path session, and joins any start continuation
+  still installing health monitoring. The normal path preserves admitted
+  effect order through adapter-stop submission and waits for artifact
+  reconciliation plus the WireGuard stop callback. The deadline cancels only
+  still-queued effects, submits WireGuard stop after the bounded submission
+  point, performs idempotent best-effort clear/withdraw, and completes without
+  waiting for physical callbacks or claiming durable cleanup succeeded.
+
+## Remaining Device Validation
+
+The shared state machine, adapter ordering, restart races, and app consumption
+are covered by deterministic tests. Signed real-device validation is still
+required before changing detection timing or claiming platform parity. Exercise
+healthy traffic, a full blackhole, never-handshake/runtime-loss cases, recovery
+before and after notification, airplane mode, Wi-Fi/cellular switches and path
+churn, app background/termination, a signed-out installed tunnel, each
+notification permission state, stop with outstanding callbacks, extension
+restart with late callbacks, and wall-clock correction.
+
+For each case verify that normal settling stays silent, a continuous outage
+creates one snapshot and at most one stable notification, recovery requires two
+healthy polls, stop removes artifacts, deadline completion remains bounded and
+late work repairs toward current desired state, traffic stays fail-closed, and
+no private runtime data is logged. macOS adapter implementation and device
+validation remain separate future work.
 
 ## Related Documents
 
-* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealthCoordinator.swift`, `GatewayTunnelHealthMonitor.swift`, and `GatewayTunnelHealthArtifactDriver.swift`.
+* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealthCoordinator.swift`, `GatewayTunnelHealthMonitor.swift`, `GatewayTunnelHealthArtifactDriver.swift`, `GatewayTunnelHealthEffectSubmissionArbiter.swift`, and `GatewayTunnelHealthNotificationRegistrationFence.swift`.
 * Health evidence and policies: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/GatewayTunnelHealth.swift`, `GatewayTunnelRecoveryPolicy.swift`, `GatewayTunnelPathPolicy.swift`, and `GatewayTunnelHealthPersistencePolicy.swift`.
 * Extension orchestration: `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift`.
 * Fork recovery APIs: `wireguard-apple` `WireGuardAdapter.refreshNetworkBinding` / `restartBackend`.
-* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthCoordinatorTests.swift` and `GatewayTunnelHealthMonitorTests.swift`.
-
-The staged extraction and remaining device-validation matrix are recorded in
-`TODO/apple-tunnel-health-coordinator-plan.md`.
+* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/GatewayTunnelHealthCoordinatorTests.swift`, `GatewayTunnelHealthMonitorTests.swift`, `GatewayTunnelHealthEffectSubmissionArbiterTests.swift`, and `GatewayTunnelHealthAdapterTests.swift`.

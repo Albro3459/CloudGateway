@@ -19,9 +19,10 @@ Current shared responsibilities:
   persistence, and notification policies as a pure reducer with explicit
   session, wake, and operation tokens.
 * `GatewayTunnelHealthMonitor` owns one cancellable wake and callback-driven
-  runtime effects without awaiting WireGuard callbacks. Its synchronous
-  generation gate and artifact reconciler keep stop/restart cleanup bounded and
-  prevent prior-session completions from erasing newer shared state.
+  runtime effects without awaiting WireGuard callbacks. Its generation-aware
+  artifact reconciler and cancellable FIFO effect-submission arbiter keep
+  stop/restart cleanup bounded, order admitted effects ahead of normal adapter
+  stop, and prevent prior-session completions from erasing newer shared state.
 * `GatewayTunnelHealthTiming.production` is the single timing contract for the
   extension producer and app-side snapshot freshness checks.
 
@@ -30,6 +31,10 @@ deterministic tests. Its plain callback protocols carry no Network,
 WireGuardKit, or User Notifications types. A platform adapter maps WireGuard
 results and capabilities, deduplicated `NWPath` fingerprints to satisfaction
 plus route generation, and stable-ID notification registration/reconciliation.
+Snapshot writes and clears enqueue on one private FIFO persistence lane and are
+retried toward desired state after failures. Notification registration uses an
+epoch fence across authorization and add callbacks so stop, withdrawal, and a
+replacement session invalidate stale work synchronously.
 The package builds for iOS 17 and macOS 14; that compatibility does not imply a
 macOS app integration exists.
 

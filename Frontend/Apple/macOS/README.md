@@ -6,9 +6,11 @@ No macOS app or packet-tunnel targets exist yet.
 
 The future macOS app should share VPN configuration through `CloudGatewayKit`.
 Its packet-tunnel extension should reuse `GatewayTunnelHealthCoordinator`,
-`GatewayTunnelHealthMonitor`, `GatewayTunnelHealthTiming`,
-`GatewayTunnelHealthStore`, and the shared notification contract without
-forking the iOS detector or adding another health timer.
+`GatewayTunnelHealthMonitor`, `GatewayTunnelHealthArtifactDriver`, the
+effect-submission arbiter, notification-registration fence,
+`GatewayTunnelHealthTiming`, `GatewayTunnelHealthStore`, and the shared
+notification contract without forking the iOS detector or adding another
+health timer.
 
 The GUI app will request notification authorization and read the shared health
 snapshot. Detection remains in the future packet extension so it continues
@@ -19,9 +21,9 @@ The macOS extension will provide only platform adapters for:
 
 * WireGuardKit runtime reads and binding refresh;
 * `NWPathMonitor` fingerprint and route-generation mapping;
-* app-group snapshot persistence;
-* pending and delivered User Notifications reconciliation;
-* packet-tunnel start and bounded stop lifecycle.
+* enqueue-only FIFO app-group snapshot persistence;
+* epoch-fenced pending and delivered User Notifications reconciliation;
+* packet-tunnel start and bounded normal/deadline stop lifecycle.
 
 WireGuardKit stays outside `CloudGatewayKit`. The pinned fork exposes binding
 refresh on macOS, but its public backend-restart entry point is currently

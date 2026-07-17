@@ -41,7 +41,9 @@ Current shared responsibilities:
 * `CloudGatewayConfigCache` stores installed config metadata in the app group.
 * `GatewayKeychainConfigSecretStore` stores the full WireGuard config in the shared Keychain.
 * `GatewayTunnelHealthCoordinator` owns the deterministic detection, recovery, persistence, and notification reducer.
-* `GatewayTunnelHealthMonitor` owns the single shared wake, callback tokens, synchronous stop gate, and generation-aware artifact reconciliation used by packet-tunnel extensions.
+* `GatewayTunnelHealthMonitor` owns the single shared wake, callback tokens,
+  generation-aware artifact reconciliation, and cancellable FIFO effect
+  submission used by packet-tunnel extensions.
 * `GatewayTunnelHealthTiming`, the evaluator/recovery/path/persistence policies,
   and `GatewayTunnelHealthStore` define one monotonic timing and snapshot
   contract for the extension producer and app consumer.
@@ -111,12 +113,15 @@ On startup, `PacketTunnelProvider`:
 8. Waits for the monitor's opaque health session, starts the session-qualified
    path adapter, and only then reports tunnel startup complete.
 
-On shutdown, the provider synchronously closes the session gate, cancels its
-path session, and bounds a start that is still installing. Monitor artifact
-cleanup and WireGuard stop begin independently. Normal completion waits for
-both durable health-artifact cleanup and the adapter stop callback; a
-five-second deadline performs idempotent best-effort cleanup and completes the
-Network Extension stop without claiming durable cleanup succeeded.
+On shutdown, the provider arms a five-second deadline immediately, closes the
+session's effect admission, cancels its path session, and joins a start that is
+still installing health monitoring. Normal completion preserves every
+already-admitted persistence and notification submission ahead of WireGuard
+stop, then waits for durable artifact reconciliation and the adapter stop
+callback. If the deadline wins, still-queued health effects are cancelled,
+WireGuard stop is submitted after the bounded submission point, and the
+Network Extension completion runs after idempotent best-effort cleanup without
+waiting for physical callbacks or claiming durable cleanup succeeded.
 
 The extension logs WireGuardKit messages with private formatting and does not log VPN traffic, DNS queries, destination metadata, private keys, full configs, auth tokens, or Firebase credentials.
 
@@ -275,10 +280,11 @@ Expected macOS shape:
 * The macOS composition passes macOS bundle IDs, provider bundle ID, app group, display name, and Keychain access group into `GatewayPlatformConfiguration`.
 * `GatewayKeychainConfigSecretStore` already has a macOS path that uses `kSecUseDataProtectionKeychain`.
 * The macOS packet-tunnel extension should reuse
-  `GatewayTunnelHealthCoordinator`, `GatewayTunnelHealthMonitor`, the shared
-  timing/store/notification contract, and the same trace tests. It should add
-  only WireGuardKit, `NWPathMonitor`, notification, persistence, and lifecycle
-  adapters.
+  `GatewayTunnelHealthCoordinator`, `GatewayTunnelHealthMonitor`,
+  `GatewayTunnelHealthArtifactDriver`, the effect-submission arbiter, the
+  notification-registration fence, the shared timing/store/notification
+  contract, and the same trace tests. It should add only WireGuardKit,
+  `NWPathMonitor`, notification, persistence, and lifecycle adapters.
 * Backend restart is an explicit runtime capability. The current macOS adapter
   should report it unsupported until the pinned WireGuard fork exposes and
   validates that public API on macOS; the bounded policy still reaches outage
