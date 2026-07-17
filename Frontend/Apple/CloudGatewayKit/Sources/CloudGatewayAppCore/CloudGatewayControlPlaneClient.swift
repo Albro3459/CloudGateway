@@ -1,7 +1,7 @@
 import CloudGatewayKit
 import Foundation
 
-public protocol CloudGatewayControlPlaneSession: AnyObject {
+public protocol CloudGatewayControlPlaneSession: AnyObject, Sendable {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 
@@ -24,7 +24,7 @@ public struct CloudGatewayCapacityResponse: Decodable, Equatable, Sendable {
     public let allocatedClientCount: Int
 }
 
-public final class CloudGatewayControlPlaneClient {
+public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServicing {
     private let originHost: String
     private let session: any CloudGatewayControlPlaneSession
 

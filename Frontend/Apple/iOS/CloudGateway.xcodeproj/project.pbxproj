@@ -15,10 +15,10 @@
 		ABCDEF000000000000000004 /* WireGuardKit in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000019 /* WireGuardKit */; };
 		ABCDEF000000000000000027 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCDEF000000000000000031 /* PacketTunnelProvider.swift */; };
 		ABCDEF000000000000000040 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000050 /* FirebaseCore */; };
-		ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000051 /* FirebaseAuth */; };
 		ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000052 /* FirebaseFirestore */; };
 		ABCDEF000000000000000054 /* CloudGatewayAppCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000057 /* CloudGatewayAppCore */; };
 		ABCDEF000000000000000056 /* CloudGatewayAppCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000057 /* CloudGatewayAppCore */; };
+		ABCDEF00000000000000005A /* CloudGatewayFirebaseAuthAdapter in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000059 /* CloudGatewayFirebaseAuthAdapter */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -105,8 +105,8 @@
 				60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */,
 				ABCDEF000000000000000054 /* CloudGatewayAppCore in Frameworks */,
 				ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */,
+				ABCDEF00000000000000005A /* CloudGatewayFirebaseAuthAdapter in Frameworks */,
 				ABCDEF000000000000000040 /* FirebaseCore in Frameworks */,
-				ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */,
 				ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -211,8 +211,8 @@
 			packageProductDependencies = (
 				ABCDEF000000000000000057 /* CloudGatewayAppCore */,
 				ABCDEF000000000000000018 /* CloudGatewayKit */,
+				ABCDEF000000000000000059 /* CloudGatewayFirebaseAuthAdapter */,
 				ABCDEF000000000000000050 /* FirebaseCore */,
-				ABCDEF000000000000000051 /* FirebaseAuth */,
 				ABCDEF000000000000000052 /* FirebaseFirestore */,
 				60B438382FF611BE0089F40B /* GoogleSignIn */,
 			);
@@ -298,6 +298,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */,
+				ABCDEF000000000000000058 /* XCLocalSwiftPackageReference "../CloudGatewayFirebaseAdapter" */,
 				ABCDEF000000000000000021 /* XCRemoteSwiftPackageReference "wireguard-apple" */,
 				ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				60B438372FF611BE0089F40B /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
@@ -762,6 +763,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../CloudGatewayKit;
 		};
+		ABCDEF000000000000000058 /* XCLocalSwiftPackageReference "../CloudGatewayFirebaseAdapter" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../CloudGatewayFirebaseAdapter;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -812,11 +817,6 @@
 			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseCore;
 		};
-		ABCDEF000000000000000051 /* FirebaseAuth */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAuth;
-		};
 		ABCDEF000000000000000052 /* FirebaseFirestore */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
@@ -826,6 +826,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */;
 			productName = CloudGatewayAppCore;
+		};
+		ABCDEF000000000000000059 /* CloudGatewayFirebaseAuthAdapter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000058 /* XCLocalSwiftPackageReference "../CloudGatewayFirebaseAdapter" */;
+			productName = CloudGatewayFirebaseAuthAdapter;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

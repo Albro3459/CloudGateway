@@ -53,9 +53,9 @@ VPN behavior change is intended.
 
 - [x] Stage 0: freeze the observable iOS contract and establish a green baseline.
 - [x] Stage 1: add the Firebase-free `CloudGatewayAppCore` module and move passive contracts.
-- [ ] Stage 2: move the app model and its tests without redesigning behavior.
-- [ ] Stage 3: extract the shared control-plane API client from the Firebase service.
-- [ ] Stage 4: split shared Firebase operations from platform sign-in presentation.
+- [x] Stage 2: move the app model and its tests without redesigning behavior.
+- [x] Stage 3: extract the shared control-plane API client from the Firebase service.
+- [x] Stage 4: split shared Firebase operations from platform sign-in presentation.
 - [ ] Stage 5: replace implicit iOS construction with explicit platform composition.
 - [ ] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
 - [ ] Stage 7: document the packet-extension reuse and thin-adapter boundary.
@@ -618,7 +618,7 @@ Completion record:
   Testing cases, project listing, and the unsigned generic-device iOS build;
 * GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
-### Stage 4 - Split Firebase Operations From Platform Presentation
+### ✅ Stage 4 - Split Firebase Operations From Platform Presentation
 
 Break the remaining production service into:
 
@@ -664,6 +664,32 @@ Acceptance:
   `CloudGatewayKit` and Apple SDK frameworks;
 * AppCore and packet-extension dependency graphs contain no Firebase or Google
   products.
+
+Completion record:
+
+* the Firebase-free AppCore now owns the auth, client-repository, control-plane,
+  and Google-presentation ports plus the thin service facade used by the shared
+  app model;
+* the new `CloudGatewayFirebaseAuthAdapter` local package contains Firebase Auth
+  only and compiles and tests natively for the declared macOS 14 deployment
+  target as well as through the iOS app graph;
+* raw Firebase error mappings, including credential code `17004`, have moved to
+  adapter tests, while facade tests cover Google presentation and revocation
+  ordering, Apple revocation forwarding, local Google sign-out ordering,
+  repository delegation, and post-create owner decoration;
+* the pinned Firebase 11.15 binary Firestore product excludes macOS, so the
+  Firestore repository remains a small iOS conformer; it normalizes `Timestamp`
+  to `Date` before calling the shared pure document mapper, without changing the
+  app lifecycle's memory-only cache configuration;
+* Google Sign-In presentation is now an injected iOS UIKit presenter, leaving
+  the future macOS app to provide its native presentation anchor without
+  duplicating auth or facade logic;
+* AppCore remains vendor- and UI-framework-free, and neither AppCore nor the
+  packet extension links Firebase or Google products;
+* `./scripts/test.sh apple` passed with 94 app-model XCTest cases, 246 Swift
+  Testing cases, 2 native macOS Firebase-adapter tests, Xcode project listing,
+  and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
 ### Stage 5 - Make Platform Composition Explicit
 

@@ -114,6 +114,8 @@ test_apple() {
 
   run_check "Apple release script syntax" bash -n scripts/ios-release.sh
   run_check "Apple package tests" swift test --package-path Frontend/Apple/CloudGatewayKit
+  run_check "Apple Firebase auth adapter tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter
   run_check "Apple iOS project list" xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
 
   if [[ "$APPLE_SIGNED" -eq 1 ]]; then
