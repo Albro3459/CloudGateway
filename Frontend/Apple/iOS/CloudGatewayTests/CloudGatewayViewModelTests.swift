@@ -1,3 +1,4 @@
+import CloudGatewayAppCore
 import CloudGatewayKit
 import XCTest
 

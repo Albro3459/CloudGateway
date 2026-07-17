@@ -1,3 +1,4 @@
+import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 
@@ -77,33 +78,22 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var deleteAccountCallCount = 0
     private(set) var syncRegionCallCount = 0
     private(set) var grantAccessCallCount = 0
-    private(set) var addAuthStateListenerCallCount = 0
-    private(set) var removeAuthStateListenerCallCount = 0
+    var addAuthStateListenerCallCount: Int { authListenerStorage.addCallCount }
+    var removeAuthStateListenerCallCount: Int { authListenerStorage.removeCallCount }
 
-    private var authStateListener: ((AuthenticatedUser?) -> Void)?
-    private var authStateListenerToken: NSObject?
+    private nonisolated let authListenerStorage = MockAuthListenerStorage()
 
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
-        addAuthStateListenerCallCount += 1
-        let token = NSObject()
-        authStateListener = listener
-        authStateListenerToken = token
-        return token
+        authListenerStorage.add(listener)
     }
 
-    func removeAuthStateListener(_ token: Any) {
-        removeAuthStateListenerCallCount += 1
-        guard let token = token as? NSObject,
-              token === authStateListenerToken else {
-            return
-        }
-        authStateListener = nil
-        authStateListenerToken = nil
+    nonisolated func removeAuthStateListener(_ token: Any) {
+        authListenerStorage.remove(token)
     }
 
     func emitAuthState(_ user: AuthenticatedUser?) {
         currentUser = user
-        authStateListener?(user)
+        authListenerStorage.emit(user)
     }
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {
@@ -341,6 +331,49 @@ final class MockGatewayService: CloudGatewayServicing {
             throw grantAccessError
         }
         return CloudGatewayGrantAccessResponse(email: email, alreadyExisted: grantAccessAlreadyExisted)
+    }
+}
+
+private final class MockAuthListenerStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var listener: ((AuthenticatedUser?) -> Void)?
+    private var token: NSObject?
+    private var addCount = 0
+    private var removeCount = 0
+
+    var addCallCount: Int {
+        lock.withLock { addCount }
+    }
+
+    var removeCallCount: Int {
+        lock.withLock { removeCount }
+    }
+
+    func add(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
+        lock.withLock {
+            addCount += 1
+            let token = NSObject()
+            self.listener = listener
+            self.token = token
+            return token
+        }
+    }
+
+    func remove(_ token: Any) {
+        lock.withLock {
+            removeCount += 1
+            guard let token = token as? NSObject,
+                  token === self.token else {
+                return
+            }
+            listener = nil
+            self.token = nil
+        }
+    }
+
+    func emit(_ user: AuthenticatedUser?) {
+        let currentListener: ((AuthenticatedUser?) -> Void)? = lock.withLock { self.listener }
+        currentListener?(user)
     }
 }
 

@@ -18,6 +18,9 @@
 		ABCDEF000000000000000040 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000050 /* FirebaseCore */; };
 		ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000051 /* FirebaseAuth */; };
 		ABCDEF000000000000000042 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000052 /* FirebaseFirestore */; };
+		ABCDEF000000000000000054 /* CloudGatewayAppCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000057 /* CloudGatewayAppCore */; };
+		ABCDEF000000000000000055 /* CloudGatewayAppCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000057 /* CloudGatewayAppCore */; };
+		ABCDEF000000000000000056 /* CloudGatewayAppCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABCDEF000000000000000057 /* CloudGatewayAppCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,7 +68,7 @@
 		607A1C1E2FF54A3F0001783A /* Exceptions for "CloudGateway" folder in "CloudGatewayTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				CloudGatewayServicing.swift,
+				CloudGatewayFirebaseAuthErrorCode.swift,
 				CloudGatewayViewModel.swift,
 			);
 			target = 607A1C072FF548230001783A /* CloudGatewayTests */;
@@ -80,9 +83,7 @@
 		60C0DE122FF700000089F40B /* Exceptions for "CloudGateway" folder in "CloudGatewayScreenshots" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				AppleSignInNonce.swift,
 				Assets.xcassets,
-				CloudGatewayServicing.swift,
 				CloudGatewayTheme.swift,
 				CloudGatewayViewModel.swift,
 				ContentView.swift,
@@ -120,6 +121,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				60B438392FF611BE0089F40B /* GoogleSignIn in Frameworks */,
+				ABCDEF000000000000000054 /* CloudGatewayAppCore in Frameworks */,
 				ABCDEF000000000000000002 /* CloudGatewayKit in Frameworks */,
 				ABCDEF000000000000000040 /* FirebaseCore in Frameworks */,
 				ABCDEF000000000000000041 /* FirebaseAuth in Frameworks */,
@@ -131,6 +133,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ABCDEF000000000000000055 /* CloudGatewayAppCore in Frameworks */,
 				607A1C1B2FF5498A0001783A /* CloudGatewayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -139,6 +142,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ABCDEF000000000000000056 /* CloudGatewayAppCore in Frameworks */,
 				60C0DE102FF700000089F40B /* CloudGatewayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -234,6 +238,7 @@
 			);
 			name = CloudGateway;
 			packageProductDependencies = (
+				ABCDEF000000000000000057 /* CloudGatewayAppCore */,
 				ABCDEF000000000000000018 /* CloudGatewayKit */,
 				ABCDEF000000000000000050 /* FirebaseCore */,
 				ABCDEF000000000000000051 /* FirebaseAuth */,
@@ -261,6 +266,7 @@
 			);
 			name = CloudGatewayTests;
 			packageProductDependencies = (
+				ABCDEF000000000000000057 /* CloudGatewayAppCore */,
 				607A1C1A2FF5498A0001783A /* CloudGatewayKit */,
 			);
 			productName = CloudGatewayTests;
@@ -284,6 +290,7 @@
 			);
 			name = CloudGatewayScreenshots;
 			packageProductDependencies = (
+				ABCDEF000000000000000057 /* CloudGatewayAppCore */,
 				ABCDEF000000000000000018 /* CloudGatewayKit */,
 			);
 			productName = CloudGatewayScreenshots;
@@ -947,6 +954,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = ABCDEF000000000000000053 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseFirestore;
+		};
+		ABCDEF000000000000000057 /* CloudGatewayAppCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ABCDEF000000000000000020 /* XCLocalSwiftPackageReference "../CloudGatewayKit" */;
+			productName = CloudGatewayAppCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

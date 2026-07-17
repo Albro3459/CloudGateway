@@ -1,20 +1,22 @@
 import CloudGatewayKit
 import Foundation
 
-protocol CloudGatewayNotificationAuthorizing {
+@MainActor
+public protocol CloudGatewayNotificationAuthorizing {
     func requestAuthorization()
     func requestAuthorizationIfUndetermined()
 }
 
-struct NoopCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
-    nonisolated init() {}
+public struct NoopCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    public nonisolated init() {}
 
-    func requestAuthorization() {}
-    func requestAuthorizationIfUndetermined() {}
+    public func requestAuthorization() {}
+    public func requestAuthorizationIfUndetermined() {}
 }
 
-enum CloudGatewayExistingInstallNotificationAuthorization {
-    static func requestIfNeeded(
+@MainActor
+public enum CloudGatewayExistingInstallNotificationAuthorization {
+    public static func requestIfNeeded(
         hasInstalledConfig: Bool,
         authorizer: CloudGatewayNotificationAuthorizing
     ) {
@@ -23,13 +25,14 @@ enum CloudGatewayExistingInstallNotificationAuthorization {
     }
 }
 
-enum CloudGatewayFirstInstallNotificationAuthorization {
-    static func request(authorizer: CloudGatewayNotificationAuthorizing) {
+@MainActor
+public enum CloudGatewayFirstInstallNotificationAuthorization {
+    public static func request(authorizer: CloudGatewayNotificationAuthorizing) {
         authorizer.requestAuthorization()
     }
 }
 
-enum CloudGatewayAppError: LocalizedError {
+public enum CloudGatewayAppError: LocalizedError {
     case missingCurrentUser
     case noEnabledRegions
     case missingSelectedRegion
@@ -45,7 +48,7 @@ enum CloudGatewayAppError: LocalizedError {
     case invalidSignInCredentials
     case wrongPassword
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingCurrentUser:
             "Sign in again to continue."
@@ -79,26 +82,11 @@ enum CloudGatewayAppError: LocalizedError {
     }
 }
 
-enum CloudGatewayFirebaseAuthErrorCode {
-    static func signInError(forRawCode code: Int) -> CloudGatewayAppError? {
-        switch code {
-        case 17008:
-            return .invalidEmail
-        case 17004, 17009, 17011:
-            return .invalidSignInCredentials
-        case 17005:
-            return .accessDenied("This account has been disabled. Contact support.")
-        default:
-            return nil
-        }
-    }
-}
-
-enum CloudGatewayRuntimeConfiguration {
-    enum Error: LocalizedError, Equatable {
+public enum CloudGatewayRuntimeConfiguration {
+    public enum Error: LocalizedError, Equatable {
         case missingKeychainAccessGroup
 
-        var errorDescription: String? {
+        public var errorDescription: String? {
             switch self {
             case .missingKeychainAccessGroup:
                 "CloudGateway keychain access group is missing or unresolved."
@@ -106,7 +94,7 @@ enum CloudGatewayRuntimeConfiguration {
         }
     }
 
-    static func keychainAccessGroup(_ value: Any?) throws -> String {
+    public static func keychainAccessGroup(_ value: Any?) throws -> String {
         guard let accessGroup = value as? String else {
             throw Error.missingKeychainAccessGroup
         }
@@ -119,12 +107,12 @@ enum CloudGatewayRuntimeConfiguration {
     }
 }
 
-enum CloudGatewayAPIURLBuilder {
-    static func apexAPIURL(originHost: String, path: String) throws -> URL {
+public enum CloudGatewayAPIURLBuilder {
+    public static func apexAPIURL(originHost: String, path: String) throws -> URL {
         try apiURL(host: "api.\(originHost)", path: path)
     }
 
-    static func regionalAPIURL(originHost: String, regionId: String, path: String) throws -> URL {
+    public static func regionalAPIURL(originHost: String, regionId: String, path: String) throws -> URL {
         try apiURL(host: "\(normalizedRegionId(regionId)).\(originHost)", path: path)
     }
 
@@ -142,9 +130,7 @@ enum CloudGatewayAPIURLBuilder {
         return normalizedRegionId
     }
 
-    // Validate a client id against a safe charset before interpolating it into
-    // an API path, so a value with "/", "?", or "#" cannot alter the request URL.
-    static func validatedClientId(_ clientId: String) throws -> String {
+    public static func validatedClientId(_ clientId: String) throws -> String {
         guard clientId.range(
             of: #"^[A-Za-z0-9_-]{1,128}$"#,
             options: .regularExpression
@@ -166,48 +152,92 @@ enum CloudGatewayAPIURLBuilder {
     }
 }
 
-struct AuthenticatedUser: Equatable, Sendable {
-    let uid: String
-    let email: String?
+public struct AuthenticatedUser: Equatable, Sendable {
+    public let uid: String
+    public let email: String?
+
+    public init(uid: String, email: String?) {
+        self.uid = uid
+        self.email = email
+    }
 }
 
-struct CloudGatewayAccessCheck: Decodable, Equatable {
-    let userId: String
-    let email: String?
-    let role: String
+public struct CloudGatewayAccessCheck: Decodable, Equatable {
+    public let userId: String
+    public let email: String?
+    public let role: String
+
+    public init(userId: String, email: String?, role: String) {
+        self.userId = userId
+        self.email = email
+        self.role = role
+    }
 }
 
-struct CloudGatewayDeleteClientResponse: Decodable, Equatable {
-    let userId: String
-    let clientId: String
-    let regionId: String
-    let status: CloudGatewayClientStatus
+public struct CloudGatewayDeleteClientResponse: Decodable, Equatable {
+    public let userId: String
+    public let clientId: String
+    public let regionId: String
+    public let status: CloudGatewayClientStatus
+
+    public init(userId: String, clientId: String, regionId: String, status: CloudGatewayClientStatus) {
+        self.userId = userId
+        self.clientId = clientId
+        self.regionId = regionId
+        self.status = status
+    }
 }
 
-struct CloudGatewayDeleteAccountResponse: Decodable, Equatable {
-    let userId: String
-    let deletedClientCount: Int
+public struct CloudGatewayDeleteAccountResponse: Decodable, Equatable {
+    public let userId: String
+    public let deletedClientCount: Int
+
+    public init(userId: String, deletedClientCount: Int) {
+        self.userId = userId
+        self.deletedClientCount = deletedClientCount
+    }
 }
 
-struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
-    let regionId: String
-    let syncedAt: String
-    let added: Int
-    let updated: Int
-    let removed: Int
-    let noChanges: Bool
-    let log: String
+public struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
+    public let regionId: String
+    public let syncedAt: String
+    public let added: Int
+    public let updated: Int
+    public let removed: Int
+    public let noChanges: Bool
+    public let log: String
+
+    public init(
+        regionId: String,
+        syncedAt: String,
+        added: Int,
+        updated: Int,
+        removed: Int,
+        noChanges: Bool,
+        log: String
+    ) {
+        self.regionId = regionId
+        self.syncedAt = syncedAt
+        self.added = added
+        self.updated = updated
+        self.removed = removed
+        self.noChanges = noChanges
+        self.log = log
+    }
 }
 
-struct CloudGatewayGrantAccessResponse: Decodable, Equatable {
-    let email: String
-    let alreadyExisted: Bool
+public struct CloudGatewayGrantAccessResponse: Decodable, Equatable {
+    public let email: String
+    public let alreadyExisted: Bool
+
+    public init(email: String, alreadyExisted: Bool) {
+        self.email = email
+        self.alreadyExisted = alreadyExisted
+    }
 }
 
-/// App-side seam over Firebase Auth + the regional API so `CloudGatewayViewModel`
-/// can be exercised with a mock. Firebase-free on purpose: the only conformer that
-/// touches Firebase is `CloudGatewayFirebaseService`.
-protocol CloudGatewayServicing {
+@MainActor
+public protocol CloudGatewayServicing: AnyObject {
     var currentUser: AuthenticatedUser? { get }
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any
     nonisolated func removeAuthStateListener(_ token: Any)
@@ -237,19 +267,19 @@ protocol CloudGatewayServicing {
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse
 }
 
-extension CloudGatewayServicing {
+public extension CloudGatewayServicing {
     func idToken() async throws -> String {
         try await idToken(forceRefresh: false)
     }
 }
 
-/// App-side seam over the shared-app-group tunnel-health flag the packet-tunnel
-/// extension writes, so the view model can read it without a network round-trip
-/// (and be exercised with a fake in tests).
-protocol CloudGatewayTunnelHealthReading {
+@MainActor
+public protocol CloudGatewayTunnelHealthReading {
     func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot?
 }
 
-struct NoopTunnelHealthReader: CloudGatewayTunnelHealthReading {
-    func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot? { nil }
+public struct NoopTunnelHealthReader: CloudGatewayTunnelHealthReading {
+    public nonisolated init() {}
+
+    public func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot? { nil }
 }

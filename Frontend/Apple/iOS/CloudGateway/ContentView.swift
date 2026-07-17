@@ -1,4 +1,5 @@
 import AuthenticationServices
+import CloudGatewayAppCore
 import CloudGatewayKit
 import SwiftUI
 import UIKit
@@ -10,6 +11,8 @@ private enum PendingAccountAction {
 }
 
 struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    nonisolated init() {}
+
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }

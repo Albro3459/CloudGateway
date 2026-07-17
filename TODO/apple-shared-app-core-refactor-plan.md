@@ -52,7 +52,7 @@ VPN behavior change is intended.
 ## Implementation Progress
 
 - [x] Stage 0: freeze the observable iOS contract and establish a green baseline.
-- [ ] Stage 1: add the Firebase-free `CloudGatewayAppCore` module and move passive contracts.
+- [x] Stage 1: add the Firebase-free `CloudGatewayAppCore` module and move passive contracts.
 - [ ] Stage 2: move the app model and its tests without redesigning behavior.
 - [ ] Stage 3: extract the shared control-plane API client from the Firebase service.
 - [ ] Stage 4: split shared Firebase operations from platform sign-in presentation.
@@ -506,6 +506,19 @@ Acceptance:
 * the AppCore target dependency list contains only `CloudGatewayKit` plus Apple
   SDK frameworks, with no Firebase or Google package product;
 * the full Apple gate remains green.
+
+Completion record:
+
+* `CloudGatewayAppCore` now builds as a Swift 6 iOS 17/macOS 14 library with
+  only `CloudGatewayKit` as a package dependency and no vendor/UI imports;
+* passive contracts, URL/runtime policies, and Apple nonce behavior moved out
+  of the iOS source tree; Firebase numeric error translation remains in the iOS
+  adapter;
+* 236 package tests (231 Kit + 5 AppCore), 94 host-less tests, the unsigned app
+  build, and the generic Simulator screenshot-target build passed;
+* GPT-5.6 Terra, medium reasoning, approved after confirming the explicit main
+  actor annotations preserve the production and screenshot targets' prior
+  `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` behavior.
 
 ### Stage 2 - Move The Shared App Model And Tests
 
