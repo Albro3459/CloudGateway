@@ -572,7 +572,7 @@ Completion record:
   test-only helpers and removing accidental access modifiers. The iOS Firebase
   numeric-code mapper regression moves to the adapter test boundary in Stage 4.
 
-### Stage 3 - Extract The Control-Plane Client
+### ✅ Stage 3 - Extract The Control-Plane Client
 
 Create a Foundation-only `CloudGatewayControlPlaneClient` in AppCore. Move:
 
@@ -599,6 +599,24 @@ Acceptance:
 * API URL/path-injection tests and every endpoint request/response contract pass;
 * no backend/API behavior change is required;
 * AppCore remains Firebase-free and compiles on macOS.
+
+Completion record:
+
+* all eight apex/regional REST endpoints, request/response DTOs, URL creation,
+  bearer and unauthenticated request construction, ISO-8601 decoding, and API
+  error translation now live in the Foundation-only
+  `CloudGatewayControlPlaneClient`;
+* the origin host and session are injected, while the production session keeps
+  the existing 10-second request timeout and disabled connectivity waiting;
+* `CloudGatewayFirebaseService` delegates control-plane work and retains only
+  its Firebase-owned post-create user decoration and Firebase/Firestore work;
+* fake-session tests cover every endpoint's URL, method, headers, body and
+  response, plus region filtering/sorting, serial best-effort capacity,
+  path-injection rejection, malformed/non-HTTP responses, API envelopes, and
+  transport-error propagation;
+* `./scripts/test.sh apple` passed with 94 app-model XCTest cases, 241 Swift
+  Testing cases, project listing, and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
 ### Stage 4 - Split Firebase Operations From Platform Presentation
 

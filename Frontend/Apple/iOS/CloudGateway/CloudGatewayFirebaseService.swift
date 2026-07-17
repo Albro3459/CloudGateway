@@ -56,39 +56,9 @@ struct CloudGatewayTunnelHealthReader: CloudGatewayTunnelHealthReading {
     }
 }
 
-struct CloudGatewayCreateClientResponse: Decodable, Equatable {
-    let clientId: String
-    let regionId: String
-    let clientName: String
-    let status: CloudGatewayClientStatus
-    let wireguardConfig: String
-    let assignedTunnelIpv4: String?
-    let serverEndpointIpv4: String?
-    let serverEndpointHostname: String?
-}
-
-struct CloudGatewayCapacityResponse: Decodable, Equatable {
-    let regionId: String
-    let capacityLimit: Int
-    let allocatedClientCount: Int
-}
-
-struct CloudGatewayRegionsResponse: Decodable, Equatable {
-    struct Region: Decodable, Equatable {
-        let regionId: String
-        let displayName: String
-        let displayOrder: Int
-    }
-
-    let regions: [Region]
-}
-
 final class CloudGatewayFirebaseService: CloudGatewayServicing {
     private let db = Firestore.firestore()
-    private let apiOriginHost = "gocloudlaunch.com"
-    // Bounded request timeout so a dead/blackholing tunnel fails in ~10s instead
-    // of URLSession's 60s default (see CloudGatewayAPISession).
-    private let apiSession = CloudGatewayAPISession.makeSession()
+    private let controlPlane = CloudGatewayControlPlaneClient(originHost: "gocloudlaunch.com")
 
     var currentUser: AuthenticatedUser? {
         guard let user = Auth.auth().currentUser else {
@@ -360,61 +330,16 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
     }
 
     func fetchRegions() async throws -> [CloudGatewayRegion] {
-        let response: CloudGatewayRegionsResponse = try await sendUnauthenticatedRequest(
-            url: try apexAPIURL(path: "regions"),
-            method: "GET"
-        )
-        let regions: [CloudGatewayRegion] = response.regions.compactMap { region in
-            guard !region.regionId.isEmpty, !region.displayName.isEmpty else {
-                return nil
-            }
-            return CloudGatewayRegion(
-                regionId: region.regionId,
-                displayName: region.displayName,
-                enabled: true,
-                displayOrder: region.displayOrder
-            )
-        }
-        return CloudGatewayConfigSelection.sortedRegions(regions)
+        try await controlPlane.fetchRegions()
     }
 
     func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion] {
-        var regionsWithCapacity = [CloudGatewayRegion]()
-        for region in regions {
-            do {
-                let capacity = try await fetchCapacity(regionId: region.regionId, idToken: idToken)
-                guard capacity.regionId == region.regionId else {
-                    regionsWithCapacity.append(region.withCapacity(.unknown))
-                    continue
-                }
-                regionsWithCapacity.append(region.withCapacity(.known(
-                    limit: capacity.capacityLimit,
-                    allocated: capacity.allocatedClientCount
-                )))
-            } catch {
-                regionsWithCapacity.append(region.withCapacity(.unknown))
-            }
-        }
-        return CloudGatewayConfigSelection.sortedRegions(regionsWithCapacity)
+        await controlPlane.addCapacity(to: regions, idToken: idToken)
     }
 
     func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
         _ = regions
-        let response: CloudGatewayAccessCheck = try await sendJSONRequest(
-            url: try apexAPIURL(path: "auth/check-access"),
-            method: "POST",
-            idToken: idToken,
-            body: EmptyRequest()
-        )
-        return response
-    }
-
-    func fetchCapacity(regionId: String, idToken: String) async throws -> CloudGatewayCapacityResponse {
-        try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "capacity"),
-            method: "GET",
-            idToken: idToken
-        )
+        return try await controlPlane.checkAccess(idToken: idToken)
     }
 
     func createClient(
@@ -422,14 +347,10 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         clientName: String,
         idToken: String
     ) async throws -> CloudGatewayClient {
-        let response: CloudGatewayCreateClientResponse = try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "clients"),
-            method: "POST",
-            idToken: idToken,
-            body: CreateClientRequest(
-                regionId: regionId,
-                clientName: clientName.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
+        let response = try await controlPlane.createClient(
+            regionId: regionId,
+            clientName: clientName,
+            idToken: idToken
         )
         return CloudGatewayClient(
             clientId: response.clientId,
@@ -452,39 +373,24 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         regionId: String,
         idToken: String
     ) async throws -> CloudGatewayDeleteClientResponse {
-        let safeClientId = try CloudGatewayAPIURLBuilder.validatedClientId(clientId)
-        return try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "clients/\(safeClientId)"),
-            method: "DELETE",
-            idToken: idToken,
-            body: DeleteClientRequest(userId: userId, regionId: regionId)
-        )
-    }
-
-    func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
-        try await sendJSONRequest(
-            url: try apexAPIURL(path: "account"),
-            method: "DELETE",
+        try await controlPlane.deleteClient(
+            clientId: clientId,
+            userId: userId,
+            regionId: regionId,
             idToken: idToken
         )
     }
 
+    func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
+        try await controlPlane.deleteAccount(idToken: idToken)
+    }
+
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
-        try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "admin/sync"),
-            method: "POST",
-            idToken: idToken,
-            body: SyncRegionRequest(regionId: regionId)
-        )
+        try await controlPlane.syncRegion(regionId: regionId, idToken: idToken)
     }
 
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse {
-        try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "users"),
-            method: "POST",
-            idToken: idToken,
-            body: GrantAccessRequest(email: email)
-        )
+        try await controlPlane.grantAccess(email: email, regionId: regionId, idToken: idToken)
     }
 
     func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient] {
@@ -566,21 +472,6 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         )
     }
 
-    private func apiErrorMessage(from data: Data) -> String? {
-        struct ErrorResponse: Decodable {
-            struct Detail: Decodable {
-                let code: String?
-                let message: String?
-            }
-            let error: Detail?
-        }
-
-        guard let response = try? JSONDecoder().decode(ErrorResponse.self, from: data) else {
-            return nil
-        }
-        return response.error?.message ?? response.error?.code
-    }
-
     private func string(_ value: Any?) -> String? {
         guard let value = value as? String else {
             return nil
@@ -596,101 +487,4 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return value as? Date
     }
 
-    private func apexAPIURL(path: String) throws -> URL {
-        try CloudGatewayAPIURLBuilder.apexAPIURL(originHost: apiOriginHost, path: path)
-    }
-
-    private func regionalAPIURL(regionId: String, path: String) throws -> URL {
-        try CloudGatewayAPIURLBuilder.regionalAPIURL(originHost: apiOriginHost, regionId: regionId, path: path)
-    }
-
-    private func sendJSONRequest<Response: Decodable, Body: Encodable>(
-        url: URL,
-        method: String,
-        idToken: String,
-        body: Body
-    ) async throws -> Response {
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(body)
-        return try await send(request)
-    }
-
-    private func sendJSONRequest<Response: Decodable>(
-        url: URL,
-        method: String,
-        idToken: String
-    ) async throws -> Response {
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        return try await send(request)
-    }
-
-    private func sendUnauthenticatedRequest<Response: Decodable>(
-        url: URL,
-        method: String
-    ) async throws -> Response {
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        return try await send(request)
-    }
-
-    private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
-        let (data, response) = try await apiSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw CloudGatewayAppError.invalidAPIResponse
-        }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw CloudGatewayAppError.accessDenied(apiErrorMessage(from: data) ?? "CloudGateway API request failed.")
-        }
-        do {
-            return try JSONDecoder.gatewayAPI.decode(Response.self, from: data)
-        } catch {
-            throw CloudGatewayAppError.invalidAPIResponse
-        }
-    }
-}
-
-private struct EmptyRequest: Encodable {}
-
-private struct CreateClientRequest: Encodable {
-    let regionId: String
-    let clientName: String
-}
-
-private struct DeleteClientRequest: Encodable {
-    let userId: String
-    let regionId: String
-}
-
-private struct SyncRegionRequest: Encodable {
-    let regionId: String
-}
-
-private struct GrantAccessRequest: Encodable {
-    let email: String
-}
-
-private extension JSONDecoder {
-    static var gatewayAPI: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
-}
-
-private extension CloudGatewayRegion {
-    func withCapacity(_ capacity: CloudGatewayRegionCapacity) -> CloudGatewayRegion {
-        CloudGatewayRegion(
-            regionId: regionId,
-            displayName: displayName,
-            enabled: enabled,
-            displayOrder: displayOrder,
-            capacity: capacity
-        )
-    }
 }
