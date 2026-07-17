@@ -8,11 +8,12 @@ The CloudGateway iOS app is the first native Apple client, but the Apple code is
 Frontend/Apple/iOS/
   CloudGateway/                 iOS SwiftUI app target
   CloudGatewayTunnel/           iOS packet tunnel extension
-  CloudGatewayTests/            host-less view-model tests
 
 Frontend/Apple/CloudGatewayKit/
   Sources/CloudGatewayKit/      shared Apple VPN/config core
+  Sources/CloudGatewayAppCore/  shared app state and orchestration
   Tests/CloudGatewayKitTests/   shared model, cache, reconciliation tests
+  Tests/CloudGatewayAppCoreTests/ shared app-model tests
 
 Frontend/Apple/macOS/
   README.md                     future macOS app placeholder
@@ -304,4 +305,7 @@ Docs-only changes can be manually reviewed. Apple code changes should use the ex
 ./scripts/test.sh apple --signed
 ```
 
-The unsigned gate covers `CloudGatewayKit` tests, no-device iOS build health, and the host-less view-model tests configured for the project. Signed/device validation is still required for Network Extension installation, App Group and Keychain Sharing entitlements, provider sign-in UI, and live WireGuard start/stop behavior.
+The unsigned gate covers `CloudGatewayKit` and `CloudGatewayAppCore` tests on
+macOS plus no-device iOS build health. Signed/device validation is still
+required for Network Extension installation, App Group and Keychain Sharing
+entitlements, provider sign-in UI, and live WireGuard start/stop behavior.

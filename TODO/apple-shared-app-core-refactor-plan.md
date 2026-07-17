@@ -373,7 +373,7 @@ The refactor is incomplete if any of these change.
 
 ## Implementation Stages
 
-### Stage 0 - Freeze The Observable Contract
+### ✅ Stage 0 - Freeze The Observable Contract
 
 Before moving code:
 
@@ -470,7 +470,7 @@ These checks require signing, entitlements, live Firebase/Google configuration,
 or a real Network Extension. They remain explicitly outstanding and are not
 claimed by the host-less or unsigned build gates.
 
-### Stage 1 - Add AppCore And Move Passive Contracts
+### ✅ Stage 1 - Add AppCore And Move Passive Contracts
 
 Add `CloudGatewayAppCore` as a library product and target in the existing
 `CloudGatewayKit` package, depending only on `CloudGatewayKit`.
@@ -520,7 +520,7 @@ Completion record:
   actor annotations preserve the production and screenshot targets' prior
   `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` behavior.
 
-### Stage 2 - Move The Shared App Model And Tests
+### ✅ Stage 2 - Move The Shared App Model And Tests
 
 Move `CloudGatewayViewModel.swift` into AppCore as one behavior-preserving unit,
 including its supporting enums, sync result, async result latch, and tunnel
@@ -552,6 +552,25 @@ Acceptance:
 * the iOS app and screenshot fixture import one compiled AppCore product;
 * no reusable source is compiled from the iOS folder by another target;
 * screenshots and all Apple validation remain unchanged.
+
+Completion record:
+
+* `CloudGatewayViewModel` and its supporting app-model declarations now live in
+  `CloudGatewayAppCore`; only members used across the module boundary are
+  public;
+* the 94 view-model tests and their fakes now run on macOS from
+  `CloudGatewayAppCoreTests`, and the obsolete Xcode host-less target, scheme,
+  membership exceptions, and duplicate iOS test sources are removed;
+* auth-listener ownership now uses a typed, thread-safe, exact-once
+  registration so model deinitialization preserves listener cleanup across the
+  Swift 6 module boundary;
+* `./scripts/test.sh apple` passed with 94 app-model XCTest cases, 236 Swift
+  Testing cases, project listing, and the unsigned generic-device iOS build;
+* screenshot inspection and Simulator use were waived by the owner. The fixture
+  target has no generic-device destination, so it was not separately built;
+* GPT-5.6 Terra, medium reasoning, approved after an API audit led to narrowing
+  test-only helpers and removing accidental access modifiers. The iOS Firebase
+  numeric-code mapper regression moves to the adapter test boundary in Stage 4.
 
 ### Stage 3 - Extract The Control-Plane Client
 
@@ -610,8 +629,10 @@ Keep Firebase startup and Firestore memory-cache configuration in the platform
 app lifecycle. The cache must be configured before any repository creates or
 uses the default Firestore instance.
 
-Add adapter tests for error mapping, Firestore document mapping, sign-out grant
-cleanup, and facade delegation without contacting production services.
+Add adapter tests for error mapping, including the raw Firebase credential code
+`17004` regression migrated from the old iOS test target, Firestore document
+mapping, sign-out grant cleanup, and facade delegation without contacting
+production services.
 
 Acceptance:
 
@@ -807,7 +828,8 @@ Run on a signed iOS device after the final refactor:
 * dead-tunnel disconnect followed by successful direct-network reload;
 * account deletion while disconnected and blocking while a tunnel is active;
 * app background/foreground and device sleep/wake with an active tunnel;
-* screenshot fixture output and release archive/build behavior.
+* ~~screenshot fixture output~~ (waived for this refactor; do not inspect images
+  or use Simulator/computer-use) and release archive/build behavior.
 
 Future macOS validation is a separate implementation gate, but it must reuse the
 same AppCore contract suite before adding platform-specific UI tests.

@@ -162,6 +162,31 @@ public struct AuthenticatedUser: Equatable, Sendable {
     }
 }
 
+/// Owns an auth-listener cancellation closure so actor-isolated app models can
+/// unregister safely from their nonisolated deinitializer. The lock protects
+/// the closure and guarantees exact-once cancellation across explicit cancel
+/// and deinitialization.
+public final class CloudGatewayAuthStateListenerRegistration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancellation: (() -> Void)?
+
+    public init(cancellation: @escaping () -> Void) {
+        self.cancellation = cancellation
+    }
+
+    public nonisolated func cancel() {
+        let cancellation = lock.withLock {
+            defer { self.cancellation = nil }
+            return self.cancellation
+        }
+        cancellation?()
+    }
+
+    deinit {
+        cancel()
+    }
+}
+
 public struct CloudGatewayAccessCheck: Decodable, Equatable {
     public let userId: String
     public let email: String?
@@ -239,8 +264,9 @@ public struct CloudGatewayGrantAccessResponse: Decodable, Equatable {
 @MainActor
 public protocol CloudGatewayServicing: AnyObject {
     var currentUser: AuthenticatedUser? { get }
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any
-    nonisolated func removeAuthStateListener(_ token: Any)
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration
     func signIn(email: String, password: String) async throws -> AuthenticatedUser
     func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func signInWithGoogle() async throws -> AuthenticatedUser

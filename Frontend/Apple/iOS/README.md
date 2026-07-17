@@ -84,15 +84,12 @@ After archiving, confirm the archive no longer embeds the binary Firestore depen
 
 ## Current Limitations
 
-Shared sorting, filtering, reconciliation, selection/merge, and cache behavior are covered by `CloudGatewayKit` tests (run under `swift test`). View-model orchestration (remote-load sequencing, sign-out branching, capacity gating, selection prune) has tests in `CloudGatewayTests/`, wired against a mock `CloudGatewayServicing` so no Firebase or network is involved.
-
-That test target is a host-less logic bundle because the app scheme cannot
-build for the iOS Simulator - the `CloudGatewayTunnel` extension links
-WireGuard's device-only `libwg-go.a`. It is part of the
-`./scripts/test.sh apple` gate without building the app host or packet-tunnel
-extension; see [CloudGatewayTests/README.md](CloudGatewayTests/README.md) for
-the Xcode wiring and direct `xcodebuild test` command. The thin
-`CloudGatewayFirebaseService` URLSession/Firestore adapter remains
+Shared sorting, filtering, reconciliation, selection/merge, and cache behavior
+are covered by `CloudGatewayKit` tests. View-model orchestration (remote-load
+sequencing, sign-out branching, capacity gating, and selection pruning) is
+covered by `CloudGatewayAppCoreTests`, wired against a mock
+`CloudGatewayServicing` so no Firebase or network is involved. Both suites run
+natively on macOS through `swift test`; the thin iOS Firebase adapter remains
 build-validated only.
 
 Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
@@ -106,9 +103,9 @@ From the repo root:
 ./scripts/test.sh apple --signed
 ```
 
-The unsigned Apple target runs shared package tests, host-less view-model
-tests, and the no-device app build. The signed variant checks explicit
-provisioning for the app and tunnel extension.
+The unsigned Apple target runs the shared package and app-core tests, then the
+no-device app build. The signed variant checks explicit provisioning for the
+app and tunnel extension.
 
 Equivalent raw commands:
 

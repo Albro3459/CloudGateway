@@ -88,14 +88,14 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         CloudGatewayConfigSelection.clientOptions(clients: clients, regions: regions)
     }
 
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration {
         Task { @MainActor in
             listener(screenshotUser)
         }
-        return NSObject()
+        return CloudGatewayAuthStateListenerRegistration {}
     }
-
-    func removeAuthStateListener(_ token: Any) {}
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {
         screenshotUser

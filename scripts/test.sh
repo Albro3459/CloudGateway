@@ -113,7 +113,7 @@ test_apple() {
   cd "$ROOT" || return 1
 
   run_check "Apple release script syntax" bash -n scripts/ios-release.sh
-  run_check "Apple CloudGatewayKit tests" swift test --package-path Frontend/Apple/CloudGatewayKit
+  run_check "Apple package tests" swift test --package-path Frontend/Apple/CloudGatewayKit
   run_check "Apple iOS project list" xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
 
   if [[ "$APPLE_SIGNED" -eq 1 ]]; then
@@ -130,16 +130,6 @@ test_apple() {
         CODE_SIGNING_ALLOWED=NO \
         build
   fi
-
-  # Host-less view-model tests. Runs on a simulator because the app scheme cannot
-  # (the packet-tunnel extension links a device-only WireGuard lib). Override the
-  # simulator with APPLE_TEST_SIMULATOR if "iPhone 17" is not installed.
-  local ios_sim="${APPLE_TEST_SIMULATOR:-iPhone 17}"
-  run_check "Apple iOS view-model tests" \
-    xcodebuild test \
-      -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
-      -scheme CloudGatewayTests \
-      -destination "platform=iOS Simulator,name=$ios_sim"
 }
 
 test_infra() {

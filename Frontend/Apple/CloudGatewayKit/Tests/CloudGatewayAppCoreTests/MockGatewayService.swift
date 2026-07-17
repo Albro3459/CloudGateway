@@ -1,4 +1,4 @@
-import CloudGatewayAppCore
+@testable import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 
@@ -83,12 +83,13 @@ final class MockGatewayService: CloudGatewayServicing {
 
     private nonisolated let authListenerStorage = MockAuthListenerStorage()
 
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
-        authListenerStorage.add(listener)
-    }
-
-    nonisolated func removeAuthStateListener(_ token: Any) {
-        authListenerStorage.remove(token)
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration {
+        let token = authListenerStorage.add(listener)
+        return CloudGatewayAuthStateListenerRegistration { [authListenerStorage] in
+            authListenerStorage.remove(token)
+        }
     }
 
     func emitAuthState(_ user: AuthenticatedUser?) {

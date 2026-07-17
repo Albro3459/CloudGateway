@@ -1,4 +1,4 @@
-import CloudGatewayAppCore
+@testable import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 

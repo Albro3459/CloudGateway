@@ -1,31 +1,30 @@
-import CloudGatewayAppCore
 import CloudGatewayKit
 import Combine
 import Foundation
 
-enum CloudGatewayAppMode: Equatable {
+public enum CloudGatewayAppMode: Equatable {
     case loading
     case guest
     case signedIn
 }
 
-enum CloudGatewayAccountDeleteReauthMethod {
+public enum CloudGatewayAccountDeleteReauthMethod {
     case password
     case apple
     case google
     case unsupported
 }
 
-enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
+public enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
     case password
     case google = "google.com"
     case apple = "apple.com"
 
-    var id: String {
+    public var id: String {
         rawValue
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .password:
             "Email and password"
@@ -37,81 +36,81 @@ enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
-enum CloudGatewayAccountLinkReauthMethod: Equatable {
+public enum CloudGatewayAccountLinkReauthMethod: Equatable {
     case none
     case password
     case apple
 }
 
-struct CloudGatewaySyncResult: Identifiable, Equatable {
-    let regionId: String
-    let syncedAt: String
-    let added: Int
-    let updated: Int
-    let removed: Int
-    let noChanges: Bool
+public struct CloudGatewaySyncResult: Identifiable, Equatable {
+    public let regionId: String
+    public let syncedAt: String
+    public let added: Int
+    public let updated: Int
+    public let removed: Int
+    public let noChanges: Bool
     // Full peer-sync audit log from the API (AdminSyncResponse.log), same text
     // the web surfaces: title, region, syncedAt, summary, and per-removed-peer detail.
-    let log: String
+    public let log: String
 
-    var id: String {
+    public var id: String {
         "\(regionId)-\(syncedAt)"
     }
 
-    var summary: String {
+    public var summary: String {
         noChanges
             ? "\(regionId): no changes"
             : "\(regionId): +\(added) ~\(updated) -\(removed)"
     }
 
-    var logText: String {
+    public var logText: String {
         log
     }
 }
 
 @MainActor
-final class CloudGatewayViewModel: ObservableObject {
-    @Published var email = ""
-    @Published var password = ""
-    @Published private(set) var appMode: CloudGatewayAppMode = .loading
-    @Published private(set) var signedInEmail: String?
-    @Published private(set) var signedInUid: String?
-    @Published private(set) var role: String?
-    @Published private(set) var regions = [CloudGatewayRegion]()
-    @Published private(set) var clientOptions = [CloudGatewayClientOption]()
-    @Published private(set) var configOptions = [CloudGatewayClientOption]()
-    @Published private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
-    @Published private(set) var tunnelStatuses = [String: CloudGatewayTunnelStatus]()
-    @Published private(set) var isWorking = false
+public final class CloudGatewayViewModel: ObservableObject {
+    @Published public var email = ""
+    @Published public var password = ""
+    @Published public private(set) var appMode: CloudGatewayAppMode = .loading
+    @Published public private(set) var signedInEmail: String?
+    @Published public private(set) var signedInUid: String?
+    @Published public private(set) var role: String?
+    @Published public private(set) var regions = [CloudGatewayRegion]()
+    @Published public private(set) var clientOptions = [CloudGatewayClientOption]()
+    @Published public private(set) var configOptions = [CloudGatewayClientOption]()
+    @Published public private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
+    @Published public private(set) var tunnelStatuses = [String: CloudGatewayTunnelStatus]()
+    @Published public private(set) var isWorking = false
     // Client whose VPN toggle is mid-flight, so its row can show a spinner while
     // the tunnel starts/stops instead of looking frozen.
-    @Published private(set) var togglingClientId: String?
-    @Published private(set) var errorText: String?
-    @Published private(set) var successText: String?
-    @Published private(set) var staleText: String?
-    @Published private(set) var lastRefreshText: String?
-    @Published private(set) var syncResult: CloudGatewaySyncResult?
-    @Published private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
-    @Published private(set) var remoteInvalidInstalledConfig = false
+    @Published public private(set) var togglingClientId: String?
+    @Published public private(set) var errorText: String?
+    @Published public private(set) var successText: String?
+    @Published public private(set) var staleText: String?
+    @Published public private(set) var lastRefreshText: String?
+    @Published public private(set) var syncResult: CloudGatewaySyncResult?
+    @Published public private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
+    @Published public private(set) var remoteInvalidInstalledConfig = false
     // True when the last remote refresh failed (offline / API error). Gates the
     // cached-row fallback so a client removed remotely while online does not
     // linger as a ghost row.
-    @Published private(set) var remoteRefreshUnavailable = false
-    @Published var selectedRegionId: String?
-    @Published var selectedClientId: String? {
+    @Published public private(set) var remoteRefreshUnavailable = false
+    @Published public var selectedRegionId: String?
+    @Published public var selectedClientId: String? {
         didSet {
             syncSelectedConfigPresentation()
         }
     }
-    @Published var newClientName = ""
-    @Published var newAccessEmail = ""
-    @Published var deleteAccountPassword = ""
-    @Published var linkEmail = ""
-    @Published var linkPassword = ""
-    @Published var linkCurrentPassword = ""
-    @Published private(set) var linkedProviderIds = [String]()
-    @Published private(set) var accountLinkReauthMethod: CloudGatewayAccountLinkReauthMethod = .none
-    @Published private(set) var pendingLinkProvider: CloudGatewayAuthProvider?
+    @Published public var newClientName = ""
+    @Published public var newAccessEmail = ""
+    @Published public var deleteAccountPassword = ""
+    @Published public var linkEmail = ""
+    @Published public var linkPassword = ""
+    @Published public var linkCurrentPassword = ""
+    @Published public private(set) var linkedProviderIds = [String]()
+    @Published public private(set) var accountLinkReauthMethod: CloudGatewayAccountLinkReauthMethod = .none
+    @Published public private(set) var pendingLinkProvider: CloudGatewayAuthProvider?
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
@@ -120,24 +119,24 @@ final class CloudGatewayViewModel: ObservableObject {
     private let deadTunnelDisconnectTimeout: Duration
     private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
-    private var authHandle: Any?
+    private var authRegistration: CloudGatewayAuthStateListenerRegistration?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
-    static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
-    static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
-    static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
-    static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
+    public static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
+    public static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
+    public static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
+    public static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
 
     private struct DeadTunnelStatusRefreshKey: Equatable {
         let tunnelIdentifier: String
         let updatedAt: Date
     }
 
-    var isSignedIn: Bool {
+    public var isSignedIn: Bool {
         appMode == .signedIn
     }
 
-    var shouldShowDeadTunnelWarning: Bool {
+    public var shouldShowDeadTunnelWarning: Bool {
         guard tunnelHealthSnapshot?.health == .notPassingTraffic,
               let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
             return false
@@ -150,7 +149,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    var statusText: String {
+    public var statusText: String {
         visibleTunnelStatus?.displayName ?? "Not installed"
     }
 
@@ -162,11 +161,11 @@ final class CloudGatewayViewModel: ObservableObject {
         isSignedIn ? selectedTunnelStatus : nil
     }
 
-    var selectedRegion: CloudGatewayRegion? {
+    public var selectedRegion: CloudGatewayRegion? {
         CloudGatewayConfigSelection.selectedRegion(id: selectedRegionId, in: regions)
     }
 
-    var filteredClientOptions: [CloudGatewayClientOption] {
+    public var filteredClientOptions: [CloudGatewayClientOption] {
         CloudGatewayConfigSelection.clientOptions(in: selectedRegionId, options: clientOptions)
     }
 
@@ -175,7 +174,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // connected) tunnel on an offline cold launch - so a running VPN stays
     // visible and can be toggled off without connectivity. Cached rows are
     // region-filtered like the remote ones, so they never leak across regions.
-    var displayedClientOptions: [CloudGatewayClientOption] {
+    public var displayedClientOptions: [CloudGatewayClientOption] {
         let options = filteredClientOptions
         guard isSignedIn, remoteRefreshUnavailable else {
             return options
@@ -187,7 +186,7 @@ final class CloudGatewayViewModel: ObservableObject {
         return cachedInRegion.isEmpty ? options : options + cachedInRegion
     }
 
-    var isUsingOfflineRegionFallback: Bool {
+    public var isUsingOfflineRegionFallback: Bool {
         isSignedIn && remoteRefreshUnavailable && clientOptions.isEmpty
     }
 
@@ -220,7 +219,7 @@ final class CloudGatewayViewModel: ObservableObject {
         configState.tunnelStatus(for: clientId)?.blocksDestructiveOperation ?? false
     }
 
-    func isTunnelActiveNow(clientId: String) async -> Bool {
+    public func isTunnelActiveNow(clientId: String) async -> Bool {
         guard let statuses = try? await configManager.allInstalledStatuses() else {
             return isTunnelActive(clientId: clientId)
         }
@@ -232,7 +231,7 @@ final class CloudGatewayViewModel: ObservableObject {
         tunnelStatuses.values.contains { $0.blocksDestructiveOperation }
     }
 
-    func hasActiveTunnelNow() async -> Bool {
+    public func hasActiveTunnelNow() async -> Bool {
         guard let statuses = try? await configManager.allInstalledStatuses() else {
             return hasActiveTunnel
         }
@@ -245,24 +244,24 @@ final class CloudGatewayViewModel: ObservableObject {
         !installedSnapshots.isEmpty
     }
 
-    var canSyncSelectedRegion: Bool {
+    public var canSyncSelectedRegion: Bool {
         role == "admin" && selectedRegion != nil && !isWorking
     }
 
-    var canGrantAccess: Bool {
+    public var canGrantAccess: Bool {
         isAdmin
             && !newAccessEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && regions.first != nil
             && !isWorking
     }
 
-    var isAdmin: Bool {
+    public var isAdmin: Bool {
         isSignedIn && role == "admin"
     }
 
     // Reauth order per the provider-ordering standard: Apple, then Google, then
     // email & password last (for convenience when other providers are linked).
-    var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
+    public var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
         let providerIds = currentProviderIds
         if providerIds.contains("apple.com") {
             return .apple
@@ -276,7 +275,7 @@ final class CloudGatewayViewModel: ObservableObject {
         return .unsupported
     }
 
-    var deleteAccountPasswordRequired: Bool {
+    public var deleteAccountPasswordRequired: Bool {
         accountDeleteReauthMethod == .password
     }
 
@@ -284,15 +283,15 @@ final class CloudGatewayViewModel: ObservableObject {
     // then Google.
     private static let linkProviderOrder: [CloudGatewayAuthProvider] = [.password, .apple, .google]
 
-    var missingLinkProviders: [CloudGatewayAuthProvider] {
+    public var missingLinkProviders: [CloudGatewayAuthProvider] {
         Self.linkProviderOrder.filter { !currentProviderIds.contains($0.rawValue) }
     }
 
-    var canLinkAnotherProvider: Bool {
+    public var canLinkAnotherProvider: Bool {
         isSignedIn && !missingLinkProviders.isEmpty
     }
 
-    var linkPasswordDisabled: Bool {
+    public var linkPasswordDisabled: Bool {
         isWorking
             || linkEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || linkPassword.isEmpty
@@ -303,15 +302,15 @@ final class CloudGatewayViewModel: ObservableObject {
         linkedProviderIds.isEmpty ? service.providerIds() : linkedProviderIds
     }
 
-    var createDisabled: Bool {
+    public var createDisabled: Bool {
         isWorking || newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !selectedRegionAllowsCreate
     }
 
-    var deleteDisabled: Bool {
+    public var deleteDisabled: Bool {
         isWorking || selectedClientOption == nil
     }
 
-    func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || option.client.status == .removed
     }
 
@@ -342,15 +341,15 @@ final class CloudGatewayViewModel: ObservableObject {
         isWorking || selectedClientId == nil || visibleTunnelStatus == nil
     }
 
-    var isLoadingRegions: Bool {
+    public var isLoadingRegions: Bool {
         isWorking && regions.isEmpty
     }
 
-    var isLoadingClients: Bool {
+    public var isLoadingClients: Bool {
         isSignedIn && isWorking && clientOptions.isEmpty
     }
 
-    init(
+    public init(
         service: CloudGatewayServicing,
         configManager: CloudGatewayConfigManager,
         healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader(),
@@ -364,7 +363,7 @@ final class CloudGatewayViewModel: ObservableObject {
         self.notificationAuthorizer = notificationAuthorizer
         self.deadTunnelDisconnectTimeout = deadTunnelDisconnectTimeout
         self.deadTunnelDisconnectPollInterval = deadTunnelDisconnectPollInterval
-        authHandle = service.addAuthStateListener { [weak self] user in
+        authRegistration = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)
             }
@@ -375,12 +374,10 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     deinit {
-        if let authHandle {
-            service.removeAuthStateListener(authHandle)
-        }
+        authRegistration?.cancel()
     }
 
-    func signIn() async {
+    public func signIn() async {
         await run {
             let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
@@ -395,7 +392,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func resetPassword() async {
+    public func resetPassword() async {
         await run {
             let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
@@ -406,14 +403,14 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func completeAppleSignIn(idToken: String, rawNonce: String) async {
+    public func completeAppleSignIn(idToken: String, rawNonce: String) async {
         await run {
             let user = try await service.signInWithApple(idToken: idToken, rawNonce: rawNonce)
             try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: true)
         }
     }
 
-    func signInWithGoogle() async {
+    public func signInWithGoogle() async {
         await run {
             do {
                 let user = try await service.signInWithGoogle()
@@ -426,13 +423,13 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // The Apple button reports non-cancellation failures from the view layer;
     // route them through run so they surface like every other CloudGatewayAppError.
-    func reportAppleSignInFailure() async {
+    public func reportAppleSignInFailure() async {
         await run {
             throw CloudGatewayAppError.appleSignInFailed
         }
     }
 
-    func linkEmailPassword() async {
+    public func linkEmailPassword() async {
         await linkAccountProvider(.password) {
             let email = self.linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = self.linkPassword
@@ -446,19 +443,19 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func linkGoogle() async {
+    public func linkGoogle() async {
         await linkAccountProvider(.google) {
             try await self.service.linkGoogle()
         }
     }
 
-    func linkApple(idToken: String, rawNonce: String) async {
+    public func linkApple(idToken: String, rawNonce: String) async {
         await linkAccountProvider(.apple) {
             try await self.service.linkApple(idToken: idToken, rawNonce: rawNonce)
         }
     }
 
-    func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
+    public func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
         guard let pendingLinkProvider else {
             return
         }
@@ -484,7 +481,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func clearAccountLinkState() {
+    public func clearAccountLinkState() {
         linkEmail = ""
         linkPassword = ""
         linkCurrentPassword = ""
@@ -492,23 +489,23 @@ final class CloudGatewayViewModel: ObservableObject {
         pendingLinkProvider = nil
     }
 
-    func signOut() async {
+    public func signOut() async {
         await run {
             try service.signOut()
             try await loadGuestState()
         }
     }
 
-    func refresh() async {
+    public func refresh() async {
         await reloadCurrentState(showsWorkingOverlay: true)
     }
 
-    func selectRegion(_ regionId: String) {
+    public func selectRegion(_ regionId: String) {
         selectedRegionId = regionId
         pruneSelectedClient()
     }
 
-    func refreshTunnelHealth() {
+    public func refreshTunnelHealth() {
         let snapshot = healthReader.currentSnapshot()
         tunnelHealthSnapshot = snapshot?.isFresh(timing: .production) == true ? snapshot : nil
         if tunnelHealthSnapshot?.health != .notPassingTraffic {
@@ -516,7 +513,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func refreshTunnelHealthAndStatus() async {
+    public func refreshTunnelHealthAndStatus() async {
         refreshTunnelHealth()
         guard let snapshot = tunnelHealthSnapshot,
               snapshot.health == .notPassingTraffic else {
@@ -535,7 +532,7 @@ final class CloudGatewayViewModel: ObservableObject {
         lastDeadTunnelStatusRefreshKey = refreshKey
     }
 
-    func disconnectDeadTunnel() async {
+    public func disconnectDeadTunnel() async {
         refreshTunnelHealth()
         guard tunnelHealthSnapshot?.health == .notPassingTraffic else {
             return
@@ -621,7 +618,7 @@ final class CloudGatewayViewModel: ObservableObject {
         try result.get()
     }
 
-    func pullToRefresh() async {
+    public func pullToRefresh() async {
         // SwiftUI cancels the .refreshable task when its pull control retracts,
         // and the early @Published updates in loadRemoteState can trigger that
         // retraction before the network reload finishes - silently aborting it
@@ -650,11 +647,11 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // Guest entry point from the login screen; refresh() already resolves to
     // guest state when there is no signed-in user.
-    func continueAsGuest() async {
+    public func continueAsGuest() async {
         await refresh()
     }
 
-    func syncSelectedRegion() async {
+    public func syncSelectedRegion() async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
@@ -681,7 +678,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func grantAccess() async {
+    public func grantAccess() async {
         await run {
             guard service.currentUser != nil else {
                 throw CloudGatewayAppError.missingCurrentUser
@@ -705,7 +702,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func createClient() async {
+    public func createClient() async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
@@ -741,7 +738,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // Taking the option explicitly (rather than reading selectedClientOption at
     // confirm time) avoids deleting the wrong client if a background refresh
     // prunes or moves the selection between opening and confirming.
-    func deleteClient(_ option: CloudGatewayClientOption) async {
+    public func deleteClient(_ option: CloudGatewayClientOption) async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
@@ -769,7 +766,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func deleteAccountWithPassword() async {
+    public func deleteAccountWithPassword() async {
         await deleteAccount {
             let password = self.deleteAccountPassword
             guard !password.isEmpty else {
@@ -779,13 +776,13 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func deleteAccountWithGoogle() async {
+    public func deleteAccountWithGoogle() async {
         await deleteAccount {
             try await self.service.reauthenticateWithGoogle(revoke: true)
         }
     }
 
-    func deleteAccountWithApple(idToken: String, rawNonce: String, authorizationCode: String) async {
+    public func deleteAccountWithApple(idToken: String, rawNonce: String, authorizationCode: String) async {
         await deleteAccount {
             try await self.service.reauthenticateWithApple(
                 idToken: idToken,
@@ -910,7 +907,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // Install button for a not-yet-installed client: pull the latest config from
     // Firebase, then install, so a stale cached config is never installed.
-    func installFromCloud(_ option: CloudGatewayClientOption) async {
+    public func installFromCloud(_ option: CloudGatewayClientOption) async {
         await run {
             _ = try await pullFreshAndInstall(option)
         }
@@ -936,7 +933,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // The client whose tunnel is actually established (connected/reasserting), so
     // the switch prompt only offers to "turn off" a VPN that is really on - not one
     // that is merely mid-connect.
-    var activeTunnelClient: CloudGatewayClientOption? {
+    public var activeTunnelClient: CloudGatewayClientOption? {
         // Mirror toggleIsOn's "on" set so a client that is still connecting is
         // treated as the active tunnel to switch away from, not left running
         // alongside a newly started one on this single-tunnel provider.
@@ -955,7 +952,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     // Turn off the currently active tunnel (if different) and start this one.
-    func switchTunnel(to option: CloudGatewayClientOption) async {
+    public func switchTunnel(to option: CloudGatewayClientOption) async {
         togglingClientId = option.client.clientId
         defer { togglingClientId = nil }
         await run {
@@ -978,7 +975,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func startTunnel(for option: CloudGatewayClientOption) async {
+    public func startTunnel(for option: CloudGatewayClientOption) async {
         selectedClientId = option.client.clientId
         await startTunnel()
     }
@@ -994,7 +991,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func stopTunnel(for option: CloudGatewayClientOption) async {
+    public func stopTunnel(for option: CloudGatewayClientOption) async {
         selectedClientId = option.client.clientId
         await stopTunnel()
     }
@@ -1009,24 +1006,24 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
+    public func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
         configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
 
-    func staleText(for option: CloudGatewayClientOption) -> String? {
+    public func staleText(for option: CloudGatewayClientOption) -> String? {
         configState.staleText(for: option.client.clientId)
     }
 
-    func dismissMessages() {
+    public func dismissMessages() {
         errorText = nil
         successText = nil
     }
 
-    func dismissSyncResult() {
+    public func dismissSyncResult() {
         syncResult = nil
     }
 
-    func installStateLabel(for option: CloudGatewayClientOption) -> String? {
+    public func installStateLabel(for option: CloudGatewayClientOption) -> String? {
         switch configState.installState(for: option) {
         case .installed:
             return nil
@@ -1041,11 +1038,11 @@ final class CloudGatewayViewModel: ObservableObject {
         installStateLabel(for: option) == nil ? "Install" : "Install Update"
     }
 
-    func installDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func installDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || !option.client.hasUsableConfig
     }
 
-    func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
+    public func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
         configState.installState(for: option) != nil
             && configState.tunnelStatus(for: option.client.clientId) != nil
     }
@@ -1065,7 +1062,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {
         let clientId = option.client.clientId
         let status = configState.tunnelStatus(for: clientId)
         return isWorking
@@ -1075,7 +1072,7 @@ final class CloudGatewayViewModel: ObservableObject {
             || configState.remoteInvalidInstalledConfig(for: clientId)
     }
 
-    func toggleIsOn(for option: CloudGatewayClientOption) -> Bool {
+    public func toggleIsOn(for option: CloudGatewayClientOption) -> Bool {
         switch configState.tunnelStatus(for: option.client.clientId) {
         case .connected, .connecting, .reasserting:
             return true
@@ -1084,7 +1081,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func isToggling(for option: CloudGatewayClientOption) -> Bool {
+    public func isToggling(for option: CloudGatewayClientOption) -> Bool {
         togglingClientId == option.client.clientId
     }
 

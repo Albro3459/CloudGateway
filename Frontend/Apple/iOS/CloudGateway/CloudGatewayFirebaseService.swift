@@ -97,17 +97,15 @@ final class CloudGatewayFirebaseService: CloudGatewayServicing {
         return AuthenticatedUser(uid: user.uid, email: user.email)
     }
 
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
-        Auth.auth().addStateDidChangeListener { _, user in
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration {
+        let handle = Auth.auth().addStateDidChangeListener { _, user in
             listener(user.map { AuthenticatedUser(uid: $0.uid, email: $0.email) })
         }
-    }
-
-    nonisolated func removeAuthStateListener(_ token: Any) {
-        guard let handle = token as? AuthStateDidChangeListenerHandle else {
-            return
+        return CloudGatewayAuthStateListenerRegistration {
+            Auth.auth().removeStateDidChangeListener(handle)
         }
-        Auth.auth().removeStateDidChangeListener(handle)
     }
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {

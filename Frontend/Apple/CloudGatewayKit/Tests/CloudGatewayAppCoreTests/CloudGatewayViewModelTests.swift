@@ -1,4 +1,4 @@
-import CloudGatewayAppCore
+@testable import CloudGatewayAppCore
 import CloudGatewayKit
 import XCTest
 
@@ -249,13 +249,13 @@ final class CloudGatewayViewModelTests: XCTestCase {
     func testViewModelDeinitRemovesAuthListener() async {
         let service = MockGatewayService()
         var viewModel: CloudGatewayViewModel? = makeViewModel(service)
-        weak var weakViewModel = viewModel
+        let weakViewModel = WeakBox(viewModel)
 
         XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
         viewModel = nil
-        await waitUntil { weakViewModel == nil }
+        await waitUntil { weakViewModel.value == nil }
 
-        XCTAssertNil(weakViewModel)
+        XCTAssertNil(weakViewModel.value)
         XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
     }
 
@@ -493,14 +493,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.removeTunnelDisabled)
     }
 
-    func testSignInMapsRawFirebaseCredentialErrorsToGenericMessage() async {
-        XCTAssertEqual(
-            CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)?.localizedDescription,
-            "Invalid email or password."
-        )
-
+    func testSignInMapsCredentialErrorsToGenericMessage() async {
         let service = MockGatewayService()
-        service.signInError = CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)
+        service.signInError = CloudGatewayAppError.invalidSignInCredentials
         let viewModel = makeViewModel(service)
         viewModel.email = "user@example.com"
         viewModel.password = "wrong-password"
@@ -1880,6 +1875,14 @@ final class CloudGatewayViewModelTests: XCTestCase {
         // Online and refresh succeeded, so the removed client must not linger.
         XCTAssertFalse(viewModel.remoteRefreshUnavailable)
         XCTAssertTrue(viewModel.displayedClientOptions.isEmpty)
+    }
+}
+
+private final class WeakBox<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value?) {
+        self.value = value
     }
 }
 
