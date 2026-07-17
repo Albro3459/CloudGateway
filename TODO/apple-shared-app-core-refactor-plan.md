@@ -56,7 +56,7 @@ VPN behavior change is intended.
 - [x] Stage 2: move the app model and its tests without redesigning behavior.
 - [x] Stage 3: extract the shared control-plane API client from the Firebase service.
 - [x] Stage 4: split shared Firebase operations from platform sign-in presentation.
-- [ ] Stage 5: replace implicit iOS construction with explicit platform composition.
+- [x] Stage 5: replace implicit iOS construction with explicit platform composition.
 - [ ] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
 - [ ] Stage 7: document the packet-extension reuse and thin-adapter boundary.
 - [ ] Stage 8: update validation, architecture documentation, and macOS handoff notes.
@@ -691,7 +691,7 @@ Completion record:
   and the unsigned generic-device iOS build;
 * GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
-### Stage 5 - Make Platform Composition Explicit
+### ✅ Stage 5 - Make Platform Composition Explicit
 
 Create an iOS composition root/factory and remove the production convenience
 initializer from `CloudGatewayFirebaseService.swift`.
@@ -720,6 +720,33 @@ Acceptance:
   notification behavior;
 * a macOS composition test can construct AppCore with fakes and macOS platform
   identifiers before a UI target exists.
+
+Completion record:
+
+* `CloudGatewayIOSCompositionRoot` now configures Firebase, applies the
+  memory-only Firestore cache, resolves the Keychain access group, constructs
+  the complete service/config/health graph, and creates exactly one shared app
+  model in dependency order;
+* the same `CloudGatewayPlatformConfiguration` value supplies the app, provider,
+  app-group, tunnel, cache, Keychain, and health-store identifiers, while the API
+  origin remains an iOS composition value;
+* the Google client ID is resolved after Firebase startup and injected into the
+  UIKit presenter, removing its Firebase singleton lookup;
+* the SwiftUI app owns the model with `StateObject`, `ContentView` observes only
+  an injected model, and the model and view receive the same notification
+  authorizer;
+* the old production and screenshot convenience initializers are gone; the
+  simulator-only screenshot target has its own explicit fixture factory and
+  no-op notification adapter, source-audited under the screenshot/simulator
+  waiver;
+* a native macOS AppCore smoke test constructs the model with fake services and
+  storage plus injected macOS platform identifiers;
+* the first gate exposed one remaining zero-argument `#Preview` call; it now uses
+  explicit production composition and is excluded from the screenshot target;
+* `./scripts/test.sh apple` then passed with 95 app-model XCTest cases, 246 Swift
+  Testing cases, 2 native macOS Firebase-adapter tests, Xcode project listing,
+  and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
 ### Stage 6 - Extract The Existing Presentation Refresh Loop
 

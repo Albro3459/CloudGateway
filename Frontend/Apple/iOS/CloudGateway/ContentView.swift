@@ -26,8 +26,8 @@ struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthori
 }
 
 struct ContentView: View {
-    @StateObject private var viewModel: CloudGatewayViewModel
-    private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
+    @ObservedObject private var viewModel: CloudGatewayViewModel
+    private let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var activeTunnelDeleteMessage: String?
@@ -47,16 +47,11 @@ struct ContentView: View {
     @Environment(\.cloudGatewayTheme) private var theme
 
     @MainActor
-    init() {
-        _viewModel = StateObject(wrappedValue: CloudGatewayViewModel())
-        notificationAuthorizer = SystemCloudGatewayNotificationAuthorizer()
-    }
-
     init(
         viewModel: CloudGatewayViewModel,
-        notificationAuthorizer: CloudGatewayNotificationAuthorizing = SystemCloudGatewayNotificationAuthorizer()
+        notificationAuthorizer: any CloudGatewayNotificationAuthorizing
     ) {
-        _viewModel = StateObject(wrappedValue: viewModel)
+        _viewModel = ObservedObject(wrappedValue: viewModel)
         self.notificationAuthorizer = notificationAuthorizer
     }
 
@@ -2276,8 +2271,14 @@ private struct IconDangerButtonStyle: ButtonStyle {
     }
 }
 
+#if !APPSTORE_SCREENSHOTS
 #Preview {
-    ContentView()
+    let composition = CloudGatewayIOSCompositionRoot.make()
+    ContentView(
+        viewModel: composition.viewModel,
+        notificationAuthorizer: composition.notificationAuthorizer
+    )
         .environment(\.cloudGatewayTheme, CloudGatewayTheme())
         .preferredColorScheme(.dark)
 }
+#endif

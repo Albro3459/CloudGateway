@@ -2,10 +2,11 @@ import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 
-extension CloudGatewayViewModel {
-    convenience init() {
+@MainActor
+enum CloudGatewayScreenshotFixtureFactory {
+    static func makeViewModel() -> CloudGatewayViewModel {
         let service = CloudGatewayScreenshotService()
-        self.init(
+        return CloudGatewayViewModel(
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: CloudGatewayScreenshotTunnelManager(

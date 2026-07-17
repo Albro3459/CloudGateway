@@ -1,55 +1,9 @@
 import CloudGatewayAppCore
-import CloudGatewayFirebaseAuthAdapter
 import CloudGatewayKit
-import FirebaseCore
 import FirebaseFirestore
 import Foundation
 import GoogleSignIn
 import UIKit
-
-extension CloudGatewayViewModel {
-    convenience init() {
-        let keychainAccessGroupIdentifier = Self.cloudGatewayKeychainAccessGroup()
-        let platform = CloudGatewayPlatformConfiguration(
-            appGroupIdentifier: "group.com.gocloudlaunch.gateway",
-            appBundleIdentifier: "com.gocloudlaunch.gateway",
-            providerBundleIdentifier: "com.gocloudlaunch.gateway.tunnel",
-            tunnelDisplayName: "CloudGateway",
-            keychainAccessGroupIdentifier: keychainAccessGroupIdentifier
-        )
-        let service = CloudGatewayAppServiceFacade(
-            auth: CloudGatewayFirebaseAuthAdapter(),
-            repository: CloudGatewayIOSFirestoreRepository(database: Firestore.firestore()),
-            controlPlane: CloudGatewayControlPlaneClient(originHost: "gocloudlaunch.com"),
-            googlePresenter: CloudGatewayIOSGoogleSignInPresenter()
-        )
-        self.init(
-            service: service,
-            configManager: CloudGatewayConfigManager(
-                tunnelManager: CloudGatewayVPNManager(platform: platform),
-                cache: CloudGatewayConfigCache(platform: platform),
-                secretStore: CloudGatewayKeychainConfigSecretStore(
-                    accessGroup: platform.keychainAccessGroupIdentifier
-                ),
-                configSecretServiceName: platform.configSecretServiceName
-            ),
-            healthReader: CloudGatewayTunnelHealthReader(
-                store: CloudGatewayTunnelHealthStore(appGroupIdentifier: platform.appGroupIdentifier)
-            ),
-            notificationAuthorizer: SystemCloudGatewayNotificationAuthorizer()
-        )
-    }
-
-    private static func cloudGatewayKeychainAccessGroup() -> String {
-        do {
-            return try CloudGatewayRuntimeConfiguration.keychainAccessGroup(
-                Bundle.main.object(forInfoDictionaryKey: "CGKeychainAccessGroup")
-            )
-        } catch {
-            preconditionFailure(error.localizedDescription)
-        }
-    }
-}
 
 struct CloudGatewayTunnelHealthReader: CloudGatewayTunnelHealthReading {
     let store: CloudGatewayTunnelHealthStore
@@ -135,8 +89,14 @@ final class CloudGatewayIOSFirestoreRepository: CloudGatewayClientRepository {
 
 @MainActor
 final class CloudGatewayIOSGoogleSignInPresenter: CloudGatewayGoogleSignInPresenting {
+    private let clientID: String?
+
+    init(clientID: String?) {
+        self.clientID = clientID
+    }
+
     func presentCredentials() async throws -> CloudGatewayGoogleCredentials {
-        guard let clientID = FirebaseApp.app()?.options.clientID,
+        guard let clientID,
               let presenting = Self.topViewController() else {
             throw CloudGatewayAppError.invalidAPIResponse
         }

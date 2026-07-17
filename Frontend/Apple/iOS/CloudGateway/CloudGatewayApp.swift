@@ -1,5 +1,4 @@
-import FirebaseCore
-import FirebaseFirestore
+import CloudGatewayAppCore
 import GoogleSignIn
 import SwiftUI
 import UIKit
@@ -10,14 +9,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        FirebaseApp.configure()
-        // WireGuard configs (including private keys) are read through Firestore.
-        // Force a memory-only cache before any read so secret material never
-        // lands in Firestore's on-disk persistence; the Keychain stays the only
-        // at-rest store. Must run before the first Firestore access.
-        let firestoreSettings = FirestoreSettings()
-        firestoreSettings.cacheSettings = MemoryCacheSettings()
-        Firestore.firestore().settings = firestoreSettings
         // The packet-tunnel extension posts a local "VPN connection interrupted"
         // notification when the tunnel blackholes traffic. Set the delegate so
         // the banner can present while foregrounded; authorization is requested
@@ -40,10 +31,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 @main
 struct CloudGatewayApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var viewModel: CloudGatewayViewModel
+    private let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
+
+    @MainActor
+    init() {
+        let composition = CloudGatewayIOSCompositionRoot.make()
+        _viewModel = StateObject(wrappedValue: composition.viewModel)
+        notificationAuthorizer = composition.notificationAuthorizer
+    }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(
+                viewModel: viewModel,
+                notificationAuthorizer: notificationAuthorizer
+            )
                 .environment(\.cloudGatewayTheme, CloudGatewayTheme())
                 .preferredColorScheme(.dark)
                 .onOpenURL { url in

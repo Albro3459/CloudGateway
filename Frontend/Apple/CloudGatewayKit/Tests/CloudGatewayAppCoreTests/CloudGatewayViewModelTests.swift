@@ -259,6 +259,31 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
     }
 
+    func testFutureMacOSCompositionConstructsAppCoreWithInjectedPlatformIdentifiers() {
+        let platform = CloudGatewayPlatformConfiguration(
+            appGroupIdentifier: "group.com.example.cloudgateway.macos",
+            appBundleIdentifier: "com.example.cloudgateway.macos",
+            providerBundleIdentifier: "com.example.cloudgateway.macos.tunnel",
+            tunnelDisplayName: "CloudGateway for macOS",
+            keychainAccessGroupIdentifier: "TEAMID.com.example.cloudgateway.macos"
+        )
+        let service = MockGatewayService()
+        let tunnelManager = CloudGatewayVPNManager(platform: platform)
+
+        _ = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore(),
+                configSecretServiceName: platform.configSecretServiceName
+            )
+        )
+
+        XCTAssertEqual(tunnelManager.platform, platform)
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+    }
+
     func testDeadTunnelRefreshReconcilesExternallyStartedStatusWithoutOverlay() async {
         let service = MockGatewayService()
         let tunnelManager = FakeTunnelManager(status: .disconnected)
