@@ -121,6 +121,9 @@ public final class CloudGatewayViewModel: ObservableObject {
     private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
     private var authRegistration: CloudGatewayAuthStateListenerRegistration?
+    private var authStateGeneration: UInt64 = 0
+    private var loadedRemoteUserId: String?
+    private var pendingLinkUserId: String?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
     private var presentationMonitorGeneration: UInt64 = 0
     private var activePresentationMonitorGeneration: UInt64?
@@ -462,24 +465,35 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     public func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
-        guard let pendingLinkProvider else {
+        guard let pendingLinkProvider,
+              let pendingLinkUserId,
+              let user = service.currentUser,
+              user.uid == pendingLinkUserId else {
             return
         }
+        let generation = authStateGeneration
         await run {
-            try await service.reauthenticateWithApple(
-                idToken: idToken,
-                rawNonce: rawNonce,
-                authorizationCode: authorizationCode,
-                revoke: false
-            )
+            try ensureCurrentSession(user, generation: generation)
+            try await performForCurrentUser(user, generation: generation) {
+                try await service.reauthenticateWithApple(
+                    idToken: idToken,
+                    rawNonce: rawNonce,
+                    authorizationCode: authorizationCode,
+                    revoke: false
+                )
+            }
             accountLinkReauthMethod = .none
             switch pendingLinkProvider {
             case .password:
                 let email = linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
                 let password = linkPassword
-                _ = try await service.linkEmailPassword(email: email, password: password)
+                _ = try await performForCurrentUser(user, generation: generation) {
+                    try await service.linkEmailPassword(email: email, password: password)
+                }
             case .google:
-                _ = try await service.linkGoogle()
+                _ = try await performForCurrentUser(user, generation: generation) {
+                    try await service.linkGoogle()
+                }
             case .apple:
                 throw CloudGatewayAppError.providerAlreadyLinked
             }
@@ -493,6 +507,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         linkCurrentPassword = ""
         accountLinkReauthMethod = .none
         pendingLinkProvider = nil
+        pendingLinkUserId = nil
     }
 
     public func signOut() async {
@@ -679,13 +694,16 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func reloadCurrentState(showsWorkingOverlay: Bool) async {
+        let generation = authStateGeneration
         await run(showsWorkingOverlay: showsWorkingOverlay) {
             if let user = service.currentUser {
                 do {
                     try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
-                    if isSignedIn {
-                        await applyRemoteRefreshUnavailable()
+                    if isCurrentUser(user), isSignedIn {
+                        try await applyRemoteRefreshUnavailable(for: user, generation: generation)
                     }
                     throw error
                 }
@@ -706,14 +724,17 @@ public final class CloudGatewayViewModel: ObservableObject {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
             guard role == "admin" else {
                 throw CloudGatewayAppError.accessDenied("Admin access is required to sync a region.")
             }
-            let token = try await service.idToken()
-            let response = try await service.syncRegion(regionId: regionId, idToken: token)
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.syncRegion(regionId: regionId, idToken: token)
+            }
             let result = CloudGatewaySyncResult(
                 regionId: response.regionId,
                 syncedAt: response.syncedAt,
@@ -730,9 +751,10 @@ public final class CloudGatewayViewModel: ObservableObject {
 
     public func grantAccess() async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard role == "admin" else {
                 throw CloudGatewayAppError.accessDenied("Admin access is required to grant access.")
             }
@@ -743,8 +765,10 @@ public final class CloudGatewayViewModel: ObservableObject {
             guard let regionId = regions.first?.regionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
-            let token = try await service.idToken()
-            let response = try await service.grantAccess(email: trimmedEmail, regionId: regionId, idToken: token)
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.grantAccess(email: trimmedEmail, regionId: regionId, idToken: token)
+            }
             newAccessEmail = ""
             successText = response.alreadyExisted
                 ? "Existing account granted access: \(response.email)"
@@ -757,6 +781,7 @@ public final class CloudGatewayViewModel: ObservableObject {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
@@ -771,12 +796,14 @@ public final class CloudGatewayViewModel: ObservableObject {
             guard !trimmedClientName.isEmpty else {
                 throw CloudGatewayAppError.accessDenied("Enter a display name, for example John's iPhone.")
             }
-            let token = try await service.idToken()
-            let created = try await service.createClient(
-                regionId: regionId,
-                clientName: trimmedClientName,
-                idToken: token
-            )
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let created = try await performForCurrentUser(user, generation: generation) {
+                try await service.createClient(
+                    regionId: regionId,
+                    clientName: trimmedClientName,
+                    idToken: token
+                )
+            }
             newClientName = ""
             selectedClientId = nil
             try await loadRemoteStateMarkingUnavailable(for: user, existingClients: [created])
@@ -793,24 +820,31 @@ public final class CloudGatewayViewModel: ObservableObject {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
-            try await ensureDestructiveOperationAllowed(
-                clientId: option.client.clientId,
-                message: Self.activeConfigDeleteMessage
-            )
-            let token = try await service.idToken()
-            let response = try await service.deleteClient(
-                clientId: option.client.clientId,
-                userId: option.client.ownerUid ?? user.uid,
-                regionId: option.client.regionId,
-                idToken: token
-            )
+            let generation = authStateGeneration
+            try await performForCurrentUser(user, generation: generation) {
+                try await ensureDestructiveOperationAllowed(
+                    clientId: option.client.clientId,
+                    message: Self.activeConfigDeleteMessage
+                )
+            }
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.deleteClient(
+                    clientId: option.client.clientId,
+                    userId: option.client.ownerUid ?? user.uid,
+                    regionId: option.client.regionId,
+                    idToken: token
+                )
+            }
             if selectedClientId == option.client.clientId {
                 selectedClientId = nil
             }
-            apply(try await configManager.removeInstalledConfigIfMatches(
+            let state = try await configManager.removeInstalledConfigIfMatches(
                 clientId: response.clientId,
                 regionId: response.regionId
-            ))
+            )
+            try ensureCurrentSession(user, generation: generation)
+            apply(state)
             try await loadRemoteStateMarkingUnavailable(for: user)
             successText = "\(option.client.displayName) was deleted."
         }
@@ -848,32 +882,40 @@ public final class CloudGatewayViewModel: ObservableObject {
         operation: @escaping () async throws -> AuthenticatedUser
     ) async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             if accountLinkReauthMethod == .password {
                 let password = linkCurrentPassword
                 guard !password.isEmpty else {
                     throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
                 }
-                try await service.reauthenticateWithPassword(password)
+                try await performForCurrentUser(user, generation: generation) {
+                    try await service.reauthenticateWithPassword(password)
+                }
                 accountLinkReauthMethod = .none
             }
 
             do {
-                _ = try await operation()
+                _ = try await performForCurrentUser(user, generation: generation, operation)
                 didLinkProvider(provider)
             } catch CloudGatewayAppError.requiresRecentLogin {
-                if try await prepareRecentLoginRecovery(for: provider) {
-                    _ = try await operation()
+                if try await prepareRecentLoginRecovery(for: provider, user: user, generation: generation) {
+                    _ = try await performForCurrentUser(user, generation: generation, operation)
                     didLinkProvider(provider)
                 }
             }
         }
     }
 
-    private func prepareRecentLoginRecovery(for provider: CloudGatewayAuthProvider) async throws -> Bool {
+    private func prepareRecentLoginRecovery(
+        for provider: CloudGatewayAuthProvider,
+        user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws -> Bool {
         pendingLinkProvider = provider
+        pendingLinkUserId = user.uid
         let providerIds = currentProviderIds
         // Reauth order per the standard: Apple, then Google, then password last.
         if providerIds.contains(CloudGatewayAuthProvider.apple.rawValue) {
@@ -881,7 +923,9 @@ public final class CloudGatewayViewModel: ObservableObject {
             throw CloudGatewayAppError.accessDenied("Sign in with Apple again, then try linking once more.")
         }
         if providerIds.contains(CloudGatewayAuthProvider.google.rawValue) {
-            try await service.reauthenticateWithGoogle(revoke: false)
+            try await performForCurrentUser(user, generation: generation) {
+                try await service.reauthenticateWithGoogle(revoke: false)
+            }
             accountLinkReauthMethod = .none
             return true
         }
@@ -900,31 +944,50 @@ public final class CloudGatewayViewModel: ObservableObject {
 
     private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
-            try await ensureDestructiveOperationAllowed(message: Self.activeAccountDeleteMessage)
-            try await reauthenticate()
-            let token = try await service.idToken(forceRefresh: true)
-            _ = try await service.deleteAccount(idToken: token)
-            await removeInstalledConfigsAfterAccountDelete()
+            let generation = authStateGeneration
+            try await performForCurrentUser(user, generation: generation) {
+                try await ensureDestructiveOperationAllowed(message: Self.activeAccountDeleteMessage)
+            }
+            try await performForCurrentUser(user, generation: generation, reauthenticate)
+            let token = try await performForCurrentUser(user, generation: generation) {
+                try await service.idToken(forceRefresh: true)
+            }
+            do {
+                _ = try await service.deleteAccount(idToken: token)
+            } catch {
+                try ensureCurrentSession(user, generation: generation)
+                throw error
+            }
+            try ensureNoReplacementUser(user, generation: generation)
+            try await removeInstalledConfigsAfterAccountDelete(for: user, generation: generation)
+            try ensureNoReplacementUser(user, generation: generation)
             deleteAccountPassword = ""
             try service.signOut()
             try await loadGuestState()
         }
     }
 
-    private func removeInstalledConfigsAfterAccountDelete() async {
+    private func removeInstalledConfigsAfterAccountDelete(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws {
         let cachedIdentifiers = installedSnapshots.map(\.clientId)
         // The account is already deleted server-side, so this local cleanup must
         // catch on-device profiles that are not in the cached snapshot. A
         // transient failure here would silently leave a stale system VPN
         // profile behind, so retry the live query briefly before giving up.
         let installedIdentifiers = await installedIdentifiersWithRetry()
+        try ensureNoReplacementUser(user, generation: generation)
         for identifier in Set(cachedIdentifiers).union(installedIdentifiers) {
+            try ensureNoReplacementUser(user, generation: generation)
             _ = try? await configManager.removeTunnel(identifier: identifier)
         }
+        try ensureNoReplacementUser(user, generation: generation)
         if let state = try? await configManager.loadLocalState() {
+            try ensureNoReplacementUser(user, generation: generation)
             apply(state)
         }
     }
@@ -1136,17 +1199,30 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func handleAuthState(_ user: AuthenticatedUser?) async {
+        let identityChanged: Bool
         if let user {
-            if appMode != .signedIn || signedInUid != user.uid {
-                selectedRegionId = nil
-                selectedClientId = nil
+            identityChanged = appMode != .signedIn || signedInUid != user.uid
+        } else {
+            identityChanged = appMode != .guest
+        }
+        if identityChanged {
+            authStateGeneration &+= 1
+        }
+        let generation = authStateGeneration
+        if let user {
+            let changedUser = identityChanged
+            if changedUser {
+                clearRemoteState()
             }
             signedInEmail = user.email
             signedInUid = user.uid
             refreshLinkedProviderIds()
             appMode = .signedIn
-            if !isWorking && configOptions.isEmpty {
-                await refresh()
+            if changedUser || loadedRemoteUserId != user.uid {
+                await reloadAuthState(
+                    for: user,
+                    generation: generation
+                )
             }
         } else if appMode == .guest {
             // A sign-out path (manual sign-out or a forced sign-out after a
@@ -1164,6 +1240,28 @@ public final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    private func reloadAuthState(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async {
+        while isWorking {
+            guard authStateGeneration == generation, isCurrentUser(user) else {
+                return
+            }
+            do {
+                try await ContinuousClock().sleep(for: .milliseconds(10))
+            } catch {
+                return
+            }
+        }
+        guard authStateGeneration == generation,
+              isCurrentUser(user),
+              loadedRemoteUserId != user.uid else {
+            return
+        }
+        await refresh()
+    }
+
     private func loadLocalState() async {
         do {
             applyLocal(try await configManager.loadLocalState())
@@ -1178,18 +1276,28 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadRemoteState(for user: AuthenticatedUser) async throws {
-        try await loadRemoteState(for: user, existingClients: [])
+        try await loadRemoteState(
+            for: user,
+            existingClients: [],
+            generation: authStateGeneration
+        )
     }
 
     private func loadRemoteStateMarkingUnavailable(
         for user: AuthenticatedUser,
         existingClients: [CloudGatewayClient] = []
     ) async throws {
+        let generation = authStateGeneration
         do {
-            try await loadRemoteState(for: user, existingClients: existingClients)
+            try await loadRemoteState(
+                for: user,
+                existingClients: existingClients,
+                generation: generation
+            )
         } catch {
+            try ensureCurrentSession(user, generation: generation)
             if isSignedIn {
-                await applyRemoteRefreshUnavailable()
+                try await applyRemoteRefreshUnavailable(for: user, generation: generation)
             }
             throw error
         }
@@ -1198,9 +1306,14 @@ public final class CloudGatewayViewModel: ObservableObject {
     // A remote refresh failed (offline, API error, cold launch with no network).
     // Reload the local cache first so installed configs stay visible and
     // controllable, then flag them as stale/offline.
-    private func applyRemoteRefreshUnavailable() async {
+    private func applyRemoteRefreshUnavailable(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws {
         _ = try? await configManager.loadLocalState()
+        try ensureCurrentSession(user, generation: generation)
         var state = await configManager.markRemoteRefreshUnavailable()
+        try ensureCurrentSession(user, generation: generation)
         if state.regions.isEmpty {
             state.regions = CloudGatewayConfigSelection.offlineRegions(from: state.installedSnapshots)
         }
@@ -1210,8 +1323,12 @@ public final class CloudGatewayViewModel: ObservableObject {
         pruneSelectedClient()
     }
 
-    private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
-        try ensureCurrentUser(user)
+    private func loadRemoteState(
+        for user: AuthenticatedUser,
+        existingClients: [CloudGatewayClient],
+        generation: UInt64
+    ) async throws {
+        try ensureCurrentSession(user, generation: generation)
         let isNewSignedInUser = appMode != .signedIn || signedInUid != user.uid
         signedInEmail = user.email
         signedInUid = user.uid
@@ -1225,16 +1342,19 @@ public final class CloudGatewayViewModel: ObservableObject {
         let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
         // Explicitly flatten so both a missing UserRoles doc (fetch returns nil)
         // and a fetch failure fall back to the check-access role.
-        role = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
+        let resolvedRole = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
+        try ensureCurrentSession(user, generation: generation)
         let regions = await service.addCapacity(to: enabledRegions, idToken: token)
-        let fetchedClients = role == "admin"
+        let fetchedClients = resolvedRole == "admin"
             ? try await service.fetchAllClients()
             : try await service.fetchOwnedClients(uid: user.uid)
-        try ensureCurrentUser(user)
+        try ensureCurrentSession(user, generation: generation)
         let clients = merge(existingClients: existingClients, fetchedClients: fetchedClients)
         let state = try await configManager.applyRemoteState(regions: regions, clients: clients)
-        try ensureCurrentUser(user)
+        try ensureCurrentSession(user, generation: generation)
+        role = resolvedRole
         apply(state)
+        loadedRemoteUserId = user.uid
         remoteRefreshUnavailable = false
         if isNewSignedInUser {
             selectedRegionId = nil
@@ -1245,24 +1365,66 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func ensureCurrentUser(_ user: AuthenticatedUser) throws {
-        guard service.currentUser?.uid == user.uid else {
+        guard isCurrentUser(user) else {
             throw CancellationError()
         }
+    }
+
+    private func performForCurrentUser<T>(
+        _ user: AuthenticatedUser,
+        generation: UInt64? = nil,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        let generation = generation ?? authStateGeneration
+        do {
+            try ensureCurrentSession(user, generation: generation)
+            let value = try await operation()
+            try ensureCurrentSession(user, generation: generation)
+            return value
+        } catch {
+            try ensureCurrentSession(user, generation: generation)
+            throw error
+        }
+    }
+
+    private func ensureCurrentSession(_ user: AuthenticatedUser, generation: UInt64) throws {
+        guard authStateGeneration == generation else {
+            throw CancellationError()
+        }
+        try ensureCurrentUser(user)
+    }
+
+    private func ensureNoReplacementUser(_ user: AuthenticatedUser, generation: UInt64) throws {
+        guard service.currentUser?.uid == nil
+                || (isCurrentUser(user) && authStateGeneration == generation) else {
+            throw CancellationError()
+        }
+    }
+
+    private func isCurrentUser(_ user: AuthenticatedUser) -> Bool {
+        service.currentUser?.uid == user.uid
     }
 
     private func loadRemoteStateOrSignOut(
         for user: AuthenticatedUser,
         signOutOnAnyFailure: Bool
     ) async throws {
+        let generation = authStateGeneration
         do {
-            try await loadRemoteState(for: user)
+            try await loadRemoteState(
+                for: user,
+                existingClients: [],
+                generation: generation
+            )
         } catch let loadError as CloudGatewayAppError {
+            try ensureCurrentSession(user, generation: generation)
             if signOutOnAnyFailure || shouldSignOut(after: loadError) {
                 try? service.signOut()
                 await dropToGuest()
             }
             throw loadError
         } catch {
+            try ensureCurrentSession(user, generation: generation)
             if signOutOnAnyFailure {
                 try? service.signOut()
                 await dropToGuest()
@@ -1302,6 +1464,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         deleteAccountPassword = ""
         clearAccountLinkState()
         linkedProviderIds = []
+        loadedRemoteUserId = nil
     }
 
     private func refreshLinkedProviderIds() {
@@ -1318,6 +1481,9 @@ public final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadGuestState() async throws {
+        if appMode != .guest {
+            authStateGeneration &+= 1
+        }
         clearRemoteState()
         let enabledRegions = try await service.fetchRegions()
         guard !enabledRegions.isEmpty else {

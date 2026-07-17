@@ -13,6 +13,9 @@ final class MockGatewayService: CloudGatewayServicing {
     var accessRole = "user"
     var providerIdsValue = ["password"]
     var fetchRegionsGate: AsyncTestGate?
+    var reauthenticateWithPasswordGate: AsyncTestGate?
+    var reauthenticateWithAppleGate: AsyncTestGate?
+    var syncRegionGate: AsyncTestGate?
 
     // Injectable errors.
     var idTokenError: Error?
@@ -172,6 +175,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func reauthenticateWithPassword(_ password: String) async throws {
         reauthenticateWithPasswordCallCount += 1
         reauthenticatePassword = password
+        if let reauthenticateWithPasswordGate {
+            await reauthenticateWithPasswordGate.wait()
+        }
         if let reauthenticateWithPasswordError {
             throw reauthenticateWithPasswordError
         }
@@ -180,6 +186,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
         reauthenticateWithAppleCallCount += 1
         reauthenticateWithAppleRevokeValues.append(revoke)
+        if let reauthenticateWithAppleGate {
+            await reauthenticateWithAppleGate.wait()
+        }
         if let reauthenticateWithAppleError {
             throw reauthenticateWithAppleError
         }
@@ -310,6 +319,9 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
         syncRegionCallCount += 1
+        if let syncRegionGate {
+            await syncRegionGate.wait()
+        }
         if let syncRegionError {
             throw syncRegionError
         }

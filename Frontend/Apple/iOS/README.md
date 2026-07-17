@@ -123,7 +123,9 @@ doubles, so no Firebase project or network is involved. Both suites run in the
 runs native macOS mapping tests; iOS Firestore and Google presentation adapters
 are covered by compilation in the full app build.
 
-Capacity is best-effort. If a regional capacity request fails, the region remains visible with "Capacity unavailable" and creation is allowed to surface the authoritative API response.
+Capacity is best-effort. If a regional capacity request fails, the region
+remains visible with "Capacity unavailable," but client creation stays disabled
+until a later refresh provides a known capacity below the region limit.
 
 ## No-Device Build Verification
 

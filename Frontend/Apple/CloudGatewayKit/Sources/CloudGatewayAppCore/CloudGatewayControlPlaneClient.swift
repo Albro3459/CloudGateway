@@ -16,12 +16,42 @@ public struct CloudGatewayCreateClientResponse: Decodable, Equatable, Sendable {
     public let assignedTunnelIpv4: String?
     public let serverEndpointIpv4: String?
     public let serverEndpointHostname: String?
+
+    public init(
+        clientId: String,
+        regionId: String,
+        clientName: String,
+        status: CloudGatewayClientStatus,
+        wireguardConfig: String,
+        assignedTunnelIpv4: String?,
+        serverEndpointIpv4: String?,
+        serverEndpointHostname: String?
+    ) {
+        self.clientId = clientId
+        self.regionId = regionId
+        self.clientName = clientName
+        self.status = status
+        self.wireguardConfig = wireguardConfig
+        self.assignedTunnelIpv4 = assignedTunnelIpv4
+        self.serverEndpointIpv4 = serverEndpointIpv4
+        self.serverEndpointHostname = serverEndpointHostname
+    }
 }
 
 public struct CloudGatewayCapacityResponse: Decodable, Equatable, Sendable {
     public let regionId: String
     public let capacityLimit: Int
     public let allocatedClientCount: Int
+
+    public init(
+        regionId: String,
+        capacityLimit: Int,
+        allocatedClientCount: Int
+    ) {
+        self.regionId = regionId
+        self.capacityLimit = capacityLimit
+        self.allocatedClientCount = allocatedClientCount
+    }
 }
 
 public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServicing {

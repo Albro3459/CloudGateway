@@ -45,6 +45,35 @@ import Testing
 }
 
 @MainActor
+@Test func appServiceFacadePinsGoogleAccountActionsToInitiatingUser() async throws {
+    let events = EventLog()
+    let auth = FacadeAuthFake(events: events)
+    let presenter = GooglePresenterFake(events: events)
+    let facade = makeFacade(auth: auth, presenter: presenter)
+    let initiatingUser = AuthenticatedUser(uid: "user-a", email: "a@example.com")
+    let replacementUser = AuthenticatedUser(uid: "user-b", email: "b@example.com")
+
+    auth.user = initiatingUser
+    presenter.onPresent = { auth.user = replacementUser }
+    await #expect(throws: CloudGatewayAppError.self) {
+        _ = try await facade.linkGoogle()
+    }
+    #expect(auth.googleLinkExpectedUserIds == ["user-a"])
+
+    auth.user = initiatingUser
+    await #expect(throws: CloudGatewayAppError.self) {
+        try await facade.reauthenticateWithGoogle(revoke: true)
+    }
+    #expect(auth.googleReauthenticationExpectedUserIds == ["user-a"])
+    #expect(!events.values.contains("google.disconnect"))
+
+    presenter.onPresent = nil
+    auth.user = initiatingUser
+    _ = try await facade.linkGoogle()
+    #expect(auth.googleLinkExpectedUserIds == ["user-a", "user-a"])
+}
+
+@MainActor
 @Test func appServiceFacadeForwardsAppleRevocationAndGoogleCancellation() async throws {
     let events = EventLog()
     let auth = FacadeAuthFake(events: events)
@@ -182,6 +211,7 @@ private final class EventLog {
 private final class GooglePresenterFake: CloudGatewayGoogleSignInPresenting {
     private let events: EventLog
     var presentationError: Error?
+    var onPresent: (() -> Void)?
 
     init(events: EventLog) {
         self.events = events
@@ -189,6 +219,7 @@ private final class GooglePresenterFake: CloudGatewayGoogleSignInPresenting {
 
     func presentCredentials() async throws -> CloudGatewayGoogleCredentials {
         events.values.append("google.present")
+        onPresent?()
         if let presentationError {
             throw presentationError
         }
@@ -207,11 +238,13 @@ private final class GooglePresenterFake: CloudGatewayGoogleSignInPresenting {
 @MainActor
 private final class FacadeAuthFake: CloudGatewayAuthServicing {
     private let events: EventLog
-    var user: AuthenticatedUser?
+    var user: AuthenticatedUser? = AuthenticatedUser(uid: "user", email: "user@example.com")
     var googleReauthenticationError: Error?
     var signOutError: Error?
     var appleRevokeFlags: [Bool] = []
     var googleSignInCount = 0
+    var googleLinkExpectedUserIds: [String] = []
+    var googleReauthenticationExpectedUserIds: [String] = []
 
     init(events: EventLog) {
         self.events = events
@@ -234,14 +267,25 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
     func providerIds() -> [String] { [] }
     func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser { try requiredUser() }
     func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser { try requiredUser() }
-    func linkGoogle(credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser { try requiredUser() }
+    func linkGoogle(
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        googleLinkExpectedUserIds.append(expectedUserId)
+        return try requiredUser(expectedUserId: expectedUserId)
+    }
     func reauthenticateWithPassword(_ password: String) async throws {}
     func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
         appleRevokeFlags.append(revoke)
     }
 
-    func reauthenticateWithGoogle(credentials: CloudGatewayGoogleCredentials) async throws {
+    func reauthenticateWithGoogle(
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws {
         events.values.append("auth.googleReauth")
+        googleReauthenticationExpectedUserIds.append(expectedUserId)
+        _ = try requiredUser(expectedUserId: expectedUserId)
         if let googleReauthenticationError {
             throw googleReauthenticationError
         }
@@ -260,6 +304,14 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
 
     private func requiredUser() throws -> AuthenticatedUser {
         guard let user else { throw CloudGatewayAppError.missingCurrentUser }
+        return user
+    }
+
+    private func requiredUser(expectedUserId: String) throws -> AuthenticatedUser {
+        let user = try requiredUser()
+        guard user.uid == expectedUserId else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
         return user
     }
 }

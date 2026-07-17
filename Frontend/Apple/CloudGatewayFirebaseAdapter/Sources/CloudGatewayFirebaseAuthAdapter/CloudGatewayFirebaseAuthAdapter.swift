@@ -93,11 +93,13 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     }
 
     public func linkGoogle(
-        credentials: CloudGatewayGoogleCredentials
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
     ) async throws -> AuthenticatedUser {
         guard let user = auth.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
+        guard user.uid == expectedUserId else { throw CancellationError() }
         let credential = GoogleAuthProvider.credential(
             withIDToken: credentials.idToken,
             accessToken: credentials.accessToken
@@ -138,10 +140,14 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         }
     }
 
-    public func reauthenticateWithGoogle(credentials: CloudGatewayGoogleCredentials) async throws {
+    public func reauthenticateWithGoogle(
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws {
         guard let user = auth.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
+        guard user.uid == expectedUserId else { throw CancellationError() }
         let credential = GoogleAuthProvider.credential(
             withIDToken: credentials.idToken,
             accessToken: credentials.accessToken

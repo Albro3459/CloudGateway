@@ -30,7 +30,10 @@ public protocol CloudGatewayAuthServicing: AnyObject {
     func providerIds() -> [String]
     func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser
     func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
-    func linkGoogle(credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser
+    func linkGoogle(
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser
     func reauthenticateWithPassword(_ password: String) async throws
     func reauthenticateWithApple(
         idToken: String,
@@ -38,7 +41,10 @@ public protocol CloudGatewayAuthServicing: AnyObject {
         authorizationCode: String,
         revoke: Bool
     ) async throws
-    func reauthenticateWithGoogle(credentials: CloudGatewayGoogleCredentials) async throws
+    func reauthenticateWithGoogle(
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws
     func sendPasswordReset(email: String) async throws
     func signOut() throws
     func idToken(forceRefresh: Bool) async throws -> String
@@ -130,8 +136,14 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
     }
 
     public func linkGoogle() async throws -> AuthenticatedUser {
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
         let credentials = try await googlePresenter.presentCredentials()
-        return try await auth.linkGoogle(credentials: credentials)
+        return try await auth.linkGoogle(
+            credentials: credentials,
+            expectedUserId: expectedUserId
+        )
     }
 
     public func reauthenticateWithPassword(_ password: String) async throws {
@@ -153,8 +165,14 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
     }
 
     public func reauthenticateWithGoogle(revoke: Bool) async throws {
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
         let credentials = try await googlePresenter.presentCredentials()
-        try await auth.reauthenticateWithGoogle(credentials: credentials)
+        try await auth.reauthenticateWithGoogle(
+            credentials: credentials,
+            expectedUserId: expectedUserId
+        )
         if revoke {
             try await googlePresenter.disconnect()
         }

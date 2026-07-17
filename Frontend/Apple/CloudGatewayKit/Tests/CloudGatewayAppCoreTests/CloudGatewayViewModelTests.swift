@@ -19,6 +19,15 @@ final class CloudGatewayViewModelTests: XCTestCase {
         }
     }
 
+    private func waitForCacheLoads(_ cache: FakeConfigCache, count: Int) async {
+        for _ in 0..<1_000 {
+            if await cache.loadRequests() >= count {
+                return
+            }
+            await Task.yield()
+        }
+    }
+
     private func waitForSleeper(
         _ sleeper: ControlledPresentationSleeper,
         recordedDurationCount: Int
@@ -171,6 +180,79 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.signedInUid)
         XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+    }
+
+    func testAuthListenerUserReplacementClearsOldStateAndQueuesNewLoad() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-a-client"])
+
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let staleRefresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 2 }
+
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil {
+            viewModel.signedInUid == "u2" && viewModel.clientOptions.isEmpty
+        }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+
+        await fetchRegionsGate.open()
+        await staleRefresh.value
+        await waitUntil {
+            viewModel.signedInUid == "u2"
+                && !viewModel.isWorking
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-b-client"]
+        }
+
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-b-client"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "user-a-client" })
+        XCTAssertEqual(service.fetchRegionsCallCount, 3)
+    }
+
+    func testUserReplacementDuringPullToRefreshCannotPublishOldOfflineFallback() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache(snapshots: [TestFixtures.snapshot("user-a-client", regionId: "us-sanjose-1")])
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        let initialCacheLoadCount = await cache.loadRequests()
+
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let fallbackGate = AsyncTestGate()
+        await cache.setLoadGate(fallbackGate)
+        let stalePull = Task { await viewModel.pullToRefresh() }
+        await waitForCacheLoads(cache, count: initialCacheLoadCount + 1)
+
+        service.fetchRegionsError = nil
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await fallbackGate.open()
+        await stalePull.value
+        await waitUntil {
+            viewModel.signedInUid == "u2"
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-b-client"]
+        }
+
+        XCTAssertFalse(viewModel.remoteRefreshUnavailable)
+        XCTAssertNil(viewModel.staleText)
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-b-client"])
     }
 
     func testAuthListenerExternalSignOutDuringRefreshCannotRestoreOldSession() async {
@@ -1002,6 +1084,25 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.syncResult)
     }
 
+    func testSyncCompletionCannotPublishPreviousUsersAuditLog() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        let syncGate = AsyncTestGate()
+        service.syncRegionGate = syncGate
+
+        let staleSync = Task { await viewModel.syncSelectedRegion() }
+        await waitUntil { service.syncRegionCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await syncGate.open()
+        await staleSync.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.syncResult)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+    }
+
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {
@@ -1238,6 +1339,39 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.linkAppleCallCount, 2)
         // Linking recovery must not disconnect the existing Google grant.
         XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [false])
+    }
+
+    func testAppleLinkRecoveryCannotResumeAgainstReplacementUser() async {
+        let service = signedInService()
+        service.providerIdsValue = ["apple.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.linkGoogleError = CloudGatewayAppError.requiresRecentLogin
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        await viewModel.linkGoogle()
+        XCTAssertEqual(viewModel.pendingLinkProvider, .google)
+        service.linkGoogleError = nil
+        let reauthGate = AsyncTestGate()
+        service.reauthenticateWithAppleGate = reauthGate
+
+        let staleRecovery = Task {
+            await viewModel.completeAccountLinkAppleReauth(
+                idToken: "tok",
+                rawNonce: "nonce",
+                authorizationCode: "code"
+            )
+        }
+        await waitUntil { service.reauthenticateWithAppleCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await reauthGate.open()
+        await staleRecovery.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertEqual(service.linkGoogleCallCount, 1)
+        XCTAssertNil(viewModel.successText)
+        XCTAssertNil(viewModel.pendingLinkProvider)
     }
 
     func testDeleteAccountWithGoogleRevokesGrant() async {
@@ -1752,6 +1886,29 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.deleteAccountPassword, "")
         XCTAssertEqual(viewModel.appMode, .guest)
         XCTAssertFalse(viewModel.isSignedIn)
+    }
+
+    func testDeleteAccountCannotTargetReplacementUserAfterReauthentication() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let reauthGate = AsyncTestGate()
+        service.reauthenticateWithPasswordGate = reauthGate
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.deleteAccountPassword = "password"
+
+        let staleDeletion = Task { await viewModel.deleteAccountWithPassword() }
+        await waitUntil { service.reauthenticateWithPasswordCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await reauthGate.open()
+        await staleDeletion.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertEqual(service.idTokenForceRefreshValues, [false])
+        XCTAssertEqual(service.deleteAccountCallCount, 0)
+        XCTAssertEqual(service.signOutCallCount, 0)
+        XCTAssertEqual(service.currentUser?.uid, "u2")
     }
 
     // MARK: - Role resolution
