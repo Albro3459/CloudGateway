@@ -57,7 +57,7 @@ VPN behavior change is intended.
 - [x] Stage 3: extract the shared control-plane API client from the Firebase service.
 - [x] Stage 4: split shared Firebase operations from platform sign-in presentation.
 - [x] Stage 5: replace implicit iOS construction with explicit platform composition.
-- [ ] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
+- [x] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
 - [ ] Stage 7: document the packet-extension reuse and thin-adapter boundary.
 - [ ] Stage 8: update validation, architecture documentation, and macOS handoff notes.
 
@@ -748,7 +748,7 @@ Completion record:
   and the unsigned generic-device iOS build;
 * GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
-### Stage 6 - Extract The Existing Presentation Refresh Loop
+### ✅ Stage 6 - Extract The Existing Presentation Refresh Loop
 
 Move the health/status refresh algorithm out of the SwiftUI view while
 preserving the current view-task lifetime exactly.
@@ -779,6 +779,29 @@ Acceptance:
   detection;
 * stale completions cannot overwrite a newer selection or loop;
 * existing dead-tunnel ordering tests and new presentation-loop tests pass.
+
+Completion record:
+
+* `ContentView` retains the same `.onAppear` and `.task` ownership, but now calls
+  AppCore operations for the immediate local health read and cancellable
+  health/status monitor instead of containing the polling algorithm;
+* the shared monitor preserves refresh-completion-plus-five-seconds cadence,
+  performs its first tick immediately, and exits with its caller's cancellation;
+* a generation token makes a replacement monitor authoritative, while late
+  local-state completions must still match the active generation and current
+  dead-health snapshot before they can update model state;
+* the production sleeper uses `ContinuousClock`, and an injected controlled
+  sleeper makes cadence, cancellation, and replacement tests deterministic;
+* tests cover appearance reads, five-second cadence, cancellation, replacement,
+  and a cancellation-insensitive late cache completion without adding remote,
+  scene-phase, wake, reachability, or background policy;
+* the first full gate exposed a stale source list in the adapter package for a
+  new sibling source file; keeping the small sleeper contract with the existing
+  AppCore passive contracts made every incremental package graph discover it;
+* `./scripts/test.sh apple` then passed with 99 app-model XCTest cases, 246 Swift
+  Testing cases, 2 native macOS Firebase-adapter tests, Xcode project listing,
+  and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
 ### Stage 7 - Document The Packet-Extension Reuse Boundary
 

@@ -1,6 +1,18 @@
 import CloudGatewayKit
 import Foundation
 
+public protocol CloudGatewayPresentationSleeping: Sendable {
+    func sleep(for duration: Duration) async throws
+}
+
+public struct CloudGatewayContinuousPresentationSleeper: CloudGatewayPresentationSleeping {
+    public init() {}
+
+    public func sleep(for duration: Duration) async throws {
+        try await ContinuousClock().sleep(for: duration)
+    }
+}
+
 @MainActor
 public protocol CloudGatewayNotificationAuthorizing {
     func requestAuthorization()

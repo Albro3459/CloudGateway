@@ -26,13 +26,55 @@ actor AsyncTestGate {
 
 final class FakeTunnelHealthReader: CloudGatewayTunnelHealthReading {
     var snapshot: CloudGatewayTunnelHealthSnapshot?
+    private(set) var readCount = 0
 
     init(snapshot: CloudGatewayTunnelHealthSnapshot? = nil) {
         self.snapshot = snapshot
     }
 
     func currentSnapshot() -> CloudGatewayTunnelHealthSnapshot? {
-        snapshot
+        readCount += 1
+        return snapshot
+    }
+}
+
+actor ControlledPresentationSleeper: CloudGatewayPresentationSleeping {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var durations = [Duration]()
+    private var waiters = [Waiter]()
+
+    func sleep(for duration: Duration) async throws {
+        let id = UUID()
+        durations.append(duration)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancel(id: id) }
+        }
+    }
+
+    func recordedDurations() -> [Duration] {
+        durations
+    }
+
+    func waitingCount() -> Int {
+        waiters.count
+    }
+
+    func resumeNext() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().continuation.resume()
+    }
+
+    private func cancel(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
     }
 }
 

@@ -116,11 +116,15 @@ public final class CloudGatewayViewModel: ObservableObject {
     private let configManager: CloudGatewayConfigManager
     private let healthReader: CloudGatewayTunnelHealthReading
     private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
+    private let presentationSleeper: any CloudGatewayPresentationSleeping
     private let deadTunnelDisconnectTimeout: Duration
     private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
     private var authRegistration: CloudGatewayAuthStateListenerRegistration?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
+    private var presentationMonitorGeneration: UInt64 = 0
+    private var activePresentationMonitorGeneration: UInt64?
+    private static let presentationRefreshInterval: Duration = .seconds(5)
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
     public static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
     public static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
@@ -354,6 +358,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         configManager: CloudGatewayConfigManager,
         healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader(),
         notificationAuthorizer: CloudGatewayNotificationAuthorizing = NoopCloudGatewayNotificationAuthorizer(),
+        presentationSleeper: any CloudGatewayPresentationSleeping = CloudGatewayContinuousPresentationSleeper(),
         deadTunnelDisconnectTimeout: Duration = .seconds(30),
         deadTunnelDisconnectPollInterval: Duration = .milliseconds(250)
     ) {
@@ -361,6 +366,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         self.configManager = configManager
         self.healthReader = healthReader
         self.notificationAuthorizer = notificationAuthorizer
+        self.presentationSleeper = presentationSleeper
         self.deadTunnelDisconnectTimeout = deadTunnelDisconnectTimeout
         self.deadTunnelDisconnectPollInterval = deadTunnelDisconnectPollInterval
         authRegistration = service.addAuthStateListener { [weak self] user in
@@ -513,7 +519,40 @@ public final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    public func presentationDidAppear() {
+        refreshTunnelHealth()
+    }
+
+    public func monitorPresentationHealthAndStatus() async {
+        presentationMonitorGeneration &+= 1
+        let generation = presentationMonitorGeneration
+        activePresentationMonitorGeneration = generation
+        defer {
+            if activePresentationMonitorGeneration == generation {
+                activePresentationMonitorGeneration = nil
+            }
+        }
+
+        while activePresentationMonitorGeneration == generation, !Task.isCancelled {
+            await refreshTunnelHealthAndStatus(expectedPresentationMonitorGeneration: generation)
+            guard activePresentationMonitorGeneration == generation, !Task.isCancelled else {
+                return
+            }
+            do {
+                try await presentationSleeper.sleep(for: Self.presentationRefreshInterval)
+            } catch {
+                return
+            }
+        }
+    }
+
     public func refreshTunnelHealthAndStatus() async {
+        await refreshTunnelHealthAndStatus(expectedPresentationMonitorGeneration: nil)
+    }
+
+    private func refreshTunnelHealthAndStatus(
+        expectedPresentationMonitorGeneration: UInt64?
+    ) async {
         refreshTunnelHealth()
         guard let snapshot = tunnelHealthSnapshot,
               snapshot.health == .notPassingTraffic else {
@@ -527,7 +566,18 @@ public final class CloudGatewayViewModel: ObservableObject {
               let state = try? await configManager.loadLocalState() else {
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              expectedPresentationMonitorGeneration.map({
+                  activePresentationMonitorGeneration == $0
+              }) ?? true,
+              let currentSnapshot = tunnelHealthSnapshot,
+              currentSnapshot.health == .notPassingTraffic,
+              DeadTunnelStatusRefreshKey(
+                  tunnelIdentifier: currentSnapshot.tunnelIdentifier,
+                  updatedAt: currentSnapshot.updatedAt
+              ) == refreshKey else {
+            return
+        }
         applyLocal(state)
         lastDeadTunnelStatusRefreshKey = refreshKey
     }

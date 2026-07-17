@@ -80,13 +80,10 @@ struct ContentView: View {
         }
         .foregroundStyle(theme.content)
         .onAppear {
-            viewModel.refreshTunnelHealth()
+            viewModel.presentationDidAppear()
         }
         .task {
-            while !Task.isCancelled {
-                await viewModel.refreshTunnelHealthAndStatus()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-            }
+            await viewModel.monitorPresentationHealthAndStatus()
         }
         .onChange(of: viewModel.appMode) { previousMode, mode in
             if mode == .signedIn {

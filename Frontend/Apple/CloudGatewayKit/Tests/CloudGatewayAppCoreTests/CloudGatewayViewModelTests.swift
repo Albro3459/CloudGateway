@@ -19,6 +19,18 @@ final class CloudGatewayViewModelTests: XCTestCase {
         }
     }
 
+    private func waitForSleeper(
+        _ sleeper: ControlledPresentationSleeper,
+        recordedDurationCount: Int
+    ) async {
+        for _ in 0..<1_000 {
+            if await sleeper.recordedDurations().count >= recordedDurationCount {
+                return
+            }
+            await Task.yield()
+        }
+    }
+
     private func makeViewModel(_ service: MockGatewayService) -> CloudGatewayViewModel {
         CloudGatewayViewModel(
             service: service,
@@ -257,6 +269,150 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         XCTAssertNil(weakViewModel.value)
         XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
+    }
+
+    func testPresentationAppearancePerformsOneImmediateLocalHealthRead() async {
+        let service = MockGatewayService()
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .passingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        viewModel.presentationDidAppear()
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 1)
+        XCTAssertEqual(viewModel.tunnelHealthSnapshot?.health, .passingTraffic)
+        XCTAssertEqual(service.fetchRegionsCallCount, 0)
+    }
+
+    func testPresentationMonitorRefreshesImmediatelyThenEveryFiveSeconds() async {
+        let service = MockGatewayService()
+        let healthReader = FakeTunnelHealthReader()
+        let sleeper = ControlledPresentationSleeper()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: sleeper
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        let monitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 1)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 1)
+        let firstDurations = await sleeper.recordedDurations()
+        XCTAssertEqual(firstDurations, [.seconds(5)])
+
+        await sleeper.resumeNext()
+        await waitForSleeper(sleeper, recordedDurationCount: 2)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+        let secondDurations = await sleeper.recordedDurations()
+        XCTAssertEqual(secondDurations, [.seconds(5), .seconds(5)])
+
+        monitor.cancel()
+        await monitor.value
+        let cancelledReadCount = healthReader.readCount
+        await sleeper.resumeNext()
+        await Task.yield()
+        XCTAssertEqual(healthReader.readCount, cancelledReadCount)
+    }
+
+    func testNewPresentationMonitorSupersedesOlderLoop() async {
+        let healthReader = FakeTunnelHealthReader()
+        let sleeper = ControlledPresentationSleeper()
+        let viewModel = CloudGatewayViewModel(
+            service: MockGatewayService(),
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: sleeper
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        let olderMonitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 1)
+        let newerMonitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 2)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+
+        await sleeper.resumeNext()
+        await olderMonitor.value
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+
+        await sleeper.resumeNext()
+        await waitForSleeper(sleeper, recordedDurationCount: 3)
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 3)
+
+        newerMonitor.cancel()
+        await newerMonitor.value
+    }
+
+    func testCancelledPresentationMonitorDiscardsLateLocalStatusCompletion() async {
+        let service = MockGatewayService()
+        let cache = FakeConfigCache(snapshots: [
+            TestFixtures.snapshot("c1", regionId: "us-sanjose-1")
+        ])
+        let tunnelManager = FakeTunnelManager(status: .disconnected)
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: ControlledPresentationSleeper()
+        )
+        await waitForLocalState(viewModel)
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+
+        await tunnelManager.setStatus(.connected, for: "c1")
+        let gate = AsyncTestGate()
+        await cache.setLoadGate(gate)
+        let loadCountBeforeMonitor = await cache.loadRequests()
+        let monitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        for _ in 0..<1_000 {
+            if await cache.loadRequests() > loadCountBeforeMonitor {
+                break
+            }
+            await Task.yield()
+        }
+
+        monitor.cancel()
+        await gate.open()
+        await monitor.value
+
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+        XCTAssertEqual(service.fetchRegionsCallCount, 0)
     }
 
     func testFutureMacOSCompositionConstructsAppCoreWithInjectedPlatformIdentifiers() {
