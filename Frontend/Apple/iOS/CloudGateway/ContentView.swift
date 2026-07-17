@@ -837,7 +837,9 @@ struct ContentView: View {
     // connects a VPN - the dead-tunnel alert only matters once a tunnel exists.
     // iOS prompts only once; later calls are no-ops that keep the current status.
     private func requestNotificationAuthorization() {
-        notificationAuthorizer.requestAuthorization()
+        CloudGatewayFirstInstallNotificationAuthorization.request(
+            authorizer: notificationAuthorizer
+        )
     }
 
     // The account sheet must finish dismissing before another sheet is

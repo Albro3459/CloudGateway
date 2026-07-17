@@ -11,6 +11,7 @@ final class MockGatewayService: CloudGatewayServicing {
     var userRole: String? = "user"
     var accessRole = "user"
     var providerIdsValue = ["password"]
+    var fetchRegionsGate: AsyncTestGate?
 
     // Injectable errors.
     var idTokenError: Error?
@@ -76,13 +77,34 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var deleteAccountCallCount = 0
     private(set) var syncRegionCallCount = 0
     private(set) var grantAccessCallCount = 0
+    private(set) var addAuthStateListenerCallCount = 0
+    private(set) var removeAuthStateListenerCallCount = 0
+
+    private var authStateListener: ((AuthenticatedUser?) -> Void)?
+    private var authStateListenerToken: NSObject?
 
     func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
-        // Intentionally does not fire so tests drive loads explicitly.
-        NSObject()
+        addAuthStateListenerCallCount += 1
+        let token = NSObject()
+        authStateListener = listener
+        authStateListenerToken = token
+        return token
     }
 
-    func removeAuthStateListener(_ token: Any) {}
+    func removeAuthStateListener(_ token: Any) {
+        removeAuthStateListenerCallCount += 1
+        guard let token = token as? NSObject,
+              token === authStateListenerToken else {
+            return
+        }
+        authStateListener = nil
+        authStateListenerToken = nil
+    }
+
+    func emitAuthState(_ user: AuthenticatedUser?) {
+        currentUser = user
+        authStateListener?(user)
+    }
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {
         signInCallCount += 1
@@ -211,6 +233,9 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func fetchRegions() async throws -> [CloudGatewayRegion] {
         fetchRegionsCallCount += 1
+        if let fetchRegionsGate {
+            await fetchRegionsGate.wait()
+        }
         if let fetchRegionsError {
             throw fetchRegionsError
         }

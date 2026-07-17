@@ -23,6 +23,12 @@ enum CloudGatewayExistingInstallNotificationAuthorization {
     }
 }
 
+enum CloudGatewayFirstInstallNotificationAuthorization {
+    static func request(authorizer: CloudGatewayNotificationAuthorizing) {
+        authorizer.requestAuthorization()
+    }
+}
+
 enum CloudGatewayAppError: LocalizedError {
     case missingCurrentUser
     case noEnabledRegions

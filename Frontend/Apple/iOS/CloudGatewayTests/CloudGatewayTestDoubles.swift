@@ -1,6 +1,28 @@
 import CloudGatewayKit
 import Foundation
 
+actor AsyncTestGate {
+    private var isOpen = false
+    private var continuations = [CheckedContinuation<Void, Never>]()
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
+    }
+}
+
 final class FakeTunnelHealthReader: CloudGatewayTunnelHealthReading {
     var snapshot: CloudGatewayTunnelHealthSnapshot?
 
@@ -126,13 +148,27 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 /// In-memory config cache for view-model tests.
 actor FakeConfigCache: CloudGatewayConfigCaching {
     private var snapshots: [CloudGatewayConfigSnapshot]
+    private var loadGate: AsyncTestGate?
+    private var loadRequestCount = 0
 
     init(snapshots: [CloudGatewayConfigSnapshot] = []) {
         self.snapshots = snapshots
     }
 
     func load() async throws -> [CloudGatewayConfigSnapshot] {
-        snapshots
+        loadRequestCount += 1
+        if let loadGate {
+            await loadGate.wait()
+        }
+        return snapshots
+    }
+
+    func setLoadGate(_ gate: AsyncTestGate?) {
+        loadGate = gate
+    }
+
+    func loadRequests() -> Int {
+        loadRequestCount
     }
 
     func save(_ snapshot: CloudGatewayConfigSnapshot) async throws {

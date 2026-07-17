@@ -51,7 +51,7 @@ VPN behavior change is intended.
 
 ## Implementation Progress
 
-- [ ] Stage 0: freeze the observable iOS contract and establish a green baseline.
+- [x] Stage 0: freeze the observable iOS contract and establish a green baseline.
 - [ ] Stage 1: add the Firebase-free `CloudGatewayAppCore` module and move passive contracts.
 - [ ] Stage 2: move the app model and its tests without redesigning behavior.
 - [ ] Stage 3: extract the shared control-plane API client from the Firebase service.
@@ -380,7 +380,10 @@ Before moving code:
 * run the prescribed Apple gate and record the commit, Xcode/Swift versions,
   resolved simulator name/runtime or `APPLE_TEST_SIMULATOR` value, test counts,
   and build result;
-* capture the current iOS screenshot fixture output;
+* ~~capture the current iOS screenshot fixture output;~~ intentionally waived by
+  the owner on 2026-07-17 because the existing screenshot fixtures are already
+  available and launching Simulator/Computer Use would add cost without
+  protecting this source extraction;
 * inventory every public/target-visible type and method in
   `CloudGatewayServicing.swift`, `CloudGatewayViewModel.swift`, and
   `CloudGatewayFirebaseService.swift`;
@@ -406,6 +409,66 @@ Acceptance:
 * `./scripts/test.sh apple` passes before extraction begins;
 * all behavior invariants have either an automated test or an explicit
   signed-device/manual check.
+
+Baseline record:
+
+* commit: `9788e6e51df4ad70618adba43a84aff6bffb45f7`;
+* toolchain: Xcode 26.5 (`17F42`), Swift package tools 6.3;
+* simulator: iPhone 17 on the installed iOS 26.5 runtime;
+* shared package: 231 tests passed;
+* host-less view model: 86 tests passed;
+* unsigned generic iOS build: passed;
+* gate: `./scripts/test.sh apple` passed on the confirming full rerun;
+* baseline observation: the first full run reported one failure in
+  `testSwitchTunnelMissingActiveTunnelFromSettingsShowsRefreshGuidanceAndClearsCardWarning`;
+  the isolated rerun and confirming full gate both passed. Treat any recurrence
+  as a test-ordering/race defect and resolve it rather than retrying indefinitely.
+
+Post-characterization confirmation:
+
+* shared package: 231 tests passed;
+* host-less view model: 94 tests passed;
+* unsigned generic iOS build: passed;
+* gate: `./scripts/test.sh apple` passed on the final characterized tree;
+* review: GPT-5.6 Terra, medium reasoning, approved after the auth-listener
+  publish race was closed at both the client-fetch and config-apply suspension
+  boundaries and characterized with deterministic gates.
+
+Extraction inventory:
+
+* `CloudGatewayServicing.swift` owns the notification authorization port and
+  no-op/policy helpers; app errors and Firebase auth error-code mapping;
+  runtime configuration and API URL validation; authenticated-user, access,
+  deletion, sync, and access-grant values; the complete authentication,
+  role/region/client/account/control-plane service port plus token convenience;
+  and the tunnel-health reader port/no-op. All declarations and protocol
+  requirements were enumerated before extraction.
+* `CloudGatewayViewModel.swift` owns app mode, provider and reauthentication
+  enums, sync results, the `@MainActor ObservableObject`, every published state
+  value and derived UI capability, and the complete auth, account, refresh,
+  selection, health, admin, client, install, tunnel, and message workflow API.
+  Its only private supporting declarations are the async-result latch and
+  tunnel-status display mapping.
+* `CloudGatewayFirebaseService.swift` owns production model composition, the
+  concrete health-store reader, create/capacity/regions response DTOs, the live
+  service implementation, private request DTOs and decoder configuration, and
+  the capacity-copy helper. The live service currently combines Firebase Auth,
+  Firestore, Google presentation, and REST transport; later stages split these
+  responsibilities without changing its outward behavior.
+
+Outstanding signed-device/manual checks:
+
+* email, Apple, and Google sign-in; provider linking and each reauthentication
+  path; Google/Apple credential revocation during account deletion;
+* first-install notification prompt, existing-install undetermined prompt, and
+  dead-tunnel notification/warning behavior while foregrounded/backgrounded;
+* profile install, start, stop, switch, remove, cold-launch restoration, offline
+  fallback, stale-config handling, and post-dead-tunnel direct-connect reload;
+* app background/foreground and device sleep/wake reconciliation.
+
+These checks require signing, entitlements, live Firebase/Google configuration,
+or a real Network Extension. They remain explicitly outstanding and are not
+claimed by the host-less or unsigned build gates.
 
 ### Stage 1 - Add AppCore And Move Passive Contracts
 

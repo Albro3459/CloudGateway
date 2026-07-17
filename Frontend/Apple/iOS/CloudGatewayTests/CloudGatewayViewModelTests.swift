@@ -3,6 +3,15 @@ import XCTest
 
 @MainActor
 final class CloudGatewayViewModelTests: XCTestCase {
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<1_000 {
+            if condition() {
+                return
+            }
+            await Task.yield()
+        }
+    }
+
     private func waitForLocalState(_ viewModel: CloudGatewayViewModel) async {
         for _ in 0..<100 where viewModel.installedSnapshots.isEmpty {
             await Task.yield()
@@ -110,6 +119,143 @@ final class CloudGatewayViewModelTests: XCTestCase {
         )
 
         XCTAssertEqual(notificationAuthorizer.undeterminedAuthorizationRequestCount, 0)
+    }
+
+    func testFirstInstallNotificationAuthorizationRequestsPermission() {
+        let notificationAuthorizer = FakeNotificationAuthorizer()
+
+        CloudGatewayFirstInstallNotificationAuthorization.request(
+            authorizer: notificationAuthorizer
+        )
+
+        XCTAssertEqual(notificationAuthorizer.authorizationRequestCount, 1)
+    }
+
+    func testAuthListenerInitialUserLoadsSignedInState() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        service.emitAuthState(service.currentUser)
+        await waitUntil { viewModel.appMode == .signedIn && !viewModel.isWorking }
+
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+        XCTAssertEqual(viewModel.signedInUid, "u1")
+        XCTAssertEqual(viewModel.signedInEmail, "a@b.com")
+        XCTAssertEqual(service.fetchOwnedClientsCallCount, 1)
+    }
+
+    func testAuthListenerExternalSignOutDropsLoadedSessionToGuest() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        service.emitAuthState(service.currentUser)
+        await waitUntil { viewModel.appMode == .signedIn && !viewModel.isWorking }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest && !viewModel.isWorking }
+
+        XCTAssertNil(viewModel.signedInUid)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+    }
+
+    func testAuthListenerExternalSignOutDuringRefreshCannotRestoreOldSession() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let viewModel = makeViewModel(service)
+
+        let refresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 1 }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        await fetchRegionsGate.open()
+        await refresh.value
+        await waitUntil { viewModel.appMode == .guest && !viewModel.isWorking }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertNil(viewModel.signedInUid)
+    }
+
+    func testAuthListenerExternalSignOutDuringConfigApplyCannotRestoreOldSession() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache()
+        let configApplyGate = AsyncTestGate()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        for _ in 0..<1_000 where await cache.loadRequests() == 0 {
+            await Task.yield()
+        }
+        await cache.setLoadGate(configApplyGate)
+
+        let refresh = Task { await viewModel.refresh() }
+        for _ in 0..<1_000 where await cache.loadRequests() < 2 {
+            await Task.yield()
+        }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        await configApplyGate.open()
+        await refresh.value
+        await waitUntil { !viewModel.isWorking }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertNil(viewModel.signedInUid)
+        XCTAssertTrue(viewModel.clientOptions.isEmpty)
+    }
+
+    func testAuthListenerIgnoresRedundantCallbackAfterManualSignOut() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        await viewModel.signOut()
+        let fetchCountAfterGuestLoad = service.fetchRegionsCallCount
+        service.emitAuthState(nil)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(service.fetchRegionsCallCount, fetchCountAfterGuestLoad)
+    }
+
+    func testAuthListenerIgnoresRedundantCallbackAfterForcedSignOut() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.checkAccessError = CloudGatewayAppError.accessDenied("No access")
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        let fetchCountAfterGuestLoad = service.fetchRegionsCallCount
+        service.emitAuthState(nil)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(service.fetchRegionsCallCount, fetchCountAfterGuestLoad)
+    }
+
+    func testViewModelDeinitRemovesAuthListener() async {
+        let service = MockGatewayService()
+        var viewModel: CloudGatewayViewModel? = makeViewModel(service)
+        weak var weakViewModel = viewModel
+
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+        viewModel = nil
+        await waitUntil { weakViewModel == nil }
+
+        XCTAssertNil(weakViewModel)
+        XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
     }
 
     func testDeadTunnelRefreshReconcilesExternallyStartedStatusWithoutOverlay() async {
@@ -1737,9 +1883,12 @@ final class CloudGatewayViewModelTests: XCTestCase {
 }
 
 private final class FakeNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    private(set) var authorizationRequestCount = 0
     private(set) var undeterminedAuthorizationRequestCount = 0
 
-    func requestAuthorization() {}
+    func requestAuthorization() {
+        authorizationRequestCount += 1
+    }
 
     func requestAuthorizationIfUndetermined() {
         undeterminedAuthorizationRequestCount += 1
