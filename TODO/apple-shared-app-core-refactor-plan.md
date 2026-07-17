@@ -58,7 +58,7 @@ VPN behavior change is intended.
 - [x] Stage 4: split shared Firebase operations from platform sign-in presentation.
 - [x] Stage 5: replace implicit iOS construction with explicit platform composition.
 - [x] Stage 6: move the existing presentation refresh loop out of `ContentView` without changing its lifecycle policy.
-- [ ] Stage 7: document the packet-extension reuse and thin-adapter boundary.
+- [x] Stage 7: document the packet-extension reuse and thin-adapter boundary.
 - [ ] Stage 8: update validation, architecture documentation, and macOS handoff notes.
 
 ## Current Architecture
@@ -803,7 +803,7 @@ Completion record:
   and the unsigned generic-device iOS build;
 * GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
-### Stage 7 - Document The Packet-Extension Reuse Boundary
+### ✅ Stage 7 - Document The Packet-Extension Reuse Boundary
 
 The health state machine is already shared, but the iOS provider still contains
 runtime, notification, path, lifecycle, stop-deadline, and WireGuard mapping
@@ -838,6 +838,27 @@ Acceptance:
 * stop-before-start-completion, callback loss, stale session, and bounded stop
   invariants remain explicit;
 * no Firebase/AppCore dependency enters either extension.
+
+Completion record:
+
+* `Frontend/Apple/macOS/README.md` now maps each packet-tunnel concern to the
+  exact shared public API and the thin native adapter the future macOS target
+  must own, without compiling iOS sources or adding a support target early;
+* the handoff explicitly preserves start identity, joined stop, missing and
+  duplicate callback bounds, stale-generation fences, FIFO effect ordering,
+  the five-second physical-stop deadline, single-monitor ownership, and the
+  privacy/no-probe contract;
+* direct API inspection corrected the draft to instantiate the public
+  `CloudGatewayTunnelHealthMonitor`, which encapsulates its internal
+  coordinator and artifact driver, instead of describing those internal types
+  as separately importable;
+* `PacketTunnelProvider.swift` remained byte-for-byte unchanged in the stage
+  diff, and no Firebase, AppCore, UI, or platform identity entered the packet
+  extension boundary;
+* `./scripts/test.sh apple` passed with 99 app-model XCTest cases, 246 Swift
+  Testing cases, 2 native macOS Firebase-adapter tests, Xcode project listing,
+  and the unsigned generic-device iOS build;
+* GPT-5.6 Terra, medium reasoning, approved with no actionable findings.
 
 ### Stage 8 - Documentation And macOS Handoff
 
