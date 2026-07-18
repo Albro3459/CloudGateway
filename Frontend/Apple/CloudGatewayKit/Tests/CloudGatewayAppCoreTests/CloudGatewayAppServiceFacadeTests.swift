@@ -74,6 +74,55 @@ import Testing
 }
 
 @MainActor
+@Test func appServiceFacadePinsAppleAndPasswordAccountActionsToInitiatingUser() async throws {
+    let events = EventLog()
+    let auth = FacadeAuthFake(events: events)
+    let presenter = GooglePresenterFake(events: events)
+    let facade = makeFacade(auth: auth, presenter: presenter)
+    let initiatingUser = AuthenticatedUser(uid: "user-a", email: "a@example.com")
+
+    auth.user = initiatingUser
+    _ = try await facade.linkEmailPassword(email: "a@example.com", password: "pw")
+    #expect(auth.passwordLinkExpectedUserIds == ["user-a"])
+
+    auth.user = initiatingUser
+    _ = try await facade.linkApple(idToken: "tok", rawNonce: "nonce")
+    #expect(auth.appleLinkExpectedUserIds == ["user-a"])
+
+    auth.user = initiatingUser
+    try await facade.reauthenticateWithPassword("pw")
+    #expect(auth.passwordReauthenticationExpectedUserIds == ["user-a"])
+
+    auth.user = initiatingUser
+    try await facade.reauthenticateWithApple(
+        idToken: "tok",
+        rawNonce: "nonce",
+        authorizationCode: "code",
+        revoke: false
+    )
+    #expect(auth.appleReauthenticationExpectedUserIds == ["user-a"])
+
+    auth.user = nil
+    await #expect(throws: CloudGatewayAppError.self) {
+        _ = try await facade.linkEmailPassword(email: "a@example.com", password: "pw")
+    }
+    await #expect(throws: CloudGatewayAppError.self) {
+        _ = try await facade.linkApple(idToken: "tok", rawNonce: "nonce")
+    }
+    await #expect(throws: CloudGatewayAppError.self) {
+        try await facade.reauthenticateWithPassword("pw")
+    }
+    await #expect(throws: CloudGatewayAppError.self) {
+        try await facade.reauthenticateWithApple(
+            idToken: "tok",
+            rawNonce: "nonce",
+            authorizationCode: "code",
+            revoke: false
+        )
+    }
+}
+
+@MainActor
 @Test func appServiceFacadeForwardsAppleRevocationAndGoogleCancellation() async throws {
     let events = EventLog()
     let auth = FacadeAuthFake(events: events)
@@ -245,6 +294,10 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
     var googleSignInCount = 0
     var googleLinkExpectedUserIds: [String] = []
     var googleReauthenticationExpectedUserIds: [String] = []
+    var passwordLinkExpectedUserIds: [String] = []
+    var appleLinkExpectedUserIds: [String] = []
+    var passwordReauthenticationExpectedUserIds: [String] = []
+    var appleReauthenticationExpectedUserIds: [String] = []
 
     init(events: EventLog) {
         self.events = events
@@ -265,8 +318,22 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
         return try requiredUser()
     }
     func providerIds() -> [String] { [] }
-    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser { try requiredUser() }
-    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser { try requiredUser() }
+    func linkEmailPassword(
+        email: String,
+        password: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        passwordLinkExpectedUserIds.append(expectedUserId)
+        return try requiredUser(expectedUserId: expectedUserId)
+    }
+    func linkApple(
+        idToken: String,
+        rawNonce: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        appleLinkExpectedUserIds.append(expectedUserId)
+        return try requiredUser(expectedUserId: expectedUserId)
+    }
     func linkGoogle(
         credentials: CloudGatewayGoogleCredentials,
         expectedUserId: String
@@ -274,8 +341,19 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
         googleLinkExpectedUserIds.append(expectedUserId)
         return try requiredUser(expectedUserId: expectedUserId)
     }
-    func reauthenticateWithPassword(_ password: String) async throws {}
-    func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
+    func reauthenticateWithPassword(_ password: String, expectedUserId: String) async throws {
+        passwordReauthenticationExpectedUserIds.append(expectedUserId)
+        _ = try requiredUser(expectedUserId: expectedUserId)
+    }
+    func reauthenticateWithApple(
+        idToken: String,
+        rawNonce: String,
+        authorizationCode: String,
+        revoke: Bool,
+        expectedUserId: String
+    ) async throws {
+        appleReauthenticationExpectedUserIds.append(expectedUserId)
+        _ = try requiredUser(expectedUserId: expectedUserId)
         appleRevokeFlags.append(revoke)
     }
 

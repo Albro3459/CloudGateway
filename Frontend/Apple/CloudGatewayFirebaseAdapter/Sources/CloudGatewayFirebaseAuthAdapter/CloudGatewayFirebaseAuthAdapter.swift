@@ -64,32 +64,30 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         auth.currentUser?.providerData.map(\.providerID) ?? []
     }
 
-    public func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
-        guard let user = auth.currentUser else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        let credential = EmailAuthProvider.credential(withEmail: email, password: password)
-        do {
-            return Self.user(try await user.link(with: credential).user)
-        } catch {
-            throw Self.mapAuthError(error)
-        }
+    public func linkEmailPassword(
+        email: String,
+        password: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        try await Self.guardedLinkEmailPassword(
+            currentUser: currentGuardedUser(),
+            email: email,
+            password: password,
+            expectedUserId: expectedUserId
+        )
     }
 
-    public func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
-        guard let user = auth.currentUser else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        let credential = OAuthProvider.appleCredential(
-            withIDToken: idToken,
+    public func linkApple(
+        idToken: String,
+        rawNonce: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        try await Self.guardedLinkApple(
+            currentUser: currentGuardedUser(),
+            idToken: idToken,
             rawNonce: rawNonce,
-            fullName: nil
+            expectedUserId: expectedUserId
         )
-        do {
-            return Self.user(try await user.link(with: credential).user)
-        } catch {
-            throw Self.mapAuthError(error)
-        }
     }
 
     public func linkGoogle(
@@ -103,30 +101,27 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         )
     }
 
-    public func reauthenticateWithPassword(_ password: String) async throws {
-        guard let user = auth.currentUser,
-              let email = user.email else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        let credential = EmailAuthProvider.credential(withEmail: email, password: password)
-        _ = try await user.reauthenticate(with: credential)
+    public func reauthenticateWithPassword(_ password: String, expectedUserId: String) async throws {
+        try await Self.guardedReauthenticatePassword(
+            currentUser: currentGuardedUser(),
+            password: password,
+            expectedUserId: expectedUserId
+        )
     }
 
     public func reauthenticateWithApple(
         idToken: String,
         rawNonce: String,
         authorizationCode: String,
-        revoke: Bool
+        revoke: Bool,
+        expectedUserId: String
     ) async throws {
-        guard let user = auth.currentUser else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        let credential = OAuthProvider.appleCredential(
-            withIDToken: idToken,
+        try await Self.guardedReauthenticateApple(
+            currentUser: currentGuardedUser(),
+            idToken: idToken,
             rawNonce: rawNonce,
-            fullName: nil
+            expectedUserId: expectedUserId
         )
-        _ = try await user.reauthenticate(with: credential)
         if revoke {
             try await auth.revokeToken(withAuthorizationCode: authorizationCode)
         }
@@ -178,10 +173,69 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         }
     }
 
-    // Mid-flight user-swap guard, factored out of the two Google methods so it can
+    // Mid-flight user-swap guard, factored out of the link/reauth methods so it can
     // be unit-tested without a live `FirebaseAuth.Auth`. A swapped `uid` throws
     // before any link/reauth credential call runs; a nil user reports the standard
     // domain error.
+    static func guardedLinkEmailPassword(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        email: String,
+        password: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        do {
+            return try await currentUser.linkEmailPassword(email: email, password: password)
+        } catch {
+            throw mapAuthError(error)
+        }
+    }
+
+    static func guardedLinkApple(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        idToken: String,
+        rawNonce: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        do {
+            return try await currentUser.linkApple(idToken: idToken, rawNonce: rawNonce)
+        } catch {
+            throw mapAuthError(error)
+        }
+    }
+
+    static func guardedReauthenticatePassword(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        password: String,
+        expectedUserId: String
+    ) async throws {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        try await currentUser.reauthenticatePassword(password)
+    }
+
+    static func guardedReauthenticateApple(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        idToken: String,
+        rawNonce: String,
+        expectedUserId: String
+    ) async throws {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        try await currentUser.reauthenticateApple(idToken: idToken, rawNonce: rawNonce)
+    }
+
     static func guardedLinkGoogle(
         currentUser: CloudGatewayFirebaseGuardedUser?,
         credentials: CloudGatewayGoogleCredentials,
@@ -231,6 +285,37 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
             let credential = GoogleAuthProvider.credential(
                 withIDToken: credentials.idToken,
                 accessToken: credentials.accessToken
+            )
+            _ = try await user.reauthenticate(with: credential)
+        }
+
+        func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
+            let credential = EmailAuthProvider.credential(withEmail: email, password: password)
+            return CloudGatewayFirebaseAuthAdapter.user(try await user.link(with: credential).user)
+        }
+
+        func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+            let credential = OAuthProvider.appleCredential(
+                withIDToken: idToken,
+                rawNonce: rawNonce,
+                fullName: nil
+            )
+            return CloudGatewayFirebaseAuthAdapter.user(try await user.link(with: credential).user)
+        }
+
+        func reauthenticatePassword(_ password: String) async throws {
+            guard let email = user.email else {
+                throw CloudGatewayAppError.missingCurrentUser
+            }
+            let credential = EmailAuthProvider.credential(withEmail: email, password: password)
+            _ = try await user.reauthenticate(with: credential)
+        }
+
+        func reauthenticateApple(idToken: String, rawNonce: String) async throws {
+            let credential = OAuthProvider.appleCredential(
+                withIDToken: idToken,
+                rawNonce: rawNonce,
+                fullName: nil
             )
             _ = try await user.reauthenticate(with: credential)
         }
@@ -294,4 +379,8 @@ protocol CloudGatewayFirebaseGuardedUser {
     var uid: String { get }
     func linkGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser
     func reauthenticateGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws
+    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser
+    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
+    func reauthenticatePassword(_ password: String) async throws
+    func reauthenticateApple(idToken: String, rawNonce: String) async throws
 }

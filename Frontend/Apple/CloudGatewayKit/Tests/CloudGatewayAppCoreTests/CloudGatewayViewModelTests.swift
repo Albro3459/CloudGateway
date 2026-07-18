@@ -4,33 +4,53 @@ import XCTest
 
 @MainActor
 final class CloudGatewayViewModelTests: XCTestCase {
-    private func waitUntil(_ condition: () -> Bool) async {
+    private func waitUntil(
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () -> Bool
+    ) async {
         for _ in 0..<1_000 {
             if condition() {
                 return
             }
             await Task.yield()
         }
+        XCTFail("waitUntil timed out", file: file, line: line)
     }
 
-    private func waitForLocalState(_ viewModel: CloudGatewayViewModel) async {
+    private func waitForLocalState(
+        _ viewModel: CloudGatewayViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
         for _ in 0..<100 where viewModel.installedSnapshots.isEmpty {
             await Task.yield()
         }
+        if viewModel.installedSnapshots.isEmpty {
+            XCTFail("waitForLocalState timed out", file: file, line: line)
+        }
     }
 
-    private func waitForCacheLoads(_ cache: FakeConfigCache, count: Int) async {
+    private func waitForCacheLoads(
+        _ cache: FakeConfigCache,
+        count: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
         for _ in 0..<1_000 {
             if await cache.loadRequests() >= count {
                 return
             }
             await Task.yield()
         }
+        XCTFail("waitForCacheLoads timed out", file: file, line: line)
     }
 
     private func waitForSleeper(
         _ sleeper: ControlledPresentationSleeper,
-        recordedDurationCount: Int
+        recordedDurationCount: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) async {
         for _ in 0..<1_000 {
             if await sleeper.recordedDurations().count >= recordedDurationCount {
@@ -38,6 +58,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
             }
             await Task.yield()
         }
+        XCTFail("waitForSleeper timed out", file: file, line: line)
     }
 
     private func makeViewModel(_ service: MockGatewayService) -> CloudGatewayViewModel {
@@ -2011,8 +2032,16 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await tunnelManager.setInstallGate(installGate)
 
         let staleInstall = Task { await viewModel.installFromCloud(option) }
-        for _ in 0..<1_000 where await tunnelManager.installRequests() < 1 {
+        var installRequestsSeen = false
+        for _ in 0..<1_000 {
+            if await tunnelManager.installRequests() >= 1 {
+                installRequestsSeen = true
+                break
+            }
             await Task.yield()
+        }
+        if !installRequestsSeen {
+            XCTFail("timed out waiting for install request")
         }
         // Gate the replacement user's own reload so it cannot overwrite the state
         // we are asserting on before we open the install gate.

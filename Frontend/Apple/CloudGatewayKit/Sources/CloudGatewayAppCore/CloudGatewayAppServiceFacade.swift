@@ -28,18 +28,27 @@ public protocol CloudGatewayAuthServicing: AnyObject {
     func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
     func signInWithGoogle(credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser
     func providerIds() -> [String]
-    func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser
-    func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser
+    func linkEmailPassword(
+        email: String,
+        password: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser
+    func linkApple(
+        idToken: String,
+        rawNonce: String,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser
     func linkGoogle(
         credentials: CloudGatewayGoogleCredentials,
         expectedUserId: String
     ) async throws -> AuthenticatedUser
-    func reauthenticateWithPassword(_ password: String) async throws
+    func reauthenticateWithPassword(_ password: String, expectedUserId: String) async throws
     func reauthenticateWithApple(
         idToken: String,
         rawNonce: String,
         authorizationCode: String,
-        revoke: Bool
+        revoke: Bool,
+        expectedUserId: String
     ) async throws
     func reauthenticateWithGoogle(
         credentials: CloudGatewayGoogleCredentials,
@@ -128,11 +137,25 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
     }
 
     public func linkEmailPassword(email: String, password: String) async throws -> AuthenticatedUser {
-        try await auth.linkEmailPassword(email: email, password: password)
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        return try await auth.linkEmailPassword(
+            email: email,
+            password: password,
+            expectedUserId: expectedUserId
+        )
     }
 
     public func linkApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
-        try await auth.linkApple(idToken: idToken, rawNonce: rawNonce)
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        return try await auth.linkApple(
+            idToken: idToken,
+            rawNonce: rawNonce,
+            expectedUserId: expectedUserId
+        )
     }
 
     public func linkGoogle() async throws -> AuthenticatedUser {
@@ -147,7 +170,10 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
     }
 
     public func reauthenticateWithPassword(_ password: String) async throws {
-        try await auth.reauthenticateWithPassword(password)
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        try await auth.reauthenticateWithPassword(password, expectedUserId: expectedUserId)
     }
 
     public func reauthenticateWithApple(
@@ -156,11 +182,15 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
         authorizationCode: String,
         revoke: Bool
     ) async throws {
+        guard let expectedUserId = auth.currentUser?.uid else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
         try await auth.reauthenticateWithApple(
             idToken: idToken,
             rawNonce: rawNonce,
             authorizationCode: authorizationCode,
-            revoke: revoke
+            revoke: revoke,
+            expectedUserId: expectedUserId
         )
     }
 
