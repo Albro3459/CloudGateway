@@ -188,22 +188,38 @@ elif mode == "patch":
 new_version = f"{major}.{minor}.{patch}" if mode else current_version
 new_build = current_build + 1
 
-for match in reversed(app_configs):
-    block = match.group(1)
-    block = re.sub(
-        r"(\n\s*CURRENT_PROJECT_VERSION = )\d+(;)",
-        rf"\g<1>{new_build}\g<2>",
-        block,
-        count=1,
+# Bump every target that declares a version (app, packet-tunnel extension, and
+# screenshots) in lockstep. App Store Connect rejects an upload whose embedded
+# binaries carry a different CFBundleVersion than the containing app, so the
+# build number must move on all of them together. The marketing version only
+# moves when --version was passed.
+all_builds = re.findall(r"\n\s*CURRENT_PROJECT_VERSION = (\d+);", text)
+if len(set(all_builds)) != 1 or all_builds[0] != str(current_build):
+    raise SystemExit(
+        "target build numbers are out of sync; align every "
+        "CURRENT_PROJECT_VERSION before releasing"
     )
-    if mode:
-        block = re.sub(
-            r"(\n\s*MARKETING_VERSION = )[0-9]+\.[0-9]+\.[0-9]+(;)",
-            rf"\g<1>{new_version}\g<2>",
-            block,
-            count=1,
+text = re.sub(
+    r"(\n\s*CURRENT_PROJECT_VERSION = )\d+(;)",
+    rf"\g<1>{new_build}\g<2>",
+    text,
+)
+if mode:
+    all_versions = re.findall(r"\n\s*MARKETING_VERSION = ([0-9]+\.[0-9]+\.[0-9]+);", text)
+    if (
+        len(all_versions) != len(all_builds)
+        or len(set(all_versions)) != 1
+        or all_versions[0] != current_version
+    ):
+        raise SystemExit(
+            "target marketing versions are out of sync; align every "
+            "MARKETING_VERSION before releasing"
         )
-    text = text[:match.start()] + block + text[match.end():]
+    text = re.sub(
+        r"(\n\s*MARKETING_VERSION = )[0-9]+\.[0-9]+\.[0-9]+(;)",
+        rf"\g<1>{new_version}\g<2>",
+        text,
+    )
 open(path, "w", encoding="utf-8").write(text)
 print(current_version, current_build, new_version, new_build)
 PY
