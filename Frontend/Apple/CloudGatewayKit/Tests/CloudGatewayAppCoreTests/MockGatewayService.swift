@@ -1,3 +1,4 @@
+@testable import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 
@@ -11,6 +12,19 @@ final class MockGatewayService: CloudGatewayServicing {
     var userRole: String? = "user"
     var accessRole = "user"
     var providerIdsValue = ["password"]
+    var fetchRegionsGate: AsyncTestGate?
+    var reauthenticateWithPasswordGate: AsyncTestGate?
+    var reauthenticateWithAppleGate: AsyncTestGate?
+    var syncRegionGate: AsyncTestGate?
+    var createClientGate: AsyncTestGate?
+    var deleteClientGate: AsyncTestGate?
+    var grantAccessGate: AsyncTestGate?
+    var deleteAccountGate: AsyncTestGate?
+
+    // deleteAccount normally simulates Firebase dropping the current user. Set to
+    // false to model the auth listener publishing a replacement user before the
+    // post-deletion local cleanup runs.
+    var deleteAccountClearsCurrentUser = true
 
     // Injectable errors.
     var idTokenError: Error?
@@ -76,13 +90,24 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var deleteAccountCallCount = 0
     private(set) var syncRegionCallCount = 0
     private(set) var grantAccessCallCount = 0
+    var addAuthStateListenerCallCount: Int { authListenerStorage.addCallCount }
+    var removeAuthStateListenerCallCount: Int { authListenerStorage.removeCallCount }
 
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
-        // Intentionally does not fire so tests drive loads explicitly.
-        NSObject()
+    private nonisolated let authListenerStorage = MockAuthListenerStorage()
+
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration {
+        let token = authListenerStorage.add(listener)
+        return CloudGatewayAuthStateListenerRegistration { [authListenerStorage] in
+            authListenerStorage.remove(token)
+        }
     }
 
-    func removeAuthStateListener(_ token: Any) {}
+    func emitAuthState(_ user: AuthenticatedUser?) {
+        currentUser = user
+        authListenerStorage.emit(user)
+    }
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {
         signInCallCount += 1
@@ -159,6 +184,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func reauthenticateWithPassword(_ password: String) async throws {
         reauthenticateWithPasswordCallCount += 1
         reauthenticatePassword = password
+        if let reauthenticateWithPasswordGate {
+            await reauthenticateWithPasswordGate.wait()
+        }
         if let reauthenticateWithPasswordError {
             throw reauthenticateWithPasswordError
         }
@@ -167,6 +195,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func reauthenticateWithApple(idToken: String, rawNonce: String, authorizationCode: String, revoke: Bool) async throws {
         reauthenticateWithAppleCallCount += 1
         reauthenticateWithAppleRevokeValues.append(revoke)
+        if let reauthenticateWithAppleGate {
+            await reauthenticateWithAppleGate.wait()
+        }
         if let reauthenticateWithAppleError {
             throw reauthenticateWithAppleError
         }
@@ -211,13 +242,16 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func fetchRegions() async throws -> [CloudGatewayRegion] {
         fetchRegionsCallCount += 1
+        if let fetchRegionsGate {
+            await fetchRegionsGate.wait()
+        }
         if let fetchRegionsError {
             throw fetchRegionsError
         }
         return CloudGatewayConfigSelection.sortedRegions(enabledRegions)
     }
 
-    func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
+    func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck {
         checkAccessCallCount += 1
         if let checkAccessError {
             throw checkAccessError
@@ -253,6 +287,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient {
         createClientCallCount += 1
         createClientName = clientName
+        if let createClientGate {
+            await createClientGate.wait()
+        }
         if let createClientError {
             throw createClientError
         }
@@ -269,6 +306,9 @@ final class MockGatewayService: CloudGatewayServicing {
         deleteClientCallCount += 1
         deleteClientUserId = userId
         deleteClientClientId = clientId
+        if let deleteClientGate {
+            await deleteClientGate.wait()
+        }
         if let deleteClientError {
             throw deleteClientError
         }
@@ -282,10 +322,15 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
         deleteAccountCallCount += 1
+        if let deleteAccountGate {
+            await deleteAccountGate.wait()
+        }
         if let deleteAccountError {
             throw deleteAccountError
         }
-        currentUser = nil
+        if deleteAccountClearsCurrentUser {
+            currentUser = nil
+        }
         return CloudGatewayDeleteAccountResponse(
             userId: "test-uid",
             deletedClientCount: ownedClients.count
@@ -294,6 +339,9 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
         syncRegionCallCount += 1
+        if let syncRegionGate {
+            await syncRegionGate.wait()
+        }
         if let syncRegionError {
             throw syncRegionError
         }
@@ -312,10 +360,56 @@ final class MockGatewayService: CloudGatewayServicing {
         grantAccessCallCount += 1
         grantAccessEmail = email
         grantAccessRegionId = regionId
+        if let grantAccessGate {
+            await grantAccessGate.wait()
+        }
         if let grantAccessError {
             throw grantAccessError
         }
         return CloudGatewayGrantAccessResponse(email: email, alreadyExisted: grantAccessAlreadyExisted)
+    }
+}
+
+private final class MockAuthListenerStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var listener: ((AuthenticatedUser?) -> Void)?
+    private var token: NSObject?
+    private var addCount = 0
+    private var removeCount = 0
+
+    var addCallCount: Int {
+        lock.withLock { addCount }
+    }
+
+    var removeCallCount: Int {
+        lock.withLock { removeCount }
+    }
+
+    func add(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
+        lock.withLock {
+            addCount += 1
+            let token = NSObject()
+            self.listener = listener
+            self.token = token
+            return token
+        }
+    }
+
+    func remove(_ token: Any) {
+        lock.withLock {
+            removeCount += 1
+            guard let token = token as? NSObject,
+                  token === self.token else {
+                return
+            }
+            listener = nil
+            self.token = nil
+        }
+    }
+
+    func emit(_ user: AuthenticatedUser?) {
+        let currentListener: ((AuthenticatedUser?) -> Void)? = lock.withLock { self.listener }
+        currentListener?(user)
     }
 }
 

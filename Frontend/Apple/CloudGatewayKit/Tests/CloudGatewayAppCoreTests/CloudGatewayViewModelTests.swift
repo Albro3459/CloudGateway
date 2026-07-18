@@ -1,12 +1,64 @@
+@testable import CloudGatewayAppCore
 import CloudGatewayKit
 import XCTest
 
 @MainActor
 final class CloudGatewayViewModelTests: XCTestCase {
-    private func waitForLocalState(_ viewModel: CloudGatewayViewModel) async {
+    private func waitUntil(
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () -> Bool
+    ) async {
+        for _ in 0..<1_000 {
+            if condition() {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("waitUntil timed out", file: file, line: line)
+    }
+
+    private func waitForLocalState(
+        _ viewModel: CloudGatewayViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
         for _ in 0..<100 where viewModel.installedSnapshots.isEmpty {
             await Task.yield()
         }
+        if viewModel.installedSnapshots.isEmpty {
+            XCTFail("waitForLocalState timed out", file: file, line: line)
+        }
+    }
+
+    private func waitForCacheLoads(
+        _ cache: FakeConfigCache,
+        count: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await cache.loadRequests() >= count {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("waitForCacheLoads timed out", file: file, line: line)
+    }
+
+    private func waitForSleeper(
+        _ sleeper: ControlledPresentationSleeper,
+        recordedDurationCount: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await sleeper.recordedDurations().count >= recordedDurationCount {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("waitForSleeper timed out", file: file, line: line)
     }
 
     private func makeViewModel(_ service: MockGatewayService) -> CloudGatewayViewModel {
@@ -110,6 +162,495 @@ final class CloudGatewayViewModelTests: XCTestCase {
         )
 
         XCTAssertEqual(notificationAuthorizer.undeterminedAuthorizationRequestCount, 0)
+    }
+
+    func testFirstInstallNotificationAuthorizationRequestsPermission() {
+        let notificationAuthorizer = FakeNotificationAuthorizer()
+
+        CloudGatewayFirstInstallNotificationAuthorization.request(
+            authorizer: notificationAuthorizer
+        )
+
+        XCTAssertEqual(notificationAuthorizer.authorizationRequestCount, 1)
+    }
+
+    func testAuthListenerInitialUserLoadsSignedInState() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        service.emitAuthState(service.currentUser)
+        await waitUntil { viewModel.appMode == .signedIn && !viewModel.isWorking }
+
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+        XCTAssertEqual(viewModel.signedInUid, "u1")
+        XCTAssertEqual(viewModel.signedInEmail, "a@b.com")
+        XCTAssertEqual(service.fetchOwnedClientsCallCount, 1)
+    }
+
+    func testAuthListenerExternalSignOutDropsLoadedSessionToGuest() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        service.emitAuthState(service.currentUser)
+        await waitUntil { viewModel.appMode == .signedIn && !viewModel.isWorking }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest && !viewModel.isWorking }
+
+        XCTAssertNil(viewModel.signedInUid)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+    }
+
+    func testAuthListenerUserReplacementClearsOldStateAndQueuesNewLoad() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-a-client"])
+
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let staleRefresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 2 }
+
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil {
+            viewModel.signedInUid == "u2" && viewModel.clientOptions.isEmpty
+        }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+
+        await fetchRegionsGate.open()
+        await staleRefresh.value
+        await waitUntil {
+            viewModel.signedInUid == "u2"
+                && !viewModel.isWorking
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-b-client"]
+        }
+
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-b-client"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "user-a-client" })
+        XCTAssertEqual(service.fetchRegionsCallCount, 3)
+    }
+
+    // Covers the reloadAuthState wait loop's re-check of authStateGeneration when a
+    // *second* swap lands while a waiter is already parked - not just the
+    // single-swap-then-resume case above. u2's waiter must wake up and bail without
+    // refreshing once u3 has superseded it; only u3's waiter should trigger a load.
+    func testSecondUserSwapWhileReloadAuthStateWaiterIsParkedSkipsStaleWaiter() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let staleRefresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 1 }
+
+        // First swap (u1 -> u2): isWorking is still true, so reloadAuthState parks a
+        // continuation instead of refreshing immediately.
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+
+        // Second swap (u2 -> u3) arrives while u2's waiter is still parked; it bumps
+        // authStateGeneration again and parks its own waiter behind u2's.
+        service.ownedClients = [TestFixtures.client("user-c-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u3", email: "c@example.com"))
+        await waitUntil { viewModel.signedInUid == "u3" }
+
+        await fetchRegionsGate.open()
+        await staleRefresh.value
+        await waitUntil {
+            viewModel.signedInUid == "u3"
+                && !viewModel.isWorking
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-c-client"]
+        }
+
+        XCTAssertEqual(viewModel.signedInEmail, "c@example.com")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-c-client"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "user-b-client" })
+        // u1's stale refresh() fails its own fence and bails; u2's parked waiter wakes
+        // up superseded and bails too; only u3's waiter actually reloads - two total
+        // fetchRegions calls, not three.
+        XCTAssertEqual(service.fetchRegionsCallCount, 2)
+    }
+
+    func testUserReplacementDuringPullToRefreshCannotPublishOldOfflineFallback() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache(snapshots: [TestFixtures.snapshot("user-a-client", regionId: "us-sanjose-1")])
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        let initialCacheLoadCount = await cache.loadRequests()
+
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let fallbackGate = AsyncTestGate()
+        await cache.setLoadGate(fallbackGate)
+        let stalePull = Task { await viewModel.pullToRefresh() }
+        await waitForCacheLoads(cache, count: initialCacheLoadCount + 1)
+
+        service.fetchRegionsError = nil
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await fallbackGate.open()
+        await stalePull.value
+        await waitUntil {
+            viewModel.signedInUid == "u2"
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-b-client"]
+        }
+
+        XCTAssertFalse(viewModel.remoteRefreshUnavailable)
+        XCTAssertNil(viewModel.staleText)
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-b-client"])
+    }
+
+    // Covers the compound race the "cancel the outer .refreshable task" comment on
+    // pullToRefresh exists for: reloadCurrentState captures `generation` *inside*
+    // the detached Task it spawns (CloudGatewayViewModel.swift:696-700), so the
+    // fence still applies even after SwiftUI retracts the pull and cancels the
+    // outer awaiting task.
+    //
+    // This re-authenticates as the *same* uid (sign out, then back in as u1)
+    // rather than swapping to a different user, on purpose: a different-uid swap
+    // would also be caught by the plain isCurrentUser identity check, which
+    // wouldn't pin down that the generation fence specifically is what's doing
+    // the work. Sign-out-then-back-in bumps authStateGeneration twice while
+    // uid stays "u1", so isCurrentUser(user) alone would let a stale reload
+    // through - only the generation check inside ensureCurrentSession can catch
+    // it. Cancel the outer task while A's original-session detached reload is
+    // gated mid-flight, then reauth as u1 while it's still suspended: the stale
+    // session's reload must never publish its data into the new session.
+    func testSameUserReauthDuringCancelledOuterPullToRefreshCannotPublishStaleSessionData() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["a-client"])
+
+        // Gates only the stale detached reload's fetchRegions call - the
+        // sign-out/re-sign-in reloads below are left ungated so the legitimate
+        // new-session reload can run to completion first. That ordering matters:
+        // it proves the fence, not last-write-wins scheduling, is what keeps the
+        // stale write out once it resumes afterward.
+        let staleReloadGate = AsyncTestGate()
+        service.fetchRegionsGate = staleReloadGate
+        let outerPull = Task { await viewModel.pullToRefresh() }
+        await waitUntil { service.fetchRegionsCallCount == 2 }
+
+        // Simulate SwiftUI retracting the pull control mid-flight. pullToRefresh's
+        // detached reload is an independent unstructured Task, so cancelling the
+        // outer awaiting task here must not tear it down or skip its fence.
+        outerPull.cancel()
+
+        // Sign out and back in as the same uid: a brand-new session for the same
+        // account. Ungate fetchRegions first so this reload isn't stuck behind
+        // the still-gated stale one.
+        service.fetchRegionsGate = nil
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        service.ownedClients = [TestFixtures.client("a-client-resession", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u1", email: "a@b.com"))
+        await waitUntil {
+            viewModel.appMode == .signedIn
+                && viewModel.clientOptions.map(\.client.clientId) == ["a-client-resession"]
+        }
+
+        // Change the server-side data again so a leaked publish from the stale
+        // session is unmistakable, then release it. isCurrentUser(user) alone
+        // would pass here (still uid "u1"), so only the generation fence can
+        // stop this from clobbering the new session's already-applied state.
+        service.ownedClients = [TestFixtures.client("stale-session-leak", regionId: "us-sanjose-1")]
+        await staleReloadGate.open()
+        _ = await outerPull.value
+
+        XCTAssertEqual(viewModel.signedInUid, "u1")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["a-client-resession"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "stale-session-leak" })
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+    }
+
+    func testAuthListenerExternalSignOutDuringRefreshCannotRestoreOldSession() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let viewModel = makeViewModel(service)
+
+        let refresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 1 }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        await fetchRegionsGate.open()
+        await refresh.value
+        await waitUntil { viewModel.appMode == .guest && !viewModel.isWorking }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertNil(viewModel.signedInUid)
+    }
+
+    func testAuthListenerExternalSignOutDuringConfigApplyCannotRestoreOldSession() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache()
+        let configApplyGate = AsyncTestGate()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        for _ in 0..<1_000 where await cache.loadRequests() == 0 {
+            await Task.yield()
+        }
+        await cache.setLoadGate(configApplyGate)
+
+        let refresh = Task { await viewModel.refresh() }
+        for _ in 0..<1_000 where await cache.loadRequests() < 2 {
+            await Task.yield()
+        }
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        await configApplyGate.open()
+        await refresh.value
+        await waitUntil { !viewModel.isWorking }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertNil(viewModel.signedInUid)
+        XCTAssertTrue(viewModel.clientOptions.isEmpty)
+    }
+
+    func testAuthListenerIgnoresRedundantCallbackAfterManualSignOut() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        await viewModel.signOut()
+        let fetchCountAfterGuestLoad = service.fetchRegionsCallCount
+        service.emitAuthState(nil)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(service.fetchRegionsCallCount, fetchCountAfterGuestLoad)
+    }
+
+    func testAuthListenerIgnoresRedundantCallbackAfterForcedSignOut() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.checkAccessError = CloudGatewayAppError.accessDenied("No access")
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+        let fetchCountAfterGuestLoad = service.fetchRegionsCallCount
+        service.emitAuthState(nil)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(service.fetchRegionsCallCount, fetchCountAfterGuestLoad)
+    }
+
+    func testViewModelDeinitRemovesAuthListener() async {
+        let service = MockGatewayService()
+        var viewModel: CloudGatewayViewModel? = makeViewModel(service)
+        let weakViewModel = WeakBox(viewModel)
+
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+        viewModel = nil
+        await waitUntil { weakViewModel.value == nil }
+
+        XCTAssertNil(weakViewModel.value)
+        XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
+    }
+
+    func testPresentationAppearancePerformsOneImmediateLocalHealthRead() async {
+        let service = MockGatewayService()
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .passingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        viewModel.presentationDidAppear()
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 1)
+        XCTAssertEqual(viewModel.tunnelHealthSnapshot?.health, .passingTraffic)
+        XCTAssertEqual(service.fetchRegionsCallCount, 0)
+    }
+
+    func testPresentationMonitorRefreshesImmediatelyThenEveryFiveSeconds() async {
+        let service = MockGatewayService()
+        let healthReader = FakeTunnelHealthReader()
+        let sleeper = ControlledPresentationSleeper()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: sleeper
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        let monitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 1)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 1)
+        let firstDurations = await sleeper.recordedDurations()
+        XCTAssertEqual(firstDurations, [.seconds(5)])
+
+        await sleeper.resumeNext()
+        await waitForSleeper(sleeper, recordedDurationCount: 2)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+        let secondDurations = await sleeper.recordedDurations()
+        XCTAssertEqual(secondDurations, [.seconds(5), .seconds(5)])
+
+        monitor.cancel()
+        await monitor.value
+        let cancelledReadCount = healthReader.readCount
+        await sleeper.resumeNext()
+        await Task.yield()
+        XCTAssertEqual(healthReader.readCount, cancelledReadCount)
+    }
+
+    func testNewPresentationMonitorSupersedesOlderLoop() async {
+        let healthReader = FakeTunnelHealthReader()
+        let sleeper = ControlledPresentationSleeper()
+        let viewModel = CloudGatewayViewModel(
+            service: MockGatewayService(),
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: FakeTunnelManager(),
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: sleeper
+        )
+        await waitUntil { healthReader.readCount > 0 }
+        let initialReadCount = healthReader.readCount
+
+        let olderMonitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 1)
+        let newerMonitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        await waitForSleeper(sleeper, recordedDurationCount: 2)
+
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+
+        await sleeper.resumeNext()
+        await olderMonitor.value
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 2)
+
+        await sleeper.resumeNext()
+        await waitForSleeper(sleeper, recordedDurationCount: 3)
+        XCTAssertEqual(healthReader.readCount, initialReadCount + 3)
+
+        newerMonitor.cancel()
+        await newerMonitor.value
+    }
+
+    func testCancelledPresentationMonitorDiscardsLateLocalStatusCompletion() async {
+        let service = MockGatewayService()
+        let cache = FakeConfigCache(snapshots: [
+            TestFixtures.snapshot("c1", regionId: "us-sanjose-1")
+        ])
+        let tunnelManager = FakeTunnelManager(status: .disconnected)
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            presentationSleeper: ControlledPresentationSleeper()
+        )
+        await waitForLocalState(viewModel)
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+
+        await tunnelManager.setStatus(.connected, for: "c1")
+        let gate = AsyncTestGate()
+        await cache.setLoadGate(gate)
+        let loadCountBeforeMonitor = await cache.loadRequests()
+        let monitor = Task { await viewModel.monitorPresentationHealthAndStatus() }
+        for _ in 0..<1_000 {
+            if await cache.loadRequests() > loadCountBeforeMonitor {
+                break
+            }
+            await Task.yield()
+        }
+
+        monitor.cancel()
+        await gate.open()
+        await monitor.value
+
+        XCTAssertEqual(viewModel.tunnelStatuses["c1"], .disconnected)
+        XCTAssertEqual(service.fetchRegionsCallCount, 0)
+    }
+
+    func testFutureMacOSCompositionConstructsAppCoreWithInjectedPlatformIdentifiers() {
+        let platform = CloudGatewayPlatformConfiguration(
+            appGroupIdentifier: "group.com.example.cloudgateway.macos",
+            appBundleIdentifier: "com.example.cloudgateway.macos",
+            providerBundleIdentifier: "com.example.cloudgateway.macos.tunnel",
+            tunnelDisplayName: "CloudGateway for macOS",
+            keychainAccessGroupIdentifier: "TEAMID.com.example.cloudgateway.macos"
+        )
+        let service = MockGatewayService()
+        let tunnelManager = CloudGatewayVPNManager(platform: platform)
+
+        _ = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore(),
+                configSecretServiceName: platform.configSecretServiceName
+            )
+        )
+
+        XCTAssertEqual(tunnelManager.platform, platform)
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
     }
 
     func testDeadTunnelRefreshReconcilesExternallyStartedStatusWithoutOverlay() async {
@@ -250,6 +791,66 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isWorking)
     }
 
+    func testDisconnectDeadTunnelMidFlightCancellationTearsDownOperationAndTimeout() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager(status: .connected)
+        await tunnelManager.setStopDelay(.seconds(5))
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            deadTunnelDisconnectTimeout: .seconds(5),
+            deadTunnelDisconnectPollInterval: .milliseconds(1)
+        )
+
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+        await viewModel.refreshTunnelHealthAndStatus()
+
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let disconnect = Task { await viewModel.disconnectDeadTunnel() }
+        for _ in 0..<1_000 {
+            if await tunnelManager.stopRequests().count == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        let stopRequestsBeforeCancel = await tunnelManager.stopRequests()
+        XCTAssertEqual(stopRequestsBeforeCancel, ["c1"])
+
+        // Cancel the caller while the operation task is suspended inside the
+        // (cancellation-aware) stop-tunnel delay, well before either the 5s
+        // stop delay or the 5s disconnect timeout could legitimately elapse.
+        disconnect.cancel()
+        await disconnect.value
+
+        XCTAssertTrue(startedAt.duration(to: clock.now) < .seconds(1))
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertFalse(viewModel.isWorking)
+
+        // The operation task never reached the line that records the stop as
+        // complete, proving it was torn down mid-flight rather than left to
+        // finish in the background after the caller stopped awaiting it.
+        let status = try? await tunnelManager.installedStatuses(for: ["c1"])
+        XCTAssertEqual(status?["c1"], .connected)
+
+        // If the timeout task had survived cancellation it would fire here and
+        // overwrite errorText with the timeout message; give it that chance.
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(viewModel.errorText)
+    }
+
     func testStaleDeadTunnelSnapshotDoesNotShowWarning() async {
         let service = signedInService()
         let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
@@ -346,14 +947,9 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.removeTunnelDisabled)
     }
 
-    func testSignInMapsRawFirebaseCredentialErrorsToGenericMessage() async {
-        XCTAssertEqual(
-            CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)?.localizedDescription,
-            "Invalid email or password."
-        )
-
+    func testSignInMapsCredentialErrorsToGenericMessage() async {
         let service = MockGatewayService()
-        service.signInError = CloudGatewayFirebaseAuthErrorCode.signInError(forRawCode: 17004)
+        service.signInError = CloudGatewayAppError.invalidSignInCredentials
         let viewModel = makeViewModel(service)
         viewModel.email = "user@example.com"
         viewModel.password = "wrong-password"
@@ -679,6 +1275,25 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.syncResult)
     }
 
+    func testSyncCompletionCannotPublishPreviousUsersAuditLog() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        let syncGate = AsyncTestGate()
+        service.syncRegionGate = syncGate
+
+        let staleSync = Task { await viewModel.syncSelectedRegion() }
+        await waitUntil { service.syncRegionCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await syncGate.open()
+        await staleSync.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.syncResult)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+    }
+
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {
@@ -915,6 +1530,39 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.linkAppleCallCount, 2)
         // Linking recovery must not disconnect the existing Google grant.
         XCTAssertEqual(service.reauthenticateWithGoogleRevokeValues, [false])
+    }
+
+    func testAppleLinkRecoveryCannotResumeAgainstReplacementUser() async {
+        let service = signedInService()
+        service.providerIdsValue = ["apple.com"]
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.linkGoogleError = CloudGatewayAppError.requiresRecentLogin
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+
+        await viewModel.linkGoogle()
+        XCTAssertEqual(viewModel.pendingLinkProvider, .google)
+        service.linkGoogleError = nil
+        let reauthGate = AsyncTestGate()
+        service.reauthenticateWithAppleGate = reauthGate
+
+        let staleRecovery = Task {
+            await viewModel.completeAccountLinkAppleReauth(
+                idToken: "tok",
+                rawNonce: "nonce",
+                authorizationCode: "code"
+            )
+        }
+        await waitUntil { service.reauthenticateWithAppleCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await reauthGate.open()
+        await staleRecovery.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertEqual(service.linkGoogleCallCount, 1)
+        XCTAssertNil(viewModel.successText)
+        XCTAssertNil(viewModel.pendingLinkProvider)
     }
 
     func testDeleteAccountWithGoogleRevokesGrant() async {
@@ -1431,6 +2079,321 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isSignedIn)
     }
 
+    func testDeleteAccountCannotTargetReplacementUserAfterReauthentication() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let reauthGate = AsyncTestGate()
+        service.reauthenticateWithPasswordGate = reauthGate
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.deleteAccountPassword = "password"
+
+        let staleDeletion = Task { await viewModel.deleteAccountWithPassword() }
+        await waitUntil { service.reauthenticateWithPasswordCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await reauthGate.open()
+        await staleDeletion.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        // The aborted deletion must never fetch a fresh (forceRefresh) delete
+        // token; the replacement user's own reload may still fetch a normal token.
+        XCTAssertFalse(service.idTokenForceRefreshValues.contains(true))
+        XCTAssertEqual(service.deleteAccountCallCount, 0)
+        XCTAssertEqual(service.signOutCallCount, 0)
+        XCTAssertEqual(service.currentUser?.uid, "u2")
+    }
+
+    // MARK: - Mid-operation user-swap races
+
+    func testCreateClientCannotPublishStaleClientUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newClientName = "Phone"
+        let createGate = AsyncTestGate()
+        service.createClientGate = createGate
+
+        let staleCreate = Task { await viewModel.createClient() }
+        await waitUntil { service.createClientCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await createGate.open()
+        await staleCreate.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        XCTAssertFalse(viewModel.clientOptions.map(\.client.clientId).contains("created-1"))
+    }
+
+    // Mirrors the stale-swap fences above (createClient/deleteClient/installFromCloud)
+    // but drives the offline path instead of a plain gate: the post-create reload goes
+    // offline and falls into loadRemoteStateMarkingUnavailable/applyRemoteRefreshUnavailable,
+    // which re-reads the local cache. A user swap arriving while that offline path is
+    // paused on the cache read must stop it from publishing u1's stale offline fallback
+    // (and the flag that marks it) under u2's session.
+    func testCreateClientOfflineReloadCannotApplyStaleOfflineStateUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")])
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                // A status fallback so c1 (and any other cached snapshot) reads as
+                // installed; otherwise refreshStatus prunes it from installedSnapshots
+                // immediately and the fence has nothing to protect.
+                tunnelManager: FakeTunnelManager(status: .disconnected),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        viewModel.newClientName = "Phone"
+        let loadCountBeforeCreate = await cache.loadRequests()
+
+        // The create call itself succeeds; it's the reload after it that goes offline.
+        // Keep fetchRegionsError active permanently (never reset it below) so u2's own
+        // auto-refresh also goes offline instead of succeeding and overwriting whatever
+        // u1's fenced (or unfenced) write left behind - that overwrite is what let the
+        // old version of this test pass even with the fence deleted.
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let cacheGate = AsyncTestGate()
+        await cache.setLoadGate(cacheGate)
+        let staleCreate = Task { await viewModel.createClient() }
+        await waitUntil { service.createClientCallCount == 1 }
+        // Paused inside applyRemoteRefreshUnavailable's configManager.loadLocalState();
+        // FakeConfigCache.load() has already captured u1's local cache (c1 installed)
+        // before it started waiting on the gate.
+        await waitForCacheLoads(cache, count: loadCountBeforeCreate + 1)
+
+        // u2's own local cache has no installed configs (a genuinely distinct local
+        // state, not a rename of u1's). This is safe to set while u1's read is
+        // paused because that read already captured its own snapshot above; only
+        // reads that start after this point observe the new value.
+        await cache.setSnapshots([])
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+
+        await cacheGate.open()
+        await staleCreate.value
+        // Wait for u2's own offline fallback to actually finish (not just for
+        // isWorking to have blipped false between u1's task ending and u2's own
+        // reload starting): remoteRefreshUnavailable only flips true once some
+        // applyRemoteRefreshUnavailable call has reached apply(), which - given
+        // u2's auto-refresh is also offline - only happens once u2's own run
+        // completes.
+        await waitUntil {
+            !viewModel.isWorking && viewModel.signedInUid == "u2" && viewModel.remoteRefreshUnavailable
+        }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        // u2's own offline fallback ran (its auto-refresh is offline too), so this
+        // is expected regardless of the fence - it is not what this test proves.
+        XCTAssertTrue(viewModel.remoteRefreshUnavailable)
+        // u2 genuinely has nothing installed locally. If u1's fenced write ever
+        // reached configManager.markRemoteRefreshUnavailable() with u1's stale
+        // (c1-installed) local state, it would stamp a stale-offline label for c1
+        // into the shared config-manager state; that label would survive u2's own
+        // (empty-cache) offline fallback, since markRemoteRefreshUnavailable only
+        // adds labels for currently-installed snapshots and never clears stale
+        // ones for snapshots that vanished. So c1 carrying a stale label here can
+        // only happen if the fence failed to stop u1's write.
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+        let c1Option = CloudGatewayClientOption(
+            client: TestFixtures.client("c1", regionId: "us-sanjose-1"),
+            region: TestFixtures.region("us-sanjose-1")
+        )
+        XCTAssertNil(viewModel.staleText(for: c1Option))
+    }
+
+    func testDeleteClientCannotRemoveProfileUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        guard let option = viewModel.clientOptions.first(where: { $0.client.clientId == "c1" }) else {
+            XCTFail("expected an installed c1 option")
+            return
+        }
+        let deleteGate = AsyncTestGate()
+        service.deleteClientGate = deleteGate
+
+        let staleDelete = Task { await viewModel.deleteClient(option) }
+        await waitUntil { service.deleteClientCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await deleteGate.open()
+        await staleDelete.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        // The gated delete captured c1, but the fence must stop the config removal
+        // from applying, so the installed profile survives under the new session.
+        XCTAssertEqual(service.deleteClientClientId, "c1")
+        XCTAssertTrue(viewModel.installedSnapshots.map(\.clientId).contains("c1"))
+    }
+
+    func testGrantAccessCannotPublishStaleSuccessUnderReplacementUser() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newAccessEmail = "new@example.com"
+        let grantGate = AsyncTestGate()
+        service.grantAccessGate = grantGate
+
+        let staleGrant = Task { await viewModel.grantAccess() }
+        await waitUntil { service.grantAccessCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await grantGate.open()
+        await staleGrant.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+    }
+
+    func testInstallFromCloudCannotApplyStaleInstallUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        guard let option = viewModel.clientOptions.first(where: { $0.client.clientId == "c1" }) else {
+            XCTFail("expected a usable c1 option")
+            return
+        }
+        let installGate = AsyncTestGate()
+        await tunnelManager.setInstallGate(installGate)
+
+        let staleInstall = Task { await viewModel.installFromCloud(option) }
+        var installRequestsSeen = false
+        for _ in 0..<1_000 {
+            if await tunnelManager.installRequests() >= 1 {
+                installRequestsSeen = true
+                break
+            }
+            await Task.yield()
+        }
+        if !installRequestsSeen {
+            XCTFail("timed out waiting for install request")
+        }
+        // Gate the replacement user's own reload so it cannot overwrite the state
+        // we are asserting on before we open the install gate.
+        let replacementRefreshGate = AsyncTestGate()
+        service.fetchRegionsGate = replacementRefreshGate
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await installGate.open()
+        await staleInstall.value
+        // Wait until the replacement user's reload is parked at its region fetch.
+        await waitUntil { service.fetchRegionsCallCount == 3 }
+
+        // The stale install completed on-device, but the fence must stop its local
+        // result from being selected/applied under the replacement session.
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+        XCTAssertNil(viewModel.selectedClientId)
+
+        await replacementRefreshGate.open()
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+    }
+
+    func testAccountDeleteCleanupProceedsWhenCurrentUserBecomesNil() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        await waitUntil { viewModel.installedSnapshots.map(\.clientId) == ["c1"] }
+        viewModel.deleteAccountPassword = "password"
+
+        await viewModel.deleteAccountWithPassword()
+
+        // deleteAccount drops the current user to nil server-side; the nil branch of
+        // ensureNoReplacementUser must still let local profile cleanup finish.
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+    }
+
+    func testAccountDeleteCleanupAbortsWhenReplacementUserAppears() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.deleteAccountClearsCurrentUser = false
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        await waitUntil { viewModel.installedSnapshots.map(\.clientId) == ["c1"] }
+        viewModel.deleteAccountPassword = "password"
+        let deleteGate = AsyncTestGate()
+        service.deleteAccountGate = deleteGate
+
+        let staleDelete = Task { await viewModel.deleteAccountWithPassword() }
+        await waitUntil { service.deleteAccountCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await deleteGate.open()
+        await staleDelete.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        // A replacement user (not nil) must abort the post-deletion cleanup: the
+        // stale flow must not remove the new session's profile or sign it out.
+        XCTAssertEqual(service.signOutCallCount, 0)
+        XCTAssertEqual(service.currentUser?.uid, "u2")
+        XCTAssertTrue(viewModel.installedSnapshots.map(\.clientId).contains("c1"))
+    }
+
+    func testDeferredAuthReloadRunsOnceAndSkipsWhenUserUnchanged() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        let baselineFetches = service.fetchRegionsCallCount
+
+        // Re-emitting the current signed-in user must not trigger another reload.
+        service.emitAuthState(AuthenticatedUser(uid: "u1", email: "a@b.com"))
+        await waitUntil { !viewModel.isWorking }
+        XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches)
+
+        // A swap while work is in-flight defers exactly one reload for the new
+        // user, fired once the in-flight operation completes (no busy-polling).
+        let syncGate = AsyncTestGate()
+        service.syncRegionGate = syncGate
+        let staleSync = Task { await viewModel.syncSelectedRegion() }
+        await waitUntil { service.syncRegionCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await syncGate.open()
+        await staleSync.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches + 1)
+    }
+
     // MARK: - Role resolution
 
     func testRoleFallsBackToAccessRoleWhenFirestoreRoleUnavailable() async {
@@ -1736,10 +2699,21 @@ final class CloudGatewayViewModelTests: XCTestCase {
     }
 }
 
+private final class WeakBox<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value?) {
+        self.value = value
+    }
+}
+
 private final class FakeNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    private(set) var authorizationRequestCount = 0
     private(set) var undeterminedAuthorizationRequestCount = 0
 
-    func requestAuthorization() {}
+    func requestAuthorization() {
+        authorizationRequestCount += 1
+    }
 
     func requestAuthorizationIfUndetermined() {
         undeterminedAuthorizationRequestCount += 1

@@ -14,14 +14,26 @@ let package = Package(
             name: "CloudGatewayKit",
             targets: ["CloudGatewayKit"]
         ),
+        .library(
+            name: "CloudGatewayAppCore",
+            targets: ["CloudGatewayAppCore"]
+        ),
     ],
     targets: [
         .target(
             name: "CloudGatewayKit"
         ),
+        .target(
+            name: "CloudGatewayAppCore",
+            dependencies: ["CloudGatewayKit"]
+        ),
         .testTarget(
             name: "CloudGatewayKitTests",
             dependencies: ["CloudGatewayKit"]
+        ),
+        .testTarget(
+            name: "CloudGatewayAppCoreTests",
+            dependencies: ["CloudGatewayAppCore"]
         ),
     ],
     swiftLanguageModes: [.v6]

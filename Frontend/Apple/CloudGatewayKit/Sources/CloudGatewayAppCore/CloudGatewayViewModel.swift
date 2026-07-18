@@ -2,29 +2,29 @@ import CloudGatewayKit
 import Combine
 import Foundation
 
-enum CloudGatewayAppMode: Equatable {
+public enum CloudGatewayAppMode: Equatable {
     case loading
     case guest
     case signedIn
 }
 
-enum CloudGatewayAccountDeleteReauthMethod {
+public enum CloudGatewayAccountDeleteReauthMethod {
     case password
     case apple
     case google
     case unsupported
 }
 
-enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
+public enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
     case password
     case google = "google.com"
     case apple = "apple.com"
 
-    var id: String {
+    public var id: String {
         rawValue
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .password:
             "Email and password"
@@ -36,107 +36,117 @@ enum CloudGatewayAuthProvider: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
-enum CloudGatewayAccountLinkReauthMethod: Equatable {
+public enum CloudGatewayAccountLinkReauthMethod: Equatable {
     case none
     case password
     case apple
 }
 
-struct CloudGatewaySyncResult: Identifiable, Equatable {
-    let regionId: String
-    let syncedAt: String
-    let added: Int
-    let updated: Int
-    let removed: Int
-    let noChanges: Bool
+public struct CloudGatewaySyncResult: Identifiable, Equatable {
+    public let regionId: String
+    public let syncedAt: String
+    public let added: Int
+    public let updated: Int
+    public let removed: Int
+    public let noChanges: Bool
     // Full peer-sync audit log from the API (AdminSyncResponse.log), same text
     // the web surfaces: title, region, syncedAt, summary, and per-removed-peer detail.
-    let log: String
+    public let log: String
 
-    var id: String {
+    public var id: String {
         "\(regionId)-\(syncedAt)"
     }
 
-    var summary: String {
+    public var summary: String {
         noChanges
             ? "\(regionId): no changes"
             : "\(regionId): +\(added) ~\(updated) -\(removed)"
     }
 
-    var logText: String {
+    public var logText: String {
         log
     }
 }
 
 @MainActor
-final class CloudGatewayViewModel: ObservableObject {
-    @Published var email = ""
-    @Published var password = ""
-    @Published private(set) var appMode: CloudGatewayAppMode = .loading
-    @Published private(set) var signedInEmail: String?
-    @Published private(set) var signedInUid: String?
-    @Published private(set) var role: String?
-    @Published private(set) var regions = [CloudGatewayRegion]()
-    @Published private(set) var clientOptions = [CloudGatewayClientOption]()
-    @Published private(set) var configOptions = [CloudGatewayClientOption]()
-    @Published private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
-    @Published private(set) var tunnelStatuses = [String: CloudGatewayTunnelStatus]()
-    @Published private(set) var isWorking = false
+public final class CloudGatewayViewModel: ObservableObject {
+    @Published public var email = ""
+    @Published public var password = ""
+    @Published public private(set) var appMode: CloudGatewayAppMode = .loading
+    @Published public private(set) var signedInEmail: String?
+    @Published public private(set) var signedInUid: String?
+    @Published public private(set) var role: String?
+    @Published public private(set) var regions = [CloudGatewayRegion]()
+    @Published public private(set) var clientOptions = [CloudGatewayClientOption]()
+    @Published public private(set) var configOptions = [CloudGatewayClientOption]()
+    @Published public private(set) var installedSnapshots = [CloudGatewayConfigSnapshot]()
+    @Published public private(set) var tunnelStatuses = [String: CloudGatewayTunnelStatus]()
+    @Published public private(set) var isWorking = false
     // Client whose VPN toggle is mid-flight, so its row can show a spinner while
     // the tunnel starts/stops instead of looking frozen.
-    @Published private(set) var togglingClientId: String?
-    @Published private(set) var errorText: String?
-    @Published private(set) var successText: String?
-    @Published private(set) var staleText: String?
-    @Published private(set) var lastRefreshText: String?
-    @Published private(set) var syncResult: CloudGatewaySyncResult?
-    @Published private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
-    @Published private(set) var remoteInvalidInstalledConfig = false
+    @Published public private(set) var togglingClientId: String?
+    @Published public private(set) var errorText: String?
+    @Published public private(set) var successText: String?
+    @Published public private(set) var staleText: String?
+    @Published public private(set) var lastRefreshText: String?
+    @Published public private(set) var syncResult: CloudGatewaySyncResult?
+    @Published public private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
+    @Published public private(set) var remoteInvalidInstalledConfig = false
     // True when the last remote refresh failed (offline / API error). Gates the
     // cached-row fallback so a client removed remotely while online does not
     // linger as a ghost row.
-    @Published private(set) var remoteRefreshUnavailable = false
-    @Published var selectedRegionId: String?
-    @Published var selectedClientId: String? {
+    @Published public private(set) var remoteRefreshUnavailable = false
+    @Published public var selectedRegionId: String?
+    @Published public var selectedClientId: String? {
         didSet {
             syncSelectedConfigPresentation()
         }
     }
-    @Published var newClientName = ""
-    @Published var newAccessEmail = ""
-    @Published var deleteAccountPassword = ""
-    @Published var linkEmail = ""
-    @Published var linkPassword = ""
-    @Published var linkCurrentPassword = ""
-    @Published private(set) var linkedProviderIds = [String]()
-    @Published private(set) var accountLinkReauthMethod: CloudGatewayAccountLinkReauthMethod = .none
-    @Published private(set) var pendingLinkProvider: CloudGatewayAuthProvider?
+    @Published public var newClientName = ""
+    @Published public var newAccessEmail = ""
+    @Published public var deleteAccountPassword = ""
+    @Published public var linkEmail = ""
+    @Published public var linkPassword = ""
+    @Published public var linkCurrentPassword = ""
+    @Published public private(set) var linkedProviderIds = [String]()
+    @Published public private(set) var accountLinkReauthMethod: CloudGatewayAccountLinkReauthMethod = .none
+    @Published public private(set) var pendingLinkProvider: CloudGatewayAuthProvider?
 
     private let service: CloudGatewayServicing
     private let configManager: CloudGatewayConfigManager
     private let healthReader: CloudGatewayTunnelHealthReading
     private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
+    private let presentationSleeper: any CloudGatewayPresentationSleeping
     private let deadTunnelDisconnectTimeout: Duration
     private let deadTunnelDisconnectPollInterval: Duration
     private var configState = CloudGatewayConfigManagerState()
-    private var authHandle: Any?
+    private var authRegistration: CloudGatewayAuthStateListenerRegistration?
+    private var authStateGeneration: UInt64 = 0
+    private var loadedRemoteUserId: String?
+    // Resumed when a working `run` finishes, so a deferred auth reload can await
+    // in-flight work instead of busy-polling `isWorking`.
+    private var workDidFinishContinuations: [CheckedContinuation<Void, Never>] = []
+    private var pendingLinkUserId: String?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
+    private var presentationMonitorGeneration: UInt64 = 0
+    private var activePresentationMonitorGeneration: UInt64?
+    private static let presentationRefreshInterval: Duration = .seconds(5)
     private static let missingInstalledTunnelMessage = "The VPN profile is no longer installed on this device. Refresh, then you can install the config again."
-    static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
-    static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
-    static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
-    static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
+    public static let deadTunnelMessage = CloudGatewayTunnelHealthNotification.body
+    public static let deadTunnelDisconnectTimeoutMessage = "The VPN is taking longer than expected to disconnect. Wait a moment, then pull to refresh."
+    public static let activeConfigDeleteMessage = "Disconnect this VPN before deleting its config."
+    public static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
 
     private struct DeadTunnelStatusRefreshKey: Equatable {
         let tunnelIdentifier: String
         let updatedAt: Date
     }
 
-    var isSignedIn: Bool {
+    public var isSignedIn: Bool {
         appMode == .signedIn
     }
 
-    var shouldShowDeadTunnelWarning: Bool {
+    public var shouldShowDeadTunnelWarning: Bool {
         guard tunnelHealthSnapshot?.health == .notPassingTraffic,
               let tunnelIdentifier = tunnelHealthSnapshot?.tunnelIdentifier else {
             return false
@@ -149,7 +159,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    var statusText: String {
+    public var statusText: String {
         visibleTunnelStatus?.displayName ?? "Not installed"
     }
 
@@ -161,11 +171,11 @@ final class CloudGatewayViewModel: ObservableObject {
         isSignedIn ? selectedTunnelStatus : nil
     }
 
-    var selectedRegion: CloudGatewayRegion? {
+    public var selectedRegion: CloudGatewayRegion? {
         CloudGatewayConfigSelection.selectedRegion(id: selectedRegionId, in: regions)
     }
 
-    var filteredClientOptions: [CloudGatewayClientOption] {
+    public var filteredClientOptions: [CloudGatewayClientOption] {
         CloudGatewayConfigSelection.clientOptions(in: selectedRegionId, options: clientOptions)
     }
 
@@ -174,7 +184,7 @@ final class CloudGatewayViewModel: ObservableObject {
     // connected) tunnel on an offline cold launch - so a running VPN stays
     // visible and can be toggled off without connectivity. Cached rows are
     // region-filtered like the remote ones, so they never leak across regions.
-    var displayedClientOptions: [CloudGatewayClientOption] {
+    public var displayedClientOptions: [CloudGatewayClientOption] {
         let options = filteredClientOptions
         guard isSignedIn, remoteRefreshUnavailable else {
             return options
@@ -186,7 +196,7 @@ final class CloudGatewayViewModel: ObservableObject {
         return cachedInRegion.isEmpty ? options : options + cachedInRegion
     }
 
-    var isUsingOfflineRegionFallback: Bool {
+    public var isUsingOfflineRegionFallback: Bool {
         isSignedIn && remoteRefreshUnavailable && clientOptions.isEmpty
     }
 
@@ -219,7 +229,7 @@ final class CloudGatewayViewModel: ObservableObject {
         configState.tunnelStatus(for: clientId)?.blocksDestructiveOperation ?? false
     }
 
-    func isTunnelActiveNow(clientId: String) async -> Bool {
+    public func isTunnelActiveNow(clientId: String) async -> Bool {
         guard let statuses = try? await configManager.allInstalledStatuses() else {
             return isTunnelActive(clientId: clientId)
         }
@@ -231,7 +241,7 @@ final class CloudGatewayViewModel: ObservableObject {
         tunnelStatuses.values.contains { $0.blocksDestructiveOperation }
     }
 
-    func hasActiveTunnelNow() async -> Bool {
+    public func hasActiveTunnelNow() async -> Bool {
         guard let statuses = try? await configManager.allInstalledStatuses() else {
             return hasActiveTunnel
         }
@@ -244,24 +254,24 @@ final class CloudGatewayViewModel: ObservableObject {
         !installedSnapshots.isEmpty
     }
 
-    var canSyncSelectedRegion: Bool {
+    public var canSyncSelectedRegion: Bool {
         role == "admin" && selectedRegion != nil && !isWorking
     }
 
-    var canGrantAccess: Bool {
+    public var canGrantAccess: Bool {
         isAdmin
             && !newAccessEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && regions.first != nil
             && !isWorking
     }
 
-    var isAdmin: Bool {
+    public var isAdmin: Bool {
         isSignedIn && role == "admin"
     }
 
     // Reauth order per the provider-ordering standard: Apple, then Google, then
     // email & password last (for convenience when other providers are linked).
-    var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
+    public var accountDeleteReauthMethod: CloudGatewayAccountDeleteReauthMethod {
         let providerIds = currentProviderIds
         if providerIds.contains("apple.com") {
             return .apple
@@ -275,7 +285,7 @@ final class CloudGatewayViewModel: ObservableObject {
         return .unsupported
     }
 
-    var deleteAccountPasswordRequired: Bool {
+    public var deleteAccountPasswordRequired: Bool {
         accountDeleteReauthMethod == .password
     }
 
@@ -283,15 +293,15 @@ final class CloudGatewayViewModel: ObservableObject {
     // then Google.
     private static let linkProviderOrder: [CloudGatewayAuthProvider] = [.password, .apple, .google]
 
-    var missingLinkProviders: [CloudGatewayAuthProvider] {
+    public var missingLinkProviders: [CloudGatewayAuthProvider] {
         Self.linkProviderOrder.filter { !currentProviderIds.contains($0.rawValue) }
     }
 
-    var canLinkAnotherProvider: Bool {
+    public var canLinkAnotherProvider: Bool {
         isSignedIn && !missingLinkProviders.isEmpty
     }
 
-    var linkPasswordDisabled: Bool {
+    public var linkPasswordDisabled: Bool {
         isWorking
             || linkEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || linkPassword.isEmpty
@@ -302,15 +312,15 @@ final class CloudGatewayViewModel: ObservableObject {
         linkedProviderIds.isEmpty ? service.providerIds() : linkedProviderIds
     }
 
-    var createDisabled: Bool {
+    public var createDisabled: Bool {
         isWorking || newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !selectedRegionAllowsCreate
     }
 
-    var deleteDisabled: Bool {
+    public var deleteDisabled: Bool {
         isWorking || selectedClientOption == nil
     }
 
-    func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || option.client.status == .removed
     }
 
@@ -341,19 +351,20 @@ final class CloudGatewayViewModel: ObservableObject {
         isWorking || selectedClientId == nil || visibleTunnelStatus == nil
     }
 
-    var isLoadingRegions: Bool {
+    public var isLoadingRegions: Bool {
         isWorking && regions.isEmpty
     }
 
-    var isLoadingClients: Bool {
+    public var isLoadingClients: Bool {
         isSignedIn && isWorking && clientOptions.isEmpty
     }
 
-    init(
+    public init(
         service: CloudGatewayServicing,
         configManager: CloudGatewayConfigManager,
         healthReader: CloudGatewayTunnelHealthReading = NoopTunnelHealthReader(),
         notificationAuthorizer: CloudGatewayNotificationAuthorizing = NoopCloudGatewayNotificationAuthorizer(),
+        presentationSleeper: any CloudGatewayPresentationSleeping = CloudGatewayContinuousPresentationSleeper(),
         deadTunnelDisconnectTimeout: Duration = .seconds(30),
         deadTunnelDisconnectPollInterval: Duration = .milliseconds(250)
     ) {
@@ -361,9 +372,10 @@ final class CloudGatewayViewModel: ObservableObject {
         self.configManager = configManager
         self.healthReader = healthReader
         self.notificationAuthorizer = notificationAuthorizer
+        self.presentationSleeper = presentationSleeper
         self.deadTunnelDisconnectTimeout = deadTunnelDisconnectTimeout
         self.deadTunnelDisconnectPollInterval = deadTunnelDisconnectPollInterval
-        authHandle = service.addAuthStateListener { [weak self] user in
+        authRegistration = service.addAuthStateListener { [weak self] user in
             Task { @MainActor in
                 await self?.handleAuthState(user)
             }
@@ -374,12 +386,10 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     deinit {
-        if let authHandle {
-            service.removeAuthStateListener(authHandle)
-        }
+        authRegistration?.cancel()
     }
 
-    func signIn() async {
+    public func signIn() async {
         await run {
             let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
@@ -394,7 +404,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func resetPassword() async {
+    public func resetPassword() async {
         await run {
             let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedEmail.contains("@"), trimmedEmail.contains(".") else {
@@ -405,14 +415,14 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func completeAppleSignIn(idToken: String, rawNonce: String) async {
+    public func completeAppleSignIn(idToken: String, rawNonce: String) async {
         await run {
             let user = try await service.signInWithApple(idToken: idToken, rawNonce: rawNonce)
             try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: true)
         }
     }
 
-    func signInWithGoogle() async {
+    public func signInWithGoogle() async {
         await run {
             do {
                 let user = try await service.signInWithGoogle()
@@ -425,13 +435,13 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // The Apple button reports non-cancellation failures from the view layer;
     // route them through run so they surface like every other CloudGatewayAppError.
-    func reportAppleSignInFailure() async {
+    public func reportAppleSignInFailure() async {
         await run {
             throw CloudGatewayAppError.appleSignInFailed
         }
     }
 
-    func linkEmailPassword() async {
+    public func linkEmailPassword() async {
         await linkAccountProvider(.password) {
             let email = self.linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
             let password = self.linkPassword
@@ -445,37 +455,48 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func linkGoogle() async {
+    public func linkGoogle() async {
         await linkAccountProvider(.google) {
             try await self.service.linkGoogle()
         }
     }
 
-    func linkApple(idToken: String, rawNonce: String) async {
+    public func linkApple(idToken: String, rawNonce: String) async {
         await linkAccountProvider(.apple) {
             try await self.service.linkApple(idToken: idToken, rawNonce: rawNonce)
         }
     }
 
-    func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
-        guard let pendingLinkProvider else {
+    public func completeAccountLinkAppleReauth(idToken: String, rawNonce: String, authorizationCode: String) async {
+        guard let pendingLinkProvider,
+              let pendingLinkUserId,
+              let user = service.currentUser,
+              user.uid == pendingLinkUserId else {
             return
         }
+        let generation = authStateGeneration
         await run {
-            try await service.reauthenticateWithApple(
-                idToken: idToken,
-                rawNonce: rawNonce,
-                authorizationCode: authorizationCode,
-                revoke: false
-            )
+            try ensureCurrentSession(user, generation: generation)
+            try await performForCurrentUser(user, generation: generation) {
+                try await service.reauthenticateWithApple(
+                    idToken: idToken,
+                    rawNonce: rawNonce,
+                    authorizationCode: authorizationCode,
+                    revoke: false
+                )
+            }
             accountLinkReauthMethod = .none
             switch pendingLinkProvider {
             case .password:
                 let email = linkEmail.trimmingCharacters(in: .whitespacesAndNewlines)
                 let password = linkPassword
-                _ = try await service.linkEmailPassword(email: email, password: password)
+                _ = try await performForCurrentUser(user, generation: generation) {
+                    try await service.linkEmailPassword(email: email, password: password)
+                }
             case .google:
-                _ = try await service.linkGoogle()
+                _ = try await performForCurrentUser(user, generation: generation) {
+                    try await service.linkGoogle()
+                }
             case .apple:
                 throw CloudGatewayAppError.providerAlreadyLinked
             }
@@ -483,31 +504,32 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func clearAccountLinkState() {
+    public func clearAccountLinkState() {
         linkEmail = ""
         linkPassword = ""
         linkCurrentPassword = ""
         accountLinkReauthMethod = .none
         pendingLinkProvider = nil
+        pendingLinkUserId = nil
     }
 
-    func signOut() async {
+    public func signOut() async {
         await run {
             try service.signOut()
             try await loadGuestState()
         }
     }
 
-    func refresh() async {
+    public func refresh() async {
         await reloadCurrentState(showsWorkingOverlay: true)
     }
 
-    func selectRegion(_ regionId: String) {
+    public func selectRegion(_ regionId: String) {
         selectedRegionId = regionId
         pruneSelectedClient()
     }
 
-    func refreshTunnelHealth() {
+    public func refreshTunnelHealth() {
         let snapshot = healthReader.currentSnapshot()
         tunnelHealthSnapshot = snapshot?.isFresh(timing: .production) == true ? snapshot : nil
         if tunnelHealthSnapshot?.health != .notPassingTraffic {
@@ -515,7 +537,40 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func refreshTunnelHealthAndStatus() async {
+    public func presentationDidAppear() {
+        refreshTunnelHealth()
+    }
+
+    public func monitorPresentationHealthAndStatus() async {
+        presentationMonitorGeneration &+= 1
+        let generation = presentationMonitorGeneration
+        activePresentationMonitorGeneration = generation
+        defer {
+            if activePresentationMonitorGeneration == generation {
+                activePresentationMonitorGeneration = nil
+            }
+        }
+
+        while activePresentationMonitorGeneration == generation, !Task.isCancelled {
+            await refreshTunnelHealthAndStatus(expectedPresentationMonitorGeneration: generation)
+            guard activePresentationMonitorGeneration == generation, !Task.isCancelled else {
+                return
+            }
+            do {
+                try await presentationSleeper.sleep(for: Self.presentationRefreshInterval)
+            } catch {
+                return
+            }
+        }
+    }
+
+    public func refreshTunnelHealthAndStatus() async {
+        await refreshTunnelHealthAndStatus(expectedPresentationMonitorGeneration: nil)
+    }
+
+    private func refreshTunnelHealthAndStatus(
+        expectedPresentationMonitorGeneration: UInt64?
+    ) async {
         refreshTunnelHealth()
         guard let snapshot = tunnelHealthSnapshot,
               snapshot.health == .notPassingTraffic else {
@@ -529,12 +584,23 @@ final class CloudGatewayViewModel: ObservableObject {
               let state = try? await configManager.loadLocalState() else {
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              expectedPresentationMonitorGeneration.map({
+                  activePresentationMonitorGeneration == $0
+              }) ?? true,
+              let currentSnapshot = tunnelHealthSnapshot,
+              currentSnapshot.health == .notPassingTraffic,
+              DeadTunnelStatusRefreshKey(
+                  tunnelIdentifier: currentSnapshot.tunnelIdentifier,
+                  updatedAt: currentSnapshot.updatedAt
+              ) == refreshKey else {
+            return
+        }
         applyLocal(state)
         lastDeadTunnelStatusRefreshKey = refreshKey
     }
 
-    func disconnectDeadTunnel() async {
+    public func disconnectDeadTunnel() async {
         refreshTunnelHealth()
         guard tunnelHealthSnapshot?.health == .notPassingTraffic else {
             return
@@ -620,7 +686,7 @@ final class CloudGatewayViewModel: ObservableObject {
         try result.get()
     }
 
-    func pullToRefresh() async {
+    public func pullToRefresh() async {
         // SwiftUI cancels the .refreshable task when its pull control retracts,
         // and the early @Published updates in loadRemoteState can trigger that
         // retraction before the network reload finishes - silently aborting it
@@ -631,13 +697,16 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func reloadCurrentState(showsWorkingOverlay: Bool) async {
+        let generation = authStateGeneration
         await run(showsWorkingOverlay: showsWorkingOverlay) {
             if let user = service.currentUser {
                 do {
                     try await loadRemoteStateOrSignOut(for: user, signOutOnAnyFailure: false)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
-                    if isSignedIn {
-                        await applyRemoteRefreshUnavailable()
+                    if isCurrentUser(user), isSignedIn {
+                        try await applyRemoteRefreshUnavailable(for: user, generation: generation)
                     }
                     throw error
                 }
@@ -649,23 +718,26 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // Guest entry point from the login screen; refresh() already resolves to
     // guest state when there is no signed-in user.
-    func continueAsGuest() async {
+    public func continueAsGuest() async {
         await refresh()
     }
 
-    func syncSelectedRegion() async {
+    public func syncSelectedRegion() async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
             guard role == "admin" else {
                 throw CloudGatewayAppError.accessDenied("Admin access is required to sync a region.")
             }
-            let token = try await service.idToken()
-            let response = try await service.syncRegion(regionId: regionId, idToken: token)
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.syncRegion(regionId: regionId, idToken: token)
+            }
             let result = CloudGatewaySyncResult(
                 regionId: response.regionId,
                 syncedAt: response.syncedAt,
@@ -680,11 +752,12 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func grantAccess() async {
+    public func grantAccess() async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard role == "admin" else {
                 throw CloudGatewayAppError.accessDenied("Admin access is required to grant access.")
             }
@@ -695,8 +768,10 @@ final class CloudGatewayViewModel: ObservableObject {
             guard let regionId = regions.first?.regionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
-            let token = try await service.idToken()
-            let response = try await service.grantAccess(email: trimmedEmail, regionId: regionId, idToken: token)
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.grantAccess(email: trimmedEmail, regionId: regionId, idToken: token)
+            }
             newAccessEmail = ""
             successText = response.alreadyExisted
                 ? "Existing account granted access: \(response.email)"
@@ -704,11 +779,12 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func createClient() async {
+    public func createClient() async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             guard let regionId = selectedRegionId else {
                 throw CloudGatewayAppError.missingSelectedRegion
             }
@@ -723,12 +799,14 @@ final class CloudGatewayViewModel: ObservableObject {
             guard !trimmedClientName.isEmpty else {
                 throw CloudGatewayAppError.accessDenied("Enter a display name, for example John's iPhone.")
             }
-            let token = try await service.idToken()
-            let created = try await service.createClient(
-                regionId: regionId,
-                clientName: trimmedClientName,
-                idToken: token
-            )
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let created = try await performForCurrentUser(user, generation: generation) {
+                try await service.createClient(
+                    regionId: regionId,
+                    clientName: trimmedClientName,
+                    idToken: token
+                )
+            }
             newClientName = ""
             selectedClientId = nil
             try await loadRemoteStateMarkingUnavailable(for: user, existingClients: [created])
@@ -740,35 +818,42 @@ final class CloudGatewayViewModel: ObservableObject {
     // Taking the option explicitly (rather than reading selectedClientOption at
     // confirm time) avoids deleting the wrong client if a background refresh
     // prunes or moves the selection between opening and confirming.
-    func deleteClient(_ option: CloudGatewayClientOption) async {
+    public func deleteClient(_ option: CloudGatewayClientOption) async {
         await run {
             guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
-            try await ensureDestructiveOperationAllowed(
-                clientId: option.client.clientId,
-                message: Self.activeConfigDeleteMessage
-            )
-            let token = try await service.idToken()
-            let response = try await service.deleteClient(
-                clientId: option.client.clientId,
-                userId: option.client.ownerUid ?? user.uid,
-                regionId: option.client.regionId,
-                idToken: token
-            )
+            let generation = authStateGeneration
+            try await performForCurrentUser(user, generation: generation) {
+                try await ensureDestructiveOperationAllowed(
+                    clientId: option.client.clientId,
+                    message: Self.activeConfigDeleteMessage
+                )
+            }
+            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
+            let response = try await performForCurrentUser(user, generation: generation) {
+                try await service.deleteClient(
+                    clientId: option.client.clientId,
+                    userId: option.client.ownerUid ?? user.uid,
+                    regionId: option.client.regionId,
+                    idToken: token
+                )
+            }
             if selectedClientId == option.client.clientId {
                 selectedClientId = nil
             }
-            apply(try await configManager.removeInstalledConfigIfMatches(
+            let state = try await configManager.removeInstalledConfigIfMatches(
                 clientId: response.clientId,
                 regionId: response.regionId
-            ))
+            )
+            try ensureCurrentSession(user, generation: generation)
+            apply(state)
             try await loadRemoteStateMarkingUnavailable(for: user)
             successText = "\(option.client.displayName) was deleted."
         }
     }
 
-    func deleteAccountWithPassword() async {
+    public func deleteAccountWithPassword() async {
         await deleteAccount {
             let password = self.deleteAccountPassword
             guard !password.isEmpty else {
@@ -778,13 +863,13 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func deleteAccountWithGoogle() async {
+    public func deleteAccountWithGoogle() async {
         await deleteAccount {
             try await self.service.reauthenticateWithGoogle(revoke: true)
         }
     }
 
-    func deleteAccountWithApple(idToken: String, rawNonce: String, authorizationCode: String) async {
+    public func deleteAccountWithApple(idToken: String, rawNonce: String, authorizationCode: String) async {
         await deleteAccount {
             try await self.service.reauthenticateWithApple(
                 idToken: idToken,
@@ -800,32 +885,40 @@ final class CloudGatewayViewModel: ObservableObject {
         operation: @escaping () async throws -> AuthenticatedUser
     ) async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
+            let generation = authStateGeneration
             if accountLinkReauthMethod == .password {
                 let password = linkCurrentPassword
                 guard !password.isEmpty else {
                     throw CloudGatewayAppError.accessDenied("Enter your current password, then try again.")
                 }
-                try await service.reauthenticateWithPassword(password)
+                try await performForCurrentUser(user, generation: generation) {
+                    try await service.reauthenticateWithPassword(password)
+                }
                 accountLinkReauthMethod = .none
             }
 
             do {
-                _ = try await operation()
+                _ = try await performForCurrentUser(user, generation: generation, operation)
                 didLinkProvider(provider)
             } catch CloudGatewayAppError.requiresRecentLogin {
-                if try await prepareRecentLoginRecovery(for: provider) {
-                    _ = try await operation()
+                if try await prepareRecentLoginRecovery(for: provider, user: user, generation: generation) {
+                    _ = try await performForCurrentUser(user, generation: generation, operation)
                     didLinkProvider(provider)
                 }
             }
         }
     }
 
-    private func prepareRecentLoginRecovery(for provider: CloudGatewayAuthProvider) async throws -> Bool {
+    private func prepareRecentLoginRecovery(
+        for provider: CloudGatewayAuthProvider,
+        user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws -> Bool {
         pendingLinkProvider = provider
+        pendingLinkUserId = user.uid
         let providerIds = currentProviderIds
         // Reauth order per the standard: Apple, then Google, then password last.
         if providerIds.contains(CloudGatewayAuthProvider.apple.rawValue) {
@@ -833,7 +926,9 @@ final class CloudGatewayViewModel: ObservableObject {
             throw CloudGatewayAppError.accessDenied("Sign in with Apple again, then try linking once more.")
         }
         if providerIds.contains(CloudGatewayAuthProvider.google.rawValue) {
-            try await service.reauthenticateWithGoogle(revoke: false)
+            try await performForCurrentUser(user, generation: generation) {
+                try await service.reauthenticateWithGoogle(revoke: false)
+            }
             accountLinkReauthMethod = .none
             return true
         }
@@ -852,31 +947,50 @@ final class CloudGatewayViewModel: ObservableObject {
 
     private func deleteAccount(reauthenticate: @escaping () async throws -> Void) async {
         await run {
-            guard service.currentUser != nil else {
+            guard let user = service.currentUser else {
                 throw CloudGatewayAppError.missingCurrentUser
             }
-            try await ensureDestructiveOperationAllowed(message: Self.activeAccountDeleteMessage)
-            try await reauthenticate()
-            let token = try await service.idToken(forceRefresh: true)
-            _ = try await service.deleteAccount(idToken: token)
-            await removeInstalledConfigsAfterAccountDelete()
+            let generation = authStateGeneration
+            try await performForCurrentUser(user, generation: generation) {
+                try await ensureDestructiveOperationAllowed(message: Self.activeAccountDeleteMessage)
+            }
+            try await performForCurrentUser(user, generation: generation, reauthenticate)
+            let token = try await performForCurrentUser(user, generation: generation) {
+                try await service.idToken(forceRefresh: true)
+            }
+            do {
+                _ = try await service.deleteAccount(idToken: token)
+            } catch {
+                try ensureCurrentSession(user, generation: generation)
+                throw error
+            }
+            try ensureNoReplacementUser(user, generation: generation)
+            try await removeInstalledConfigsAfterAccountDelete(for: user, generation: generation)
+            try ensureNoReplacementUser(user, generation: generation)
             deleteAccountPassword = ""
             try service.signOut()
             try await loadGuestState()
         }
     }
 
-    private func removeInstalledConfigsAfterAccountDelete() async {
+    private func removeInstalledConfigsAfterAccountDelete(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws {
         let cachedIdentifiers = installedSnapshots.map(\.clientId)
         // The account is already deleted server-side, so this local cleanup must
         // catch on-device profiles that are not in the cached snapshot. A
         // transient failure here would silently leave a stale system VPN
         // profile behind, so retry the live query briefly before giving up.
         let installedIdentifiers = await installedIdentifiersWithRetry()
+        try ensureNoReplacementUser(user, generation: generation)
         for identifier in Set(cachedIdentifiers).union(installedIdentifiers) {
+            try ensureNoReplacementUser(user, generation: generation)
             _ = try? await configManager.removeTunnel(identifier: identifier)
         }
+        try ensureNoReplacementUser(user, generation: generation)
         if let state = try? await configManager.loadLocalState() {
+            try ensureNoReplacementUser(user, generation: generation)
             apply(state)
         }
     }
@@ -909,7 +1023,7 @@ final class CloudGatewayViewModel: ObservableObject {
 
     // Install button for a not-yet-installed client: pull the latest config from
     // Firebase, then install, so a stale cached config is never installed.
-    func installFromCloud(_ option: CloudGatewayClientOption) async {
+    public func installFromCloud(_ option: CloudGatewayClientOption) async {
         await run {
             _ = try await pullFreshAndInstall(option)
         }
@@ -919,6 +1033,7 @@ final class CloudGatewayViewModel: ObservableObject {
         guard let user = service.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
+        let generation = authStateGeneration
         try await loadRemoteStateMarkingUnavailable(for: user)
         guard let freshOption = clientOptions.first(where: {
             $0.client.clientId == option.client.clientId
@@ -927,15 +1042,21 @@ final class CloudGatewayViewModel: ObservableObject {
         }) else {
             throw CloudGatewayAppError.accessDenied("This VPN client is not ready to install.")
         }
+        // Fence the install tail like deleteClient: a user swap during the install
+        // must not select or apply this stale flow's local result under the new
+        // session. The device-local "pull fresh, then install" ordering is kept.
+        let installedState = try await performForCurrentUser(user, generation: generation) {
+            try await configManager.install(freshOption)
+        }
         selectedClientId = freshOption.client.clientId
-        apply(try await configManager.install(freshOption))
+        apply(installedState)
         return freshOption.client.displayName
     }
 
     // The client whose tunnel is actually established (connected/reasserting), so
     // the switch prompt only offers to "turn off" a VPN that is really on - not one
     // that is merely mid-connect.
-    var activeTunnelClient: CloudGatewayClientOption? {
+    public var activeTunnelClient: CloudGatewayClientOption? {
         // Mirror toggleIsOn's "on" set so a client that is still connecting is
         // treated as the active tunnel to switch away from, not left running
         // alongside a newly started one on this single-tunnel provider.
@@ -954,7 +1075,7 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     // Turn off the currently active tunnel (if different) and start this one.
-    func switchTunnel(to option: CloudGatewayClientOption) async {
+    public func switchTunnel(to option: CloudGatewayClientOption) async {
         togglingClientId = option.client.clientId
         defer { togglingClientId = nil }
         await run {
@@ -977,7 +1098,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func startTunnel(for option: CloudGatewayClientOption) async {
+    public func startTunnel(for option: CloudGatewayClientOption) async {
         selectedClientId = option.client.clientId
         await startTunnel()
     }
@@ -993,7 +1114,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func stopTunnel(for option: CloudGatewayClientOption) async {
+    public func stopTunnel(for option: CloudGatewayClientOption) async {
         selectedClientId = option.client.clientId
         await stopTunnel()
     }
@@ -1008,24 +1129,24 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
+    public func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
         configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
 
-    func staleText(for option: CloudGatewayClientOption) -> String? {
+    public func staleText(for option: CloudGatewayClientOption) -> String? {
         configState.staleText(for: option.client.clientId)
     }
 
-    func dismissMessages() {
+    public func dismissMessages() {
         errorText = nil
         successText = nil
     }
 
-    func dismissSyncResult() {
+    public func dismissSyncResult() {
         syncResult = nil
     }
 
-    func installStateLabel(for option: CloudGatewayClientOption) -> String? {
+    public func installStateLabel(for option: CloudGatewayClientOption) -> String? {
         switch configState.installState(for: option) {
         case .installed:
             return nil
@@ -1040,11 +1161,11 @@ final class CloudGatewayViewModel: ObservableObject {
         installStateLabel(for: option) == nil ? "Install" : "Install Update"
     }
 
-    func installDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func installDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || !option.client.hasUsableConfig
     }
 
-    func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
+    public func isInstalled(_ option: CloudGatewayClientOption) -> Bool {
         configState.installState(for: option) != nil
             && configState.tunnelStatus(for: option.client.clientId) != nil
     }
@@ -1064,7 +1185,7 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {
+    public func toggleDisabled(for option: CloudGatewayClientOption) -> Bool {
         let clientId = option.client.clientId
         let status = configState.tunnelStatus(for: clientId)
         return isWorking
@@ -1074,7 +1195,7 @@ final class CloudGatewayViewModel: ObservableObject {
             || configState.remoteInvalidInstalledConfig(for: clientId)
     }
 
-    func toggleIsOn(for option: CloudGatewayClientOption) -> Bool {
+    public func toggleIsOn(for option: CloudGatewayClientOption) -> Bool {
         switch configState.tunnelStatus(for: option.client.clientId) {
         case .connected, .connecting, .reasserting:
             return true
@@ -1083,22 +1204,35 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
-    func isToggling(for option: CloudGatewayClientOption) -> Bool {
+    public func isToggling(for option: CloudGatewayClientOption) -> Bool {
         togglingClientId == option.client.clientId
     }
 
     private func handleAuthState(_ user: AuthenticatedUser?) async {
+        let identityChanged: Bool
         if let user {
-            if appMode != .signedIn || signedInUid != user.uid {
-                selectedRegionId = nil
-                selectedClientId = nil
+            identityChanged = appMode != .signedIn || signedInUid != user.uid
+        } else {
+            identityChanged = appMode != .guest
+        }
+        if identityChanged {
+            authStateGeneration &+= 1
+        }
+        let generation = authStateGeneration
+        if let user {
+            let changedUser = identityChanged
+            if changedUser {
+                clearRemoteState()
             }
             signedInEmail = user.email
             signedInUid = user.uid
             refreshLinkedProviderIds()
             appMode = .signedIn
-            if !isWorking && configOptions.isEmpty {
-                await refresh()
+            if changedUser || loadedRemoteUserId != user.uid {
+                await reloadAuthState(
+                    for: user,
+                    generation: generation
+                )
             }
         } else if appMode == .guest {
             // A sign-out path (manual sign-out or a forced sign-out after a
@@ -1116,6 +1250,29 @@ final class CloudGatewayViewModel: ObservableObject {
         }
     }
 
+    private func reloadAuthState(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async {
+        // Wait for the in-flight operation to finish instead of polling. The
+        // check and the continuation append run without an intervening suspension,
+        // so a `run` completing here always resumes this waiter (no lost wakeup).
+        while isWorking {
+            guard authStateGeneration == generation, isCurrentUser(user) else {
+                return
+            }
+            await withCheckedContinuation { continuation in
+                workDidFinishContinuations.append(continuation)
+            }
+        }
+        guard authStateGeneration == generation,
+              isCurrentUser(user),
+              loadedRemoteUserId != user.uid else {
+            return
+        }
+        await refresh()
+    }
+
     private func loadLocalState() async {
         do {
             applyLocal(try await configManager.loadLocalState())
@@ -1130,18 +1287,28 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadRemoteState(for user: AuthenticatedUser) async throws {
-        try await loadRemoteState(for: user, existingClients: [])
+        try await loadRemoteState(
+            for: user,
+            existingClients: [],
+            generation: authStateGeneration
+        )
     }
 
     private func loadRemoteStateMarkingUnavailable(
         for user: AuthenticatedUser,
         existingClients: [CloudGatewayClient] = []
     ) async throws {
+        let generation = authStateGeneration
         do {
-            try await loadRemoteState(for: user, existingClients: existingClients)
+            try await loadRemoteState(
+                for: user,
+                existingClients: existingClients,
+                generation: generation
+            )
         } catch {
+            try ensureCurrentSession(user, generation: generation)
             if isSignedIn {
-                await applyRemoteRefreshUnavailable()
+                try await applyRemoteRefreshUnavailable(for: user, generation: generation)
             }
             throw error
         }
@@ -1150,9 +1317,14 @@ final class CloudGatewayViewModel: ObservableObject {
     // A remote refresh failed (offline, API error, cold launch with no network).
     // Reload the local cache first so installed configs stay visible and
     // controllable, then flag them as stale/offline.
-    private func applyRemoteRefreshUnavailable() async {
+    private func applyRemoteRefreshUnavailable(
+        for user: AuthenticatedUser,
+        generation: UInt64
+    ) async throws {
         _ = try? await configManager.loadLocalState()
+        try ensureCurrentSession(user, generation: generation)
         var state = await configManager.markRemoteRefreshUnavailable()
+        try ensureCurrentSession(user, generation: generation)
         if state.regions.isEmpty {
             state.regions = CloudGatewayConfigSelection.offlineRegions(from: state.installedSnapshots)
         }
@@ -1162,7 +1334,12 @@ final class CloudGatewayViewModel: ObservableObject {
         pruneSelectedClient()
     }
 
-    private func loadRemoteState(for user: AuthenticatedUser, existingClients: [CloudGatewayClient]) async throws {
+    private func loadRemoteState(
+        for user: AuthenticatedUser,
+        existingClients: [CloudGatewayClient],
+        generation: UInt64
+    ) async throws {
+        try ensureCurrentSession(user, generation: generation)
         let isNewSignedInUser = appMode != .signedIn || signedInUid != user.uid
         signedInEmail = user.email
         signedInUid = user.uid
@@ -1173,16 +1350,22 @@ final class CloudGatewayViewModel: ObservableObject {
         guard !enabledRegions.isEmpty else {
             throw CloudGatewayAppError.noEnabledRegions
         }
-        let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
+        let access = try await service.checkAccess(idToken: token)
         // Explicitly flatten so both a missing UserRoles doc (fetch returns nil)
         // and a fetch failure fall back to the check-access role.
-        role = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
+        let resolvedRole = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
+        try ensureCurrentSession(user, generation: generation)
         let regions = await service.addCapacity(to: enabledRegions, idToken: token)
-        let fetchedClients = role == "admin"
+        let fetchedClients = resolvedRole == "admin"
             ? try await service.fetchAllClients()
             : try await service.fetchOwnedClients(uid: user.uid)
+        try ensureCurrentSession(user, generation: generation)
         let clients = merge(existingClients: existingClients, fetchedClients: fetchedClients)
-        apply(try await configManager.applyRemoteState(regions: regions, clients: clients))
+        let state = try await configManager.applyRemoteState(regions: regions, clients: clients)
+        try ensureCurrentSession(user, generation: generation)
+        role = resolvedRole
+        apply(state)
+        loadedRemoteUserId = user.uid
         remoteRefreshUnavailable = false
         if isNewSignedInUser {
             selectedRegionId = nil
@@ -1192,19 +1375,67 @@ final class CloudGatewayViewModel: ObservableObject {
         pruneSelectedClient()
     }
 
+    private func ensureCurrentUser(_ user: AuthenticatedUser) throws {
+        guard isCurrentUser(user) else {
+            throw CancellationError()
+        }
+    }
+
+    private func performForCurrentUser<T>(
+        _ user: AuthenticatedUser,
+        generation: UInt64? = nil,
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        let generation = generation ?? authStateGeneration
+        do {
+            try ensureCurrentSession(user, generation: generation)
+            let value = try await operation()
+            try ensureCurrentSession(user, generation: generation)
+            return value
+        } catch {
+            try ensureCurrentSession(user, generation: generation)
+            throw error
+        }
+    }
+
+    private func ensureCurrentSession(_ user: AuthenticatedUser, generation: UInt64) throws {
+        guard authStateGeneration == generation else {
+            throw CancellationError()
+        }
+        try ensureCurrentUser(user)
+    }
+
+    private func ensureNoReplacementUser(_ user: AuthenticatedUser, generation: UInt64) throws {
+        guard service.currentUser?.uid == nil
+                || (isCurrentUser(user) && authStateGeneration == generation) else {
+            throw CancellationError()
+        }
+    }
+
+    private func isCurrentUser(_ user: AuthenticatedUser) -> Bool {
+        service.currentUser?.uid == user.uid
+    }
+
     private func loadRemoteStateOrSignOut(
         for user: AuthenticatedUser,
         signOutOnAnyFailure: Bool
     ) async throws {
+        let generation = authStateGeneration
         do {
-            try await loadRemoteState(for: user)
+            try await loadRemoteState(
+                for: user,
+                existingClients: [],
+                generation: generation
+            )
         } catch let loadError as CloudGatewayAppError {
+            try ensureCurrentSession(user, generation: generation)
             if signOutOnAnyFailure || shouldSignOut(after: loadError) {
                 try? service.signOut()
                 await dropToGuest()
             }
             throw loadError
         } catch {
+            try ensureCurrentSession(user, generation: generation)
             if signOutOnAnyFailure {
                 try? service.signOut()
                 await dropToGuest()
@@ -1244,6 +1475,7 @@ final class CloudGatewayViewModel: ObservableObject {
         deleteAccountPassword = ""
         clearAccountLinkState()
         linkedProviderIds = []
+        loadedRemoteUserId = nil
     }
 
     private func refreshLinkedProviderIds() {
@@ -1260,6 +1492,9 @@ final class CloudGatewayViewModel: ObservableObject {
     }
 
     private func loadGuestState() async throws {
+        if appMode != .guest {
+            authStateGeneration &+= 1
+        }
         clearRemoteState()
         let enabledRegions = try await service.fetchRegions()
         guard !enabledRegions.isEmpty else {
@@ -1361,6 +1596,11 @@ final class CloudGatewayViewModel: ObservableObject {
         defer {
             if showsWorkingOverlay {
                 isWorking = false
+                let waiters = workDidFinishContinuations
+                workDidFinishContinuations.removeAll()
+                for waiter in waiters {
+                    waiter.resume()
+                }
             }
         }
 

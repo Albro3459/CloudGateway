@@ -109,37 +109,72 @@ test_firebase() {
   run_check "Firestore rules tests" run_firestore_rules_tests
 }
 
+check_apple_signing_prerequisites() {
+  local login_keychain="$HOME/Library/Keychains/login.keychain-db"
+
+  if ! security show-keychain-info "$login_keychain" >/dev/null 2>&1; then
+    echo "The login keychain is locked or unavailable." >&2
+    echo "Unlock it with:" >&2
+    echo "  security unlock-keychain \"$login_keychain\"" >&2
+    return 1
+  fi
+
+  if ! security find-identity -v -p codesigning "$login_keychain" |
+      grep -Eq '"Apple Development: .+"'; then
+    echo "No accessible Apple Development signing identity was found." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 test_apple() {
   cd "$ROOT" || return 1
 
-  run_check "Apple release script syntax" bash -n scripts/ios-release.sh
-  run_check "Apple CloudGatewayKit tests" swift test --package-path Frontend/Apple/CloudGatewayKit
-  run_check "Apple iOS project list" xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
+  local failed=0
+
+  run_check "Apple release script syntax" \
+    bash -n scripts/ios-release.sh ||
+    failed=1
+  run_check "Apple Kit and AppCore package tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayKit ||
+    failed=1
+  run_check "Apple Firebase auth adapter tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+    failed=1
+  run_check "Apple iOS project list" \
+    xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj ||
+    failed=1
 
   if [[ "$APPLE_SIGNED" -eq 1 ]]; then
-    run_check "Apple signed no-device iOS build" \
-      xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
-        -scheme CloudGateway \
-        -destination generic/platform=iOS \
-        build
+    if run_check \
+      "Apple signing prerequisites" \
+      check_apple_signing_prerequisites
+    then
+      run_check "Apple signed Release no-device iOS build" \
+        xcodebuild \
+          -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+          -scheme CloudGateway \
+          -configuration Release \
+          -destination generic/platform=iOS \
+          -allowProvisioningUpdates \
+          build ||
+        failed=1
+    else
+      failed=1
+    fi
   else
     run_check "Apple unsigned no-device iOS build" \
       xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
         -scheme CloudGateway \
+        -configuration Debug \
         -destination generic/platform=iOS \
         CODE_SIGNING_ALLOWED=NO \
-        build
+        build ||
+      failed=1
   fi
 
-  # Host-less view-model tests. Runs on a simulator because the app scheme cannot
-  # (the packet-tunnel extension links a device-only WireGuard lib). Override the
-  # simulator with APPLE_TEST_SIMULATOR if "iPhone 17" is not installed.
-  local ios_sim="${APPLE_TEST_SIMULATOR:-iPhone 17}"
-  run_check "Apple iOS view-model tests" \
-    xcodebuild test \
-      -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
-      -scheme CloudGatewayTests \
-      -destination "platform=iOS Simulator,name=$ios_sim"
+  return "$failed"
 }
 
 test_infra() {

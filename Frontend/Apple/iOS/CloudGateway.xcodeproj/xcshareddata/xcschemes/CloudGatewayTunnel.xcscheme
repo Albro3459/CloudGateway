@@ -45,17 +45,6 @@
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "607A1C072FF548230001783A"
-               BuildableName = "CloudGatewayTests.xctest"
-               BlueprintName = "CloudGatewayTests"
-               ReferencedContainer = "container:CloudGateway.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

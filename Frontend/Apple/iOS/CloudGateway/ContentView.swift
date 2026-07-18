@@ -1,4 +1,5 @@
 import AuthenticationServices
+import CloudGatewayAppCore
 import CloudGatewayKit
 import SwiftUI
 import UIKit
@@ -10,6 +11,8 @@ private enum PendingAccountAction {
 }
 
 struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthorizing {
+    nonisolated init() {}
+
     func requestAuthorization() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
@@ -23,8 +26,8 @@ struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthori
 }
 
 struct ContentView: View {
-    @StateObject private var viewModel: CloudGatewayViewModel
-    private let notificationAuthorizer: CloudGatewayNotificationAuthorizing
+    @ObservedObject private var viewModel: CloudGatewayViewModel
+    private let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var activeTunnelDeleteMessage: String?
@@ -44,16 +47,11 @@ struct ContentView: View {
     @Environment(\.cloudGatewayTheme) private var theme
 
     @MainActor
-    init() {
-        _viewModel = StateObject(wrappedValue: CloudGatewayViewModel())
-        notificationAuthorizer = SystemCloudGatewayNotificationAuthorizer()
-    }
-
     init(
         viewModel: CloudGatewayViewModel,
-        notificationAuthorizer: CloudGatewayNotificationAuthorizing = SystemCloudGatewayNotificationAuthorizer()
+        notificationAuthorizer: any CloudGatewayNotificationAuthorizing
     ) {
-        _viewModel = StateObject(wrappedValue: viewModel)
+        _viewModel = ObservedObject(wrappedValue: viewModel)
         self.notificationAuthorizer = notificationAuthorizer
     }
 
@@ -82,13 +80,10 @@ struct ContentView: View {
         }
         .foregroundStyle(theme.content)
         .onAppear {
-            viewModel.refreshTunnelHealth()
+            viewModel.presentationDidAppear()
         }
         .task {
-            while !Task.isCancelled {
-                await viewModel.refreshTunnelHealthAndStatus()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-            }
+            await viewModel.monitorPresentationHealthAndStatus()
         }
         .onChange(of: viewModel.appMode) { previousMode, mode in
             if mode == .signedIn {
@@ -837,7 +832,9 @@ struct ContentView: View {
     // connects a VPN - the dead-tunnel alert only matters once a tunnel exists.
     // iOS prompts only once; later calls are no-ops that keep the current status.
     private func requestNotificationAuthorization() {
-        notificationAuthorizer.requestAuthorization()
+        CloudGatewayFirstInstallNotificationAuthorization.request(
+            authorizer: notificationAuthorizer
+        )
     }
 
     // The account sheet must finish dismissing before another sheet is
@@ -2271,8 +2268,14 @@ private struct IconDangerButtonStyle: ButtonStyle {
     }
 }
 
+#if !APPSTORE_SCREENSHOTS
 #Preview {
-    ContentView()
+    let composition = CloudGatewayIOSCompositionRoot.make()
+    ContentView(
+        viewModel: composition.viewModel,
+        notificationAuthorizer: composition.notificationAuthorizer
+    )
         .environment(\.cloudGatewayTheme, CloudGatewayTheme())
         .preferredColorScheme(.dark)
 }
+#endif

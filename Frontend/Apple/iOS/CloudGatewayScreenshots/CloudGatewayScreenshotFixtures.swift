@@ -1,10 +1,12 @@
+import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 
-extension CloudGatewayViewModel {
-    convenience init() {
+@MainActor
+enum CloudGatewayScreenshotFixtureFactory {
+    static func makeViewModel() -> CloudGatewayViewModel {
         let service = CloudGatewayScreenshotService()
-        self.init(
+        return CloudGatewayViewModel(
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: CloudGatewayScreenshotTunnelManager(
@@ -87,14 +89,14 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         CloudGatewayConfigSelection.clientOptions(clients: clients, regions: regions)
     }
 
-    func addAuthStateListener(_ listener: @escaping (AuthenticatedUser?) -> Void) -> Any {
+    func addAuthStateListener(
+        _ listener: @escaping (AuthenticatedUser?) -> Void
+    ) -> CloudGatewayAuthStateListenerRegistration {
         Task { @MainActor in
             listener(screenshotUser)
         }
-        return NSObject()
+        return CloudGatewayAuthStateListenerRegistration {}
     }
-
-    func removeAuthStateListener(_ token: Any) {}
 
     func signIn(email: String, password: String) async throws -> AuthenticatedUser {
         screenshotUser
@@ -146,7 +148,7 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         CloudGatewayConfigSelection.sortedRegions(regions)
     }
 
-    func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
+    func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck {
         CloudGatewayAccessCheck(userId: screenshotUser.uid, email: screenshotUser.email, role: "user")
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import CloudGatewayKit
+@testable import CloudGatewayAppCore
 
 @Test func apiSessionUsesBoundedRequestTimeout() {
     let configuration = CloudGatewayAPISession.makeConfiguration()
