@@ -16,6 +16,15 @@ final class MockGatewayService: CloudGatewayServicing {
     var reauthenticateWithPasswordGate: AsyncTestGate?
     var reauthenticateWithAppleGate: AsyncTestGate?
     var syncRegionGate: AsyncTestGate?
+    var createClientGate: AsyncTestGate?
+    var deleteClientGate: AsyncTestGate?
+    var grantAccessGate: AsyncTestGate?
+    var deleteAccountGate: AsyncTestGate?
+
+    // deleteAccount normally simulates Firebase dropping the current user. Set to
+    // false to model the auth listener publishing a replacement user before the
+    // post-deletion local cleanup runs.
+    var deleteAccountClearsCurrentUser = true
 
     // Injectable errors.
     var idTokenError: Error?
@@ -278,6 +287,9 @@ final class MockGatewayService: CloudGatewayServicing {
     func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient {
         createClientCallCount += 1
         createClientName = clientName
+        if let createClientGate {
+            await createClientGate.wait()
+        }
         if let createClientError {
             throw createClientError
         }
@@ -294,6 +306,9 @@ final class MockGatewayService: CloudGatewayServicing {
         deleteClientCallCount += 1
         deleteClientUserId = userId
         deleteClientClientId = clientId
+        if let deleteClientGate {
+            await deleteClientGate.wait()
+        }
         if let deleteClientError {
             throw deleteClientError
         }
@@ -307,10 +322,15 @@ final class MockGatewayService: CloudGatewayServicing {
 
     func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse {
         deleteAccountCallCount += 1
+        if let deleteAccountGate {
+            await deleteAccountGate.wait()
+        }
         if let deleteAccountError {
             throw deleteAccountError
         }
-        currentUser = nil
+        if deleteAccountClearsCurrentUser {
+            currentUser = nil
+        }
         return CloudGatewayDeleteAccountResponse(
             userId: "test-uid",
             deletedClientCount: ownedClients.count
@@ -340,6 +360,9 @@ final class MockGatewayService: CloudGatewayServicing {
         grantAccessCallCount += 1
         grantAccessEmail = email
         grantAccessRegionId = regionId
+        if let grantAccessGate {
+            await grantAccessGate.wait()
+        }
         if let grantAccessError {
             throw grantAccessError
         }

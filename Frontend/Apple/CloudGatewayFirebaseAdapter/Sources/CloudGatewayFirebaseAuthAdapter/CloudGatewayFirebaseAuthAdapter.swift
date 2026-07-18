@@ -96,19 +96,11 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         credentials: CloudGatewayGoogleCredentials,
         expectedUserId: String
     ) async throws -> AuthenticatedUser {
-        guard let user = auth.currentUser else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        guard user.uid == expectedUserId else { throw CancellationError() }
-        let credential = GoogleAuthProvider.credential(
-            withIDToken: credentials.idToken,
-            accessToken: credentials.accessToken
+        try await Self.guardedLinkGoogle(
+            currentUser: currentGuardedUser(),
+            credentials: credentials,
+            expectedUserId: expectedUserId
         )
-        do {
-            return Self.user(try await user.link(with: credential).user)
-        } catch {
-            throw Self.mapAuthError(error)
-        }
     }
 
     public func reauthenticateWithPassword(_ password: String) async throws {
@@ -144,15 +136,11 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         credentials: CloudGatewayGoogleCredentials,
         expectedUserId: String
     ) async throws {
-        guard let user = auth.currentUser else {
-            throw CloudGatewayAppError.missingCurrentUser
-        }
-        guard user.uid == expectedUserId else { throw CancellationError() }
-        let credential = GoogleAuthProvider.credential(
-            withIDToken: credentials.idToken,
-            accessToken: credentials.accessToken
+        try await Self.guardedReauthenticateGoogle(
+            currentUser: currentGuardedUser(),
+            credentials: credentials,
+            expectedUserId: expectedUserId
         )
-        _ = try await user.reauthenticate(with: credential)
     }
 
     public func sendPasswordReset(email: String) async throws {
@@ -187,6 +175,64 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
                 }
                 continuation.resume(returning: token)
             }
+        }
+    }
+
+    // Mid-flight user-swap guard, factored out of the two Google methods so it can
+    // be unit-tested without a live `FirebaseAuth.Auth`. A swapped `uid` throws
+    // before any link/reauth credential call runs; a nil user reports the standard
+    // domain error.
+    static func guardedLinkGoogle(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws -> AuthenticatedUser {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        do {
+            return try await currentUser.linkGoogle(credentials)
+        } catch {
+            throw mapAuthError(error)
+        }
+    }
+
+    static func guardedReauthenticateGoogle(
+        currentUser: CloudGatewayFirebaseGuardedUser?,
+        credentials: CloudGatewayGoogleCredentials,
+        expectedUserId: String
+    ) async throws {
+        guard let currentUser else {
+            throw CloudGatewayAppError.missingCurrentUser
+        }
+        guard currentUser.uid == expectedUserId else { throw CancellationError() }
+        try await currentUser.reauthenticateGoogle(credentials)
+    }
+
+    private func currentGuardedUser() -> CloudGatewayFirebaseGuardedUser? {
+        auth.currentUser.map(FirebaseGuardedUser.init)
+    }
+
+    private struct FirebaseGuardedUser: CloudGatewayFirebaseGuardedUser {
+        let user: User
+
+        var uid: String { user.uid }
+
+        func linkGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser {
+            let credential = GoogleAuthProvider.credential(
+                withIDToken: credentials.idToken,
+                accessToken: credentials.accessToken
+            )
+            return CloudGatewayFirebaseAuthAdapter.user(try await user.link(with: credential).user)
+        }
+
+        func reauthenticateGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws {
+            let credential = GoogleAuthProvider.credential(
+                withIDToken: credentials.idToken,
+                accessToken: credentials.accessToken
+            )
+            _ = try await user.reauthenticate(with: credential)
         }
     }
 
@@ -238,4 +284,14 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         let nsError = error as NSError
         return AuthErrorCode(_bridgedNSError: nsError)?.code.rawValue ?? nsError.code
     }
+}
+
+// Seam over the signed-in Firebase user used only by the Google link/reauth
+// guard. Production wraps `FirebaseAuth.User`; tests inject a fake so the guard
+// runs without configuring Firebase.
+@MainActor
+protocol CloudGatewayFirebaseGuardedUser {
+    var uid: String { get }
+    func linkGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser
+    func reauthenticateGoogle(_ credentials: CloudGatewayGoogleCredentials) async throws
 }

@@ -91,6 +91,8 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     private var stopDelay: Duration?
     private var stopResultStatus: CloudGatewayTunnelStatus = .disconnected
     private var stoppedIdentifiers = [String]()
+    private var installGate: AsyncTestGate?
+    private var installCallCount = 0
 
     init(status: CloudGatewayTunnelStatus? = nil) {
         self.status = status
@@ -130,6 +132,10 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
     }
 
     func installTunnel(_ tunnel: CloudGatewayTunnelConfiguration) async throws {
+        installCallCount += 1
+        if let installGate {
+            await installGate.wait()
+        }
         statuses[tunnel.identifier] = .disconnected
     }
 
@@ -185,6 +191,14 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 
     func stopRequests() -> [String] {
         stoppedIdentifiers
+    }
+
+    func setInstallGate(_ gate: AsyncTestGate?) {
+        installGate = gate
+    }
+
+    func installRequests() -> Int {
+        installCallCount
     }
 }
 

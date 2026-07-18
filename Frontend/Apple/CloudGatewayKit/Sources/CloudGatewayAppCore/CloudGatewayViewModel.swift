@@ -123,6 +123,9 @@ public final class CloudGatewayViewModel: ObservableObject {
     private var authRegistration: CloudGatewayAuthStateListenerRegistration?
     private var authStateGeneration: UInt64 = 0
     private var loadedRemoteUserId: String?
+    // Resumed when a working `run` finishes, so a deferred auth reload can await
+    // in-flight work instead of busy-polling `isWorking`.
+    private var workDidFinishContinuations: [CheckedContinuation<Void, Never>] = []
     private var pendingLinkUserId: String?
     private var lastDeadTunnelStatusRefreshKey: DeadTunnelStatusRefreshKey?
     private var presentationMonitorGeneration: UInt64 = 0
@@ -1030,6 +1033,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         guard let user = service.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
+        let generation = authStateGeneration
         try await loadRemoteStateMarkingUnavailable(for: user)
         guard let freshOption = clientOptions.first(where: {
             $0.client.clientId == option.client.clientId
@@ -1038,8 +1042,14 @@ public final class CloudGatewayViewModel: ObservableObject {
         }) else {
             throw CloudGatewayAppError.accessDenied("This VPN client is not ready to install.")
         }
+        // Fence the install tail like deleteClient: a user swap during the install
+        // must not select or apply this stale flow's local result under the new
+        // session. The device-local "pull fresh, then install" ordering is kept.
+        let installedState = try await performForCurrentUser(user, generation: generation) {
+            try await configManager.install(freshOption)
+        }
         selectedClientId = freshOption.client.clientId
-        apply(try await configManager.install(freshOption))
+        apply(installedState)
         return freshOption.client.displayName
     }
 
@@ -1244,14 +1254,15 @@ public final class CloudGatewayViewModel: ObservableObject {
         for user: AuthenticatedUser,
         generation: UInt64
     ) async {
+        // Wait for the in-flight operation to finish instead of polling. The
+        // check and the continuation append run without an intervening suspension,
+        // so a `run` completing here always resumes this waiter (no lost wakeup).
         while isWorking {
             guard authStateGeneration == generation, isCurrentUser(user) else {
                 return
             }
-            do {
-                try await ContinuousClock().sleep(for: .milliseconds(10))
-            } catch {
-                return
+            await withCheckedContinuation { continuation in
+                workDidFinishContinuations.append(continuation)
             }
         }
         guard authStateGeneration == generation,
@@ -1585,6 +1596,11 @@ public final class CloudGatewayViewModel: ObservableObject {
         defer {
             if showsWorkingOverlay {
                 isWorking = false
+                let waiters = workDidFinishContinuations
+                workDidFinishContinuations.removeAll()
+                for waiter in waiters {
+                    waiter.resume()
+                }
             }
         }
 

@@ -1905,10 +1905,211 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await staleDeletion.value
         await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
 
-        XCTAssertEqual(service.idTokenForceRefreshValues, [false])
+        // The aborted deletion must never fetch a fresh (forceRefresh) delete
+        // token; the replacement user's own reload may still fetch a normal token.
+        XCTAssertFalse(service.idTokenForceRefreshValues.contains(true))
         XCTAssertEqual(service.deleteAccountCallCount, 0)
         XCTAssertEqual(service.signOutCallCount, 0)
         XCTAssertEqual(service.currentUser?.uid, "u2")
+    }
+
+    // MARK: - Mid-operation user-swap races
+
+    func testCreateClientCannotPublishStaleClientUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newClientName = "Phone"
+        let createGate = AsyncTestGate()
+        service.createClientGate = createGate
+
+        let staleCreate = Task { await viewModel.createClient() }
+        await waitUntil { service.createClientCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await createGate.open()
+        await staleCreate.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        XCTAssertFalse(viewModel.clientOptions.map(\.client.clientId).contains("created-1"))
+    }
+
+    func testDeleteClientCannotRemoveProfileUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        guard let option = viewModel.clientOptions.first(where: { $0.client.clientId == "c1" }) else {
+            XCTFail("expected an installed c1 option")
+            return
+        }
+        let deleteGate = AsyncTestGate()
+        service.deleteClientGate = deleteGate
+
+        let staleDelete = Task { await viewModel.deleteClient(option) }
+        await waitUntil { service.deleteClientCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await deleteGate.open()
+        await staleDelete.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        // The gated delete captured c1, but the fence must stop the config removal
+        // from applying, so the installed profile survives under the new session.
+        XCTAssertEqual(service.deleteClientClientId, "c1")
+        XCTAssertTrue(viewModel.installedSnapshots.map(\.clientId).contains("c1"))
+    }
+
+    func testGrantAccessCannotPublishStaleSuccessUnderReplacementUser() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        viewModel.newAccessEmail = "new@example.com"
+        let grantGate = AsyncTestGate()
+        service.grantAccessGate = grantGate
+
+        let staleGrant = Task { await viewModel.grantAccess() }
+        await waitUntil { service.grantAccessCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await grantGate.open()
+        await staleGrant.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+    }
+
+    func testInstallFromCloudCannotApplyStaleInstallUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager()
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(),
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        guard let option = viewModel.clientOptions.first(where: { $0.client.clientId == "c1" }) else {
+            XCTFail("expected a usable c1 option")
+            return
+        }
+        let installGate = AsyncTestGate()
+        await tunnelManager.setInstallGate(installGate)
+
+        let staleInstall = Task { await viewModel.installFromCloud(option) }
+        for _ in 0..<1_000 where await tunnelManager.installRequests() < 1 {
+            await Task.yield()
+        }
+        // Gate the replacement user's own reload so it cannot overwrite the state
+        // we are asserting on before we open the install gate.
+        let replacementRefreshGate = AsyncTestGate()
+        service.fetchRegionsGate = replacementRefreshGate
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await installGate.open()
+        await staleInstall.value
+        // Wait until the replacement user's reload is parked at its region fetch.
+        await waitUntil { service.fetchRegionsCallCount == 3 }
+
+        // The stale install completed on-device, but the fence must stop its local
+        // result from being selected/applied under the replacement session.
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+        XCTAssertNil(viewModel.selectedClientId)
+
+        await replacementRefreshGate.open()
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+    }
+
+    func testAccountDeleteCleanupProceedsWhenCurrentUserBecomesNil() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        await waitUntil { viewModel.installedSnapshots.map(\.clientId) == ["c1"] }
+        viewModel.deleteAccountPassword = "password"
+
+        await viewModel.deleteAccountWithPassword()
+
+        // deleteAccount drops the current user to nil server-side; the nil branch of
+        // ensureNoReplacementUser must still let local profile cleanup finish.
+        XCTAssertEqual(service.deleteAccountCallCount, 1)
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+    }
+
+    func testAccountDeleteCleanupAbortsWhenReplacementUserAppears() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.deleteAccountClearsCurrentUser = false
+        let viewModel = makeViewModel(
+            service,
+            installedSnapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")],
+            tunnelStatus: .disconnected
+        )
+        await viewModel.refresh()
+        await waitUntil { viewModel.installedSnapshots.map(\.clientId) == ["c1"] }
+        viewModel.deleteAccountPassword = "password"
+        let deleteGate = AsyncTestGate()
+        service.deleteAccountGate = deleteGate
+
+        let staleDelete = Task { await viewModel.deleteAccountWithPassword() }
+        await waitUntil { service.deleteAccountCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await deleteGate.open()
+        await staleDelete.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        // A replacement user (not nil) must abort the post-deletion cleanup: the
+        // stale flow must not remove the new session's profile or sign it out.
+        XCTAssertEqual(service.signOutCallCount, 0)
+        XCTAssertEqual(service.currentUser?.uid, "u2")
+        XCTAssertTrue(viewModel.installedSnapshots.map(\.clientId).contains("c1"))
+    }
+
+    func testDeferredAuthReloadRunsOnceAndSkipsWhenUserUnchanged() async {
+        let service = signedInAdminService()
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        let baselineFetches = service.fetchRegionsCallCount
+
+        // Re-emitting the current signed-in user must not trigger another reload.
+        service.emitAuthState(AuthenticatedUser(uid: "u1", email: "a@b.com"))
+        await waitUntil { !viewModel.isWorking }
+        XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches)
+
+        // A swap while work is in-flight defers exactly one reload for the new
+        // user, fired once the in-flight operation completes (no busy-polling).
+        let syncGate = AsyncTestGate()
+        service.syncRegionGate = syncGate
+        let staleSync = Task { await viewModel.syncSelectedRegion() }
+        await waitUntil { service.syncRegionCallCount == 1 }
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+        await syncGate.open()
+        await staleSync.value
+        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+
+        XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches + 1)
     }
 
     // MARK: - Role resolution
