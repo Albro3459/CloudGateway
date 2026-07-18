@@ -294,7 +294,7 @@ public protocol CloudGatewayServicing: AnyObject {
     func idToken(forceRefresh: Bool) async throws -> String
     func fetchUserRole(uid: String) async throws -> String?
     func fetchRegions() async throws -> [CloudGatewayRegion]
-    func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck
+    func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck
     func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion]
     func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient]
     func fetchAllClients() async throws -> [CloudGatewayClient]

@@ -233,12 +233,8 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
         await controlPlane.addCapacity(to: regions, idToken: idToken)
     }
 
-    public func checkAccess(
-        idToken: String,
-        regions: [CloudGatewayRegion]
-    ) async throws -> CloudGatewayAccessCheck {
-        _ = regions
-        return try await controlPlane.checkAccess(idToken: idToken)
+    public func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck {
+        try await controlPlane.checkAccess(idToken: idToken)
     }
 
     public func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient] {

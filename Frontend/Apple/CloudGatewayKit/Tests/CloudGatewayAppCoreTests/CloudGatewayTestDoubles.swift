@@ -214,14 +214,22 @@ actor FakeConfigCache: CloudGatewayConfigCaching {
 
     func load() async throws -> [CloudGatewayConfigSnapshot] {
         loadRequestCount += 1
+        // Capture the result before waiting on the gate so a paused caller sees
+        // the data as of when it called in, not whatever is current when it is
+        // later released - mirrors a real cache read racing a concurrent write.
+        let result = snapshots
         if let loadGate {
             await loadGate.wait()
         }
-        return snapshots
+        return result
     }
 
     func setLoadGate(_ gate: AsyncTestGate?) {
         loadGate = gate
+    }
+
+    func setSnapshots(_ snapshots: [CloudGatewayConfigSnapshot]) {
+        self.snapshots = snapshots
     }
 
     func loadRequests() -> Int {

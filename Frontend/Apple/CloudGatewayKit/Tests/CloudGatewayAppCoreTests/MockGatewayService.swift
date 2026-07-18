@@ -251,7 +251,7 @@ final class MockGatewayService: CloudGatewayServicing {
         return CloudGatewayConfigSelection.sortedRegions(enabledRegions)
     }
 
-    func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
+    func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck {
         checkAccessCallCount += 1
         if let checkAccessError {
             throw checkAccessError

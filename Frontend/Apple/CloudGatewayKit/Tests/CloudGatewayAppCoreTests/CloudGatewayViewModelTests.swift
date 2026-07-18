@@ -238,6 +238,50 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(service.fetchRegionsCallCount, 3)
     }
 
+    // Covers the reloadAuthState wait loop's re-check of authStateGeneration when a
+    // *second* swap lands while a waiter is already parked - not just the
+    // single-swap-then-resume case above. u2's waiter must wake up and bail without
+    // refreshing once u3 has superseded it; only u3's waiter should trigger a load.
+    func testSecondUserSwapWhileReloadAuthStateWaiterIsParkedSkipsStaleWaiter() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("user-a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+
+        let fetchRegionsGate = AsyncTestGate()
+        service.fetchRegionsGate = fetchRegionsGate
+        let staleRefresh = Task { await viewModel.refresh() }
+        await waitUntil { viewModel.isWorking && service.fetchRegionsCallCount == 1 }
+
+        // First swap (u1 -> u2): isWorking is still true, so reloadAuthState parks a
+        // continuation instead of refreshing immediately.
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+
+        // Second swap (u2 -> u3) arrives while u2's waiter is still parked; it bumps
+        // authStateGeneration again and parks its own waiter behind u2's.
+        service.ownedClients = [TestFixtures.client("user-c-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u3", email: "c@example.com"))
+        await waitUntil { viewModel.signedInUid == "u3" }
+
+        await fetchRegionsGate.open()
+        await staleRefresh.value
+        await waitUntil {
+            viewModel.signedInUid == "u3"
+                && !viewModel.isWorking
+                && viewModel.clientOptions.map(\.client.clientId) == ["user-c-client"]
+        }
+
+        XCTAssertEqual(viewModel.signedInEmail, "c@example.com")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-c-client"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "user-b-client" })
+        // u1's stale refresh() fails its own fence and bails; u2's parked waiter wakes
+        // up superseded and bails too; only u3's waiter actually reloads - two total
+        // fetchRegions calls, not three.
+        XCTAssertEqual(service.fetchRegionsCallCount, 2)
+    }
+
     func testUserReplacementDuringPullToRefreshCannotPublishOldOfflineFallback() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
@@ -679,6 +723,66 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.tunnelStatuses["c1"], .connected)
         XCTAssertEqual(stopRequests, ["c1"])
         XCTAssertFalse(viewModel.isWorking)
+    }
+
+    func testDisconnectDeadTunnelMidFlightCancellationTearsDownOperationAndTimeout() async {
+        let service = MockGatewayService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        let tunnelManager = FakeTunnelManager(status: .connected)
+        await tunnelManager.setStopDelay(.seconds(5))
+        let healthReader = FakeTunnelHealthReader(snapshot: CloudGatewayTunnelHealthSnapshot(
+            tunnelIdentifier: "c1",
+            health: .notPassingTraffic,
+            updatedAt: Date()
+        ))
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                tunnelManager: tunnelManager,
+                cache: FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")]),
+                secretStore: FakeConfigSecretStore()
+            ),
+            healthReader: healthReader,
+            deadTunnelDisconnectTimeout: .seconds(5),
+            deadTunnelDisconnectPollInterval: .milliseconds(1)
+        )
+
+        await viewModel.refresh()
+        await waitForLocalState(viewModel)
+        await viewModel.refreshTunnelHealthAndStatus()
+
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let disconnect = Task { await viewModel.disconnectDeadTunnel() }
+        for _ in 0..<1_000 {
+            if await tunnelManager.stopRequests().count == 1 {
+                break
+            }
+            await Task.yield()
+        }
+        let stopRequestsBeforeCancel = await tunnelManager.stopRequests()
+        XCTAssertEqual(stopRequestsBeforeCancel, ["c1"])
+
+        // Cancel the caller while the operation task is suspended inside the
+        // (cancellation-aware) stop-tunnel delay, well before either the 5s
+        // stop delay or the 5s disconnect timeout could legitimately elapse.
+        disconnect.cancel()
+        await disconnect.value
+
+        XCTAssertTrue(startedAt.duration(to: clock.now) < .seconds(1))
+        XCTAssertNil(viewModel.errorText)
+        XCTAssertFalse(viewModel.isWorking)
+
+        // The operation task never reached the line that records the stop as
+        // complete, proving it was torn down mid-flight rather than left to
+        // finish in the background after the caller stopped awaiting it.
+        let status = try? await tunnelManager.installedStatuses(for: ["c1"])
+        XCTAssertEqual(status?["c1"], .connected)
+
+        // If the timeout task had survived cancellation it would fire here and
+        // overwrite errorText with the timeout message; give it that chance.
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(viewModel.errorText)
     }
 
     func testStaleDeadTunnelSnapshotDoesNotShowWarning() async {
@@ -1956,6 +2060,89 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.successText)
         XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
         XCTAssertFalse(viewModel.clientOptions.map(\.client.clientId).contains("created-1"))
+    }
+
+    // Mirrors the stale-swap fences above (createClient/deleteClient/installFromCloud)
+    // but drives the offline path instead of a plain gate: the post-create reload goes
+    // offline and falls into loadRemoteStateMarkingUnavailable/applyRemoteRefreshUnavailable,
+    // which re-reads the local cache. A user swap arriving while that offline path is
+    // paused on the cache read must stop it from publishing u1's stale offline fallback
+    // (and the flag that marks it) under u2's session.
+    func testCreateClientOfflineReloadCannotApplyStaleOfflineStateUnderReplacementUser() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1", capacity: .known(limit: 10, allocated: 1))]
+        service.ownedClients = [TestFixtures.client("c1", regionId: "us-sanjose-1")]
+        let cache = FakeConfigCache(snapshots: [TestFixtures.snapshot("c1", regionId: "us-sanjose-1")])
+        let viewModel = CloudGatewayViewModel(
+            service: service,
+            configManager: CloudGatewayConfigManager(
+                // A status fallback so c1 (and any other cached snapshot) reads as
+                // installed; otherwise refreshStatus prunes it from installedSnapshots
+                // immediately and the fence has nothing to protect.
+                tunnelManager: FakeTunnelManager(status: .disconnected),
+                cache: cache,
+                secretStore: FakeConfigSecretStore()
+            )
+        )
+        await viewModel.refresh()
+        viewModel.newClientName = "Phone"
+        let loadCountBeforeCreate = await cache.loadRequests()
+
+        // The create call itself succeeds; it's the reload after it that goes offline.
+        // Keep fetchRegionsError active permanently (never reset it below) so u2's own
+        // auto-refresh also goes offline instead of succeeding and overwriting whatever
+        // u1's fenced (or unfenced) write left behind - that overwrite is what let the
+        // old version of this test pass even with the fence deleted.
+        service.fetchRegionsError = URLError(.notConnectedToInternet)
+        let cacheGate = AsyncTestGate()
+        await cache.setLoadGate(cacheGate)
+        let staleCreate = Task { await viewModel.createClient() }
+        await waitUntil { service.createClientCallCount == 1 }
+        // Paused inside applyRemoteRefreshUnavailable's configManager.loadLocalState();
+        // FakeConfigCache.load() has already captured u1's local cache (c1 installed)
+        // before it started waiting on the gate.
+        await waitForCacheLoads(cache, count: loadCountBeforeCreate + 1)
+
+        // u2's own local cache has no installed configs (a genuinely distinct local
+        // state, not a rename of u1's). This is safe to set while u1's read is
+        // paused because that read already captured its own snapshot above; only
+        // reads that start after this point observe the new value.
+        await cache.setSnapshots([])
+        service.ownedClients = [TestFixtures.client("user-b-client", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
+        await waitUntil { viewModel.signedInUid == "u2" }
+
+        await cacheGate.open()
+        await staleCreate.value
+        // Wait for u2's own offline fallback to actually finish (not just for
+        // isWorking to have blipped false between u1's task ending and u2's own
+        // reload starting): remoteRefreshUnavailable only flips true once some
+        // applyRemoteRefreshUnavailable call has reached apply(), which - given
+        // u2's auto-refresh is also offline - only happens once u2's own run
+        // completes.
+        await waitUntil {
+            !viewModel.isWorking && viewModel.signedInUid == "u2" && viewModel.remoteRefreshUnavailable
+        }
+
+        XCTAssertNil(viewModel.successText)
+        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
+        // u2's own offline fallback ran (its auto-refresh is offline too), so this
+        // is expected regardless of the fence - it is not what this test proves.
+        XCTAssertTrue(viewModel.remoteRefreshUnavailable)
+        // u2 genuinely has nothing installed locally. If u1's fenced write ever
+        // reached configManager.markRemoteRefreshUnavailable() with u1's stale
+        // (c1-installed) local state, it would stamp a stale-offline label for c1
+        // into the shared config-manager state; that label would survive u2's own
+        // (empty-cache) offline fallback, since markRemoteRefreshUnavailable only
+        // adds labels for currently-installed snapshots and never clears stale
+        // ones for snapshots that vanished. So c1 carrying a stale label here can
+        // only happen if the fence failed to stop u1's write.
+        XCTAssertTrue(viewModel.installedSnapshots.isEmpty)
+        let c1Option = CloudGatewayClientOption(
+            client: TestFixtures.client("c1", regionId: "us-sanjose-1"),
+            region: TestFixtures.region("us-sanjose-1")
+        )
+        XCTAssertNil(viewModel.staleText(for: c1Option))
     }
 
     func testDeleteClientCannotRemoveProfileUnderReplacementUser() async {

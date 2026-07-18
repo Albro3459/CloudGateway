@@ -148,7 +148,7 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         CloudGatewayConfigSelection.sortedRegions(regions)
     }
 
-    func checkAccess(idToken: String, regions: [CloudGatewayRegion]) async throws -> CloudGatewayAccessCheck {
+    func checkAccess(idToken: String) async throws -> CloudGatewayAccessCheck {
         CloudGatewayAccessCheck(userId: screenshotUser.uid, email: screenshotUser.email, role: "user")
     }
 

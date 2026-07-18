@@ -1350,7 +1350,7 @@ public final class CloudGatewayViewModel: ObservableObject {
         guard !enabledRegions.isEmpty else {
             throw CloudGatewayAppError.noEnabledRegions
         }
-        let access = try await service.checkAccess(idToken: token, regions: enabledRegions)
+        let access = try await service.checkAccess(idToken: token)
         // Explicitly flatten so both a missing UserRoles doc (fetch returns nil)
         // and a fetch failure fall back to the check-access role.
         let resolvedRole = ((try? await service.fetchUserRole(uid: user.uid)) ?? nil) ?? access.role
