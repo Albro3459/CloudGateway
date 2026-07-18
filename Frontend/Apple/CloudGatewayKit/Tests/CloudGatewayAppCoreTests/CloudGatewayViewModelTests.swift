@@ -320,6 +320,72 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["user-b-client"])
     }
 
+    // Covers the compound race the "cancel the outer .refreshable task" comment on
+    // pullToRefresh exists for: reloadCurrentState captures `generation` *inside*
+    // the detached Task it spawns (CloudGatewayViewModel.swift:696-700), so the
+    // fence still applies even after SwiftUI retracts the pull and cancels the
+    // outer awaiting task.
+    //
+    // This re-authenticates as the *same* uid (sign out, then back in as u1)
+    // rather than swapping to a different user, on purpose: a different-uid swap
+    // would also be caught by the plain isCurrentUser identity check, which
+    // wouldn't pin down that the generation fence specifically is what's doing
+    // the work. Sign-out-then-back-in bumps authStateGeneration twice while
+    // uid stays "u1", so isCurrentUser(user) alone would let a stale reload
+    // through - only the generation check inside ensureCurrentSession can catch
+    // it. Cancel the outer task while A's original-session detached reload is
+    // gated mid-flight, then reauth as u1 while it's still suspended: the stale
+    // session's reload must never publish its data into the new session.
+    func testSameUserReauthDuringCancelledOuterPullToRefreshCannotPublishStaleSessionData() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.ownedClients = [TestFixtures.client("a-client", regionId: "us-sanjose-1")]
+        let viewModel = makeViewModel(service)
+        await viewModel.refresh()
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["a-client"])
+
+        // Gates only the stale detached reload's fetchRegions call - the
+        // sign-out/re-sign-in reloads below are left ungated so the legitimate
+        // new-session reload can run to completion first. That ordering matters:
+        // it proves the fence, not last-write-wins scheduling, is what keeps the
+        // stale write out once it resumes afterward.
+        let staleReloadGate = AsyncTestGate()
+        service.fetchRegionsGate = staleReloadGate
+        let outerPull = Task { await viewModel.pullToRefresh() }
+        await waitUntil { service.fetchRegionsCallCount == 2 }
+
+        // Simulate SwiftUI retracting the pull control mid-flight. pullToRefresh's
+        // detached reload is an independent unstructured Task, so cancelling the
+        // outer awaiting task here must not tear it down or skip its fence.
+        outerPull.cancel()
+
+        // Sign out and back in as the same uid: a brand-new session for the same
+        // account. Ungate fetchRegions first so this reload isn't stuck behind
+        // the still-gated stale one.
+        service.fetchRegionsGate = nil
+        service.emitAuthState(nil)
+        await waitUntil { viewModel.appMode == .guest }
+        service.ownedClients = [TestFixtures.client("a-client-resession", regionId: "us-sanjose-1")]
+        service.emitAuthState(AuthenticatedUser(uid: "u1", email: "a@b.com"))
+        await waitUntil {
+            viewModel.appMode == .signedIn
+                && viewModel.clientOptions.map(\.client.clientId) == ["a-client-resession"]
+        }
+
+        // Change the server-side data again so a leaked publish from the stale
+        // session is unmistakable, then release it. isCurrentUser(user) alone
+        // would pass here (still uid "u1"), so only the generation fence can
+        // stop this from clobbering the new session's already-applied state.
+        service.ownedClients = [TestFixtures.client("stale-session-leak", regionId: "us-sanjose-1")]
+        await staleReloadGate.open()
+        _ = await outerPull.value
+
+        XCTAssertEqual(viewModel.signedInUid, "u1")
+        XCTAssertEqual(viewModel.clientOptions.map(\.client.clientId), ["a-client-resession"])
+        XCTAssertFalse(viewModel.clientOptions.contains { $0.client.clientId == "stale-session-leak" })
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
+    }
+
     func testAuthListenerExternalSignOutDuringRefreshCannotRestoreOldSession() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
