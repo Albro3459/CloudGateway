@@ -13,7 +13,6 @@ import {
   signInWithPopup,
   signOut,
   onAuthStateChanged,
-  getIdToken,
 } from "firebase/auth";
 
 import { firebaseConfig } from "./Secrets/firebaseConfig";
@@ -44,13 +43,10 @@ export {
   signInWithGoogle,
   signOut,
   onAuthStateChanged,
-  getIdToken,
   linkWithCredential,
   linkWithPopup,
   appleProvider,
-  GoogleAuthProvider,
   googleProvider,
-  OAuthProvider,
   reauthenticateWithCredential,
   reauthenticateWithPopup,
 };

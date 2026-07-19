@@ -20,7 +20,7 @@ export const getClientKey = (entry: VPNClientKeyFields) => (
     `${entry.userID}:${entry.region || ""}:${entry.clientId}`
 );
 
-export const shouldShowVPNClient = (
+const shouldShowVPNClient = (
     entry: VPNClientVisibilityFields,
     sessionRemovedClientKeys: Set<string>,
 ) => (

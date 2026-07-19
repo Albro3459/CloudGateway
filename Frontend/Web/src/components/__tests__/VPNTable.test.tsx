@@ -1,4 +1,3 @@
-import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { VPNTable, VPNTableEntry } from "../VPNTable";

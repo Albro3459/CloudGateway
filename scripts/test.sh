@@ -87,6 +87,9 @@ test_web() {
 
   run_check "Web Jest" env CI=true npm run test -- --watchAll=false --runInBand
   run_check "Web TypeScript" npx tsc --noEmit
+  # Dead-code enforcement via knip (see Frontend/Web/knip.json), mirroring the
+  # Apple Periphery scans: unused files/exports/deps fail the target.
+  run_check "Web dead code (knip)" npx --no-install knip
   run_check "Web production build" npm run build
 }
 

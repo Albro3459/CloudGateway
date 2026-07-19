@@ -26,7 +26,3 @@ export const getUserRole = async (user: User): Promise<string | null> => {
       return null;
     }
 };
-
-export const isUserProvisioned = async (user: User): Promise<boolean> => {
-    return (await getUserRole(user)) !== null;
-};

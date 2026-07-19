@@ -11,7 +11,7 @@ type FastApiErrorResponse = {
     error?: FastApiError | string;
 };
 
-export type ApiHelperSuccess<T> = {
+type ApiHelperSuccess<T> = {
     success: true;
     data: T;
 };
@@ -83,7 +83,7 @@ export type RegionCapacityResponse = {
     allocatedClientCount: number;
 };
 
-export type RegionSummary = {
+type RegionSummary = {
     regionId: string;
     displayName: string;
     displayOrder: number;
@@ -327,7 +327,7 @@ export const createAdminUser = (
     }
 };
 
-export const runRegionSync = (
+const runRegionSync = (
     regionId: string,
     token: string,
 ): Promise<ApiHelperResult<RegionSyncResponse>> => {

@@ -1,6 +1,6 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
 
-export type RegionCapacity = {
+type RegionCapacity = {
     status: "known";
     limit: number;
     allocated: number;

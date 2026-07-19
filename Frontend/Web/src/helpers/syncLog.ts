@@ -12,7 +12,7 @@ const timestampForFilename = (syncedAt: string): string => {
     );
 };
 
-export const buildSyncLogFilename = (regionId: string, syncedAt: string): string => (
+const buildSyncLogFilename = (regionId: string, syncedAt: string): string => (
     `sync_log_${regionId}_${timestampForFilename(syncedAt)}.log`
 );
 

@@ -30,8 +30,6 @@ const usesLocalDevProxy = (location: LocationLike) => (
     !API_ORIGIN && isLocalDevHostname(location.hostname)
 );
 
-export const getApiOriginOverride = () => API_ORIGIN;
-
 export const buildRegionalApiEndpoint = (
     regionId: string,
     path: string,
@@ -72,7 +70,7 @@ export type ApiRegionOption = {
     displayOrder?: number;
 };
 
-export const getFirstEnabledRegionId = (regions: ApiRegionOption[] | null | undefined) => {
+const getFirstEnabledRegionId = (regions: ApiRegionOption[] | null | undefined) => {
     const sortedRegions = [...(regions || [])]
         .filter(region => region.enabled !== false && region.regionId)
         .sort((a, b) => {
