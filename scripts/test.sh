@@ -128,10 +128,28 @@ check_apple_signing_prerequisites() {
   return 0
 }
 
+# Dead-code report via Periphery over the shared Swift packages. Rooted at
+# CloudGatewayFirebaseAdapter, the top of the local package graph, so one
+# SwiftPM build indexes all three shared targets (see Frontend/Apple/.periphery.yml).
+# Report-only: existing findings do not fail the build. To enforce zero dead
+# code once findings are cleaned, append `--strict` to the scan below.
+scan_apple_dead_code() {
+  if ! command -v periphery >/dev/null 2>&1; then
+    echo "periphery not found; skipping Apple dead-code scan. Install: brew install periphery" >&2
+    return 0
+  fi
+  periphery scan \
+    --config "$ROOT/Frontend/Apple/.periphery.yml" \
+    --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" ||
+    true
+}
+
 test_apple() {
   cd "$ROOT" || return 1
 
   local failed=0
+
+  scan_apple_dead_code
 
   run_check "Apple release script syntax" \
     bash -n scripts/ios-release.sh ||

@@ -1,0 +1,26 @@
+# Dead-code scan for the Apple clients (Periphery), SPM-package mode.
+#
+# scripts/test.sh runs a single scan rooted at CloudGatewayFirebaseAdapter, the
+# top of the local package graph (FirebaseAuthAdapter -> AppCore ->
+# CloudGatewayKit), so one SwiftPM build indexes all three shared targets:
+#
+#   periphery scan --config Frontend/Apple/.periphery.yml \
+#     --project-root Frontend/Apple/CloudGatewayFirebaseAdapter
+#
+# Why SPM mode and not the iOS xcodeproj: Xcode 26's package-graph resolver
+# crashes (IDESwiftPackageCore, "count of array differs from count of index
+# set") when Periphery drives xcodebuild against CloudGateway.xcodeproj. SPM
+# mode avoids the IDE layer and is sound for dead code -- internal declarations
+# are unreachable from the separate app module, so anything flagged here is
+# genuinely dead. The trade-off is that unused *public* shared API is retained
+# (retain_public) and therefore not reported; an app-project scan is the only
+# way to catch that, so revisit once the Xcode bug is fixed. When a macOS app
+# ships, its shared code is already covered here via the same packages.
+
+retain_public: true
+exclude_tests: true
+
+# Suppress framework-driven false positives.
+retain_objc_accessible: true
+retain_codable_properties: true
+retain_swift_ui_previews: true
