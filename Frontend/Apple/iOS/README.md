@@ -142,6 +142,13 @@ tests, lists the Xcode project, and performs the no-device app build. The signed
 variant replaces only the unsigned build with explicit provisioning for the app
 and tunnel extension.
 
+Signed builds and archives use your login keychain. If it is locked, unlock it
+first with a command that omits the password so macOS prompts for it:
+
+```sh
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+```
+
 Equivalent raw commands:
 
 ```sh

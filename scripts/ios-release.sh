@@ -17,6 +17,7 @@ KEY_PATH="${HOME}/.ssh/Apple_API_KEY/AuthKey_${KEY_ID}.p8"
 ARCHIVE_ROOT="/private/tmp/CloudGatewayArchives"
 SOURCE_DERIVED_DATA="$ARCHIVE_ROOT/SourceFirestoreDerivedData"
 SOURCE_PACKAGES="$ARCHIVE_ROOT/SourceFirestorePackages"
+LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 VERSION_MODE=""
 BACKUP=""
 COMMITTED=0
@@ -79,6 +80,19 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+ensure_login_keychain_unlocked() {
+  if security show-keychain-info "$LOGIN_KEYCHAIN" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "==> Login keychain is locked; unlocking for code signing"
+  # No -p flag: security prompts for the password interactively, so it is
+  # never passed on the command line or left in shell history.
+  if ! security unlock-keychain "$LOGIN_KEYCHAIN"; then
+    echo "Failed to unlock the login keychain: $LOGIN_KEYCHAIN" >&2
+    exit 1
+  fi
+}
 
 JWT="$(python3 - "$KEY_PATH" "$KEY_ID" "$ISSUER_ID" <<'PY'
 import base64
@@ -148,6 +162,9 @@ echo "==> Validating App Store Connect API key"
 curl --fail --silent --show-error --output /dev/null \
   -H "Authorization: Bearer $JWT" \
   "https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=com.gocloudlaunch.gateway"
+
+echo "==> Ensuring login keychain is unlocked for code signing"
+ensure_login_keychain_unlocked
 
 mkdir -p "$ARCHIVE_ROOT" "$SOURCE_DERIVED_DATA" "$SOURCE_PACKAGES"
 BACKUP="$(mktemp /private/tmp/CloudGatewayProject.XXXXXX)"

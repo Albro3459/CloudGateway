@@ -34,6 +34,14 @@ The script expects the team API key at
 The key ID and issuer ID are identifiers, not secrets; the `.p8` file must
 never be committed or logged.
 
+Code signing uses your login keychain. If it is locked, the release script
+unlocks it and macOS prompts for the password. To unlock it beforehand, run the
+command without a password so macOS prompts for it:
+
+```sh
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+```
+
 See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
 ## Deploy regional servers

@@ -228,6 +228,14 @@ The configured team key path is
 key ID and issuer ID are identifiers, not secrets; never commit or log the `.p8`
 private key.
 
+Code signing uses your login keychain. If it is locked, the release script
+unlocks it before archiving and macOS prompts for the password. To unlock it
+beforehand, run the command without a password so macOS prompts for it:
+
+```sh
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+```
+
 For the manual Xcode flow, quit Xcode and reopen the project with source
 Firestore:
 
