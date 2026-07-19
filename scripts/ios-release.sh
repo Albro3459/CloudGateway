@@ -294,25 +294,13 @@ FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR="$SOURCE_PACKAGES" 
     -derivedDataPath "$SOURCE_DERIVED_DATA" \
     -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
     -archivePath "$ARCHIVE_PATH" \
-    -allowProvisioningUpdates \
-    -authenticationKeyID "$KEY_ID" \
-    -authenticationKeyIssuerID "$ISSUER_ID" \
-    -authenticationKeyPath "$KEY_PATH" \
     archive
 
 echo "==> Exporting IPA"
-# Authenticate with the App Store Connect API key and allow provisioning
-# updates so Xcode regenerates the managed store profiles against the current
-# Apple Distribution certificate. Without this, export re-signs with whatever
-# profile is cached locally, which fails when that profile predates the cert.
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
-  -exportPath "$EXPORT_PATH" \
-  -allowProvisioningUpdates \
-  -authenticationKeyID "$KEY_ID" \
-  -authenticationKeyIssuerID "$ISSUER_ID" \
-  -authenticationKeyPath "$KEY_PATH"
+  -exportPath "$EXPORT_PATH"
 
 IPA_PATH="$EXPORT_PATH/CloudGateway.ipa"
 if [[ ! -f "$IPA_PATH" ]]; then
