@@ -18,6 +18,7 @@ ARCHIVE_ROOT="/private/tmp/CloudGatewayArchives"
 SOURCE_DERIVED_DATA="$ARCHIVE_ROOT/SourceFirestoreDerivedData"
 SOURCE_PACKAGES="$ARCHIVE_ROOT/SourceFirestorePackages"
 LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+TEAM_ID="CRQWDQ7QQR"
 VERSION_MODE=""
 BACKUP=""
 COMMITTED=0
@@ -94,6 +95,21 @@ ensure_login_keychain_unlocked() {
   fi
 }
 
+check_distribution_identity() {
+  # App Store export needs an Apple Distribution signing identity for the release
+  # team in the login keychain. Probing here fails in seconds instead of after
+  # the full archive build, which is the only later step that needs it.
+  if security find-identity -v -p codesigning "$LOGIN_KEYCHAIN" |
+      grep -Eq "\"(Apple|iPhone) Distribution: .*\($TEAM_ID\)\""; then
+    return 0
+  fi
+  echo "No Apple Distribution signing identity for team $TEAM_ID was found in the login keychain." >&2
+  echo "Create one in Xcode: Settings > Accounts > Manage Certificates > + > Apple Distribution (team $TEAM_ID), then re-run." >&2
+  echo "List what is installed with:" >&2
+  echo "  security find-identity -v -p codesigning" >&2
+  exit 1
+}
+
 JWT="$(python3 - "$KEY_PATH" "$KEY_ID" "$ISSUER_ID" <<'PY'
 import base64
 import json
@@ -165,6 +181,9 @@ curl --fail --silent --show-error --output /dev/null \
 
 echo "==> Ensuring login keychain is unlocked for code signing"
 ensure_login_keychain_unlocked
+
+echo "==> Checking for an App Store distribution certificate"
+check_distribution_identity
 
 mkdir -p "$ARCHIVE_ROOT" "$SOURCE_DERIVED_DATA" "$SOURCE_PACKAGES"
 BACKUP="$(mktemp /private/tmp/CloudGatewayProject.XXXXXX)"
@@ -259,7 +278,7 @@ cat > "$EXPORT_OPTIONS" <<EOF
   <key>signingStyle</key>
   <string>automatic</string>
   <key>teamID</key>
-  <string>CRQWDQ7QQR</string>
+  <string>${TEAM_ID}</string>
 </dict>
 </plist>
 EOF
