@@ -184,6 +184,7 @@ public struct CloudGatewayConfigSnapshot: Codable, Equatable, Sendable {
         self.serverEndpointHostname = serverEndpointHostname
     }
 
+    // periphery:ignore - shared test-fixture initializer
     public init(
         clientId: String,
         regionId: String,
@@ -376,27 +377,6 @@ public enum CloudGatewayConfigSelection {
         return regions.first { $0.regionId == id }
     }
 
-    public static func selectedOption(
-        clientId: String?,
-        in options: [CloudGatewayClientOption]
-    ) -> CloudGatewayClientOption? {
-        guard let clientId else {
-            return nil
-        }
-        return options.first { $0.client.clientId == clientId }
-    }
-
-    public static func usableSelection(
-        _ option: CloudGatewayClientOption?
-    ) -> CloudGatewayClientOption? {
-        guard let option,
-              option.client.hasUsableConfig,
-              option.region?.enabled == true else {
-            return nil
-        }
-        return option
-    }
-
     private static func clientKey(for client: CloudGatewayClient) -> String {
         "\(client.regionId)/\(client.clientId)"
     }
@@ -451,13 +431,6 @@ public enum CloudGatewayConfigSelection {
             throw CloudGatewayVPNError.missingWireGuardConfiguration
         }
         return try CloudGatewayWireGuardConfig(wireGuardConfig)
-    }
-
-    public static func containsUsableClient(
-        matching snapshot: CloudGatewayConfigSnapshot,
-        in options: [CloudGatewayClientOption]
-    ) -> Bool {
-        matchingOption(for: snapshot, in: options) != nil
     }
 
     public static func matchingOption(

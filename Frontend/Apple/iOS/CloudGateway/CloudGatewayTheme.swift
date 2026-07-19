@@ -19,8 +19,6 @@ struct CloudGatewayTheme {
     let primarySoftEdge = Color(hex: 0x1c398e)
     let accent = Color(hex: 0x51a2ff)
     let accentStrong = Color(hex: 0x8ec5ff)
-    let focus = Color(hex: 0x2b7fff)
-    let focusSoft = Color(hex: 0x1c398e)
 
     let content = Color(hex: 0xf3f4f6)
     let contentSecondary = Color(hex: 0xd1d5dc)

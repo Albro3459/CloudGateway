@@ -185,10 +185,6 @@ public actor CloudGatewayConfigManager {
         try await tunnelManager.allInstalledStatuses()
     }
 
-    public func installState(for option: CloudGatewayClientOption) -> CloudGatewayConfigInstallState? {
-        state.installState(for: option)
-    }
-
     private func updateStaleState() {
         state.staleTexts = [:]
         state.remoteInvalidInstalledConfigIds = []

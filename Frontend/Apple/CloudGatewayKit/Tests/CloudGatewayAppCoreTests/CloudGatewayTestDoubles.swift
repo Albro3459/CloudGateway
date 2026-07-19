@@ -63,10 +63,6 @@ actor ControlledPresentationSleeper: CloudGatewayPresentationSleeping {
         durations
     }
 
-    func waitingCount() -> Int {
-        waiters.count
-    }
-
     func resumeNext() {
         guard !waiters.isEmpty else { return }
         waiters.removeFirst().continuation.resume()
@@ -96,13 +92,6 @@ actor FakeTunnelManager: CloudGatewayTunnelManaging {
 
     init(status: CloudGatewayTunnelStatus? = nil) {
         self.status = status
-    }
-
-    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
-        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw CloudGatewayVPNError.missingInstalledTunnel
-        }
-        return status
     }
 
     func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
@@ -253,6 +242,7 @@ final class FakeConfigSecretStore: CloudGatewayConfigSecretStoring, @unchecked S
         configs[reference] = config
     }
 
+    // periphery:ignore - protocol-conformance boilerplate, not exercised by any test
     func loadConfig(for reference: CloudGatewayConfigSecretReference) throws -> CloudGatewayWireGuardConfig {
         guard let config = configs[reference] else {
             throw CloudGatewayVPNError.keychainReadFailed(-25300)

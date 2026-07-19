@@ -17,6 +17,7 @@ public struct CloudGatewayCreateClientResponse: Decodable, Equatable, Sendable {
     public let serverEndpointIpv4: String?
     public let serverEndpointHostname: String?
 
+    // periphery:ignore - shared test-fixture initializer
     public init(
         clientId: String,
         regionId: String,
@@ -42,16 +43,6 @@ public struct CloudGatewayCapacityResponse: Decodable, Equatable, Sendable {
     public let regionId: String
     public let capacityLimit: Int
     public let allocatedClientCount: Int
-
-    public init(
-        regionId: String,
-        capacityLimit: Int,
-        allocatedClientCount: Int
-    ) {
-        self.regionId = regionId
-        self.capacityLimit = capacityLimit
-        self.allocatedClientCount = allocatedClientCount
-    }
 }
 
 public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServicing {

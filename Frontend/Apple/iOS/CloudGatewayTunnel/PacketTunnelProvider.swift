@@ -628,11 +628,17 @@ private struct HealthPathFingerprint: Equatable {
         case requiresConnection
     }
 
+    // periphery:ignore - compared via synthesized Equatable
     let status: Status
+    // periphery:ignore - compared via synthesized Equatable
     let interfaceTypes: [NWInterface.InterfaceType]
+    // periphery:ignore - compared via synthesized Equatable
     let gateways: [String]
+    // periphery:ignore - compared via synthesized Equatable
     let supportsIPv4: Bool
+    // periphery:ignore - compared via synthesized Equatable
     let supportsIPv6: Bool
+    // periphery:ignore - compared via synthesized Equatable
     let supportsDNS: Bool
 
     init(_ path: Network.NWPath) {

@@ -2,17 +2,6 @@ import Foundation
 import Testing
 @testable import CloudGatewayKit
 
-private func waitForHealthSemaphore(_ semaphore: DispatchSemaphore) {
-    semaphore.wait()
-}
-
-private func healthSemaphoreIsBlocked(
-    _ semaphore: DispatchSemaphore,
-    milliseconds: Int
-) -> Bool {
-    semaphore.wait(timeout: .now() + .milliseconds(milliseconds)) == .timedOut
-}
-
 private final class ManualHealthCancellation:
     CloudGatewayTunnelHealthWakeCancellation,
     @unchecked Sendable
@@ -369,12 +358,6 @@ private final class LockedFlag: @unchecked Sendable {
         storage = true
         lock.unlock()
     }
-
-    func clear() {
-        lock.lock()
-        storage = false
-        lock.unlock()
-    }
 }
 
 private func makeMonitor(
@@ -590,40 +573,6 @@ private func makeMonitor(
     #expect(notifications.calls.last == .withdraw)
 }
 
-@Test func notificationRepairReconciliationIsReservedUntilSubmitted() async throws {
-    let gate = CloudGatewayTunnelHealthEffectGate()
-    let drained = LockedFlag()
-    let drainWasDeferred = LockedFlag()
-    let notifications = ControllableNotificationAdapter(
-        reconcileSubmission: {
-            guard let generation = gate.closeCurrent() else { return }
-            gate.notifyWhenDrained(generation: generation) { drained.set() }
-            if !drained.value { drainWasDeferred.set() }
-        }
-    )
-    let driver = CloudGatewayTunnelHealthArtifactDriver(
-        persistence: ControllablePersistenceAdapter(),
-        notifications: notifications,
-        gate: gate
-    )
-    gate.open(generation: 1)
-    await driver.activate(
-        generation: 1,
-        desired: .init(
-            snapshot: nil,
-            notificationDesired: true,
-            notificationRegistrationAllowed: true
-        )
-    )
-
-    await driver.requestCurrentRepair()
-    gate.waitForSubmittedEffects()
-
-    #expect(drainWasDeferred.value)
-    #expect(drained.value)
-    #expect(notifications.calls == [.reconcile])
-}
-
 @Test func monitorRestartRejectsPriorSessionRuntimeCallback() async throws {
     let runtime = ControllableRuntimeAdapter()
     let scheduler = ManualHealthScheduler()
@@ -690,7 +639,7 @@ private func makeMonitor(
 @Test func artifactDriverRepairsOldWriteWithNewestSnapshot() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -738,7 +687,7 @@ private func makeMonitor(
 @Test func artifactDriverReconcilesOldNotificationAgainstNewestIntent() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -780,7 +729,7 @@ private func makeMonitor(
 @Test func artifactDriverWithdrawsOldNotificationForNewestHealthyIntent() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -848,7 +797,7 @@ private func makeMonitor(
 @Test func lostNotificationRepairDoesNotBlockNewestSnapshotRepair() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -909,7 +858,7 @@ private func makeMonitor(
 @Test func notificationRepairWaitsForCurrentRegistration() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -961,7 +910,7 @@ private func makeMonitor(
 @Test func deferredNotificationIsCancelledWhenHealthRecovers() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1006,7 +955,7 @@ private func makeMonitor(
 @Test func olderRegisteredNotificationSupersedesDeferredStableIDAdd() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1055,7 +1004,7 @@ private func makeMonitor(
 @Test func notificationRepairDoesNotRegisterAfterRecovery() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1083,7 +1032,7 @@ private func makeMonitor(
 @Test func successfulRepairAddSatisfiesDeferredCoordinatorRegistration() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1137,7 +1086,7 @@ private func makeMonitor(
 @Test func missingRepairReconciliationYieldsToCurrentRegistration() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1177,7 +1126,7 @@ private func makeMonitor(
 @Test func missingRepairRegistrationYieldsToCurrentReconciliation() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1218,7 +1167,7 @@ private func makeMonitor(
 @Test func newerCoordinatorNotificationSupersedesMissingCallback() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1272,7 +1221,7 @@ private func makeMonitor(
 @Test func failedSnapshotRepairRemainsDueAndBlocksNormalStop() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1295,7 +1244,7 @@ private func makeMonitor(
 @Test func failedNotificationRepairRemainsDueForLaterRetry() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1337,7 +1286,7 @@ private func makeMonitor(
 @Test func artifactDriverStopWaitsForPendingNotificationAndRepair() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1375,7 +1324,7 @@ private func makeMonitor(
 @Test func artifactDriverStopWaitsForPhysicalRepairRegistration() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1409,7 +1358,7 @@ private func makeMonitor(
 @Test func artifactDriverStopDrainsAfterPhysicalRepairRegistrationFailure() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1443,7 +1392,7 @@ private func makeMonitor(
 @Test func artifactDriverBoundsLostPhysicalRegistrationBookkeeping() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1478,7 +1427,7 @@ private func makeMonitor(
 @Test func artifactDriverAbandonmentUnblocksReplacementNotificationLane() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1528,7 +1477,7 @@ private func makeMonitor(
 @Test func artifactDriverAbandonmentRetiresPendingNotificationReconciliation() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1556,7 +1505,7 @@ private func makeMonitor(
 @Test func artifactDriverAbandonmentRepairsLatePersistenceTowardEmptyIntent() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1592,7 +1541,7 @@ private func makeMonitor(
 @Test func artifactDriverAbandonmentRepairsInFlightSnapshotWriteAfterDeadlineClear() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,
@@ -1627,7 +1576,7 @@ private func makeMonitor(
 @Test func artifactDriverAbandonmentRepairsInFlightNotificationRegistration() async throws {
     let persistence = ControllablePersistenceAdapter()
     let notifications = ControllableNotificationAdapter()
-    let gate = CloudGatewayTunnelHealthEffectGate()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter()
     let driver = CloudGatewayTunnelHealthArtifactDriver(
         persistence: persistence,
         notifications: notifications,

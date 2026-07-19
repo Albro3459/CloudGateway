@@ -155,7 +155,7 @@ final class CloudGatewayTunnelHealthEffectSubmissionArbiter: @unchecked Sendable
     }
 
     func enqueueNormalStop(
-        generation: UInt64,
+        generation _: UInt64,
         _ submission: @escaping @Sendable () -> Void
     ) {
         lock.lock()
@@ -205,35 +205,6 @@ final class CloudGatewayTunnelHealthEffectSubmissionArbiter: @unchecked Sendable
         lock.lock()
         defer { lock.unlock() }
         return isOpen && self.generation == generation
-    }
-
-    @discardableResult
-    func performIfOpen(
-        generation: UInt64,
-        _ submission: @escaping @Sendable () -> Void
-    ) -> Bool {
-        submit(generation: generation) { ticket in
-            submission()
-            ticket.drain()
-        }
-    }
-
-    func notifyWhenDrained(
-        generation: UInt64,
-        _ action: @escaping @Sendable () -> Void
-    ) {
-        enqueueNormalStop(generation: generation, action)
-    }
-
-    func notifyAfterOutstandingReservations(
-        generation: UInt64,
-        _ action: @escaping @Sendable () -> Void
-    ) {
-        addPostDrainRepair(generation: generation, action)
-    }
-
-    func waitForSubmittedEffects() {
-        executor.waitForPrecedingActions()
     }
 
     private func start(
@@ -306,5 +277,3 @@ final class CloudGatewayTunnelHealthEffectSubmissionArbiter: @unchecked Sendable
         }
     }
 }
-
-typealias CloudGatewayTunnelHealthEffectGate = CloudGatewayTunnelHealthEffectSubmissionArbiter

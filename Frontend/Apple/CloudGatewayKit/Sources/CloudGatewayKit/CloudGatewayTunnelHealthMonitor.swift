@@ -2,6 +2,9 @@ import Foundation
 
 public enum CloudGatewayTunnelBackendRestartCapability: Equatable, Sendable {
     case supported
+    // periphery:ignore - never constructed by a production runtime adapter today, but
+    // exercised by unsupportedBackendRestartConfirmsWithoutCallingAdapter in
+    // CloudGatewayTunnelHealthMonitorTests.swift, which is real behavioral coverage
     case unsupported
 }
 
@@ -84,6 +87,10 @@ public struct CloudGatewayTunnelHealthStoreAdapter: CloudGatewayTunnelHealthPers
         )
     }
 
+    // periphery:ignore - never constructed in production (only init(store:) is), but
+    // storeAdapterEnqueuesStalledWorkAndPreservesFIFO/storeAdapterFailureDoesNotOvertakeFollowingClear
+    // in CloudGatewayTunnelHealthAdapterTests.swift use it to exercise FIFO/failure
+    // ordering with a manual executor, which is real behavioral coverage
     init(
         write: @escaping @Sendable (CloudGatewayTunnelHealthSnapshot) throws -> Void,
         clear: @escaping @Sendable () throws -> Void,
@@ -267,18 +274,6 @@ public final class CloudGatewayTunnelHealthStopToken: @unchecked Sendable {
         self.cleanup = cleanup
     }
 
-    convenience init(
-        generation: UInt64,
-        effectGate: CloudGatewayTunnelHealthEffectGate,
-        cleanup: @escaping @Sendable () -> Void
-    ) {
-        self.init(
-            generation: generation,
-            effectArbiter: effectGate,
-            cleanup: cleanup
-        )
-    }
-
     public func bestEffortDeadlineCleanup() {
         lock.lock()
         let cleanup = cleanup
@@ -394,10 +389,7 @@ public actor CloudGatewayTunnelHealthMonitor {
             tunnelIdentifier: tunnelIdentifier,
             at: moment
         )
-        artifactIntent.activate(
-            generation: generation,
-            desired: coordinator.desiredArtifacts
-        )
+        artifactIntent.activate(generation: generation)
         notifications.resumeRegistrations()
         effectArbiter.open(generation: generation)
         await artifactDriver.activate(

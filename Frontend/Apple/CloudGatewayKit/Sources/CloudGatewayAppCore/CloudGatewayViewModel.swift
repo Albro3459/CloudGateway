@@ -48,19 +48,12 @@ public struct CloudGatewaySyncResult: Identifiable, Equatable {
     public let added: Int
     public let updated: Int
     public let removed: Int
-    public let noChanges: Bool
     // Full peer-sync audit log from the API (AdminSyncResponse.log), same text
     // the web surfaces: title, region, syncedAt, summary, and per-removed-peer detail.
     public let log: String
 
     public var id: String {
         "\(regionId)-\(syncedAt)"
-    }
-
-    public var summary: String {
-        noChanges
-            ? "\(regionId): no changes"
-            : "\(regionId): +\(added) ~\(updated) -\(removed)"
     }
 
     public var logText: String {
@@ -138,7 +131,9 @@ public final class CloudGatewayViewModel: ObservableObject {
     public static let activeAccountDeleteMessage = "Disconnect your VPN before deleting your account."
 
     private struct DeadTunnelStatusRefreshKey: Equatable {
+        // periphery:ignore - compared via synthesized Equatable
         let tunnelIdentifier: String
+        // periphery:ignore - compared via synthesized Equatable
         let updatedAt: Date
     }
 
@@ -157,18 +152,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         case .invalid, .disconnected, .disconnecting, nil:
             return false
         }
-    }
-
-    public var statusText: String {
-        visibleTunnelStatus?.displayName ?? "Not installed"
-    }
-
-    var visibleInstalledSnapshot: CloudGatewayConfigSnapshot? {
-        isSignedIn ? selectedInstalledSnapshot : nil
-    }
-
-    var visibleTunnelStatus: CloudGatewayTunnelStatus? {
-        isSignedIn ? selectedTunnelStatus : nil
     }
 
     public var selectedRegion: CloudGatewayRegion? {
@@ -198,28 +181,6 @@ public final class CloudGatewayViewModel: ObservableObject {
 
     public var isUsingOfflineRegionFallback: Bool {
         isSignedIn && remoteRefreshUnavailable && clientOptions.isEmpty
-    }
-
-    var selectedClientOption: CloudGatewayClientOption? {
-        CloudGatewayConfigSelection.selectedOption(clientId: selectedClientId, in: filteredClientOptions)
-    }
-
-    var selectedConfigOption: CloudGatewayClientOption? {
-        CloudGatewayConfigSelection.usableSelection(selectedClientOption)
-    }
-
-    var selectedInstalledSnapshot: CloudGatewayConfigSnapshot? {
-        guard let selectedClientId else {
-            return nil
-        }
-        return configState.installedSnapshot(clientId: selectedClientId)
-    }
-
-    var selectedTunnelStatus: CloudGatewayTunnelStatus? {
-        guard let selectedClientId else {
-            return nil
-        }
-        return configState.tunnelStatus(for: selectedClientId)
     }
 
     // A config cannot be deleted while its own tunnel is routing: with a
@@ -285,10 +246,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         return .unsupported
     }
 
-    public var deleteAccountPasswordRequired: Bool {
-        accountDeleteReauthMethod == .password
-    }
-
     // Link order per the provider-ordering standard: email & password, Apple,
     // then Google.
     private static let linkProviderOrder: [CloudGatewayAuthProvider] = [.password, .apple, .google]
@@ -316,39 +273,8 @@ public final class CloudGatewayViewModel: ObservableObject {
         isWorking || newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !selectedRegionAllowsCreate
     }
 
-    public var deleteDisabled: Bool {
-        isWorking || selectedClientOption == nil
-    }
-
     public func deleteDisabled(for option: CloudGatewayClientOption) -> Bool {
         isWorking || !isSignedIn || option.client.status == .removed
-    }
-
-    var installDisabled: Bool {
-        isWorking || !isSignedIn || selectedConfigOption == nil
-    }
-
-    var startDisabled: Bool {
-        isWorking
-            || !isSignedIn
-            || selectedClientId == nil
-            || visibleTunnelStatus == nil
-            || visibleTunnelStatus == .connected
-            || visibleTunnelStatus == .connecting
-            || remoteInvalidInstalledConfig
-    }
-
-    var stopDisabled: Bool {
-        isWorking
-            || !isSignedIn
-            || selectedClientId == nil
-            || visibleTunnelStatus == nil
-            || visibleTunnelStatus == .disconnected
-            || visibleTunnelStatus == .disconnecting
-    }
-
-    var removeTunnelDisabled: Bool {
-        isWorking || selectedClientId == nil || visibleTunnelStatus == nil
     }
 
     public var isLoadingRegions: Bool {
@@ -744,7 +670,6 @@ public final class CloudGatewayViewModel: ObservableObject {
                 added: response.added,
                 updated: response.updated,
                 removed: response.removed,
-                noChanges: response.noChanges,
                 log: response.log
             )
             syncResult = result
@@ -1007,20 +932,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         return []
     }
 
-    func installSelectedClient() async {
-        guard let selectedConfigOption else {
-            errorText = "Choose an active config with an available WireGuard configuration."
-            return
-        }
-        await install(selectedConfigOption)
-    }
-
-    func install(_ option: CloudGatewayClientOption) async {
-        await run {
-            apply(try await configManager.install(option))
-        }
-    }
-
     // Install button for a not-yet-installed client: pull the latest config from
     // Firebase, then install, so a stale cached config is never installed.
     public func installFromCloud(_ option: CloudGatewayClientOption) async {
@@ -1119,16 +1030,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         await stopTunnel()
     }
 
-    func removeTunnel() async {
-        await run {
-            guard let selectedClientId else {
-                throw CloudGatewayAppError.accessDenied("Choose an installed config to remove.")
-            }
-            apply(try await configManager.removeTunnel(identifier: selectedClientId))
-            successText = "VPN removed."
-        }
-    }
-
     public func tunnelStatusLabel(for option: CloudGatewayClientOption) -> String? {
         configState.tunnelStatus(for: option.client.clientId)?.displayName
     }
@@ -1155,10 +1056,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         case nil:
             return nil
         }
-    }
-
-    func installButtonTitle(for option: CloudGatewayClientOption) -> String {
-        installStateLabel(for: option) == nil ? "Install" : "Install Update"
     }
 
     public func installDisabled(for option: CloudGatewayClientOption) -> Bool {
@@ -1284,14 +1181,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         } catch {
             errorText = error.localizedDescription
         }
-    }
-
-    private func loadRemoteState(for user: AuthenticatedUser) async throws {
-        try await loadRemoteState(
-            for: user,
-            existingClients: [],
-            generation: authStateGeneration
-        )
     }
 
     private func loadRemoteStateMarkingUnavailable(

@@ -229,13 +229,6 @@ actor CloudGatewayScreenshotTunnelManager: CloudGatewayTunnelManaging {
         self.statuses = statuses
     }
 
-    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
-        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw CloudGatewayVPNError.missingInstalledTunnel
-        }
-        return status
-    }
-
     func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
         identifiers.reduce(into: [String: CloudGatewayTunnelStatus]()) { result, identifier in
             if let status = statuses[identifier] {

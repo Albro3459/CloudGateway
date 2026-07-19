@@ -29,6 +29,7 @@ public struct CloudGatewayConfigSecretReference: Codable, Equatable, Hashable, S
 
 public protocol CloudGatewayConfigSecretStoring: Sendable {
     func saveConfig(_ config: CloudGatewayWireGuardConfig, for reference: CloudGatewayConfigSecretReference) throws
+    // periphery:ignore - called through protocol existential in PacketTunnelProvider
     func loadConfig(for reference: CloudGatewayConfigSecretReference) throws -> CloudGatewayWireGuardConfig
     func deleteConfig(for reference: CloudGatewayConfigSecretReference) throws
 }

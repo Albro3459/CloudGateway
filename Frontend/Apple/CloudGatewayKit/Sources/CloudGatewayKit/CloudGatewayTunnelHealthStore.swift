@@ -7,6 +7,7 @@ public struct CloudGatewayTunnelHealthSnapshot: Codable, Equatable, Sendable {
     /// The extension periodically rewrites this file. A bounded
     /// window prevents a dead verdict from surviving an extension crash or a
     /// long suspension and misleading the app later.
+    // periphery:ignore - test-seam accessor for constructing boundary-fresh fixtures
     public static var freshnessWindow: TimeInterval {
         CloudGatewayTunnelHealthTiming.production.snapshotFreshness.gatewayTimeInterval
     }
@@ -47,6 +48,7 @@ public struct CloudGatewayTunnelHealthStore: Sendable {
 
     // Test seam: write into an explicit directory, bypassing the app-group
     // container that is unavailable to unit tests.
+    // periphery:ignore - test-seam initializer used by CloudGatewayTunnelHealthTests.swift
     init(directory: URL, fileName: String = "tunnel-health.json") {
         self.appGroupIdentifier = nil
         self.overrideDirectory = directory

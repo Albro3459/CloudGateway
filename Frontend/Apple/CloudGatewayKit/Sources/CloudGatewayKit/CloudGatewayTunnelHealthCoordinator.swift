@@ -1,14 +1,20 @@
 import Foundation
 
-struct CloudGatewayTunnelHealthSessionID: Hashable, Sendable { let rawValue: UInt64 }
+struct CloudGatewayTunnelHealthSessionID: Hashable, Sendable {
+    // periphery:ignore - compared via synthesized Hashable
+    let rawValue: UInt64
+}
 
 struct CloudGatewayTunnelHealthWakeID: Hashable, Sendable {
+    // periphery:ignore - compared via synthesized Hashable
     let session: CloudGatewayTunnelHealthSessionID
+    // periphery:ignore - compared via synthesized Hashable
     let sequence: UInt64
 }
 
 struct CloudGatewayTunnelHealthOperationID: Hashable, Sendable {
     let session: CloudGatewayTunnelHealthSessionID
+    // periphery:ignore - compared via synthesized Hashable
     let sequence: UInt64
 }
 
@@ -72,6 +78,7 @@ struct CloudGatewayTunnelHealthWake: Equatable, Sendable {
 
 struct CloudGatewayTunnelHealthTransition: Equatable, Sendable {
     let effects: [CloudGatewayTunnelHealthEffect]
+    // periphery:ignore - compared via synthesized Equatable
     let health: CloudGatewayTunnelHealth?
     let nextWake: CloudGatewayTunnelHealthWake?
 }

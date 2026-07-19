@@ -9,6 +9,7 @@ public enum CloudGatewayTunnelHealthNotificationAuthorizationResult: Sendable {
 /// Orders a stable notification request against replacement and withdrawal.
 public final class CloudGatewayTunnelHealthNotificationRegistrationFence: @unchecked Sendable {
     public struct Epoch: Equatable, Sendable {
+        // periphery:ignore - compared via synthesized Equatable
         fileprivate let revision: UInt64
     }
 

@@ -76,15 +76,4 @@ public struct CloudGatewayTunnelPathPolicy: Sendable {
         }
         return min(lastPathChangeAt + quietPeriod, settlingStartedAt + settlingCap)
     }
-
-    public mutating func recordPathChange(isSatisfied: Bool, at now: Date) {
-        recordPathChange(
-            isSatisfied: isSatisfied,
-            at: .seconds(now.timeIntervalSinceReferenceDate)
-        )
-    }
-
-    public mutating func availability(at now: Date) -> CloudGatewayTunnelPathAvailability {
-        availability(at: .seconds(now.timeIntervalSinceReferenceDate))
-    }
 }

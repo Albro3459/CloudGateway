@@ -128,20 +128,31 @@ check_apple_signing_prerequisites() {
   return 0
 }
 
-# Dead-code report via Periphery over the shared Swift packages. Rooted at
-# CloudGatewayFirebaseAdapter, the top of the local package graph, so one
-# SwiftPM build indexes all three shared targets (see Frontend/Apple/.periphery.yml).
-# Report-only: existing findings do not fail the build. To enforce zero dead
-# code once findings are cleaned, append `--strict` to the scan below.
+# Dead-code enforcement via Periphery, three strict scans (see
+# Frontend/Apple/.periphery.yml for why three): the app xcodeproj scan covers
+# all production code including unused public shared API, and the two SPM
+# scans (which build the test targets) cover dead test code. --strict makes
+# any finding fail the target.
 scan_apple_dead_code() {
   if ! command -v periphery >/dev/null 2>&1; then
-    echo "periphery not found; skipping Apple dead-code scan. Install: brew install periphery" >&2
+    echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
     return 0
   fi
-  periphery scan \
-    --config "$ROOT/Frontend/Apple/.periphery.yml" \
-    --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" ||
-    true
+  run_check "Apple dead code: app project" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project "$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj" \
+      --schemes CloudGateway --schemes CloudGatewayScreenshots
+  run_check "Apple dead code: Kit tests" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
+      --report-include "**/Tests/**"
+  run_check "Apple dead code: Firebase adapter tests" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
+      --report-include "**/Tests/**"
 }
 
 test_apple() {

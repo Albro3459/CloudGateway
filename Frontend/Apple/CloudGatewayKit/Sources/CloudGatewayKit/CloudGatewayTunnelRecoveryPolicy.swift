@@ -49,16 +49,6 @@ public struct CloudGatewayTunnelRecoveryPolicy: Sendable {
                 healthyPollsToRecover: timing.healthyPollsToRecover
             )
         }
-
-        public init(runtimeUnavailableDuration: TimeInterval) {
-            self.init(
-                verificationDuration: CloudGatewayTunnelHealthTiming.production
-                    .recoveryVerificationDuration,
-                runtimeUnavailableDuration: .seconds(runtimeUnavailableDuration),
-                healthyPollsToRecover: CloudGatewayTunnelHealthTiming.production
-                    .healthyPollsToRecover
-            )
-        }
     }
 
     private enum State: Sendable {
@@ -370,29 +360,6 @@ public struct CloudGatewayTunnelRecoveryPolicy: Sendable {
             state = .confirmed
             return emit(.notPassingTraffic)
         }
-    }
-
-    public mutating func update(
-        stats: CloudGatewayTunnelRuntimeStats?,
-        evidence: CloudGatewayTunnelHealthEvidence?,
-        path: CloudGatewayTunnelPathAvailability,
-        routeGeneration: UInt64,
-        at now: Date
-    ) -> CloudGatewayTunnelRecoveryAction {
-        update(
-            stats: stats,
-            evidence: evidence,
-            path: path,
-            routeGeneration: routeGeneration,
-            at: .seconds(now.timeIntervalSinceReferenceDate)
-        )
-    }
-
-    public mutating func recoveryAttemptCompleted(accepted: Bool, at now: Date) {
-        recoveryAttemptCompleted(
-            accepted: accepted,
-            at: .seconds(now.timeIntervalSinceReferenceDate)
-        )
     }
 
     private var currentAttempt: Int? {

@@ -498,13 +498,6 @@ private actor RecordingTunnelManager: CloudGatewayTunnelManaging {
         self.installError = installError
     }
 
-    func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
-        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw CloudGatewayVPNError.missingInstalledTunnel
-        }
-        return status
-    }
-
     func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
         statusRequests.append(identifiers)
         return identifiers.reduce(into: [String: CloudGatewayTunnelStatus]()) { result, identifier in

@@ -66,28 +66,21 @@ struct CloudGatewayTunnelHealthDesiredArtifacts: Equatable, Sendable {
 final class CloudGatewayTunnelHealthArtifactIntent: @unchecked Sendable {
     struct State: Sendable {
         let generation: UInt64?
-        let desired: CloudGatewayTunnelHealthDesiredArtifacts
     }
 
     private let lock = NSLock()
-    private var state = State(generation: nil, desired: .empty)
+    private var state = State(generation: nil)
 
-    func activate(
-        generation: UInt64,
-        desired: CloudGatewayTunnelHealthDesiredArtifacts
-    ) {
+    func activate(generation: UInt64) {
         lock.lock()
-        state = State(generation: generation, desired: desired)
+        state = State(generation: generation)
         lock.unlock()
     }
 
-    func update(
-        generation: UInt64,
-        desired: CloudGatewayTunnelHealthDesiredArtifacts
-    ) {
+    func update(generation: UInt64) {
         lock.lock()
         if state.generation == generation {
-            state = State(generation: generation, desired: desired)
+            state = State(generation: generation)
         }
         lock.unlock()
     }
@@ -95,7 +88,7 @@ final class CloudGatewayTunnelHealthArtifactIntent: @unchecked Sendable {
     func deactivate(generation: UInt64) {
         lock.lock()
         if state.generation == generation {
-            state = State(generation: nil, desired: .empty)
+            state = State(generation: nil)
         }
         lock.unlock()
     }
@@ -118,6 +111,7 @@ actor CloudGatewayTunnelHealthArtifactDriver {
 
     private struct PendingKey: Hashable, Sendable {
         let generation: UInt64
+        // periphery:ignore - compared via synthesized Hashable
         let sequence: UInt64
     }
 
@@ -228,7 +222,7 @@ actor CloudGatewayTunnelHealthArtifactDriver {
     ) {
         activeGeneration = generation
         self.desired = desired
-        intent.activate(generation: generation, desired: desired)
+        intent.activate(generation: generation)
         if snapshotRepairInFlight != nil { snapshotRepairDirty = true }
         if notificationRepairInFlight != nil { notificationRepairDirty = true }
     }
@@ -248,7 +242,7 @@ actor CloudGatewayTunnelHealthArtifactDriver {
             notificationRepairDirty = true
         }
         self.desired = desired
-        intent.update(generation: generation, desired: desired)
+        intent.update(generation: generation)
         if deferredNotification?.id != desired.notificationOperationID {
             deferredNotification = nil
         }
@@ -341,10 +335,12 @@ actor CloudGatewayTunnelHealthArtifactDriver {
         requestRepair()
     }
 
+    // periphery:ignore - internal state assertions used by CloudGatewayTunnelHealthMonitorTests.swift
     var pendingNotificationOperationCount: Int {
         pending.values.filter { $0.kind == .notification }.count
     }
 
+    // periphery:ignore - internal state assertions used by CloudGatewayTunnelHealthMonitorTests.swift
     var physicalNotificationRegistrationGenerationCount: Int {
         physicalNotificationRegistrationCounts.count
     }

@@ -306,49 +306,49 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
     var currentUser: AuthenticatedUser? { user }
 
     func addAuthStateListener(
-        _ listener: @escaping (AuthenticatedUser?) -> Void
+        _: @escaping (AuthenticatedUser?) -> Void
     ) -> CloudGatewayAuthStateListenerRegistration {
         CloudGatewayAuthStateListenerRegistration(cancellation: {})
     }
 
-    func signIn(email: String, password: String) async throws -> AuthenticatedUser { try requiredUser() }
-    func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser { try requiredUser() }
-    func signInWithGoogle(credentials: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser {
+    func signIn(email _: String, password _: String) async throws -> AuthenticatedUser { try requiredUser() }
+    func signInWithApple(idToken _: String, rawNonce _: String) async throws -> AuthenticatedUser { try requiredUser() }
+    func signInWithGoogle(credentials _: CloudGatewayGoogleCredentials) async throws -> AuthenticatedUser {
         googleSignInCount += 1
         return try requiredUser()
     }
     func providerIds() -> [String] { [] }
     func linkEmailPassword(
-        email: String,
-        password: String,
+        email _: String,
+        password _: String,
         expectedUserId: String
     ) async throws -> AuthenticatedUser {
         passwordLinkExpectedUserIds.append(expectedUserId)
         return try requiredUser(expectedUserId: expectedUserId)
     }
     func linkApple(
-        idToken: String,
-        rawNonce: String,
+        idToken _: String,
+        rawNonce _: String,
         expectedUserId: String
     ) async throws -> AuthenticatedUser {
         appleLinkExpectedUserIds.append(expectedUserId)
         return try requiredUser(expectedUserId: expectedUserId)
     }
     func linkGoogle(
-        credentials: CloudGatewayGoogleCredentials,
+        credentials _: CloudGatewayGoogleCredentials,
         expectedUserId: String
     ) async throws -> AuthenticatedUser {
         googleLinkExpectedUserIds.append(expectedUserId)
         return try requiredUser(expectedUserId: expectedUserId)
     }
-    func reauthenticateWithPassword(_ password: String, expectedUserId: String) async throws {
+    func reauthenticateWithPassword(_: String, expectedUserId: String) async throws {
         passwordReauthenticationExpectedUserIds.append(expectedUserId)
         _ = try requiredUser(expectedUserId: expectedUserId)
     }
     func reauthenticateWithApple(
-        idToken: String,
-        rawNonce: String,
-        authorizationCode: String,
+        idToken _: String,
+        rawNonce _: String,
+        authorizationCode _: String,
         revoke: Bool,
         expectedUserId: String
     ) async throws {
@@ -358,7 +358,7 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
     }
 
     func reauthenticateWithGoogle(
-        credentials: CloudGatewayGoogleCredentials,
+        credentials _: CloudGatewayGoogleCredentials,
         expectedUserId: String
     ) async throws {
         events.values.append("auth.googleReauth")
@@ -369,7 +369,7 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
         }
     }
 
-    func sendPasswordReset(email: String) async throws {}
+    func sendPasswordReset(email _: String) async throws {}
 
     func signOut() throws {
         events.values.append("auth.signOut")
@@ -378,7 +378,7 @@ private final class FacadeAuthFake: CloudGatewayAuthServicing {
         }
     }
 
-    func idToken(forceRefresh: Bool) async throws -> String { "token" }
+    func idToken(forceRefresh _: Bool) async throws -> String { "token" }
 
     private func requiredUser() throws -> AuthenticatedUser {
         guard let user else { throw CloudGatewayAppError.missingCurrentUser }
@@ -417,8 +417,11 @@ private final class FacadeRepositoryFake: CloudGatewayClientRepository {
 
 private final class FacadeControlPlaneFake: CloudGatewayControlPlaneServicing, @unchecked Sendable {
     struct CreateArguments: Equatable {
+        // periphery:ignore - compared via synthesized Equatable
         let regionId: String
+        // periphery:ignore - compared via synthesized Equatable
         let clientName: String
+        // periphery:ignore - compared via synthesized Equatable
         let idToken: String
     }
 

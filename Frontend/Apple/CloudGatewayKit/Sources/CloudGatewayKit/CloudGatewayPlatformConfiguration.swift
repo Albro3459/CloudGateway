@@ -2,6 +2,7 @@ public struct CloudGatewayPlatformConfiguration: Equatable, Sendable {
     public let appGroupIdentifier: String
     public let appBundleIdentifier: String
     public let providerBundleIdentifier: String
+    // periphery:ignore - injected platform config value, compared via synthesized Equatable
     public let tunnelDisplayName: String
     public let keychainAccessGroupIdentifier: String?
     public let configSecretServiceName: String

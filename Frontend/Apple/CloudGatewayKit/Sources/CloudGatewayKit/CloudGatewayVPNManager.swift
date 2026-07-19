@@ -21,13 +21,6 @@ public final class CloudGatewayVPNManager {
         return protocolConfiguration
     }
 
-    public func installedStatus(for identifier: String) async throws -> CloudGatewayTunnelStatus {
-        guard let status = try await installedStatuses(for: [identifier])[identifier] else {
-            throw CloudGatewayVPNError.missingInstalledTunnel
-        }
-        return status
-    }
-
     public func installedStatuses(for identifiers: [String]) async throws -> [String: CloudGatewayTunnelStatus] {
         let identifiers = Set(identifiers)
         guard !identifiers.isEmpty else {

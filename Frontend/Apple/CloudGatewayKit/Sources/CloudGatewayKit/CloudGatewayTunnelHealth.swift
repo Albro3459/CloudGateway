@@ -47,8 +47,6 @@ public struct CloudGatewayTunnelHealthThresholds: Equatable, Sendable {
             oneWayMinTxGrowth: oneWayMinTxGrowth
         )
     }
-
-    public static let `default` = CloudGatewayTunnelHealthThresholds(timing: .production)
 }
 
 /// Produces raw transport evidence. User-visible outage policy intentionally
@@ -63,11 +61,6 @@ public struct CloudGatewayTunnelHealthEvaluator: Sendable {
     // Without this the evaluator would blink `.healthy` between candidate windows
     // during a continuous blackhole, which reads as recovery and flaps the outage.
     private var oneWayLatched = false
-
-    public init(startedAt: Date, thresholds: CloudGatewayTunnelHealthThresholds = .default) {
-        self.thresholds = thresholds
-        self.startedAt = .seconds(startedAt.timeIntervalSinceReferenceDate)
-    }
 
     public init(
         startedAt moment: CloudGatewayTunnelHealthMoment,
@@ -149,32 +142,8 @@ public struct CloudGatewayTunnelHealthEvaluator: Sendable {
         return .healthy
     }
 
-    public mutating func evaluateEvidence(
-        _ stats: CloudGatewayTunnelRuntimeStats,
-        at now: Date
-    ) -> CloudGatewayTunnelHealthEvidence {
-        evaluateEvidence(
-            stats,
-            at: CloudGatewayTunnelHealthMoment(
-                monotonic: .seconds(now.timeIntervalSinceReferenceDate),
-                wall: now
-            )
-        )
-    }
-
     /// Starts a new traffic observation window after a binding refresh while
     /// preserving handshake/session age.
-    public mutating func resetTrafficEvidence(
-        baseline: CloudGatewayTunnelRuntimeStats? = nil,
-        at now: Date? = nil
-    ) {
-        oneWayCandidate = nil
-        oneWayLatched = false
-        previousSample = baseline
-        previousSampleAt = baseline == nil ? nil : now
-            .map { .seconds($0.timeIntervalSinceReferenceDate) }
-    }
-
     public mutating func resetTrafficEvidence(
         baseline: CloudGatewayTunnelRuntimeStats? = nil,
         at moment: CloudGatewayTunnelHealthMoment
@@ -185,24 +154,8 @@ public struct CloudGatewayTunnelHealthEvaluator: Sendable {
         previousSampleAt = baseline == nil ? nil : moment.monotonic
     }
 
-    public mutating func evaluate(_ stats: CloudGatewayTunnelRuntimeStats, at now: Date) -> CloudGatewayTunnelHealth {
-        switch evaluateEvidence(stats, at: now) {
-        case .warmingUp: return .unknown
-        case .healthy: return .passingTraffic
-        case .failed: return .notPassingTraffic
-        }
-    }
-
     /// Starts a fresh backend session, including handshake warmup and traffic
     /// baselines. Use when WireGuard's backend is intentionally recreated.
-    public mutating func resetSession(at now: Date) {
-        startedAt = .seconds(now.timeIntervalSinceReferenceDate)
-        previousSample = nil
-        previousSampleAt = nil
-        oneWayCandidate = nil
-        oneWayLatched = false
-    }
-
     public mutating func resetSession(at moment: CloudGatewayTunnelHealthMoment) {
         startedAt = moment.monotonic
         previousSample = nil

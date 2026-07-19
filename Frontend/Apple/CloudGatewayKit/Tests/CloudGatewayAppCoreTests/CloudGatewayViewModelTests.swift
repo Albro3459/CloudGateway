@@ -922,15 +922,14 @@ final class CloudGatewayViewModelTests: XCTestCase {
             XCTFail("Expected an active signed-in config option.")
             return
         }
-        viewModel.selectedClientId = option.client.clientId
         viewModel.email = "user@example.com"
         viewModel.password = "secret-password"
-        await viewModel.install(option)
+        await viewModel.installFromCloud(option)
 
         XCTAssertEqual(viewModel.appMode, .signedIn)
         XCTAssertFalse(viewModel.installedSnapshots.isEmpty)
-        XCTAssertNotNil(viewModel.visibleInstalledSnapshot)
-        XCTAssertNotNil(viewModel.visibleTunnelStatus)
+        XCTAssertTrue(viewModel.installedSnapshots.contains { $0.clientId == option.client.clientId })
+        XCTAssertNotNil(viewModel.tunnelStatuses[option.client.clientId])
 
         await viewModel.signOut()
 
@@ -940,11 +939,6 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.password, "")
         XCTAssertEqual(viewModel.email, "user@example.com")
         XCTAssertFalse(viewModel.installedSnapshots.isEmpty)
-        XCTAssertNil(viewModel.visibleInstalledSnapshot)
-        XCTAssertNil(viewModel.visibleTunnelStatus)
-        XCTAssertTrue(viewModel.startDisabled)
-        XCTAssertTrue(viewModel.stopDisabled)
-        XCTAssertTrue(viewModel.removeTunnelDisabled)
     }
 
     func testSignInMapsCredentialErrorsToGenericMessage() async {
@@ -1117,7 +1111,7 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         viewModel.selectedClientId = "theirs"
-        let option = try XCTUnwrap(viewModel.selectedClientOption)
+        let option = try XCTUnwrap(viewModel.filteredClientOptions.first { $0.client.clientId == "theirs" })
         await viewModel.deleteClient(option)
 
         XCTAssertEqual(service.deleteClientCallCount, 1)
@@ -1265,7 +1259,6 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.syncSelectedRegion()
 
         XCTAssertEqual(service.syncRegionCallCount, 1)
-        XCTAssertEqual(viewModel.syncResult?.summary, "us-sanjose-1: +1 ~0 -0")
         XCTAssertEqual(viewModel.syncResult?.regionId, "us-sanjose-1")
         // logText now surfaces the API's peer-sync audit log verbatim.
         XCTAssertTrue(viewModel.syncResult?.logText.contains("CloudGateway peer sync audit log") == true)
@@ -1749,16 +1742,16 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         await viewModel.refresh()
         viewModel.selectedClientId = "c1"
-        XCTAssertNotNil(viewModel.selectedClientOption)
+        XCTAssertTrue(viewModel.filteredClientOptions.contains { $0.client.clientId == "c1" })
 
         service.ownedClients = []
         await viewModel.refresh()
 
         XCTAssertNil(viewModel.selectedClientId)
-        XCTAssertNil(viewModel.selectedClientOption)
+        XCTAssertFalse(viewModel.filteredClientOptions.contains { $0.client.clientId == "c1" })
     }
 
-    func testInstalledMissingRemoteClientRemainsManageableAndCannotStart() async {
+    func testInstalledMissingRemoteClientRemainsManageable() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
         service.ownedClients = []
@@ -1771,10 +1764,8 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertEqual(viewModel.selectedClientId, "c1")
-        XCTAssertNil(viewModel.selectedClientOption)
-        XCTAssertEqual(viewModel.visibleInstalledSnapshot?.clientId, "c1")
-        XCTAssertTrue(viewModel.startDisabled)
-        XCTAssertFalse(viewModel.removeTunnelDisabled)
+        XCTAssertFalse(viewModel.filteredClientOptions.contains { $0.client.clientId == "c1" })
+        XCTAssertEqual(viewModel.installedSnapshots.first { $0.clientId == "c1" }?.clientId, "c1")
         XCTAssertNotNil(viewModel.staleText)
     }
 
