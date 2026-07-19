@@ -220,6 +220,13 @@ test_infra() {
   run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py
+
+  # bash -n above only parses the shell; these exercise the Python embedded in
+  # the ios-release heredocs (JWT signer + version bumper) so a release-only
+  # code path is validated locally instead of first failing during a release.
+  run_pyright "iOS release pyright" scripts/test_ios_release.py
+  run_check "iOS release compile" python3 -m py_compile scripts/test_ios_release.py
+  run_check "iOS release tests" python3 -m unittest scripts/test_ios_release.py
 }
 
 run_step() {
