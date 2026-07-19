@@ -2,7 +2,7 @@
 #
 # Three scans give full coverage:
 #   1. App project scan (--project iOS/CloudGateway.xcodeproj --schemes
-#      CloudGateway,CloudGatewayScreenshots): indexes the app, the packet-tunnel
+#      CloudGateway --schemes CloudGatewayScreenshots): indexes the app, the packet-tunnel
 #      extension, the App Store screenshots target, and all shared packages with
 #      public-API analysis enabled. No tests in scope, so production code kept
 #      alive only by its own tests is still reported.
