@@ -38,8 +38,7 @@ testpaths = ["tests"]
 paths = ["src", "tests", "vulture_whitelist.py"]
 ignore_decorators = ["@router.*", "@app.*", "@pytest.fixture", "@field_validator"]
 # Names only ever set via kwargs (Pydantic response/dataclass fields never
-# attribute-read in our own code, framework-mandated config attrs, and fake
-# test-double params kept for subprocess.run signature compatibility). See
+# attribute-read in our own code and framework-mandated config attrs). See
 # vulture_whitelist.py for entries that need executable stand-ins instead.
 ignore_names = [
     "model_config",
@@ -48,7 +47,5 @@ ignore_names = [
     "health_status",
     "updated_at",
     "created_at",
-    "capture_output",
-    "check",
 ]
 min_confidence = 60

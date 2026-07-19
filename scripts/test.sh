@@ -145,21 +145,26 @@ scan_apple_dead_code() {
     echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
     return 0
   fi
+  local failed=0
   run_check "Apple dead code: app project" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project "$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj" \
-      --schemes CloudGateway --schemes CloudGatewayScreenshots
+      --schemes CloudGateway --schemes CloudGatewayScreenshots ||
+    failed=1
   run_check "Apple dead code: Kit tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
-      --report-include "**/Tests/**"
+      --report-include "**/Tests/**" ||
+    failed=1
   run_check "Apple dead code: Firebase adapter tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
-      --report-include "**/Tests/**"
+      --report-include "**/Tests/**" ||
+    failed=1
+  return "$failed"
 }
 
 test_apple() {
@@ -167,7 +172,8 @@ test_apple() {
 
   local failed=0
 
-  scan_apple_dead_code
+  scan_apple_dead_code ||
+    failed=1
 
   run_check "Apple release script syntax" \
     bash -n scripts/ios-release.sh ||

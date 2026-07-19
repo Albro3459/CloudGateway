@@ -82,6 +82,9 @@ class FakeWireGuardCommandRunner:
         check=False,
         shell=False,
     ):
+        # Signature-compat params for subprocess.run callers; consumed here so
+        # vulture doesn't need repo-wide ignore_names entries for them.
+        del capture_output, text, check
         if shell is not False:
             raise AssertionError("WireGuard commands must run with shell=False.")
 

@@ -360,6 +360,25 @@ private final class LockedFlag: @unchecked Sendable {
     }
 }
 
+// Test twin of the production serial submission executor, injected so tests
+// can wait on the arbiter's submission queue directly.
+private final class SerialHealthSubmissionExecutor:
+    CloudGatewayTunnelHealthEffectSubmissionExecuting,
+    @unchecked Sendable
+{
+    private let queue = DispatchQueue(
+        label: "com.gocloudlaunch.gateway.tests.effect-submission"
+    )
+
+    func enqueue(_ action: @escaping @Sendable () -> Void) {
+        queue.async(execute: action)
+    }
+
+    func waitForPrecedingActions() {
+        queue.sync {}
+    }
+}
+
 private func makeMonitor(
     runtime: ControllableRuntimeAdapter = ControllableRuntimeAdapter(),
     persistence: ControllablePersistenceAdapter = ControllablePersistenceAdapter(),
@@ -763,6 +782,41 @@ private func makeMonitor(
 
     try await notifications.complete(0, result: .registered)
     #expect(notifications.calls == [.register, .withdraw])
+}
+
+@Test func notificationRepairReconciliationIsReservedUntilSubmitted() async throws {
+    let executor = SerialHealthSubmissionExecutor()
+    let gate = CloudGatewayTunnelHealthEffectSubmissionArbiter(executor: executor)
+    let drained = LockedFlag()
+    let drainWasDeferred = LockedFlag()
+    let notifications = ControllableNotificationAdapter(
+        reconcileSubmission: {
+            guard let generation = gate.closeCurrent() else { return }
+            gate.enqueueNormalStop(generation: generation) { drained.set() }
+            if !drained.value { drainWasDeferred.set() }
+        }
+    )
+    let driver = CloudGatewayTunnelHealthArtifactDriver(
+        persistence: ControllablePersistenceAdapter(),
+        notifications: notifications,
+        gate: gate
+    )
+    gate.open(generation: 1)
+    await driver.activate(
+        generation: 1,
+        desired: .init(
+            snapshot: nil,
+            notificationDesired: true,
+            notificationRegistrationAllowed: true
+        )
+    )
+
+    await driver.requestCurrentRepair()
+    executor.waitForPrecedingActions()
+
+    #expect(drainWasDeferred.value)
+    #expect(drained.value)
+    #expect(notifications.calls == [.reconcile])
 }
 
 @Test func monitorRejectsOutOfOrderPathRouteID() async throws {
