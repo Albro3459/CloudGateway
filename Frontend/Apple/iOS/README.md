@@ -149,6 +149,12 @@ first with a command that omits the password so macOS prompts for it:
 security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
 ```
 
+Release export signs manually against the installed `CloudGateway AppStore` and
+`CloudGateway Tunnel AppStore` profiles, which embed the team's Apple
+Distribution certificate and expire 2027-07-19. See
+[apple-ios-app.md](../../../docs/apple-ios-app.md#distribution-signing-profiles)
+for how to recreate them when they lapse.
+
 Equivalent raw commands:
 
 ```sh

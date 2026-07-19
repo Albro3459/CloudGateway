@@ -42,6 +42,13 @@ command without a password so macOS prompts for it:
 security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
 ```
 
+Export signs manually against two installed App Store profiles,
+`CloudGateway AppStore` and `CloudGateway Tunnel AppStore`, built on the team's
+Apple Distribution certificate. Both expire 2027-07-19; when they lapse export
+fails with a "profile doesn't include signing certificate" error. See
+[apple-ios-app.md](apple-ios-app.md#distribution-signing-profiles) for how to
+recreate them.
+
 See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
 ## Deploy regional servers

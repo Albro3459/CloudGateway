@@ -236,6 +236,45 @@ beforehand, run the command without a password so macOS prompts for it:
 security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
 ```
 
+### Distribution signing profiles
+
+Export uses manual signing. `ios-release.sh` writes an `ExportOptions.plist`
+that pins each bundle ID to a named App Store provisioning profile:
+
+* `com.gocloudlaunch.gateway` -> `CloudGateway AppStore`
+* `com.gocloudlaunch.gateway.tunnel` -> `CloudGateway Tunnel AppStore`
+
+Both profiles must be installed in
+`~/Library/Developer/Xcode/UserData/Provisioning Profiles/` and must embed the
+team's current Apple Distribution certificate, whose private key lives in the
+login keychain. The App Store Connect API key only authorizes the upload; it
+cannot sign the binary, so a valid certificate and a profile that lists it are
+required locally.
+
+Those profiles and the distribution certificate expire 2027-07-19. When they
+lapse, or if the distribution certificate is rotated, export fails with:
+
+```
+error: exportArchive Provisioning profile "..." doesn't include signing certificate "Apple Distribution: ... (CRQWDQ7QQR)".
+```
+
+Recreate both profiles against the live certificate:
+
+1. In the Apple Developer portal, create two App Store Connect distribution
+   profiles, one for `com.gocloudlaunch.gateway` and one for
+   `com.gocloudlaunch.gateway.tunnel`, each selecting the current Apple
+   Distribution certificate. Name them `CloudGateway AppStore` and
+   `CloudGateway Tunnel AppStore` so they match `ExportOptions`.
+2. Download both and double-click to install; they land in the directory above,
+   keyed by UUID.
+3. Re-run `./scripts/ios-release.sh`.
+
+Do not create a second distribution certificate to work around this. The
+account is capped at two, creating one silently revokes the old one, and a
+certificate the profiles do not list cannot sign. Keep one Apple Distribution
+certificate whose key is in the login keychain and make sure the profiles list
+it.
+
 For the manual Xcode flow, quit Xcode and reopen the project with source
 Firestore:
 
