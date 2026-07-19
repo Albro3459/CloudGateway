@@ -276,9 +276,18 @@ cat > "$EXPORT_OPTIONS" <<EOF
   <key>method</key>
   <string>app-store</string>
   <key>signingStyle</key>
-  <string>automatic</string>
+  <string>manual</string>
   <key>teamID</key>
   <string>${TEAM_ID}</string>
+  <key>signingCertificate</key>
+  <string>Apple Distribution</string>
+  <key>provisioningProfiles</key>
+  <dict>
+    <key>com.gocloudlaunch.gateway</key>
+    <string>CloudGateway AppStore</string>
+    <key>com.gocloudlaunch.gateway.tunnel</key>
+    <string>CloudGateway Tunnel AppStore</string>
+  </dict>
 </dict>
 </plist>
 EOF
