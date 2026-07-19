@@ -73,6 +73,10 @@ test_api() {
   run_check "API compile" ./.venv/bin/python -m compileall -q src tests
   run_pyright "API pyright" Backend/API/src Backend/API/tests
   cd "$ROOT/Backend/API" || return 1
+  # Dead-code enforcement via vulture (see [tool.vulture] in pyproject.toml),
+  # mirroring the Web knip and Apple Periphery scans: unused code fails the
+  # target. vulture reads its config from pyproject.toml when run from here.
+  run_check "API dead code (vulture)" ./.venv/bin/vulture
   run_check "API pytest" ./.venv/bin/python -m pytest
 }
 

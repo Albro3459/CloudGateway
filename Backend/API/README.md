@@ -157,6 +157,7 @@ Useful local checks:
 ```sh
 cd Backend/API
 ./.venv/bin/python -m pyright src tests
+./.venv/bin/vulture
 ./.venv/bin/python -m pytest
 ```
 

@@ -1,5 +1,3 @@
-from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,8 +28,3 @@ class Settings(BaseSettings):
     region_display_name: str = "local-region"
     region_display_order: int = 1000
     region_capacity_limit: int = 20
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()

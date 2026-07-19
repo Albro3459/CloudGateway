@@ -11,6 +11,8 @@
   "extraPaths": [
     "Backend/API"
   ],
+  "reportUnusedImport": "error",
+  "reportUnusedVariable": "error",
   "venvPath": "Backend/API",
   "venv": ".venv"
 }

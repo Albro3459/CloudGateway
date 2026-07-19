@@ -112,12 +112,6 @@ def test_list_admin_emails_filters_missing_blank_non_admin_and_duplicates(reposi
     assert repository.list_admin_emails() == ["admin@example.com"]
 
 
-def require_test_region(repository: FakeRepository) -> RegionDoc:
-    region = repository.get_region(REGION_ID)
-    assert region is not None
-    return region
-
-
 def test_assign_tunnel_ips_skips_server_address():
     assert assign_tunnel_ips(
         ipv4_cidr="10.0.0.0/29",
