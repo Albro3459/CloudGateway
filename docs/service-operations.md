@@ -22,7 +22,7 @@ journalctl -u cloudgateway-api.service --since "1 hour ago"
 * Logs are structured JSON: request ID, event, region, route, status, UID/email, client ID, duration, exception type/message. If you see key material or full configs in API logs, that is a bug - report it immediately.
 * After editing `/etc/cloudgateway/api.env`, restart the service. Verify the file stays `0600` root-owned.
 * Restarting the API does not touch `wg0`; existing tunnels keep working.
-* To roll the API to a new version, run `sudo cloudgateway-install-api <ref>` with a pushed tag/SHA (no argument re-fetches the deployed ref). It downloads `API/` from GitHub, reinstalls into the venv, and restarts the service - see [docs/github-deployment-setup.md](github-deployment-setup.md).
+* To roll the API to a new version, run `sudo cloudgateway-install-api <ref>` with a pushed tag/SHA (no argument re-fetches the deployed ref). It downloads `Backend/API/` from GitHub, reinstalls into the venv, and restarts the service - see [docs/github-deployment-setup.md](github-deployment-setup.md).
 
 ## Caddy
 

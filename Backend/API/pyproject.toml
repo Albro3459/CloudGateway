@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudgateway-api"
+version = "0.1.0"
+description = "CloudGateway regional VPN control-plane API"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "firebase-admin>=6.5",
+]
+
+[project.scripts]
+cloudgateway-sync-peers = "src.sync:main"
+cloudgateway-register-region = "src.register:main"
+
+[project.optional-dependencies]
+dev = [
+    "httpx2>=2.4",
+    "pyright>=1.1",
+    "pytest>=8",
+    "vulture>=2.14",
+]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.vulture]
+paths = ["src", "tests", "vulture_whitelist.py"]
+ignore_decorators = ["@router.*", "@app.*", "@pytest.fixture", "@field_validator"]
+# Names only ever set via kwargs (Pydantic response/dataclass fields never
+# attribute-read in our own code and framework-mandated config attrs). See
+# vulture_whitelist.py for entries that need executable stand-ins instead.
+ignore_names = [
+    "model_config",
+    "deleted_client_count",
+    "no_changes",
+    "health_status",
+    "updated_at",
+    "created_at",
+]
+min_confidence = 60

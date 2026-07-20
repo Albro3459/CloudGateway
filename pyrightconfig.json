@@ -1,16 +1,18 @@
 {
   "include": [
-    "API/src",
-    "API/tests",
+    "Backend/API/src",
+    "Backend/API/tests",
     "scripts"
   ],
   "exclude": [
-    "API/build",
+    "Backend/API/build",
     "**/__pycache__"
   ],
   "extraPaths": [
-    "API"
+    "Backend/API"
   ],
-  "venvPath": "API",
+  "reportUnusedImport": "error",
+  "reportUnusedVariable": "error",
+  "venvPath": "Backend/API",
   "venv": ".venv"
 }

@@ -1,7 +1,7 @@
 # Regional API Contract
 
 External request/response contract for the regional FastAPI control plane. For Firestore
-paths, document shapes, security rules, and limits, see [Firebase/README.md](../Firebase/README.md).
+paths, document shapes, security rules, and limits, see [Backend/Firebase/README.md](../Backend/Firebase/README.md).
 
 ## Naming
 
@@ -13,15 +13,22 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 
 ## External API URLs
 
+- Apex API base URL is `https://api.<origin>/api`, for example
+  `https://api.gocloudlaunch.com/api`.
 - Regional API base URL is `https://<regionId>.<origin>/api`.
 - `<origin>` is the current frontend origin host without protocol, for example `gocloudlaunch.com`.
-- For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls
-  `https://us-sanjose-1.gocloudlaunch.com/api/*`.
+- For a frontend loaded from `https://gocloudlaunch.com`, global/read calls use
+  `https://api.gocloudlaunch.com/api/*`; region `us-sanjose-1` mutations and capacity calls
+  use `https://us-sanjose-1.gocloudlaunch.com/api/*`.
 - FastAPI internal routes do not include `/api`. Caddy strips `/api/*` before proxying to FastAPI.
 - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API
-  calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and the regional API URL is
-  derived from `window.location.origin` plus the selected `regionId`.
-- There is no global API router and no frontend base-domain config.
+  calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and API URLs are derived
+  from `window.location.origin`.
+- The apex API host serves global/account traffic: `GET /regions`, `POST /auth/check-access`,
+  and `DELETE /account`.
+- Native Apple clients use the same production regional hostname shape with origin
+  `gocloudlaunch.com`, and use `api.gocloudlaunch.com` for apex calls. Capacity, create,
+  delete, and sync calls use the selected or target config region.
 
 ## Routes
 
@@ -37,6 +44,46 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 }
 ```
 
+### `GET /regions`
+
+- Apex. Unauthenticated.
+- Returns enabled regions only, sorted by `displayOrder`. This is display-safe discovery data
+  only; it never includes capacity, endpoint IPs, hostnames, WireGuard public keys, DNS settings,
+  health state, or `enabled`.
+- Response `200`:
+
+```json
+{
+  "regions": [
+    {
+      "regionId": "us-sanjose-1",
+      "displayName": "San Jose",
+      "displayOrder": 1
+    },
+    {
+      "regionId": "us-ashburn-1",
+      "displayName": "Ashburn",
+      "displayOrder": 2
+    }
+  ]
+}
+```
+
+### `POST /auth/check-access`
+
+- Apex. Requires Firebase bearer auth.
+- Verifies that the authenticated user is provisioned and returns their role. Unprovisioned
+  users are denied and disabled as before.
+- Response `200`:
+
+```json
+{
+  "userId": "firebase-uid",
+  "email": "user@example.com",
+  "role": "user"
+}
+```
+
 ### `POST /clients`
 
 - Requires Firebase bearer auth. Creates a client only for the authenticated user.
@@ -49,7 +96,7 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 }
 ```
 
-- `clientName` is optional. Blank or missing values use a simple server default.
+- `clientName` is required and must be non-blank.
 - Response `200`:
 
 ```json
@@ -70,6 +117,7 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
 
 - Requires Firebase bearer auth for a provisioned user.
 - Regional: returns capacity for this API server's local region only.
+- Signed-in clients fan this out per region after `GET /regions`; guests never call it.
 - `allocatedClientCount` counts client docs with status `creating` or `active`.
 - Response `200`:
 
@@ -104,6 +152,21 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
   "clientId": "6f77fd32-ecf5-4dd7-9d96-6bb84de92df1",
   "regionId": "us-sanjose-1",
   "status": "removed"
+}
+```
+
+### `DELETE /account`
+
+- Apex. Requires Firebase bearer auth from a recent sign-in.
+- Removes any live regional peers for the authenticated user, then hard-deletes the user's
+  owned client docs, account doc, role doc, and Firebase Auth user.
+- Request body: none.
+- Response `200`:
+
+```json
+{
+  "userId": "firebase-uid",
+  "deletedClientCount": 3
 }
 ```
 
@@ -161,6 +224,9 @@ paths, document shapes, security rules, and limits, see [Firebase/README.md](../
   "log": "CloudGateway peer sync audit log\nregion: ...\n"
 }
 ```
+
+- `log` is an admin audit artifact. It can include user emails, client names,
+  client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 
 - `log` is a plaintext audit report (no ANSI/color) listing each added/updated/removed peer:
   added/updated peers include the owning `clientId`/`email`, removed peers (host peers with no

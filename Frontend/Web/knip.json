@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/index.tsx", "src/**/__tests__/**/*.{ts,tsx}"],
+  "project": ["src/**/*.{ts,tsx}"],
+  "ignore": ["src/Secrets/example.firebaseConfig.ts"],
+  "ignoreDependencies": [
+    "tailwindcss",
+    "postcss",
+    "autoprefixer",
+    "http-proxy-middleware"
+  ]
+}

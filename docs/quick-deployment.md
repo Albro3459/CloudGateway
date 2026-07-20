@@ -11,8 +11,45 @@ Run the full suite; everything must pass before deploying:
 ## Deploy the frontend
 
 ```sh
-cd APP && npm run deploy && cd -
+./scripts/deploy-react.sh
 ```
+
+## Build iOS App Store archive
+
+The release script always increments the iOS build number. It keeps the
+marketing version unchanged unless a version flag is supplied. It validates the
+individual App Store Connect API key, archives with source Firestore, exports an
+IPA, uploads it with Transporter, and commits the project-file bump. It does not
+push the commit.
+
+```sh
+./scripts/ios-release.sh
+./scripts/ios-release.sh --version patch
+./scripts/ios-release.sh --version minor
+./scripts/ios-release.sh --version major
+```
+
+The script expects the team API key at
+`$HOME/.ssh/Apple_API_KEY/AuthKey_YDM2P5LSK8.p8` with mode `600`.
+The key ID and issuer ID are identifiers, not secrets; the `.p8` file must
+never be committed or logged.
+
+Code signing uses your login keychain. If it is locked, the release script
+unlocks it and macOS prompts for the password. To unlock it beforehand, run the
+command without a password so macOS prompts for it:
+
+```sh
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+```
+
+Export signs manually against two installed App Store profiles,
+`CloudGateway AppStore` and `CloudGateway Tunnel AppStore`, built on the team's
+Apple Distribution certificate. Both expire 2027-07-19; when they lapse export
+fails with a "profile doesn't include signing certificate" error. See
+[apple-ios-app.md](apple-ios-app.md#distribution-signing-profiles) for how to
+recreate them.
+
+See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
 ## Deploy regional servers
 
@@ -20,12 +57,11 @@ cd APP && npm run deploy && cd -
 2. Back up Firestore before replacing any regional server:
 
    ```sh
-   source API/.venv/bin/activate
-   python3 scripts/backup_firestore.py
-   ls -lh Firebase/backups
+   Backend/API/.venv/bin/python3 scripts/backup_firestore.py
+   ls -lh Backend/Firebase/backups
    ```
 
-   Confirm a new `Firebase/backups/backup-<timestamp>.json` file exists before continuing.
+   Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists before continuing.
 
 3. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
 
@@ -42,11 +78,11 @@ cd APP && npm run deploy && cd -
    ```
 
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
-Each region must have a matching gitignored `OCI/terraform/<regionId>.terraform.tfvars`.
+Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
 
 This deploys new VPN servers from your local branch. It validates every listed
 tfvars file has a `source_ref`, saves the final plan for each region, then bumps
-`API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
+`Backend/API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
 `deploy-v<x>` tag, writes that same tag to every listed region's `source_ref`,
 and applies each saved plan in sequence. The host downloads the pinned Caddy
 binary release and verifies it against `caddy_binary_sha256` during bootstrap.

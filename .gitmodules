@@ -1,0 +1,4 @@
+[submodule "Frontend/Apple/wireguard-apple"]
+	path = Frontend/Apple/wireguard-apple
+	url = git@github.com:Albro3459/wireguard-apple.git
+	branch = cloudgateway/xcode-26

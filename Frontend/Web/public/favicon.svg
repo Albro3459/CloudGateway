@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc" width="64" height="64"><title id="title">CloudGateway logo</title><desc id="desc">A white cloud with a connected gateway tunnel on a light blue gradient background.</desc><defs>
+    <linearGradient id="background" x1="7" y1="6" x2="57" y2="59" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#66DDF7"></stop>
+      <stop offset="0.48" stop-color="#39B9F2"></stop>
+      <stop offset="1" stop-color="#397FF0"></stop>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(17 11) rotate(48) scale(40)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.28"></stop>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop>
+    </radialGradient>
+    <linearGradient id="cloud" x1="17" y1="19" x2="45" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"></stop>
+      <stop offset="1" stop-color="#EAF8FF"></stop>
+    </linearGradient>
+    <filter id="shadow" x="3" y="11" width="58" height="43" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.4" flood-color="#1977CD" flood-opacity="0.22"></feDropShadow>
+    </filter>
+  </defs><rect width="64" height="64" rx="14" fill="url(#background)"></rect><rect width="64" height="64" rx="14" fill="url(#glow)"></rect><g filter="url(#shadow)">
+    <path fill="url(#cloud)" d="M17.5 47h29c6.5 0 11.3-4.3 11.3-9.9 0-5.3-4.4-9.6-9.9-10-2.5-7-8.9-11.4-16.4-11.4-7.7 0-14.2 4.7-16.7 11.8C9 28.2 5 32.6 5 37.9 5 43.4 9.7 47 17.5 47Z"></path>
+
+    <path fill="url(#background)" d="M25.2 47V36.3c0-4.6 2.8-7.8 6.8-7.8s6.8 3.2 6.8 7.8V47h-4.6V36.5c0-2.2-.8-3.5-2.2-3.5s-2.2 1.3-2.2 3.5V47h-4.6Z"></path>
+
+    <path d="M17.5 37.3h7.7M38.8 37.3h7.7" fill="none" stroke="url(#background)" stroke-width="2.4" stroke-linecap="round"></path>
+    <circle cx="17.5" cy="37.3" r="2.7" fill="url(#background)"></circle>
+    <circle cx="46.5" cy="37.3" r="2.7" fill="url(#background)"></circle>
+    <circle cx="17.5" cy="37.3" r="1" fill="#FFFFFF" fill-opacity="0.8"></circle>
+    <circle cx="46.5" cy="37.3" r="1" fill="#FFFFFF" fill-opacity="0.8"></circle>
+  </g></svg>

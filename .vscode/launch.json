@@ -6,7 +6,7 @@
             "request": "launch",
             "runtimeExecutable": "npm",
             "runtimeArgs": [ "run", "start" ],
-            "cwd": "${workspaceFolder}/react-frontend",
+            "cwd": "${workspaceFolder}/Frontend/Web",
             "console": "integratedTerminal",
             "serverReadyAction": {
                 "pattern": "Local:.*(https?://localhost:\\d+)",

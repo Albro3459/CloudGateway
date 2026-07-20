@@ -12,8 +12,8 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CREDENTIALS_PATH = REPO_ROOT / "Firebase" / "Secrets" / "firebase-credentials.json"
-BACKUP_DIR = REPO_ROOT / "Firebase" / "backups"
+CREDENTIALS_PATH = REPO_ROOT / "Backend" / "Firebase" / "Secrets" / "firebase-credentials.json"
+BACKUP_DIR = REPO_ROOT / "Backend" / "Firebase" / "backups"
 
 
 def get_firestore_client() -> Any:
@@ -118,7 +118,7 @@ def create_backup(
 
     payload = {
         "generatedAt": (now or dt.datetime.now(dt.timezone.utc)).isoformat(),
-        "credentialsPath": "Firebase/Secrets/firebase-credentials.json",
+        "credentialsPath": "Backend/Firebase/Secrets/firebase-credentials.json",
         "documentCount": len(documents),
         "documents": documents,
     }
@@ -132,7 +132,7 @@ def main() -> int:
         "--output",
         type=Path,
         default=None,
-        help="Optional backup path. Defaults to Firebase/backups/backup-<timestamp>.json.",
+        help="Optional backup path. Defaults to Backend/Firebase/backups/backup-<timestamp>.json.",
     )
     args = parser.parse_args()
 

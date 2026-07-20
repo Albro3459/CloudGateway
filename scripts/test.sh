@@ -3,11 +3,14 @@
 # Runs every local test/validation suite for the repo.
 #
 # Usage:
-#   ./scripts/test.sh            # run everything
+#   ./scripts/test.sh            # run everything (apple unsigned)
+#   ./scripts/test.sh --signed   # run everything with a signed apple build
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh app infra  # any combination of: api app infra
+#   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
+#   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
+#   ./scripts/test.sh web infra  # any combination of: api web infra apple firebase
 #
-# One-time setup (API venv, APP node_modules, terraform providers) happens
+# One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
 #
 # Every step runs even if an earlier one fails; the script exits 1 if any
@@ -18,6 +21,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
 API_PYTHON_TOOLS_READY=0
+APPLE_SIGNED=0
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
@@ -35,14 +39,14 @@ run_check() {
 }
 
 ensure_api_python_tools() {
-  cd "$ROOT/API" || return 1
+  cd "$ROOT/Backend/API" || return 1
 
   if [[ "$API_PYTHON_TOOLS_READY" -eq 1 ]]; then
     return 0
   fi
 
   if [[ ! -x .venv/bin/python ]]; then
-    echo "Creating API/.venv"
+    echo "Creating Backend/API/.venv"
     run_check "API venv create" python3 -m venv .venv || return 1
     run_check "API pip upgrade" ./.venv/bin/python -m pip install --quiet --upgrade pip || return 1
   fi
@@ -59,67 +63,197 @@ run_pyright() {
   cd "$ROOT" || return 1
   ensure_api_python_tools || return 1
   cd "$ROOT" || return 1
-  run_check "$name" API/.venv/bin/pyright --project pyrightconfig.json "$@"
+  run_check "$name" Backend/API/.venv/bin/pyright --project pyrightconfig.json "$@"
 }
 
 test_api() {
   ensure_api_python_tools || return 1
-  cd "$ROOT/API" || return 1
+  cd "$ROOT/Backend/API" || return 1
 
   run_check "API compile" ./.venv/bin/python -m compileall -q src tests
-  run_pyright "API pyright" API/src API/tests
-  cd "$ROOT/API" || return 1
+  run_pyright "API pyright" Backend/API/src Backend/API/tests
+  cd "$ROOT/Backend/API" || return 1
+  # Dead-code enforcement via vulture (see [tool.vulture] in pyproject.toml),
+  # mirroring the Web knip and Apple Periphery scans: unused code fails the
+  # target. vulture reads its config from pyproject.toml when run from here.
+  run_check "API dead code (vulture)" ./.venv/bin/vulture
   run_check "API pytest" ./.venv/bin/python -m pytest
 }
 
-test_app() {
-  cd "$ROOT/APP" || return 1
+test_web() {
+  cd "$ROOT/Frontend/Web" || return 1
 
+  run_check "React deployment script syntax" bash -n "$ROOT/scripts/deploy-react.sh"
   if [[ ! -d node_modules ]]; then
-    echo "Installing APP dependencies"
-    run_check "APP dependency install" npm install || return 1
+    echo "Installing Web dependencies"
+    run_check "Web dependency install" npm install || return 1
   fi
 
-  run_check "APP Jest" env CI=true npm run test -- --watchAll=false --runInBand
-  run_check "APP TypeScript" npx tsc --noEmit
-  run_check "APP production build" npm run build
+  run_check "Web Jest" env CI=true npm run test -- --watchAll=false --runInBand
+  run_check "Web TypeScript" npx tsc --noEmit
+  # Dead-code enforcement via knip (see Frontend/Web/knip.json), mirroring the
+  # Apple Periphery scans: unused files/exports/deps fail the target.
+  run_check "Web dead code (knip)" npx --no-install knip
+  run_check "Web production build" npm run build
+}
+
+test_firebase() {
+  cd "$ROOT/Backend/Firebase" || return 1
+
+  if [[ ! -d node_modules ]]; then
+    echo "Installing Firebase rules-test dependencies"
+    run_check "Firebase dependency install" npm install || return 1
+  fi
+
+  run_firestore_rules_tests() {
+    env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only firestore --project demo-cloudgateway "npm test" 2> >(
+      grep -Ev "^(lsof: WARNING: can't stat\\(\\)|      Output information may be incomplete\\.|      assuming \"dev=)" >&2
+    )
+  }
+
+  # emulators:exec boots the Firestore emulator, runs the rules tests, and tears
+  # it down. A demo- project keeps it fully offline (no credentials).
+  run_check "Firestore rules tests" run_firestore_rules_tests
+}
+
+check_apple_signing_prerequisites() {
+  local login_keychain="$HOME/Library/Keychains/login.keychain-db"
+
+  if ! security show-keychain-info "$login_keychain" >/dev/null 2>&1; then
+    echo "The login keychain is locked or unavailable." >&2
+    echo "Unlock it with:" >&2
+    echo "  security unlock-keychain \"$login_keychain\"" >&2
+    return 1
+  fi
+
+  if ! security find-identity -v -p codesigning "$login_keychain" |
+      grep -Eq '"Apple Development: .+"'; then
+    echo "No accessible Apple Development signing identity was found." >&2
+    return 1
+  fi
+
+  return 0
+}
+
+# Dead-code enforcement via Periphery, three strict scans (see
+# Frontend/Apple/.periphery.yml for why three): the app xcodeproj scan covers
+# all production code including unused public shared API, and the two SPM
+# scans (which build the test targets) cover dead test code. --strict makes
+# any finding fail the target.
+scan_apple_dead_code() {
+  if ! command -v periphery >/dev/null 2>&1; then
+    echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
+    return 0
+  fi
+  local failed=0
+  run_check "Apple dead code: app project" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project "$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj" \
+      --schemes CloudGateway --schemes CloudGatewayScreenshots ||
+    failed=1
+  run_check "Apple dead code: Kit tests" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
+      --report-include "**/Tests/**" ||
+    failed=1
+  run_check "Apple dead code: Firebase adapter tests" \
+    periphery scan --quiet --strict \
+      --config "$ROOT/Frontend/Apple/.periphery.yml" \
+      --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
+      --report-include "**/Tests/**" ||
+    failed=1
+  return "$failed"
+}
+
+test_apple() {
+  cd "$ROOT" || return 1
+
+  local failed=0
+
+  scan_apple_dead_code ||
+    failed=1
+
+  run_check "Apple release script syntax" \
+    bash -n scripts/ios-release.sh ||
+    failed=1
+  run_check "Apple Kit and AppCore package tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayKit ||
+    failed=1
+  run_check "Apple Firebase auth adapter tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+    failed=1
+  run_check "Apple iOS project list" \
+    xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj ||
+    failed=1
+
+  if [[ "$APPLE_SIGNED" -eq 1 ]]; then
+    if run_check \
+      "Apple signing prerequisites" \
+      check_apple_signing_prerequisites
+    then
+      run_check "Apple signed Release no-device iOS build" \
+        xcodebuild \
+          -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+          -scheme CloudGateway \
+          -configuration Release \
+          -destination generic/platform=iOS \
+          -allowProvisioningUpdates \
+          build ||
+        failed=1
+    else
+      failed=1
+    fi
+  else
+    run_check "Apple unsigned no-device iOS build" \
+      xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+        -scheme CloudGateway \
+        -configuration Debug \
+        -destination generic/platform=iOS \
+        CODE_SIGNING_ALLOWED=NO \
+        build ||
+      failed=1
+  fi
+
+  return "$failed"
 }
 
 test_infra() {
   cd "$ROOT" || return 1
 
-  if [[ ! -d OCI/terraform/.terraform || ! -f OCI/terraform/.terraform.lock.hcl ]]; then
+  if [[ ! -d Infrastructure/OCI/terraform/.terraform || ! -f Infrastructure/OCI/terraform/.terraform.lock.hcl ]]; then
     echo "Initializing Terraform providers"
-    run_check "Terraform init" terraform -chdir=OCI/terraform init -backend=false -input=false || return 1
+    run_check "Terraform init" terraform -chdir=Infrastructure/OCI/terraform init -backend=false -input=false || return 1
   fi
-  run_check "Terraform format" terraform -chdir=OCI/terraform fmt -check
-  run_check "Terraform validate" terraform -chdir=OCI/terraform validate
+  run_check "Terraform format" terraform -chdir=Infrastructure/OCI/terraform fmt -check
+  run_check "Terraform validate" terraform -chdir=Infrastructure/OCI/terraform validate
 
-  for script in OCI/host/*.sh scripts/*.sh; do
+  for script in Infrastructure/OCI/host/*.sh scripts/*.sh; do
     run_check "parse $script" bash -n "$script"
   done
 
-  for template in OCI/terraform/*.tftpl; do
+  for template in Infrastructure/OCI/terraform/*.tftpl; do
     run_check "parse $template" bash -n "$template"
   done
 
-  run_check "Unbound forwards over DoT" grep -Fq 'forward-tls-upstream: yes' OCI/host/bootstrap.sh
-  run_check "Unbound DoT cert bundle" grep -Fq 'tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"' OCI/host/bootstrap.sh
-  run_check "Unbound DNSSEC trust anchor fallback" grep -Fq 'UNBOUND_TRUST_ANCHOR_LINE=' OCI/host/bootstrap.sh
-  run_check "Unbound DNSSEC is required" grep -Fq 'DNSSEC validation requires /var/lib/unbound/root.key' OCI/host/bootstrap.sh
-  run_check "Unbound DNSSEC no fail-soft" sh -c '! grep -Fq "continuing without DNSSEC validation" OCI/host/bootstrap.sh'
-  run_check "Unbound DNSSEC duplicate trust anchor guard" grep -Fq 'Existing Unbound config already declares /var/lib/unbound/root.key' OCI/host/bootstrap.sh
-  run_check "Unbound DoT upstream Quad9" grep -Fq '9.9.9.9@853#dns.quad9.net' OCI/host/bootstrap.sh
-  run_check "Unbound DoT upstream Mullvad" grep -Fq '194.242.2.2@853#dns.mullvad.net' OCI/host/bootstrap.sh
-  run_check "Unbound DoT upstream DNS.SB" grep -Fq '185.222.222.222@853#dns.sb' OCI/host/bootstrap.sh
-  run_check "Unbound no recursive root-hints override" sh -c '! grep -Fq "root-hints:" OCI/host/bootstrap.sh'
-  run_check "Unbound no plaintext recursion fallback" grep -Fq 'forward-first: no' OCI/host/bootstrap.sh
-  run_check "AdGuard upstream is local Unbound" grep -Fq '127.0.0.1:$UNBOUND_LISTEN_PORT' OCI/host/bootstrap.sh
-  run_check "AdGuard DNSSEC enabled" grep -Fq 'enable_dnssec: true' OCI/host/bootstrap.sh
+  run_check "Unbound forwards over DoT" grep -Fq 'forward-tls-upstream: yes' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DoT cert bundle" grep -Fq 'tls-cert-bundle: "/etc/ssl/certs/ca-certificates.crt"' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC trust anchor fallback" grep -Fq 'UNBOUND_TRUST_ANCHOR_LINE=' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC is required" grep -Fq 'DNSSEC validation requires /var/lib/unbound/root.key' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DNSSEC no fail-soft" sh -c '! grep -Fq "continuing without DNSSEC validation" Infrastructure/OCI/host/bootstrap.sh'
+  run_check "Unbound DNSSEC duplicate trust anchor guard" grep -Fq 'Existing Unbound config already declares /var/lib/unbound/root.key' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream Quad9" grep -Fq '9.9.9.9@853#dns.quad9.net' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream Mullvad" grep -Fq '194.242.2.2@853#dns.mullvad.net' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound DoT upstream DNS.SB" grep -Fq '185.222.222.222@853#dns.sb' Infrastructure/OCI/host/bootstrap.sh
+  run_check "Unbound no recursive root-hints override" sh -c '! grep -Fq "root-hints:" Infrastructure/OCI/host/bootstrap.sh'
+  run_check "Unbound no plaintext recursion fallback" grep -Fq 'forward-first: no' Infrastructure/OCI/host/bootstrap.sh
+  run_check "AdGuard upstream is local Unbound" grep -Fq '127.0.0.1:$UNBOUND_LISTEN_PORT' Infrastructure/OCI/host/bootstrap.sh
+  run_check "AdGuard DNSSEC enabled" grep -Fq 'enable_dnssec: true' Infrastructure/OCI/host/bootstrap.sh
 
-  run_check "Caddy release version format" grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$' OCI/caddy/VERSION
-  run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' OCI/caddy/Dockerfile
-  run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' OCI/caddy/Dockerfile
+  run_check "Caddy release version format" grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$' Infrastructure/OCI/caddy/VERSION
+  run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' Infrastructure/OCI/caddy/Dockerfile
+  run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' Infrastructure/OCI/caddy/Dockerfile
 
   run_pyright "Terraform preflight pyright" scripts/terraform-preflight.py scripts/test_terraform_preflight.py
   run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
@@ -128,6 +262,13 @@ test_infra() {
   run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py
+
+  # bash -n above only parses the shell; these exercise the Python embedded in
+  # the ios-release heredocs (JWT signer + version bumper) so a release-only
+  # code path is validated locally instead of first failing during a release.
+  run_pyright "iOS release pyright" scripts/test_ios_release.py
+  run_check "iOS release compile" python3 -m py_compile scripts/test_ios_release.py
+  run_check "iOS release tests" python3 -m unittest scripts/test_ios_release.py
 }
 
 run_step() {
@@ -149,18 +290,29 @@ run_step() {
   fi
 }
 
-targets=("$@")
+targets=()
+for arg in "$@"; do
+  case "$arg" in
+    --signed) APPLE_SIGNED=1 ;;
+    *) targets+=("$arg") ;;
+  esac
+done
+
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(api app infra)
+  # apple runs last (slowest) and unsigned by default; pass --signed for a signed
+  # apple build. Non-macOS/CI runners should pass explicit targets instead.
+  targets=(api web infra firebase apple)
 fi
 
 for target in "${targets[@]}"; do
   case "$target" in
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
-    app) run_step "APP tests + typecheck + build (jest + tsc + CRA)" test_app ;;
+    web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
+    apple) run_step "Apple tests + no-device iOS build" test_apple ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
+    firebase) run_step "Firestore rules tests (emulator)" test_firebase ;;
     *)
-      echo "Unknown target: $target (expected: api, app, infra)" >&2
+      echo "Unknown target: $target (expected: api, web, apple, infra, firebase; optional flag: --signed)" >&2
       exit 2
       ;;
   esac

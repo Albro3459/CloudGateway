@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service cloud.firestore {
+
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isUser() {
+      return isAuth()
+        && exists(/databases/$(database)/documents/UserRoles/$(request.auth.uid))
+        && exists(/databases/$(database)/documents/Users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.get('disabled', false) != true;
+    }
+
+    function isAdmin() {
+      return isUser() && get(/databases/$(database)/documents/UserRoles/$(request.auth.uid)).data.roleId == "admin";
+    }
+
+    function isUserOwner(userId) {
+      return isUser() && request.auth.uid == userId;
+    }
+
+    function isOwnerOrAdmin(userId) {
+      return isUserOwner(userId) || isAdmin();
+    }
+
+    // Clients are read-only; every mutation goes through the regional API
+    // (Admin SDK, which bypasses these rules). No client write is permitted.
+    match /Roles/{roleId} {
+      allow read: if isAdmin();
+    }
+
+    match /UserRoles/{userId} {
+      allow get: if isOwnerOrAdmin(userId);
+      allow list: if isAdmin();
+    }
+
+    match /Regions/{regionId} {
+      allow get, list: if isUser() && (resource.data.enabled == true || isAdmin());
+    }
+
+    match /Users/{userId} {
+      allow get: if isOwnerOrAdmin(userId);
+      allow list: if isAdmin();
+    }
+
+    match /{path=**}/Instances/{instanceId} {
+      allow get, list: if isAdmin() || (isUser() && resource.data.ownerUid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+  }
+}

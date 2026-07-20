@@ -1,0 +1,118 @@
+describe("apiEndpoints", () => {
+    const originalApiOrigin = process.env.REACT_APP_API_ORIGIN;
+
+    afterEach(() => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = originalApiOrigin;
+    });
+
+    it("uses REACT_APP_API_ORIGIN for local/dev override", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test/";
+        const { buildApexApiEndpoint, buildRegionalApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildRegionalApiEndpoint("us-sanjose-1", "/clients", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("https://api.example.test/api/clients");
+        expect(buildApexApiEndpoint("/regions", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("https://api.example.test/api/regions");
+    });
+
+    it("derives production regional URLs from the current frontend host", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildRegionalApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildRegionalApiEndpoint("us-sanjose-1", "clients", {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com:443",
+        })).toBe("https://us-sanjose-1.gocloudlaunch.com/api/clients");
+    });
+
+    it("derives production apex URLs from the current frontend host", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildApexApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildApexApiEndpoint("regions", {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com:443",
+        })).toBe("https://api.gocloudlaunch.com/api/regions");
+    });
+
+    it("uses apex and regional proxy paths for localhost API requests", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildApexApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildRegionalApiEndpoint("us-sanjose-1", "health", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("/api/regions/us-sanjose-1/health");
+        expect(buildApexApiEndpoint("auth/check-access", {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("/api/auth/check-access");
+        expect(buildCreateUserApiEndpoint([{ regionId: "us-sanjose-1", enabled: true }], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("/api/regions/us-sanjose-1/users");
+    });
+
+    it("uses REACT_APP_API_ORIGIN for user creation without requiring regions", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test";
+        const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildCreateUserApiEndpoint([], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("https://api.example.test/api/users");
+    });
+
+    it("uses REACT_APP_API_ORIGIN for access checks without requiring regions", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "https://api.example.test";
+        const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildAccessCheckApiEndpoint([], {
+            hostname: "localhost",
+            host: "localhost:3000",
+        })).toBe("https://api.example.test/api/auth/check-access");
+    });
+
+    it("selects first enabled region for global user creation", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildCreateUserApiEndpoint([
+            { regionId: "us-sanjose-1", enabled: true },
+            { regionId: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
+            { regionId: "us-ashburn-1", enabled: false, displayOrder: 1 },
+        ], {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com",
+        })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/users");
+    });
+
+    it("uses the apex host for access checks", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildAccessCheckApiEndpoint } = require("../apiEndpoints");
+
+        expect(buildAccessCheckApiEndpoint([
+            { regionId: "us-sanjose-1", enabled: true },
+            { regionId: "eu-frankfurt-1", enabled: true, displayOrder: 10 },
+            { regionId: "us-ashburn-1", enabled: false, displayOrder: 1 },
+        ], {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com",
+        })).toBe("https://api.gocloudlaunch.com/api/auth/check-access");
+    });
+});
+
+export {};

@@ -8,7 +8,7 @@
 
 * Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
 
-* View, copy, download, or QR-code your client config straight from the dashboard.
+* View, copy, download, or QR-code your client config straight from the dashboard. The native iOS app can sign in, list active Firebase-backed configs, and install a selected config without the separate WireGuard app.
 
 * Admins can also sync region clients, if needed, and grant users accounts.
 
@@ -16,9 +16,18 @@
 
 ## Screenshots
 
+#### iOS App
+
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
-  <img src="https://github.com/user-attachments/assets/13f11324-5489-4f6f-bc54-ba4e18bd1f83" alt="Dashboard" height="400"/>
-  <img src="https://github.com/user-attachments/assets/039c0c18-54e3-4c25-aed4-3b86b78e4cb7" alt="Admin Region Sync" height="400"/>
+  <img src="https://github.com/user-attachments/assets/fe33a1c2-7c88-4047-8647-7a8fb5b721ac" alt="Dashboard" height="400"/>
+  <img src="https://github.com/user-attachments/assets/e8fe3bf2-fe29-4c92-857e-0b30b449dbc2" alt="Login" height="400"/>
+</div>
+
+#### Website
+
+<div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
+  <img src="https://github.com/user-attachments/assets/82ceba8e-bb29-45bd-87c3-3fe118f929ec" alt="Dashboard" height="400"/>
+  <img src="https://github.com/user-attachments/assets/31ca677e-c3b7-4acf-bb0a-419e149dc1fd" alt="Admin Region Sync" height="400"/>
 </div>
 
 ## Architecture
@@ -43,9 +52,11 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 ### Components
 
-* <b>React dashboard</b> (`APP/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
+* <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
+* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and future macOS apps.
+* <b>iOS app</b> (`Frontend/Apple/iOS/`): CloudGateway app and packet tunnel extension. It uses Firebase Auth/Firestore to list owned configs and installs the user-selected config internally.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
-* <b>Regional API</b> (`API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
+* <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
 * <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudgateway-sync-peers`.
 * <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to local Unbound, a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. The cloud provider sees only encrypted DNS and never the domains clients resolve. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
@@ -86,16 +97,15 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
-* To save the config file or scan the QR code, on either the phone or computer, you need the WireGuard app because the VPN uses the WireGuard protocol.
-  * Desktop: [wireguard.com](https://www.wireguard.com/install/) or for iPhone: [AppStore](https://apps.apple.com/us/app/wireguard/id1441195209)
+* Desktop clients still use the WireGuard app or `wg-quick`.
+* The native iOS app is replacing the iPhone QR/config-file flow by installing the selected config through its packet tunnel extension.
 
 #### On Phone
 
-* Install the WireGuard app on your phone.
-
-* Either download the config file or scan the QR code in the WireGuard app.
-
-* Enable it in WireGuard and Settings and you're done!
+* Build and install the CloudGateway iOS app from Xcode.
+* Sign in with your Firebase email/password account.
+* Choose one active config by client display name and region.
+* Install the VPN profile, then start or stop the tunnel from the app.
 
 #### On Mac
 
@@ -119,13 +129,13 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 ## More Docs
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
-* Frontend: [APP/README.md](APP/README.md)
-* Regional API: [API/README.md](API/README.md)
+* Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
+* Regional API: [Backend/API/README.md](Backend/API/README.md)
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)
 * API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
-* Regional server / Terraform: [OCI/README.md](OCI/README.md)
-* Caddy binary build: [OCI/caddy/README.md](OCI/caddy/README.md)
-* Firebase / Firestore: [Firebase/README.md](Firebase/README.md)
-* Cloudflare: [CloudFlare/README.md](CloudFlare/README.md)
+* Regional server / Terraform: [Infrastructure/OCI/README.md](Infrastructure/OCI/README.md)
+* Caddy binary build: [Infrastructure/OCI/caddy/README.md](Infrastructure/OCI/caddy/README.md)
+* Firebase / Firestore: [Backend/Firebase/README.md](Backend/Firebase/README.md)
+* Cloudflare: [Infrastructure/CloudFlare/README.md](Infrastructure/CloudFlare/README.md)
 * Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
 * Operations runbooks: [docs/](docs/)

@@ -1,0 +1,32 @@
+# Dead-code scan config shared by the Periphery passes in scripts/test.sh.
+#
+# Three scans give full coverage:
+#   1. App project scan (--project iOS/CloudGateway.xcodeproj --schemes
+#      CloudGateway --schemes CloudGatewayScreenshots): indexes the app, the packet-tunnel
+#      extension, the App Store screenshots target, and all shared packages with
+#      public-API analysis enabled. No tests in scope, so production code kept
+#      alive only by its own tests is still reported.
+#   2. SPM scan rooted at CloudGatewayKit, report-filtered to **/Tests/**:
+#      reports dead code in CloudGatewayKitTests/CloudGatewayAppCoreTests.
+#   3. SPM scan rooted at CloudGatewayFirebaseAdapter, same Tests filter:
+#      reports dead code in the adapter's tests.
+#
+# History: the app-project scan originally appeared to crash Xcode 26's
+# package-graph resolver (IDESwiftPackageCore, "count of array differs from
+# count of index set"). The real trigger was a stale iOS Package.resolved,
+# fixed in the same commit that introduced Periphery; the direct scan works.
+#
+# Suppress framework-driven false positives.
+retain_objc_accessible: true
+retain_codable_properties: true
+retain_swift_ui_previews: true
+
+# CloudGatewayKit is shared-first for iOS and a future macOS app (see
+# AGENTS.md's Apple Client section): most of its public API is intentionally
+# used only by the current iOS app/extension today. The app-project scan's
+# public-API analysis flags all of that as "redundant public accessibility,"
+# which would otherwise force demoting a large, deliberate macOS-shared
+# surface (view model, control-plane client, config/provider types, tunnel
+# health policy engine) back to internal. Disable that specific analysis
+# rather than annotate dozens of declarations.
+disable_redundant_public_analysis: true
