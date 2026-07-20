@@ -118,19 +118,28 @@ class VersionBumpTests(unittest.TestCase):
                 self.assertTrue(all(v == want for v in after), after)
 
     def test_build_drift_aborts(self) -> None:
+        current_build = self.builds(self.original)[0]
+        drifted_build = str(int(current_build) - 1)
         drifted = self.original.replace(
-            "CURRENT_PROJECT_VERSION = 13;", "CURRENT_PROJECT_VERSION = 12;", 1
+            f"CURRENT_PROJECT_VERSION = {current_build};",
+            f"CURRENT_PROJECT_VERSION = {drifted_build};",
+            1,
         )
-        self.assertIn("CURRENT_PROJECT_VERSION = 12;", drifted)
+        self.assertNotEqual(drifted, self.original, "drift replacement matched nothing")
         result, result_text = self.run_bump(drifted, "")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result_text, drifted, "file must be untouched when aborting")
 
     def test_marketing_drift_aborts_on_version(self) -> None:
+        current_version = self.versions(self.original)[0]
+        major, minor, patch = current_version.split(".")
+        drifted_version = f"{major}.{int(minor) + 2}.{patch}"
         drifted = self.original.replace(
-            "MARKETING_VERSION = 1.0.0;", "MARKETING_VERSION = 1.2.0;", 1
+            f"MARKETING_VERSION = {current_version};",
+            f"MARKETING_VERSION = {drifted_version};",
+            1,
         )
-        self.assertIn("MARKETING_VERSION = 1.2.0;", drifted)
+        self.assertNotEqual(drifted, self.original, "drift replacement matched nothing")
         result, _ = self.run_bump(drifted, "minor")
         self.assertNotEqual(result.returncode, 0)
 
