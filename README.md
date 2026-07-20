@@ -26,8 +26,8 @@
 #### Website
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
-  <img src="https://github.com/user-attachments/assets/13f11324-5489-4f6f-bc54-ba4e18bd1f83" alt="Dashboard" height="400"/>
-  <img src="https://github.com/user-attachments/assets/039c0c18-54e3-4c25-aed4-3b86b78e4cb7" alt="Admin Region Sync" height="400"/>
+  <img src="https://github.com/user-attachments/assets/82ceba8e-bb29-45bd-87c3-3fe118f929ec" alt="Dashboard" height="400"/>
+  <img src="https://github.com/user-attachments/assets/31ca677e-c3b7-4acf-bb0a-419e149dc1fd" alt="Admin Region Sync" height="400"/>
 </div>
 
 ## Architecture
