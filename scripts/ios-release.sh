@@ -11,6 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj"
 PBXPROJ="$PROJECT/project.pbxproj"
+RESOLVED="$PROJECT/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 KEY_ID="YDM2P5LSK8"
 ISSUER_ID="9157d52e-3841-40de-8e45-fc74f01dfd2f"
 KEY_PATH="${HOME}/.ssh/Apple_API_KEY/AuthKey_${KEY_ID}.p8"
@@ -21,6 +22,7 @@ LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 TEAM_ID="CRQWDQ7QQR"
 VERSION_MODE=""
 BACKUP=""
+RESOLVED_BACKUP=""
 COMMITTED=0
 RELEASE_METADATA=""
 AUTH_HOME=""
@@ -68,13 +70,26 @@ restore_project() {
   fi
 }
 
+# The committed Package.resolved is only ever stashed for the source-Firestore
+# archive (see below) and must always come back untouched, so unlike the
+# project restore this is not gated on COMMITTED.
+restore_resolved() {
+  if [[ -n "$RESOLVED_BACKUP" && -f "$RESOLVED_BACKUP" ]]; then
+    cp "$RESOLVED_BACKUP" "$RESOLVED"
+  fi
+}
+
 cleanup() {
   restore_project
+  restore_resolved
   if [[ -n "$AUTH_HOME" && -d "$AUTH_HOME" ]]; then
     trash "$AUTH_HOME" >/dev/null 2>&1 || true
   fi
   if [[ -n "$BACKUP" && -f "$BACKUP" ]]; then
     trash "$BACKUP" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RESOLVED_BACKUP" && -f "$RESOLVED_BACKUP" ]]; then
+    trash "$RESOLVED_BACKUP" >/dev/null 2>&1 || true
   fi
   if [[ -n "$RELEASE_METADATA" && -f "$RELEASE_METADATA" ]]; then
     trash "$RELEASE_METADATA" >/dev/null 2>&1 || true
@@ -294,6 +309,16 @@ EOF
 
 echo "==> Bumping iOS version ${CURRENT_VERSION} (${CURRENT_BUILD}) to ${NEW_VERSION} (${NEW_BUILD})"
 echo "==> Archiving with source Firestore"
+# The committed Package.resolved pins Firestore's default *binary* gRPC
+# distribution (grpc-binary). A source-Firestore archive resolves a different
+# graph (grpc-ios and its abseil/BoringSSL/nanopb source deps); Xcode's IDE
+# package-graph loader crashes reconciling the binary pins against that source
+# graph (`-[NSMutableArray insertObjects:atIndexes:]` count mismatch, seen on
+# Xcode 26.5). Stash the committed resolution so the archive resolves its own
+# consistent source graph, and restore it before the upload guard inspects the
+# tree. The cleanup trap restores it too if the archive aborts.
+RESOLVED_BACKUP="$(mktemp /private/tmp/CloudGatewayResolved.XXXXXX)"
+mv "$RESOLVED" "$RESOLVED_BACKUP"
 FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR="$SOURCE_PACKAGES" \
   xcodebuild \
     -project "$PROJECT" \
@@ -304,6 +329,7 @@ FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR="$SOURCE_PACKAGES" 
     -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
     -archivePath "$ARCHIVE_PATH" \
     archive
+restore_resolved
 
 echo "==> Exporting IPA"
 xcodebuild -exportArchive \
