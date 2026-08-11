@@ -418,6 +418,59 @@ def test_run_sync_write_mesh_status_failure_does_not_fail_sync():
     assert REGION_ID not in repository.mesh_status
 
 
+def test_malformed_mesh_candidate_does_not_block_valid_client_or_mesh():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    active = activate(repository, reserve(repository), "client-public-key")
+    repository.regions["bad"] = remote_region("bad", public_key=FAKE_MESH_PUBLIC_KEY, wireguard_port=None)
+    repository.regions["good"] = remote_region("good", public_key=FAKE_MESH_PUBLIC_KEY_2)
+    wireguard = FakeWireGuardManager()
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.added == 1
+    assert active.client_public_key in wireguard.peers
+    assert outcome.result.mesh_applied == 1
+    states = {state.region_id: state for state in outcome.mesh_candidates}
+    assert states["bad"].status == MeshPeerStatus.SKIPPED_INCOMPLETE
+    assert states["bad"].reason_code == "invalid-endpoint-port"
+    assert states["good"].status == MeshPeerStatus.APPLIED
+
+
+def test_duplicate_mesh_keys_skip_all_candidates_and_keep_all_region_ids():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["a"] = remote_region("a", public_key=FAKE_MESH_PUBLIC_KEY)
+    repository.regions["b"] = remote_region("b", public_key=FAKE_MESH_PUBLIC_KEY)
+
+    desired = desired_mesh_peers(repository, make_settings(), repository.list_enabled_regions())
+
+    assert desired.peers == ()
+    assert [(state.region_id, state.reason_code) for state in desired.candidates] == [
+        ("a", "duplicate-public-key"),
+        ("b", "duplicate-public-key"),
+    ]
+
+
+def test_duplicate_mesh_key_stale_peer_and_routes_are_removed():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["a"] = remote_region("a", public_key=FAKE_MESH_PUBLIC_KEY)
+    repository.regions["b"] = remote_region("b", public_key=FAKE_MESH_PUBLIC_KEY)
+    wireguard = FakeWireGuardManager()
+    wireguard.mesh_peers[FAKE_MESH_PUBLIC_KEY] = MeshPeer(
+        FAKE_MESH_PUBLIC_KEY, "wg.a.example.com", 51820, "10.0.1.0/24", "fd42:42:42:1::/64"
+    )
+    wireguard.routes[4]["10.0.1.0/24"] = "static"
+    wireguard.routes[6]["fd42:42:42:1::/64"] = "static"
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.mesh_removed == 1
+    assert outcome.result.routes_removed == 2
+    assert FAKE_MESH_PUBLIC_KEY not in wireguard.mesh_peers
+
+
 # --- audit log ---------------------------------------------------------------
 
 

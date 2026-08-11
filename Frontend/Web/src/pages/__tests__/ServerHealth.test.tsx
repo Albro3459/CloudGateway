@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Region } from "../../helpers/regionsHelper";
 import type { MeshDoc } from "../../helpers/meshHelper";
 import type { RegionSyncResponse } from "../../helpers/APIHelper";
@@ -50,14 +50,22 @@ const region = (regionId: string, displayName: string, meshEnabled: boolean, dis
     enabled: true,
     displayOrder,
     meshEnabled,
+    wireguardEndpointHostname: "wg.example.com",
+    wireguardPort: 51820,
+    wireguardPortPresent: true,
+    wireguardPublicKey: "public-key",
+    tunnelNetworkV4: "10.0.1.0/24",
+    tunnelNetworkV6: "fd42:42:42:1::/64",
 });
 
 const meshPeer = (overrides: Partial<MeshDoc["peers"][string]> = {}) => ({
     endpointHostname: "wg.example.com",
+    endpointPort: 51820,
     publicKey: "public-key",
     allowedNetworkV4: "10.0.1.0/24",
     allowedNetworkV6: "fd42:42:42:1::/64",
     status: "applied" as const,
+    reasonCode: null,
     appliedAt: null,
     ...overrides,
 });
@@ -78,6 +86,7 @@ const syncResponse = (regionId: string, overrides: Partial<RegionSyncResponse> =
     removed: 0,
     noChanges: false,
     log: "sync log",
+    meshUpdated: 0,
     meshEnabled: true,
     meshApplied: 1,
     meshAdded: 1,
@@ -88,6 +97,16 @@ const syncResponse = (regionId: string, overrides: Partial<RegionSyncResponse> =
     meshPeers: [],
     ...overrides,
 });
+
+const deferred = <T,>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+};
 
 describe("ServerHealth", () => {
     beforeEach(() => {
@@ -196,6 +215,75 @@ describe("ServerHealth", () => {
         expect(await screen.findAllByText("Pending")).toHaveLength(1);
         expect(screen.getByText("San Jose ↔ Chicago · not synced")).toBeTruthy();
         expect(screen.getByText("(pending)")).toBeTruthy();
+    });
+
+    it("keeps optimistic toggle intent when a stale refresh resolves afterward", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const initialRegions = [
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ];
+        getAllRegionDocs.mockResolvedValue(initialRegions);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose");
+        const staleRegions = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => staleRegions.promise);
+        getMeshDocs.mockResolvedValueOnce(new Map());
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        fireEvent.click(checkbox);
+
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        await act(async () => {
+            staleRegions.resolve(initialRegions);
+            await staleRegions.promise;
+        });
+
+        expect((screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("keeps a newer region toggle intact when an older toggle fails later", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        let authoritativeRegions = [
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ];
+        const firstToggle = deferred<void>();
+        const secondToggle = deferred<void>();
+        getAllRegionDocs.mockImplementation(() => Promise.resolve(authoritativeRegions));
+        getMeshDocs.mockResolvedValue(new Map());
+        setRegionMeshEnabled
+            .mockImplementationOnce(() => firstToggle.promise)
+            .mockImplementationOnce(() => secondToggle.promise);
+
+        render(<ServerHealth />);
+        await screen.findByLabelText("Mesh enabled for San Jose");
+        fireEvent.click(screen.getByLabelText("Mesh enabled for San Jose"));
+        fireEvent.click(screen.getByLabelText("Mesh enabled for Chicago"));
+
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledTimes(2));
+        authoritativeRegions = [
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+        ];
+        await act(async () => {
+            secondToggle.resolve();
+            await secondToggle.promise;
+        });
+        await waitFor(() => expect((screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement).checked).toBe(true));
+
+        await act(async () => {
+            firstToggle.reject(new Error("older toggle failed"));
+            await firstToggle.promise.catch(() => undefined);
+        });
+
+        await waitFor(() => {
+            expect((screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked).toBe(false);
+            expect((screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement).checked).toBe(true);
+        });
     });
 
     it("surfaces a partial sync failure inline without blocking the rest of the page", async () => {

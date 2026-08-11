@@ -33,6 +33,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TFDIR="$ROOT/Infrastructure/OCI/terraform"
 API_VERSION_FILE="$ROOT/Backend/API/src/version.py"
 PREFLIGHT="$ROOT/scripts/terraform-preflight.py"
+LIFECYCLE="$ROOT/scripts/region-lifecycle.py"
+REGISTRY="$TFDIR/subnet-registry.json"
 RAW_ACTION=""      # empty when no action is given (bare `./scripts/terraform.sh <region>`)
 ACTION="apply"
 REGIONS=("$@")
@@ -42,6 +44,7 @@ DEPLOY_VERSION=""
 DEPLOY_TAG=""
 DEPLOY_PREVIOUS_TAG=""
 APPLY_PLANFILES=()
+APPLY_PLANJSONS=()
 TEMPFILES=()
 
 usage() {
@@ -77,6 +80,20 @@ for region in "${REGIONS[@]}"; do
   REGION_IDS+=("$region_id")
   VARFILES+=("$TFDIR/${region_id}.terraform.tfvars")
 done
+
+for i in "${!REGION_IDS[@]}"; do
+  for j in "${!REGION_IDS[@]}"; do
+    if [[ "$i" -lt "$j" && "${REGION_IDS[$i]}" == "${REGION_IDS[$j]}" ]]; then
+      echo "Duplicate region argument: ${REGION_IDS[$i]}" >&2
+      exit 2
+    fi
+  done
+done
+
+if [[ ! -f "$REGISTRY" ]]; then
+  echo "Missing authoritative subnet registry: $REGISTRY" >&2
+  exit 1
+fi
 
 varfile_error=0
 for i in "${!REGION_IDS[@]}"; do
@@ -203,7 +220,7 @@ preflight_region() {
   local region_id="$1" varfile="$2"
 
   select_region_workspace "$region_id" "$varfile"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY"
 }
 
 plan_region() {
@@ -215,19 +232,40 @@ plan_region() {
   TEMPFILES+=("$planfile" "$planjson")
   terraform plan -input=false -var-file="$varfile" -out="$planfile" >/dev/null
   terraform show -json "$planfile" > "$planjson"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
+  python3 "$LIFECYCLE" plan-check "$region_id" --plan-json "$planjson"
   terraform show -no-color "$planfile"
 }
 
 save_apply_plan() {
-  local region_id="$1" varfile="$2" tag="$3" planfile="$4" planjson
+  local region_id="$1" varfile="$2" tag="$3" planfile="$4" planjson="$5"
 
   select_region_workspace "$region_id" "$varfile"
   terraform plan -input=false -var-file="$varfile" -var="source_ref=${tag}" -out="$planfile"
-  planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
-  TEMPFILES+=("$planjson")
   terraform show -json "$planfile" > "$planjson"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
+}
+
+save_destroy_plan() {
+  local region_id="$1" varfile="$2" planfile="$3" planjson="$4"
+
+  select_region_workspace "$region_id" "$varfile"
+  terraform plan -destroy -input=false -var-file="$varfile" -out="$planfile"
+  terraform show -json "$planfile" > "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
+  python3 "$LIFECYCLE" plan-check "$region_id" --plan-json "$planjson"
+}
+
+verify_apply_lifecycle() {
+  local region_id="$1" varfile="$2" planjson="$3"
+
+  python3 "$LIFECYCLE" verify-plan "$region_id" --var-file "$varfile" --plan-json "$planjson"
+}
+
+verify_destroy_lifecycle() {
+  local region_id="$1"
+
+  python3 "$LIFECYCLE" verify-drain "$region_id"
 }
 
 cd "$TFDIR"
@@ -247,11 +285,19 @@ case "$ACTION" in
     prepare_next_deploy_tag
     trap cleanup_apply_planfiles EXIT
 
+    # Build and validate every plan before any tag, source_ref, or Terraform apply
+    # mutation. Lifecycle verification below is deliberately all-targets-first.
     for i in "${!REGION_IDS[@]}"; do
       planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan.XXXXXX")"
+      planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
       APPLY_PLANFILES+=("$planfile")
-      TEMPFILES+=("$planfile")
-      save_apply_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$DEPLOY_TAG" "$planfile"
+      APPLY_PLANJSONS+=("$planjson")
+      TEMPFILES+=("$planfile" "$planjson")
+      save_apply_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$DEPLOY_TAG" "$planfile" "$planjson"
+    done
+
+    for i in "${!REGION_IDS[@]}"; do
+      verify_apply_lifecycle "${REGION_IDS[$i]}" "${VARFILES[$i]}" "${APPLY_PLANJSONS[$i]}"
     done
 
     # Bare `./scripts/terraform.sh <region> [<region> ...]` shows final plans and confirms
@@ -275,8 +321,20 @@ case "$ACTION" in
     done
     ;;
   destroy)
+    trap cleanup_apply_planfiles EXIT
     for i in "${!REGION_IDS[@]}"; do
       preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}"
+      planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan.XXXXXX")"
+      planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan-json.XXXXXX")"
+      TEMPFILES+=("$planfile" "$planjson")
+      save_destroy_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$planfile" "$planjson"
+      APPLY_PLANJSONS+=("$planjson")
+    done
+
+    # Every destroy is a drain operation. Verify all regions before the first
+    # Terraform confirmation or destroy mutation.
+    for i in "${!REGION_IDS[@]}"; do
+      verify_destroy_lifecycle "${REGION_IDS[$i]}"
     done
 
     for i in "${!REGION_IDS[@]}"; do

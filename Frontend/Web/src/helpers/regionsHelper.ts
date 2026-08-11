@@ -1,5 +1,14 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
 
+const numberOrNull = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+};
+
 type RegionCapacity = {
     status: "known";
     limit: number;
@@ -15,7 +24,10 @@ export type Region = {
     wireguardEndpointIpv4?: string | null;
     wireguardEndpointIpv6?: string | null;
     wireguardEndpointHostname?: string | null;
-    wireguardPort?: number;
+    // Nullable/missing-aware value used for mesh snapshot freshness. The
+    // application has no frontend consumer that needs to invent a default.
+    wireguardPort?: number | null;
+    wireguardPortPresent?: boolean;
     wireguardDnsIpv4?: string | null;
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
@@ -40,7 +52,8 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardEndpointIpv4: stringOrNull(data.wireguardEndpointIpv4),
         wireguardEndpointIpv6: stringOrNull(data.wireguardEndpointIpv6),
         wireguardEndpointHostname: stringOrNull(data.wireguardEndpointHostname),
-        wireguardPort: numberOrDefault(data.wireguardPort, 51820),
+        wireguardPort: numberOrNull(data.wireguardPort),
+        wireguardPortPresent: Object.prototype.hasOwnProperty.call(data, "wireguardPort"),
         wireguardDnsIpv4: stringOrNull(data.wireguardDnsIpv4),
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),

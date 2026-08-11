@@ -11,6 +11,22 @@ export type FirebaseOperationResult = "success" | "failed" | "noop";
 
 export type FirebaseMeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
 
+export type FirebaseMeshPeerReasonCode =
+    | "missing-public-key"
+    | "invalid-public-key"
+    | "missing-endpoint-hostname"
+    | "invalid-endpoint-hostname"
+    | "invalid-endpoint-port"
+    | "missing-network-v4"
+    | "invalid-network-v4"
+    | "missing-network-v6"
+    | "invalid-network-v6"
+    | "outside-aggregate"
+    | "duplicate-public-key"
+    | "local-network-invalid"
+    | "overlap-local"
+    | "overlap-candidate";
+
 export type FirebaseRegionDoc = {
     regionId: string;
     displayName: string;
@@ -26,17 +42,20 @@ export type FirebaseRegionDoc = {
     tunnelNetworkV4: string;
     tunnelNetworkV6: string;
     meshEnabled: boolean;
+    drainRequestedAt?: FirestoreTimestamp;
     displayOrder?: number;
     healthStatus?: string;
     updatedAt: FirestoreTimestamp;
 };
 
 export type FirebaseMeshPeerEntry = {
-    endpointHostname: string;
-    publicKey: string;
-    allowedNetworkV4: string;
-    allowedNetworkV6: string;
+    endpointHostname?: string;
+    endpointPort?: number;
+    publicKey?: string;
+    allowedNetworkV4?: string;
+    allowedNetworkV6?: string;
     status: FirebaseMeshPeerStatus;
+    reasonCode?: FirebaseMeshPeerReasonCode | string;
     appliedAt: FirestoreTimestamp;
 };
 

@@ -32,19 +32,35 @@ type NavigationState = {
     runSync?: boolean;
 };
 
+type ToggleOverride = {
+    enabled: boolean;
+    revision: number;
+};
+
+type ClearOverride = {
+    regionId: string;
+    revision: number;
+};
+
 const regionLabel = (regionId: string, names: Map<string, string>): string => (
     names.get(regionId) || regionId
 );
 
 const linkRowClasses = (status: MeshLinkStatus): string => {
     if (status === "both-applied") return "border-success-soft-edge bg-success-soft text-success-strong";
+    if (status === "stale") return "border-danger-soft-edge bg-danger-soft text-danger-content";
     if (status === "one-sided") return "border-warning-soft-edge bg-warning-soft text-warning-strong";
     return "border-edge-subtle bg-inset text-content-secondary";
 };
 
-const sideLabel = (name: string, status: MeshLinkRow["aToB"]): string => (
-    status === "applied" ? `${name} applied` : `${name} not synced`
-);
+const sideLabel = (name: string, row: MeshLinkRow, side: "a" | "b"): string => {
+    const stale = side === "a" ? row.aToBStale : row.bToAStale;
+    const current = side === "a" ? row.aToBCurrent : row.bToACurrent;
+    const status = side === "a" ? row.aToB : row.bToA;
+    if (stale) return `${name} stale`;
+    if (current) return `${name} applied`;
+    return status ? `${name} ${status}` : `${name} not synced`;
+};
 
 const formatLinkRowLabel = (row: MeshLinkRow, names: Map<string, string>): string => {
     const aName = regionLabel(row.regionAId, names);
@@ -53,15 +69,37 @@ const formatLinkRowLabel = (row: MeshLinkRow, names: Map<string, string>): strin
     if (row.status === "both-applied") {
         return `${aName} ↔ ${bName} · both applied`;
     }
+    if (row.status === "stale") {
+        return `${aName} ↔ ${bName} · stale · ${sideLabel(aName, row, "a")}, ${sideLabel(bName, row, "b")}`;
+    }
     if (row.status === "one-sided") {
-        return `${aName} ↔ ${bName} · one-sided · ${sideLabel(aName, row.aToB)}, ${sideLabel(bName, row.bToA)}`;
+        return `${aName} ↔ ${bName} · one-sided · ${sideLabel(aName, row, "a")}, ${sideLabel(bName, row, "b")}`;
     }
     return `${aName} ↔ ${bName} · not synced`;
 };
 
-const formatWarningReason = (status: "skipped-overlap" | "skipped-incomplete"): string => (
-    status === "skipped-overlap" ? "claimed subnet overlaps another region" : "region doc is missing required mesh fields"
-);
+const formatWarningReason = (status: "skipped-overlap" | "skipped-incomplete", reasonCode: string | null): string => {
+    const reasons: Record<string, string> = {
+        "invalid-endpoint-port": "endpoint port is invalid",
+        "duplicate-public-key": "public key is duplicated by another region",
+        "missing-public-key": "public key is missing",
+        "invalid-public-key": "public key is invalid",
+        "missing-endpoint-hostname": "endpoint hostname is missing",
+        "invalid-endpoint-hostname": "endpoint hostname is invalid",
+        "missing-network-v4": "tunnel IPv4 network is missing",
+        "invalid-network-v4": "tunnel IPv4 network is invalid",
+        "missing-network-v6": "tunnel IPv6 network is missing",
+        "invalid-network-v6": "tunnel IPv6 network is invalid",
+        "outside-aggregate": "tunnel network is outside the mesh aggregate",
+        "local-network-invalid": "tunnel network overlaps the local network check",
+        "overlap-local": "claimed subnet overlaps the local region",
+        "overlap-candidate": "claimed subnet overlaps another region",
+    };
+    if (reasonCode && reasons[reasonCode]) return reasons[reasonCode];
+    return status === "skipped-overlap"
+        ? "claimed subnet overlaps another region"
+        : "mesh peer was skipped because required metadata is incomplete or invalid";
+};
 
 // Admin-only Server Health page: mesh membership toggles, link status derived
 // from Mesh/* (durable, last-applied), and per-region client-peer sync
@@ -88,6 +126,18 @@ const ServerHealth: React.FC = () => {
     const [syncError, setSyncError] = useState<string | null>(null);
 
     const autoRunHandled = useRef(false);
+    const mountedRef = useRef(false);
+    const authGenerationRef = useRef(0);
+    const loadGenerationRef = useRef(0);
+    const nextToggleRevisionRef = useRef(0);
+    const toggleRevisionsRef = useRef(new Map<string, number>());
+    const overridesRef = useRef(new Map<string, ToggleOverride>());
+
+    const isCurrent = useCallback((authGeneration: number, loadGeneration?: number): boolean => (
+        mountedRef.current
+        && authGenerationRef.current === authGeneration
+        && (loadGeneration === undefined || loadGenerationRef.current === loadGeneration)
+    ), []);
 
     const enabledRegions = useMemo(() => getEnabledRegions(regions), [regions]);
     const regionDisplayNames = useMemo(() => (
@@ -97,25 +147,57 @@ const ServerHealth: React.FC = () => {
     const warnings = useMemo(() => collectMeshWarnings(meshDocs), [meshDocs]);
     const anyPending = useMemo(() => hasAnyMeshPending(enabledRegions, meshDocs), [enabledRegions, meshDocs]);
 
-    const loadServerHealthData = useCallback(async () => {
+    const loadServerHealthData = useCallback(async (clearOverride?: ClearOverride): Promise<boolean> => {
+        const loadGeneration = ++loadGenerationRef.current;
+        const authGeneration = authGenerationRef.current;
+        if (!mountedRef.current) return false;
+
         setDataLoading(true);
         try {
             const [regionDocs, mesh] = await Promise.all([getAllRegionDocs(), getMeshDocs()]);
-            setRegions(regionDocs);
+            if (!isCurrent(authGeneration, loadGeneration)) return false;
+
+            if (clearOverride) {
+                const activeOverride = overridesRef.current.get(clearOverride.regionId);
+                const authoritativeRegion = regionDocs.find(region => region.regionId === clearOverride.regionId);
+                if (
+                    activeOverride?.revision === clearOverride.revision
+                    && authoritativeRegion?.meshEnabled === activeOverride.enabled
+                ) {
+                    // The authoritative read has completed and confirms this
+                    // revision. Only now may the optimistic overlay be removed.
+                    overridesRef.current.delete(clearOverride.regionId);
+                }
+            }
+
+            const overlaidRegions = regionDocs.map(region => {
+                const override = overridesRef.current.get(region.regionId);
+                return override ? { ...region, meshEnabled: override.enabled } : region;
+            });
+            setRegions(overlaidRegions);
             setMeshDocs(mesh);
+            return true;
         } catch (error) {
             console.error("Error loading server health data:", error);
-            setBanner({ type: "error", message: "Unable to load server health data." });
+            if (isCurrent(authGeneration, loadGeneration)) {
+                setBanner({ type: "error", message: "Unable to load server health data." });
+            }
+            return false;
         } finally {
-            setDataLoading(false);
+            if (isCurrent(authGeneration, loadGeneration)) {
+                setDataLoading(false);
+            }
         }
-    }, []);
+    }, [isCurrent]);
 
     const runSync = useCallback(async (regionIds: string[], token: string) => {
+        const authGeneration = authGenerationRef.current;
+        if (!mountedRef.current) return;
         setSyncing(true);
         setSyncError(null);
         try {
             const results = await runRegionsSync(regionIds, token);
+            if (!isCurrent(authGeneration)) return;
             setSyncResults(results);
             // Mesh/* is durable state written by each host during its own sync
             // pass, so re-read it once the fan-out settles rather than trusting
@@ -123,30 +205,53 @@ const ServerHealth: React.FC = () => {
             await loadServerHealthData();
         } catch (error) {
             console.error("Error syncing regions:", error);
-            setSyncError("Unable to sync regions.");
+            if (isCurrent(authGeneration)) setSyncError("Unable to sync regions.");
         } finally {
-            setSyncing(false);
+            if (isCurrent(authGeneration)) setSyncing(false);
         }
-    }, [loadServerHealthData]);
+    }, [isCurrent, loadServerHealthData]);
 
     const handleToggleMesh = async (region: Region) => {
+        if (!mountedRef.current) return;
         const next = region.meshEnabled !== true;
+        const revision = ++nextToggleRevisionRef.current;
+        const authGeneration = authGenerationRef.current;
+        const previousValue = region.meshEnabled === true;
+        toggleRevisionsRef.current.set(region.regionId, revision);
+        overridesRef.current.set(region.regionId, { enabled: next, revision });
+        // Any refresh already in flight must not commit over this optimistic
+        // intent. The next accepted snapshot overlays the active override.
+        ++loadGenerationRef.current;
         setTogglingRegionIds(prev => new Set(prev).add(region.regionId));
         setBanner(null);
         setRegions(prev => (prev ? prev.map(r => (r.regionId === region.regionId ? { ...r, meshEnabled: next } : r)) : prev));
 
+        const isCurrentToggle = (): boolean => (
+            isCurrent(authGeneration)
+            && toggleRevisionsRef.current.get(region.regionId) === revision
+        );
+
         try {
             await setRegionMeshEnabled(region.regionId, next);
+            if (!isCurrentToggle()) return;
+            await loadServerHealthData({ regionId: region.regionId, revision });
         } catch (error) {
             console.error("Error updating mesh membership:", error);
+            if (!isCurrentToggle()) return;
+            overridesRef.current.delete(region.regionId);
+            setRegions(prev => (prev
+                ? prev.map(r => (r.regionId === region.regionId ? { ...r, meshEnabled: previousValue } : r))
+                : prev));
             setBanner({ type: "error", message: `Unable to update ${region.displayName}.` });
-            setRegions(prev => (prev ? prev.map(r => (r.regionId === region.regionId ? { ...r, meshEnabled: !next } : r)) : prev));
+            await loadServerHealthData();
         } finally {
-            setTogglingRegionIds(prev => {
-                const updated = new Set(prev);
-                updated.delete(region.regionId);
-                return updated;
-            });
+            if (isCurrentToggle()) {
+                setTogglingRegionIds(prev => {
+                    const updated = new Set(prev);
+                    updated.delete(region.regionId);
+                    return updated;
+                });
+            }
         }
     };
 
@@ -160,27 +265,43 @@ const ServerHealth: React.FC = () => {
     };
 
     useEffect(() => {
+        mountedRef.current = true;
+        const authGenerationRefForCleanup = authGenerationRef;
+        const loadGenerationRefForCleanup = loadGenerationRef;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
+            const authGeneration = ++authGenerationRef.current;
+            ++loadGenerationRef.current;
+            toggleRevisionsRef.current.clear();
+            overridesRef.current.clear();
+
             const fetchUserData = async () => {
                 if (!user) {
-                    await logout(navigate);
+                    if (mountedRef.current) await logout(navigate);
                     return;
                 }
 
                 const userRole = await getUserRole(user);
+                if (!isCurrent(authGeneration)) return;
                 setRole(userRole);
                 if (userRole !== "admin") {
                     navigate("/home", { replace: true });
                     return;
                 }
 
-                setJwtToken(await user.getIdToken());
+                const token = await user.getIdToken();
+                if (!isCurrent(authGeneration)) return;
+                setJwtToken(token);
                 await loadServerHealthData();
             };
             void fetchUserData();
         });
-        return () => unsubscribe();
-    }, [navigate, loadServerHealthData]);
+        return () => {
+            mountedRef.current = false;
+            ++authGenerationRefForCleanup.current;
+            ++loadGenerationRefForCleanup.current;
+            unsubscribe();
+        };
+    }, [navigate, isCurrent, loadServerHealthData]);
 
     // Home passes a "run now" signal via navigation state instead of starting
     // the fan-out itself, so the request survives the route change instead of
@@ -239,6 +360,7 @@ const ServerHealth: React.FC = () => {
                     <div>
                         <h2 className="text-xl font-semibold text-content">Server Health</h2>
                         <p className="mt-1 text-sm text-content-muted">Mesh membership, link status, and client peer sync per region.</p>
+                        <p className="mt-1 text-xs text-content-muted">Mesh status reflects durable configuration snapshots only; it does not prove a handshake or traffic reachability.</p>
                     </div>
                     <button
                         type="button"
@@ -308,6 +430,7 @@ const ServerHealth: React.FC = () => {
                             <li
                                 key={`${row.regionAId}-${row.regionBId}`}
                                 className={`rounded-lg border px-3 py-2 text-sm ${linkRowClasses(row.status)}`}
+                                aria-label={formatLinkRowLabel(row, regionDisplayNames)}
                             >
                                 {formatLinkRowLabel(row, regionDisplayNames)}
                                 {row.pending && <span className="ml-2 text-xs italic">(pending)</span>}
@@ -322,7 +445,7 @@ const ServerHealth: React.FC = () => {
                         <ul className="mt-2 space-y-1 text-sm text-warning-strong">
                             {warnings.map((warning, index) => (
                                 <li key={`${warning.regionId}-${warning.peerRegionId}-${index}`}>
-                                    {regionLabel(warning.regionId, regionDisplayNames)} skipped {regionLabel(warning.peerRegionId, regionDisplayNames)}: {formatWarningReason(warning.status)}
+                                    {regionLabel(warning.regionId, regionDisplayNames)} skipped {regionLabel(warning.peerRegionId, regionDisplayNames)}: {formatWarningReason(warning.status, warning.reasonCode)}{warning.reasonCode ? ` [${warning.reasonCode}]` : ""}
                                 </li>
                             ))}
                         </ul>

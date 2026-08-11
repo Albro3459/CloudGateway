@@ -25,7 +25,7 @@ class RegionDoc:
     enabled: bool
     wireguard_endpoint_ipv4: str
     wireguard_endpoint_ipv6: str | None
-    wireguard_port: int
+    wireguard_port: int | None
     wireguard_dns_ipv4: str
     wireguard_dns_ipv6: str
     wireguard_public_key: str
@@ -117,6 +117,8 @@ class MeshPeerState:
     allowed_network_v4: str
     allowed_network_v6: str
     status: MeshPeerStatus
+    endpoint_port: int | None = None
+    reason_code: str | None = None
 
 
 def clean_client_name(value: str) -> str:

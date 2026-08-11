@@ -8,7 +8,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.transforms import Sentinel
 
 from .auth import AuthenticatedUser, TokenVerifier
-from .enums import ClientStatus, Role
+from .enums import ClientStatus, MeshPeerStatus, Role
 from .errors import (
     AccountDisabledError,
     AuthRequiredError,
@@ -175,17 +175,25 @@ class FirestoreRepository(FirebaseRepository):
         # Full replacement (not merge): peers that fell out of the desired set must
         # disappear from the doc rather than lingering as stale entries.
         applied_at = utc_now()
-        peers_data = {
-            peer.region_id: {
-                "endpointHostname": peer.endpoint_hostname,
-                "publicKey": peer.public_key,
-                "allowedNetworkV4": peer.allowed_network_v4,
-                "allowedNetworkV6": peer.allowed_network_v6,
+        peers_data = {}
+        for peer in peers:
+            peer_data: dict[str, Any] = {
                 "status": peer.status.value,
                 "appliedAt": applied_at,
             }
-            for peer in peers
-        }
+            if peer.endpoint_hostname:
+                peer_data["endpointHostname"] = peer.endpoint_hostname
+            if peer.endpoint_port is not None and peer.status != MeshPeerStatus.SKIPPED_INCOMPLETE:
+                peer_data["endpointPort"] = peer.endpoint_port
+            if peer.public_key:
+                peer_data["publicKey"] = peer.public_key
+            if peer.allowed_network_v4:
+                peer_data["allowedNetworkV4"] = peer.allowed_network_v4
+            if peer.allowed_network_v6:
+                peer_data["allowedNetworkV6"] = peer.allowed_network_v6
+            if peer.reason_code:
+                peer_data["reasonCode"] = peer.reason_code
+            peers_data[peer.region_id] = peer_data
         try:
             self._db().collection("Mesh").document(region_id).set(
                 {
@@ -792,17 +800,22 @@ def _region_from_snapshot(snapshot: DocumentSnapshot, region_id: str) -> RegionD
 
 
 def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
+    # Missing wireguardPort is a legacy document shape and keeps the historical
+    # default. A present malformed value is preserved as invalid instead of
+    # silently becoming 51820 and reaching command construction.
+    raw_port = data["wireguardPort"] if "wireguardPort" in data else 51820
+    wireguard_port = raw_port if isinstance(raw_port, int) and not isinstance(raw_port, bool) else None
     return RegionDoc(
         region_id=data.get("regionId") or region_id,
         display_name=data.get("displayName") or region_id,
         enabled=bool(data.get("enabled")),
         wireguard_endpoint_ipv4=data.get("wireguardEndpointIpv4") or "",
         wireguard_endpoint_ipv6=data.get("wireguardEndpointIpv6"),
-        wireguard_port=int(data.get("wireguardPort") or 51820),
+        wireguard_port=wireguard_port,
         wireguard_dns_ipv4=data.get("wireguardDnsIpv4") or "",
         wireguard_dns_ipv6=data.get("wireguardDnsIpv6") or "",
         wireguard_public_key=data.get("wireguardPublicKey") or "",
-        capacity_limit=int(data.get("capacityLimit") or 0),
+        capacity_limit=_safe_int(data.get("capacityLimit"), default=0),
         wireguard_endpoint_hostname=data.get("wireguardEndpointHostname") or "",
         display_order=data.get("displayOrder"),
         health_status=data.get("healthStatus"),
@@ -811,6 +824,10 @@ def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
         tunnel_network_v6=data.get("tunnelNetworkV6") or "",
         mesh_enabled=bool(data.get("meshEnabled")),
     )
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
 def _user_from_data(data: dict[str, Any], uid: str) -> UserDoc:

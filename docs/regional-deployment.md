@@ -42,17 +42,34 @@ workspace state. It also stops on duplicates. The script reports the region and
 resource IDs; manually reconcile or import the canonical resources before
 rerunning.
 
-The same preflight also enforces the cross-region WireGuard tunnel subnet scheme: region index N
-gets `10.0.N.0/24` and `fd42:42:42:N::/64` (`us-sanjose-1` = index 0, `us-chicago-1` = index 1),
-and every region's `wg_network_v4`/`wg_network_v6` must sit inside the aggregates `10.0.0.0/16`
-and `fd42:42:42::/48`. It reads every `*.terraform.tfvars` next to the one being deployed (not
-just the region in this deploy) and fails if any two regions' networks are equal or overlapping,
-if an address/DNS field falls outside its own region's network, or if a region's network falls
-outside the aggregates - the aggregates are load-bearing because the API peer sync reconciles
-mesh routes by sweeping `dev wg0` routes inside them. A new region picks the next free index and
-must not reuse or overlap an existing region's subnet; see
+The tracked [subnet-registry.json](../Infrastructure/OCI/terraform/subnet-registry.json) is the
+authoritative inventory and boundary for the cross-region WireGuard tunnel subnet scheme. It lists
+active and reserved allocations as a JSON `regions` list; keep removed allocations as `reserved`
+and never reuse or overlap them. Region index N gets `10.0.N.0/24` and `fd42:42:42:N::/64`
+(`us-sanjose-1` = index 0, `us-chicago-1` = index 1), inside the registry aggregates
+`10.0.0.0/16` and `fd42:42:42::/48`. Every local tfvars file must match its registry entry
+exactly. The registry remains authoritative when a region's local tfvars file is absent; sibling
+files are only optional consistency checks. `scripts/terraform-preflight.py` uses a strict
+stdlib parser for the supported tfvars scalar/list/heredoc forms and rejects malformed or duplicate
+assignments, then validates the registry, selected active allocation, present tfvars, interface
+prefixes, interface-derived networks, DNS/interface equality, and all active/reserved overlap
+before every plan/apply/destroy. A new region is added to the
+registry first with the next free allocation; see
 [Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
-for the full scheme.
+for the operator workflow.
+
+### Drain gate for replacement and destroy
+
+A replacement or destroy must follow this exact order, including when the host is already lost:
+
+1. `python3 scripts/region-lifecycle.py prepare-drain <regionId>` writes `enabled=false`, `meshEnabled=false`, and a server timestamp to the target Region document.
+2. In the dashboard, run **Sync All Regions** across every remaining enabled region.
+3. `python3 scripts/region-lifecycle.py verify-drain <regionId>` confirms fresh Mesh status from every remaining enabled region and that the drained region is absent from peer maps.
+4. Run `./scripts/terraform.sh <regionId> apply` or `destroy`.
+
+The wrapper parses every saved Terraform plan before tag, `source_ref`, apply, or destroy mutation. `delete` and `delete+create` instance actions require the drain verification; a replacement that changes either tunnel subnet also requires no `active` or `creating` client reservations. Same-subnet replacement may retain clients. Plan-only mode only warns and never writes Firebase. There is no break-glass override.
+
+After a rebuild, registration may set `enabled=true` once health checks pass, but it leaves `meshEnabled=false`. Explicitly enable mesh in the dashboard and run Sync All only after the replacement is validated. A `Mesh/{regionId}` status document proves what a sync observed, not a WireGuard handshake; use `wg show` on the host for live link verification.
 
 **One-time cutover note (shared-subnet mesh):** `us-chicago-1` moves from index 0 (shared with
 San Jose, the pre-mesh bug this scheme fixes) to index 1. Before deploying, an operator edits the
@@ -88,9 +105,10 @@ cp Infrastructure/OCI/terraform/terraform.tfvars.example Infrastructure/OCI/terr
 ```
 
 For `apply`, the script validates all requested var files and `source_ref` lines
-before side effects, saves every region's plan against the new deploy tag, creates
-and pushes one `Deploy v<x>` commit plus `deploy-v<x>` tag, writes that tag into
-every listed `source_ref`, then applies the saved plans one at a time. If one
+before side effects, saves every region's plan against the new deploy tag, performs
+all required drain and subnet/client checks, then creates and pushes one `Deploy v<x>`
+commit plus `deploy-v<x>` tag, writes that tag into every listed `source_ref`, and
+applies the saved plans one at a time. If one
 region fails, the script stops and already applied regions remain deployed; fix
 the failure and rerun.
 
@@ -139,7 +157,13 @@ One-time project setup: confirm any required Firestore indexes for the current s
 The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
 
 If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudgateway-api` then
-`( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region )`. The upsert is idempotent.
+run the registration command through systemd so its `EnvironmentFile` parser handles `api.env`:
+
+```sh
+sudo systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/opt/cloudgateway/api --property=EnvironmentFile=/etc/cloudgateway/api.env /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region
+```
+
+The upsert is idempotent.
 
 ## 5. Validate `/api/health` Through Cloudflare
 

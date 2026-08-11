@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -61,9 +62,18 @@ class WireGuardKeypair:
 class MeshPeer:
     public_key: str
     endpoint_host: str
-    endpoint_port: int
+    endpoint_port: int | None
     allowed_network_v4: str
     allowed_network_v6: str
+
+
+@dataclass(frozen=True)
+class LivePeerSnapshot:
+    public_key: str
+    endpoint_addresses: frozenset[str] = frozenset()
+    endpoint_port: int | None = None
+    allowed_ips: frozenset[str] = frozenset()
+    persistent_keepalive: int | None = None
 
 
 PEER_ADDED = "added"
@@ -84,6 +94,7 @@ class MeshPeerChange:
     public_key: str
     action: str
     endpoint_host: str = ""
+    endpoint_port: int | None = None
     allowed_network_v4: str = ""
     allowed_network_v6: str = ""
 
@@ -125,6 +136,10 @@ class PeerSyncResult:
     @property
     def mesh_removed(self) -> int:
         return sum(1 for change in self.mesh_changes if change.action == PEER_REMOVED)
+
+    @property
+    def mesh_updated(self) -> int:
+        return sum(1 for change in self.mesh_changes if change.action == PEER_UPDATED)
 
     @property
     def routes_added(self) -> int:
@@ -206,6 +221,7 @@ class LocalWireGuardManager(WireGuardManager):
         tunnel_network_v4: str,
         tunnel_network_v6: str,
         command_runner: CommandRunner = subprocess.run,
+        endpoint_resolver: Callable[[str], Sequence[str]] | None = None,
     ):
         self.interface = _validate_interface(interface)
         self.lock_path = Path(lock_path)
@@ -217,6 +233,7 @@ class LocalWireGuardManager(WireGuardManager):
         self.tunnel_network_v4 = _validate_network(tunnel_network_v4, 4, "tunnel network v4")
         self.tunnel_network_v6 = _validate_network(tunnel_network_v6, 6, "tunnel network v6")
         self.command_runner = command_runner
+        self.endpoint_resolver = endpoint_resolver or _resolve_endpoint_addresses
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -288,13 +305,19 @@ class LocalWireGuardManager(WireGuardManager):
         return OperationResult.SUCCESS
 
     def current_peers(self) -> dict[str, frozenset[str]]:
+        return {
+            public_key: snapshot.allowed_ips
+            for public_key, snapshot in self.peer_snapshots().items()
+        }
+
+    def peer_snapshots(self) -> dict[str, LivePeerSnapshot]:
         # The first dump line carries the interface private key; it is parsed
         # away here and must never be logged.
         output = self._run(
             ["wg", "show", self.interface, "dump"],
             failure_message="WireGuard state read failed.",
         ).stdout
-        return _parse_dump(output)
+        return _parse_dump_snapshots(output)
 
     def sync_peers(
         self,
@@ -316,7 +339,7 @@ class LocalWireGuardManager(WireGuardManager):
         # malformed value never aborts the pass - it just fails to match.
         known_keys = set(known_region_keys) | set(mesh_by_key)
 
-        current = self.current_peers()
+        current = self.peer_snapshots()
 
         changes: list[PeerChange] = []
         for public_key, (tunnel_ipv4, tunnel_ipv6) in validated_clients.items():
@@ -325,20 +348,32 @@ class LocalWireGuardManager(WireGuardManager):
             if public_key not in current:
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
                 changes.append(PeerChange(public_key, PEER_ADDED, tunnel_ipv4, tunnel_ipv6))
-            elif current[public_key] != frozenset({tunnel_ipv4, tunnel_ipv6}):
+            elif current[public_key].allowed_ips != frozenset({tunnel_ipv4, tunnel_ipv6}):
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
                 changes.append(PeerChange(public_key, PEER_UPDATED, tunnel_ipv4, tunnel_ipv6))
 
         mesh_changes: list[MeshPeerChange] = []
         for public_key, peer in mesh_by_key.items():
-            was_live = public_key in current
+            live = current.get(public_key)
             self._apply_mesh_peer_command(peer)
-            if not was_live:
+            if live is None:
                 mesh_changes.append(
                     MeshPeerChange(
                         public_key=public_key,
                         action=PEER_ADDED,
                         endpoint_host=peer.endpoint_host,
+                        endpoint_port=peer.endpoint_port,
+                        allowed_network_v4=peer.allowed_network_v4,
+                        allowed_network_v6=peer.allowed_network_v6,
+                    )
+                )
+            elif self._mesh_peer_drifted(live, peer):
+                mesh_changes.append(
+                    MeshPeerChange(
+                        public_key=public_key,
+                        action=PEER_UPDATED,
+                        endpoint_host=peer.endpoint_host,
+                        endpoint_port=peer.endpoint_port,
                         allowed_network_v4=peer.allowed_network_v4,
                         allowed_network_v6=peer.allowed_network_v6,
                     )
@@ -371,6 +406,18 @@ class LocalWireGuardManager(WireGuardManager):
             allowed_network_v6=_validate_mesh_network(peer.allowed_network_v6, 6, "mesh allowed network v6"),
         )
 
+    def _mesh_peer_drifted(self, live: LivePeerSnapshot, peer: MeshPeer) -> bool:
+        try:
+            desired_addresses = frozenset(self.endpoint_resolver(peer.endpoint_host))
+        except OSError:
+            desired_addresses = frozenset()
+        return (
+            live.endpoint_addresses != desired_addresses
+            or live.endpoint_port != peer.endpoint_port
+            or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
+            or live.persistent_keepalive != PERSISTENT_KEEPALIVE_SECONDS
+        )
+
     def _apply_mesh_peer_command(self, peer: MeshPeer) -> None:
         self._run(
             [
@@ -380,7 +427,7 @@ class LocalWireGuardManager(WireGuardManager):
                 "peer",
                 peer.public_key,
                 "endpoint",
-                f"{peer.endpoint_host}:{peer.endpoint_port}",
+                _format_endpoint(peer.endpoint_host, peer.endpoint_port),
                 "allowed-ips",
                 f"{peer.allowed_network_v4},{peer.allowed_network_v6}",
                 "persistent-keepalive",
@@ -518,17 +565,97 @@ class LocalWireGuardManager(WireGuardManager):
             ) from exc
 
 
-def _parse_dump(output: str) -> dict[str, frozenset[str]]:
-    peers: dict[str, frozenset[str]] = {}
+def _parse_dump_snapshots(output: str) -> dict[str, LivePeerSnapshot]:
+    peers: dict[str, LivePeerSnapshot] = {}
     lines = output.splitlines()
     for line in lines[1:]:
         fields = line.split("\t")
-        if len(fields) < 4:
+        if len(fields) < 8:
             continue
         public_key = fields[0]
-        allowed_ips = frozenset(ip for ip in fields[3].split(",") if ip and ip != "(none)")
-        peers[public_key] = allowed_ips
+        endpoint_addresses, endpoint_port = _parse_dump_endpoint(fields[2])
+        allowed_values: set[str] = set()
+        for raw_allowed_ip in fields[3].split(","):
+            if not raw_allowed_ip or raw_allowed_ip == "(none)":
+                continue
+            normalized_allowed_ip = _normalize_live_allowed_ip(raw_allowed_ip)
+            if normalized_allowed_ip is not None:
+                allowed_values.add(normalized_allowed_ip)
+        allowed_ips = frozenset(allowed_values)
+        keepalive = _parse_optional_int(fields[7])
+        peers[public_key] = LivePeerSnapshot(
+            public_key=public_key,
+            endpoint_addresses=endpoint_addresses,
+            endpoint_port=endpoint_port,
+            allowed_ips=allowed_ips,
+            persistent_keepalive=keepalive,
+        )
     return peers
+
+
+def _parse_dump_endpoint(value: str) -> tuple[frozenset[str], int | None]:
+    if not value or value == "(none)":
+        return frozenset(), None
+    host: str
+    port_text: str
+    if value.startswith("[") and "]" in value:
+        end = value.index("]")
+        host, port_text = value[1:end], value[end + 1 :].removeprefix(":")
+    elif value.count(":") == 1:
+        host, port_text = value.rsplit(":", 1)
+    else:
+        return frozenset(), None
+    port = _parse_optional_int(port_text)
+    if port is None or not 1 <= port <= 65535:
+        return frozenset(), None
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        host = host.lower().rstrip(".")
+    return frozenset({host}), port
+
+
+def _normalize_live_allowed_ip(value: str) -> str | None:
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError:
+        return None
+
+
+def _parse_optional_int(value: str) -> int | None:
+    try:
+        return int(value) if value != "(none)" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_endpoint_addresses(host: str) -> Sequence[str]:
+    try:
+        addresses = socket.getaddrinfo(host, None, type=socket.SOCK_DGRAM)
+    except OSError:
+        return ()
+    normalized: set[str] = set()
+    for entry in addresses:
+        address = entry[4][0]
+        if not isinstance(address, str):
+            continue
+        try:
+            normalized.add(str(ipaddress.ip_address(address)))
+        except ValueError:
+            normalized.add(address.lower().rstrip("."))
+    return tuple(sorted(normalized))
+
+
+def _format_endpoint(host: str, port: int | None) -> str:
+    if port is None:
+        raise WireGuardApplyFailedError("Invalid WireGuard endpoint port.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return f"{host}:{port}"
+    if address.version == 6:
+        return f"[{address}]:{port}"
+    return f"{address}:{port}"
 
 
 def _normalize_route_dst(dst: str, version: int) -> str | None:
@@ -556,6 +683,8 @@ def _validate_interface(interface: str) -> str:
 
 
 def _validate_key(key: str, label: str) -> str:
+    if not isinstance(key, str):
+        raise WireGuardApplyFailedError(f"Invalid WireGuard {label}.")
     try:
         decoded = base64.b64decode(key, validate=True)
     except (ValueError, binascii.Error) as exc:
@@ -566,6 +695,8 @@ def _validate_key(key: str, label: str) -> str:
 
 
 def _validate_endpoint_host(value: str) -> str:
+    if not isinstance(value, str):
+        raise WireGuardApplyFailedError("Invalid WireGuard endpoint host.")
     try:
         return str(ipaddress.ip_address(value))
     except ValueError:
@@ -613,7 +744,31 @@ def _validate_mesh_network(value: str, version: int, label: str) -> str:
     return str(network)
 
 
-def _validate_port(port: int) -> int:
-    if port < 1 or port > 65535:
+def _validate_port(port: int | None) -> int:
+    if not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535:
         raise WireGuardApplyFailedError("Invalid WireGuard listen port.")
     return port
+
+
+def is_valid_wireguard_key(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        return False
+    return len(decoded) == 32 and len(value) == 44
+
+
+def is_valid_endpoint_host(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return _HOSTNAME_PATTERN.fullmatch(value) is not None
+
+
+def is_valid_port(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535

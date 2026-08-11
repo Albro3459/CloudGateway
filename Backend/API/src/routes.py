@@ -492,7 +492,7 @@ def create_user(
     )
 
 
-@router.post("/admin/sync", response_model=AdminSyncResponse)
+@router.post("/admin/sync", response_model=AdminSyncResponse, response_model_exclude_none=True)
 def admin_sync(
     request: Request,
     body: AdminSyncRequest,
@@ -553,6 +553,7 @@ def admin_sync(
     no_changes = (
         not result.changes
         and result.mesh_added == 0
+        and result.mesh_updated == 0
         and result.mesh_removed == 0
         and result.routes_added == 0
         and result.routes_removed == 0
@@ -589,6 +590,7 @@ def admin_sync(
         mesh_enabled=outcome.mesh_enabled,
         mesh_applied=result.mesh_applied,
         mesh_added=result.mesh_added,
+        mesh_updated=result.mesh_updated,
         mesh_removed=result.mesh_removed,
         mesh_skipped=mesh_skipped,
         mesh_routes_added=result.routes_added,
@@ -598,8 +600,10 @@ def admin_sync(
                 region_id=candidate.region_id,
                 status=candidate.status,
                 endpoint_hostname=candidate.endpoint_hostname,
+                endpoint_port=candidate.endpoint_port,
                 allowed_network_v4=candidate.allowed_network_v4,
                 allowed_network_v6=candidate.allowed_network_v6,
+                reason_code=candidate.reason_code,
             )
             for candidate in outcome.mesh_candidates
         ],

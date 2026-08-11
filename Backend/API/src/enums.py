@@ -25,6 +25,23 @@ class MeshPeerStatus(str, Enum):
     SKIPPED_INCOMPLETE = "skipped-incomplete"
 
 
+class MeshPeerReasonCode(str, Enum):
+    MISSING_PUBLIC_KEY = "missing-public-key"
+    INVALID_PUBLIC_KEY = "invalid-public-key"
+    MISSING_ENDPOINT_HOSTNAME = "missing-endpoint-hostname"
+    INVALID_ENDPOINT_HOSTNAME = "invalid-endpoint-hostname"
+    INVALID_ENDPOINT_PORT = "invalid-endpoint-port"
+    MISSING_NETWORK_V4 = "missing-network-v4"
+    INVALID_NETWORK_V4 = "invalid-network-v4"
+    MISSING_NETWORK_V6 = "missing-network-v6"
+    INVALID_NETWORK_V6 = "invalid-network-v6"
+    OUTSIDE_AGGREGATE = "outside-aggregate"
+    DUPLICATE_PUBLIC_KEY = "duplicate-public-key"
+    LOCAL_NETWORK_INVALID = "local-network-invalid"
+    OVERLAP_LOCAL = "overlap-local"
+    OVERLAP_CANDIDATE = "overlap-candidate"
+
+
 class ErrorCode(str, Enum):
     AUTH_REQUIRED = "AUTH_REQUIRED"
     ADMIN_REQUIRED = "ADMIN_REQUIRED"

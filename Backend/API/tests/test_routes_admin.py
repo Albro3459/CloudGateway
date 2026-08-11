@@ -115,6 +115,7 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
             "regionId": "us-other-1",
             "status": "applied",
             "endpointHostname": "wg.us-other-1.example.com",
+            "endpointPort": 51820,
             "allowedNetworkV4": "10.0.1.0/24",
             "allowedNetworkV6": "fd42:42:42:1::/64",
         }

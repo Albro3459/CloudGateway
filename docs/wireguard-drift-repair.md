@@ -20,7 +20,7 @@ One-directional, Firebase to server. After a pass, the live peer set equals exac
 | Peer's allowed-ips differ from the client doc | Peer is updated to match Firebase |
 | Client doc is `removed`/`failed`/`creating` but a matching peer exists | Peer is removed |
 | Server has a client-classified peer Firebase does not know | Peer is removed - unknown peers are never adopted into Firebase |
-| A sibling region is mesh-enabled and complete/non-overlapping | Mesh peer is applied (re-applied every pass; idempotent, re-resolves the endpoint hostname) |
+| A sibling region is mesh-enabled and complete/non-overlapping | Mesh peer is applied (re-applied every pass; idempotent, re-resolves the endpoint hostname); endpoint/port/AllowedIPs/keepalive drift is reported as an update |
 | A sibling region is missing mesh config, or its subnet overlaps another mesh candidate | Mesh peer is skipped (`skipped-incomplete` / `skipped-overlap`); no peer or route is applied for it |
 | This region's own `meshEnabled` is off | Any previously-applied mesh peers and routes are torn down (rollback) |
 
@@ -39,7 +39,9 @@ Mesh peers need routes, not just `wg set` allowed-ips: `wg-quick` only auto-inst
 
 ## The One Firebase Write
 
-The sync's contract is otherwise one-directional and read-only against Firebase. The single carve-out: after a successful pass, the host writes a best-effort `Mesh/{regionId}` status doc - server metadata only (region IDs, CIDRs, public keys, endpoint hostnames), never per-user data and never handshake timestamps. A Firestore write failure there is logged (`mesh_status_write_failed`) and does not fail, retry, or roll back an already-successful sync.
+The sync's contract is otherwise one-directional and read-only against Firebase. The single carve-out: while still holding the WireGuard lock, after live peer/route reconciliation the host writes a best-effort full-replacement `Mesh/{regionId}` status doc - server metadata only (region IDs, CIDRs, public keys, endpoint hostnames, and endpoint ports), never per-user data and never handshake timestamps. Skipped-incomplete entries may omit malformed fields and carry a `reasonCode`. A Firestore write failure there is logged (`mesh_status_write_failed`) and does not fail, retry, or roll back an already-successful sync.
+
+Drain verification uses these status snapshots as a freshness and membership barrier: after `prepare-drain`, every remaining enabled region must run Sync All so its `Mesh/{regionId}.updatedAt` is strictly newer than the target's `drainRequestedAt` and its peer map omits the drained region and public key. A status document proves the reconciliation snapshot only; it does not prove a WireGuard handshake. Use `wg show wg0` for live link state.
 
 ## Diagnosing Before/After
 

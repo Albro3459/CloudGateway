@@ -122,8 +122,12 @@ variable "wg_address_v4" {
   description = "WireGuard server IPv4 address CIDR"
 
   validation {
-    condition     = can(cidrhost(var.wg_address_v4, 0))
-    error_message = "wg_address_v4 must be a valid IPv4 address CIDR, for example 10.0.1.1/24."
+    condition = try(
+      can(cidrnetmask(var.wg_address_v4)) &&
+      split("/", var.wg_address_v4)[1] == "24",
+      false
+    )
+    error_message = "wg_address_v4 must be a valid IPv4 /24 interface CIDR, for example 10.0.1.1/24."
   }
 }
 
@@ -132,21 +136,31 @@ variable "wg_address_v6" {
   description = "WireGuard server IPv6 address CIDR"
 
   validation {
-    condition     = can(cidrhost(var.wg_address_v6, 0))
-    error_message = "wg_address_v6 must be a valid IPv6 address CIDR, for example fd42:42:42:1::1/64."
+    condition = try(
+      can(cidrhost(var.wg_address_v6, 0)) &&
+      !can(cidrnetmask(var.wg_address_v6)) &&
+      split("/", var.wg_address_v6)[1] == "64",
+      false
+    )
+    error_message = "wg_address_v6 must be a valid IPv6 /64 interface CIDR, for example fd42:42:42:1::1/64."
   }
 }
 
-# wg_address_v4/v6 and wg_dns_address_v4/v6 containment inside wg_network_v4/v6 is enforced by
-# scripts/terraform-preflight.py (evaluate_subnet_plan), not here: cross-variable references in
-# validation blocks need Terraform 1.9+, and this package is pinned to 1.6+ (docs/tool-versions.md).
+# Cross-variable subnet consistency is also checked by scripts/terraform-preflight.py. The
+# resource preconditions below keep direct Terraform plan/apply use safe on Terraform 1.6,
+# without relying on newer cross-variable validation blocks.
 variable "wg_network_v4" {
   type        = string
   description = "WireGuard IPv4 network CIDR for NAT"
 
   validation {
-    condition     = can(cidrhost(var.wg_network_v4, 0)) && var.wg_network_v4 == cidrsubnet(var.wg_network_v4, 0, 0)
-    error_message = "wg_network_v4 must be a valid IPv4 network address CIDR with no host bits set, for example 10.0.1.0/24."
+    condition = try(
+      can(cidrnetmask(var.wg_network_v4)) &&
+      var.wg_network_v4 == cidrsubnet(var.wg_network_v4, 0, 0) &&
+      split("/", var.wg_network_v4)[1] == "24",
+      false
+    )
+    error_message = "wg_network_v4 must be a canonical IPv4 /24 network address, for example 10.0.1.0/24."
   }
 }
 
@@ -155,8 +169,14 @@ variable "wg_network_v6" {
   description = "WireGuard IPv6 network CIDR for NAT"
 
   validation {
-    condition     = can(cidrhost(var.wg_network_v6, 0)) && var.wg_network_v6 == cidrsubnet(var.wg_network_v6, 0, 0)
-    error_message = "wg_network_v6 must be a valid IPv6 network address CIDR with no host bits set, for example fd42:42:42:1::/64."
+    condition = try(
+      can(cidrhost(var.wg_network_v6, 0)) &&
+      !can(cidrnetmask(var.wg_network_v6)) &&
+      var.wg_network_v6 == cidrsubnet(var.wg_network_v6, 0, 0) &&
+      split("/", var.wg_network_v6)[1] == "64",
+      false
+    )
+    error_message = "wg_network_v6 must be a canonical IPv6 /64 network address, for example fd42:42:42:1::/64."
   }
 }
 
@@ -165,7 +185,7 @@ variable "wg_dns_address_v4" {
   description = "WireGuard DNS server IPv4 address"
 
   validation {
-    condition     = can(cidrhost("${var.wg_dns_address_v4}/32", 0))
+    condition     = can(cidrnetmask("${var.wg_dns_address_v4}/32"))
     error_message = "wg_dns_address_v4 must be a valid IPv4 address, for example 10.0.1.1."
   }
 }
@@ -175,7 +195,11 @@ variable "wg_dns_address_v6" {
   description = "WireGuard DNS server IPv6 address"
 
   validation {
-    condition     = can(cidrhost("${var.wg_dns_address_v6}/128", 0))
+    condition = try(
+      can(cidrhost("${var.wg_dns_address_v6}/128", 0)) &&
+      !can(cidrnetmask("${var.wg_dns_address_v6}/128")),
+      false
+    )
     error_message = "wg_dns_address_v6 must be a valid IPv6 address, for example fd42:42:42:1::1."
   }
 }
@@ -413,6 +437,61 @@ variable "cloudflare_ipv6_ranges" {
 }
 
 locals {
+  subnet_registry         = jsondecode(file("${path.module}/subnet-registry.json"))
+  subnet_registry_regions = try(local.subnet_registry.regions, [])
+  selected_registry_regions = [
+    for registry_region in local.subnet_registry_regions : registry_region
+    if try(registry_region.region_id, "") == var.region_id
+  ]
+  selected_registry = try(local.selected_registry_regions[0], {})
+
+  wg_network_v4_valid = try(
+    cidrnetmask(var.wg_network_v4) != "" &&
+    var.wg_network_v4 == cidrsubnet(var.wg_network_v4, 0, 0) &&
+    split("/", var.wg_network_v4)[1] == "24",
+    false
+  )
+  wg_network_v6_valid = try(
+    cidrhost(var.wg_network_v6, 0) != "" &&
+    !can(cidrnetmask(var.wg_network_v6)) &&
+    var.wg_network_v6 == cidrsubnet(var.wg_network_v6, 0, 0) &&
+    split("/", var.wg_network_v6)[1] == "64",
+    false
+  )
+  wg_address_v4_valid = try(
+    cidrnetmask(var.wg_address_v4) != "" &&
+    split("/", var.wg_address_v4)[1] == "24",
+    false
+  )
+  wg_address_v6_valid = try(
+    cidrhost(var.wg_address_v6, 0) != "" &&
+    !can(cidrnetmask(var.wg_address_v6)) &&
+    split("/", var.wg_address_v6)[1] == "64",
+    false
+  )
+  wg_address_v4_network_matches = try(
+    cidrsubnet(var.wg_address_v4, 0, 0) == var.wg_network_v4,
+    false
+  )
+  wg_address_v6_network_matches = try(
+    cidrsubnet(var.wg_address_v6, 0, 0) == var.wg_network_v6,
+    false
+  )
+  wg_dns_address_v4_valid = try(cidrnetmask("${var.wg_dns_address_v4}/32") != "", false)
+  wg_dns_address_v6_valid = try(
+    cidrhost("${var.wg_dns_address_v6}/128", 0) != "" &&
+    !can(cidrnetmask("${var.wg_dns_address_v6}/128")),
+    false
+  )
+  wg_dns_v4_matches_interface = try(
+    cidrhost("${var.wg_address_v4}", 0) == cidrhost("${var.wg_dns_address_v4}/32", 0),
+    false
+  )
+  wg_dns_v6_matches_interface = try(
+    cidrhost("${var.wg_address_v6}", 0) == cidrhost("${var.wg_dns_address_v6}/128", 0),
+    false
+  )
+
   backdoor_user_data = templatefile("${path.module}/backdoor-cloud-init.yaml", {
     hashed_password = var.hashed_password
   })
@@ -480,6 +559,38 @@ EOT
 }
 
 resource "oci_core_instance" "generated_oci_core_instance" {
+  lifecycle {
+    precondition {
+      condition     = local.wg_network_v4_valid && local.wg_network_v6_valid
+      error_message = "wg_network_v4 must be canonical IPv4 /24 and wg_network_v6 must be canonical IPv6 /64 networks."
+    }
+    precondition {
+      condition     = local.wg_address_v4_valid && local.wg_address_v6_valid
+      error_message = "wg_address_v4 must be an IPv4 interface with /24 and wg_address_v6 must be an IPv6 interface with /64."
+    }
+    precondition {
+      condition     = local.wg_address_v4_network_matches && local.wg_address_v6_network_matches
+      error_message = "wg_address_v4/v6 must derive exactly wg_network_v4/v6."
+    }
+    precondition {
+      condition     = local.wg_dns_address_v4_valid && local.wg_dns_address_v6_valid
+      error_message = "wg_dns_address_v4 and wg_dns_address_v6 must be plain addresses of the expected family."
+    }
+    precondition {
+      condition     = local.wg_dns_v4_matches_interface && local.wg_dns_v6_matches_interface
+      error_message = "Each WireGuard DNS address must equal its corresponding interface IP."
+    }
+    precondition {
+      condition = length(local.selected_registry_regions) == 1 && try(
+        local.selected_registry.status == "active" &&
+        local.selected_registry.wg_network_v4 == var.wg_network_v4 &&
+        local.selected_registry.wg_network_v6 == var.wg_network_v6,
+        false
+      )
+      error_message = "region_id must select one active subnet-registry allocation, and wg_network_v4/v6 must match it exactly."
+    }
+  }
+
   agent_config {
     is_management_disabled = "false"
     is_monitoring_disabled = "false"

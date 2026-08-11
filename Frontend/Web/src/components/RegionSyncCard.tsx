@@ -35,7 +35,7 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
 
     const {
         added, updated, removed, noChanges, log, syncedAt,
-        meshEnabled, meshApplied, meshAdded, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
+        meshEnabled, meshApplied, meshAdded, meshUpdated = 0, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
     } = result.data;
 
     return (
@@ -61,6 +61,7 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
             <div className="mt-2 flex flex-wrap gap-2">
                 <Count label="Mesh applied" value={meshApplied} />
                 <Count label="Mesh added" value={meshAdded} />
+                <Count label="Mesh updated" value={meshUpdated} />
                 <Count label="Mesh removed" value={meshRemoved} />
                 <Count label="Mesh skipped" value={meshSkipped} />
                 <Count label="Routes added" value={meshRoutesAdded} />
@@ -82,7 +83,7 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
                                     : "border-warning-soft-edge bg-warning-soft text-warning-strong"
                             }`}
                         >
-                            {peer.regionId}: {peer.status}
+                            {peer.regionId}: {peer.status}{peer.reasonCode ? ` (${peer.reasonCode})` : ""}
                         </span>
                     ))}
                 </div>

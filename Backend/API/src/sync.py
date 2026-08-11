@@ -1,10 +1,10 @@
 import ipaddress
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .enums import Event, MeshPeerStatus
+from .enums import Event, MeshPeerReasonCode, MeshPeerStatus
 from .logs import log_event, setup_logging
 from .repository import ClientDoc, FirebaseRepository, MeshPeerState, RegionDoc
 from .settings import Settings
@@ -18,6 +18,9 @@ from .wireguard import (
     PeerSyncResult,
     WireGuardManager,
     is_subnet_of,
+    is_valid_endpoint_host,
+    is_valid_port,
+    is_valid_wireguard_key,
 )
 
 logger = logging.getLogger("src.sync")
@@ -45,25 +48,13 @@ def desired_mesh_peers(
     local_region = repository.get_region(settings.region_id)
     mesh_enabled = bool(local_region and local_region.mesh_enabled)
     if not mesh_enabled:
-        # Not in the mesh this pass: no attempt is made, so nothing to report.
-        # The (already-empty) apply-set flows through the union sync + route
-        # sweep, which removes any previously-applied mesh peers/routes - that
-        # is the rollback path.
         return DesiredMesh(mesh_enabled=False)
 
     candidates = [
         region for region in enabled_regions if region.region_id != settings.region_id and region.mesh_enabled
     ]
-
-    # The local overlap check must trust the host's own tunnel networks
-    # (settings, the same values that configure wg0), never the local region
-    # doc - a doc other parties can write. `mesh_enabled` above stays sourced
-    # from the doc since that is operator-owned state.
     local_networks = _local_networks(settings)
     if local_networks is None:
-        # A malformed local network here means the guard can no longer tell a
-        # hijack attempt from a benign candidate - fail closed, loudly, rather
-        # than silently skipping the overlap check (the old, fail-open bug).
         log_event(
             logger,
             Event.MESH_LOCAL_NETWORK_INVALID,
@@ -71,19 +62,51 @@ def desired_mesh_peers(
             region_id=settings.region_id,
         )
 
-    parsed: dict[str, tuple[RegionDoc, ipaddress.IPv4Network | ipaddress.IPv6Network, ipaddress.IPv4Network | ipaddress.IPv6Network]] = {}
+    valid_key_owners: dict[str, list[str]] = {}
+    for region in enabled_regions:
+        if is_valid_wireguard_key(region.wireguard_public_key):
+            valid_key_owners.setdefault(region.wireguard_public_key, []).append(region.region_id)
+    duplicate_keys = {key for key, owners in valid_key_owners.items() if len(owners) > 1}
+
+    parsed: dict[str, tuple[RegionDoc, ipaddress.IPv4Network, ipaddress.IPv6Network, MeshPeer]] = {}
     states: dict[str, MeshPeerState] = {}
     for region in candidates:
-        networks = _parse_candidate_networks(region)
-        if networks is None:
-            states[region.region_id] = _mesh_state(region, MeshPeerStatus.SKIPPED_INCOMPLETE)
+        raw_key = region.wireguard_public_key if isinstance(region.wireguard_public_key, str) else ""
+        if raw_key in duplicate_keys:
+            endpoint_host = region.wireguard_endpoint_hostname if isinstance(region.wireguard_endpoint_hostname, str) else ""
+            endpoint_port = region.wireguard_port if is_valid_port(region.wireguard_port) else None
+            states[region.region_id] = _incomplete_state(
+                region,
+                endpoint_host if is_valid_endpoint_host(endpoint_host) else "",
+                raw_key,
+                endpoint_port,
+                MeshPeerReasonCode.DUPLICATE_PUBLIC_KEY.value,
+            )
+            log_event(
+                logger,
+                Event.MESH_PEER_SKIPPED,
+                level=logging.ERROR,
+                region_id=settings.region_id,
+                conflicting_region_ids=valid_key_owners[raw_key],
+                reason_code=MeshPeerReasonCode.DUPLICATE_PUBLIC_KEY.value,
+            )
             continue
-        parsed[region.region_id] = (region, networks[0], networks[1])
+        peer, state = normalize_mesh_candidate(region)
+        if peer is None:
+            states[region.region_id] = state
+            continue
+        v4 = ipaddress.ip_network(peer.allowed_network_v4)
+        v6 = ipaddress.ip_network(peer.allowed_network_v6)
+        if not isinstance(v4, ipaddress.IPv4Network) or not isinstance(v6, ipaddress.IPv6Network):
+            continue
+        parsed[region.region_id] = (region, v4, v6, peer)
 
-    overlap_flagged: set[str] = set()
-    for region_id, (region, v4, v6) in parsed.items():
-        if local_networks is None or _overlaps_local(v4, v6, *local_networks):
-            overlap_flagged.add(region_id)
+    overlap_reasons: dict[str, str] = {}
+    for region_id, (_, v4, v6, _) in parsed.items():
+        if local_networks is None:
+            overlap_reasons[region_id] = MeshPeerReasonCode.LOCAL_NETWORK_INVALID.value
+        elif _overlaps_local(v4, v6, *local_networks):
+            overlap_reasons[region_id] = MeshPeerReasonCode.OVERLAP_LOCAL.value
             log_event(
                 logger,
                 Event.MESH_PEER_SKIPPED,
@@ -94,14 +117,14 @@ def desired_mesh_peers(
                 network_v6=str(v6),
             )
 
-    ids = list(parsed.keys())
-    for i, region_id_a in enumerate(ids):
-        _, v4_a, v6_a = parsed[region_id_a]
-        for region_id_b in ids[i + 1 :]:
-            _, v4_b, v6_b = parsed[region_id_b]
+    ids = list(parsed)
+    for index, region_id_a in enumerate(ids):
+        _, v4_a, v6_a, _ = parsed[region_id_a]
+        for region_id_b in ids[index + 1 :]:
+            _, v4_b, v6_b, _ = parsed[region_id_b]
             if v4_a.overlaps(v4_b) or v6_a.overlaps(v6_b):
-                overlap_flagged.add(region_id_a)
-                overlap_flagged.add(region_id_b)
+                overlap_reasons[region_id_a] = MeshPeerReasonCode.OVERLAP_CANDIDATE.value
+                overlap_reasons[region_id_b] = MeshPeerReasonCode.OVERLAP_CANDIDATE.value
                 log_event(
                     logger,
                     Event.MESH_PEER_SKIPPED,
@@ -119,31 +142,118 @@ def desired_mesh_peers(
         region_id = region.region_id
         if region_id not in parsed:
             continue
-        status = MeshPeerStatus.SKIPPED_OVERLAP if region_id in overlap_flagged else MeshPeerStatus.APPLIED
-        states[region_id] = _mesh_state(region, status)
-        if status == MeshPeerStatus.APPLIED:
-            peers.append(
-                MeshPeer(
-                    public_key=region.wireguard_public_key,
-                    endpoint_host=region.wireguard_endpoint_hostname,
-                    endpoint_port=region.wireguard_port,
-                    allowed_network_v4=region.tunnel_network_v4,
-                    allowed_network_v6=region.tunnel_network_v6,
-                )
+        _, _, _, peer = parsed[region_id]
+        overlap_reason = overlap_reasons.get(region_id)
+        if overlap_reason is not None:
+            states[region_id] = _mesh_state(
+                region,
+                MeshPeerStatus.SKIPPED_OVERLAP,
+                reason_code=overlap_reason,
+                peer=peer,
             )
+            continue
+        states[region_id] = _mesh_state(region, MeshPeerStatus.APPLIED, peer=peer)
+        peers.append(peer)
 
     ordered_states = tuple(states[region.region_id] for region in candidates)
     return DesiredMesh(peers=tuple(peers), candidates=ordered_states, mesh_enabled=True)
 
 
-def _mesh_state(region: RegionDoc, status: MeshPeerStatus) -> MeshPeerState:
+def normalize_mesh_candidate(region: RegionDoc) -> tuple[MeshPeer | None, MeshPeerState]:
+    """Normalize one Firestore region without allowing malformed data to abort a pass."""
+    public_key = region.wireguard_public_key if isinstance(region.wireguard_public_key, str) else ""
+    endpoint_host = region.wireguard_endpoint_hostname if isinstance(region.wireguard_endpoint_hostname, str) else ""
+    network_v4 = region.tunnel_network_v4 if isinstance(region.tunnel_network_v4, str) else ""
+    network_v6 = region.tunnel_network_v6 if isinstance(region.tunnel_network_v6, str) else ""
+    endpoint_port = region.wireguard_port if isinstance(region.wireguard_port, int) and not isinstance(region.wireguard_port, bool) else None
+    valid_public_key = public_key if is_valid_wireguard_key(public_key) else ""
+    valid_endpoint_host = endpoint_host if is_valid_endpoint_host(endpoint_host) else ""
+    valid_endpoint_port = endpoint_port if is_valid_port(endpoint_port) else None
+    if not public_key:
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.MISSING_PUBLIC_KEY.value)
+    if not valid_public_key:
+        return None, _incomplete_state(region, valid_endpoint_host, "", valid_endpoint_port, MeshPeerReasonCode.INVALID_PUBLIC_KEY.value)
+    if not endpoint_host:
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.MISSING_ENDPOINT_HOSTNAME.value)
+    if not valid_endpoint_host:
+        return None, _incomplete_state(region, "", valid_public_key, valid_endpoint_port, MeshPeerReasonCode.INVALID_ENDPOINT_HOSTNAME.value)
+    if valid_endpoint_port is None:
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, None, MeshPeerReasonCode.INVALID_ENDPOINT_PORT.value)
+    parsed_v4, reason_v4 = _parse_mesh_network(network_v4, 4)
+    if parsed_v4 is None:
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, reason_v4)
+    parsed_v6, reason_v6 = _parse_mesh_network(network_v6, 6)
+    if parsed_v6 is None:
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, reason_v6, str(parsed_v4))
+    if not isinstance(parsed_v4, ipaddress.IPv4Network) or not isinstance(parsed_v6, ipaddress.IPv6Network):
+        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.INVALID_NETWORK_V4.value)
+    if not is_subnet_of(parsed_v4, ipaddress.ip_network(MESH_AGGREGATE_V4)) or not is_subnet_of(
+        parsed_v6, ipaddress.ip_network(MESH_AGGREGATE_V6)
+    ):
+        return None, MeshPeerState(
+            region_id=region.region_id,
+            endpoint_hostname=valid_endpoint_host,
+            public_key=valid_public_key,
+            allowed_network_v4=str(parsed_v4),
+            allowed_network_v6=str(parsed_v6),
+            status=MeshPeerStatus.SKIPPED_INCOMPLETE,
+            endpoint_port=valid_endpoint_port,
+            reason_code=MeshPeerReasonCode.OUTSIDE_AGGREGATE.value,
+        )
+    peer = MeshPeer(valid_public_key, valid_endpoint_host, valid_endpoint_port, str(parsed_v4), str(parsed_v6))
+    return peer, _mesh_state(region, MeshPeerStatus.APPLIED, peer=peer)
+
+
+def _incomplete_state(
+    region: RegionDoc,
+    endpoint_hostname: str,
+    public_key: str,
+    endpoint_port: int | None,
+    reason_code: str,
+    allowed_network_v4: str = "",
+) -> MeshPeerState:
     return MeshPeerState(
         region_id=region.region_id,
-        endpoint_hostname=region.wireguard_endpoint_hostname,
-        public_key=region.wireguard_public_key,
-        allowed_network_v4=region.tunnel_network_v4,
-        allowed_network_v6=region.tunnel_network_v6,
+        endpoint_hostname=endpoint_hostname,
+        public_key=public_key,
+        allowed_network_v4=allowed_network_v4,
+        allowed_network_v6="",
+        status=MeshPeerStatus.SKIPPED_INCOMPLETE,
+        endpoint_port=endpoint_port,
+        reason_code=reason_code,
+    )
+
+
+def _parse_mesh_network(value: str, version: int) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network | None, str]:
+    missing_code = MeshPeerReasonCode.MISSING_NETWORK_V4 if version == 4 else MeshPeerReasonCode.MISSING_NETWORK_V6
+    invalid_code = MeshPeerReasonCode.INVALID_NETWORK_V4 if version == 4 else MeshPeerReasonCode.INVALID_NETWORK_V6
+    if not value:
+        return None, missing_code.value
+    try:
+        network = ipaddress.ip_network(value, strict=True)
+    except ValueError:
+        return None, invalid_code.value
+    if network.version != version or str(network) != value:
+        return None, invalid_code.value
+    return network, ""
+
+
+def _mesh_state(
+    region: RegionDoc,
+    status: MeshPeerStatus,
+    *,
+    reason_code: str | None = None,
+    peer: MeshPeer | None = None,
+) -> MeshPeerState:
+    return MeshPeerState(
+        region_id=region.region_id,
+        endpoint_hostname=peer.endpoint_host if peer is not None else "",
+        public_key=peer.public_key if peer is not None else "",
+        allowed_network_v4=peer.allowed_network_v4 if peer is not None else "",
+        allowed_network_v6=peer.allowed_network_v6 if peer is not None else "",
         status=status,
+        endpoint_port=peer.endpoint_port if peer is not None and status != MeshPeerStatus.SKIPPED_INCOMPLETE else None,
+        reason_code=reason_code,
     )
 
 
@@ -153,28 +263,9 @@ def _local_networks(
     try:
         v4 = ipaddress.ip_network(settings.wg_tunnel_ipv4_cidr, strict=True)
         v6 = ipaddress.ip_network(settings.wg_tunnel_ipv6_cidr, strict=True)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     if not isinstance(v4, ipaddress.IPv4Network) or not isinstance(v6, ipaddress.IPv6Network):
-        return None
-    return v4, v6
-
-
-def _parse_candidate_networks(region: RegionDoc):
-    if not region.wireguard_public_key or not region.wireguard_endpoint_hostname:
-        return None
-    if not region.tunnel_network_v4 or not region.tunnel_network_v6:
-        return None
-    try:
-        v4 = ipaddress.ip_network(region.tunnel_network_v4, strict=True)
-        v6 = ipaddress.ip_network(region.tunnel_network_v6, strict=True)
-    except ValueError:
-        return None
-    if v4.version != 4 or v6.version != 6:
-        return None
-    if not is_subnet_of(v4, ipaddress.ip_network(MESH_AGGREGATE_V4)):
-        return None
-    if not is_subnet_of(v6, ipaddress.ip_network(MESH_AGGREGATE_V6)):
         return None
     return v4, v6
 
@@ -188,33 +279,29 @@ class SyncOutcome:
     result: PeerSyncResult
     mesh_enabled: bool
     mesh_candidates: tuple[MeshPeerState, ...] = ()
-    mesh_region_by_key: dict[str, str] = field(default_factory=dict)
+    mesh_region_by_key: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, settings: Settings) -> SyncOutcome:
-    # Read the desired peer set (clients + mesh) under the lock so a concurrent
-    # create/delete/mesh-toggle cannot commit between the Firebase read and the
-    # live peer apply, which would otherwise let sync remove a just-created peer
-    # (or re-add a removed one) from a stale snapshot.
+    # Firebase reads, live mutations, and the status snapshot are serialized by
+    # the same lock. This prevents an older pass from writing status after a
+    # newer reconciliation has completed.
     with wireguard.lock():
         desired = desired_peers(repository, settings.region_id)
         enabled_regions = repository.list_enabled_regions()
         mesh = desired_mesh_peers(repository, settings, enabled_regions)
-
-        # Every other enabled region, regardless of its own meshEnabled value or
-        # this pass's overlap/completeness outcome - used only for live-peer
-        # classification and route-sweep "known to Firestore" accounting, so a
-        # region that just turned mesh off (but is still deployed) is still
-        # recognized as mesh when its peer/route is torn down.
         other_regions = [region for region in enabled_regions if region.region_id != settings.region_id]
-        known_region_keys = tuple(region.wireguard_public_key for region in other_regions if region.wireguard_public_key)
+        key_owners: dict[str, list[str]] = {}
+        for region in other_regions:
+            if is_valid_wireguard_key(region.wireguard_public_key):
+                key_owners.setdefault(region.wireguard_public_key, []).append(region.region_id)
+        known_region_keys = tuple(key_owners)
         known_mesh_networks = tuple(
             cidr
             for region in other_regions
             for cidr in (region.tunnel_network_v4, region.tunnel_network_v6)
-            if cidr
+            if isinstance(cidr, str) and cidr
         )
-        mesh_region_by_key = {region.wireguard_public_key: region.region_id for region in other_regions if region.wireguard_public_key}
 
         result = wireguard.sync_peers(
             desired,
@@ -222,36 +309,26 @@ def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, set
             known_mesh_networks=known_mesh_networks,
             known_region_keys=known_region_keys,
         )
-
-    # mesh.mesh_enabled is the value desired_mesh_peers observed under the lock
-    # above - the status doc must record exactly what this pass acted on, not a
-    # value re-read after the lock is released (an operator toggle in between
-    # would otherwise land in Firestore without ever having been applied).
-    #
-    # Best-effort observability write. The reconcile above already committed to
-    # the interface, so a Firestore write failure here must never fail (or
-    # retroactively undo) an already-successful sync - it is the one carve-out
-    # to "sync never writes to Firebase" (docs/wireguard-drift-repair.md).
-    try:
-        repository.write_mesh_status(
-            region_id=settings.region_id,
-            mesh_enabled=mesh.mesh_enabled,
-            peers=mesh.candidates,
-        )
-    except Exception as exc:
-        log_event(
-            logger,
-            Event.MESH_STATUS_WRITE_FAILED,
-            level=logging.ERROR,
-            region_id=settings.region_id,
-            exc_info=(type(exc), exc, exc.__traceback__),
-        )
+        try:
+            repository.write_mesh_status(
+                region_id=settings.region_id,
+                mesh_enabled=mesh.mesh_enabled,
+                peers=mesh.candidates,
+            )
+        except Exception as exc:
+            log_event(
+                logger,
+                Event.MESH_STATUS_WRITE_FAILED,
+                level=logging.ERROR,
+                region_id=settings.region_id,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
 
     return SyncOutcome(
         result=result,
         mesh_enabled=mesh.mesh_enabled,
         mesh_candidates=mesh.candidates,
-        mesh_region_by_key=mesh_region_by_key,
+        mesh_region_by_key={key: tuple(owners) for key, owners in key_owners.items()},
     )
 
 
@@ -263,7 +340,7 @@ def build_sync_audit_log(
     clients_by_key: dict[str, ClientDoc],
     mesh_enabled: bool,
     mesh_candidates: Sequence[MeshPeerState] = (),
-    mesh_region_by_key: dict[str, str] | None = None,
+    mesh_region_by_key: Mapping[str, tuple[str, ...] | str] | None = None,
 ) -> str:
     # Plain text only (no ANSI/color) so the file reads back cleanly. Lists the
     # client peers each pass added/updated/removed; removed peers include Firebase
@@ -277,8 +354,8 @@ def build_sync_audit_log(
         f"syncedAt: {synced_at.isoformat()}",
         (
             f"summary: added={result.added} updated={result.updated} removed={result.removed} "
-            f"meshApplied={result.mesh_applied} meshAdded={result.mesh_added} meshRemoved={result.mesh_removed} "
-            f"meshRoutesAdded={result.routes_added} meshRoutesRemoved={result.routes_removed}"
+            f"meshApplied={result.mesh_applied} meshAdded={result.mesh_added} meshUpdated={result.mesh_updated} "
+            f"meshRemoved={result.mesh_removed} meshRoutesAdded={result.routes_added} meshRoutesRemoved={result.routes_removed}"
         ),
     ]
 
@@ -321,13 +398,18 @@ def build_sync_audit_log(
                 "  "
                 f"regionId={candidate.region_id} status={candidate.status.value} "
                 f"endpointHostname={candidate.endpoint_hostname} "
-                f"allowedNetworkV4={candidate.allowed_network_v4} allowedNetworkV6={candidate.allowed_network_v6}"
+                f"endpointPort={candidate.endpoint_port} "
+                f"allowedNetworkV4={candidate.allowed_network_v4} allowedNetworkV6={candidate.allowed_network_v6} "
+                f"reasonCode={candidate.reason_code}"
             )
     if result.mesh_changes:
         lines.append("mesh peer changes:")
         for change in result.mesh_changes:
-            region_id_label = mesh_region_by_key.get(change.public_key, "unknown")
+            owner_value = mesh_region_by_key.get(change.public_key, "unknown")
+            region_id_label = ",".join(owner_value) if isinstance(owner_value, tuple) else owner_value
             parts = [f"regionId={region_id_label}", f"action={change.action}"]
+            if change.endpoint_port is not None:
+                parts.append(f"endpointPort={change.endpoint_port}")
             if change.allowed_network_v4:
                 parts.append(f"allowedNetworkV4={change.allowed_network_v4}")
             if change.allowed_network_v6:
@@ -384,6 +466,7 @@ def main() -> int:
         mesh_enabled=outcome.mesh_enabled,
         mesh_applied=outcome.result.mesh_applied,
         mesh_added=outcome.result.mesh_added,
+        mesh_updated=outcome.result.mesh_updated,
         mesh_removed=outcome.result.mesh_removed,
         mesh_routes_added=outcome.result.routes_added,
         mesh_routes_removed=outcome.result.routes_removed,

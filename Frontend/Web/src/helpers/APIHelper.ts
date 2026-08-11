@@ -98,9 +98,11 @@ type RegionSyncMeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incompl
 type RegionSyncMeshPeer = {
     regionId: string;
     status: RegionSyncMeshPeerStatus;
-    endpointHostname: string;
-    allowedNetworkV4: string;
-    allowedNetworkV6: string;
+    endpointHostname?: string;
+    endpointPort?: number | null;
+    allowedNetworkV4?: string;
+    allowedNetworkV6?: string;
+    reasonCode?: string | null;
 };
 
 export type RegionSyncResponse = {
@@ -111,6 +113,7 @@ export type RegionSyncResponse = {
     removed: number;
     noChanges: boolean;
     log: string;
+    meshUpdated?: number;
     meshEnabled: boolean;
     meshApplied: number;
     meshAdded: number;
@@ -345,22 +348,32 @@ export const createAdminUser = (
     }
 };
 
-const runRegionSync = (
+const normalizeRegionSyncResponse = (response: RegionSyncResponse): RegionSyncResponse => ({
+    ...response,
+    // Older regional APIs omit this additive counter. Keep the web shape
+    // stable while mixed-version sync fan-outs are still possible.
+    meshUpdated: typeof response.meshUpdated === "number" && Number.isFinite(response.meshUpdated)
+        ? response.meshUpdated
+        : 0,
+});
+
+const runRegionSync = async (
     regionId: string,
     token: string,
 ): Promise<ApiHelperResult<RegionSyncResponse>> => {
     try {
-        return sendJsonRequest<RegionSyncResponse>(
+        const result = await sendJsonRequest<RegionSyncResponse>(
             buildRegionalApiEndpoint(regionId, "admin/sync"),
             token,
             "POST",
             { regionId },
         );
+        return result.success ? { ...result, data: normalizeRegionSyncResponse(result.data) } : result;
     } catch (error) {
-        return Promise.resolve({
+        return {
             success: false,
             error: error instanceof Error ? error.message : "Unknown API Error",
-        });
+        };
     }
 };
 

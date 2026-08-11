@@ -259,6 +259,10 @@ test_infra() {
   run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
   run_check "Terraform  preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
 
+  run_pyright "Region lifecycle pyright" scripts/region-lifecycle.py scripts/test_region_lifecycle.py
+  run_check "Region lifecycle compile" python3 -m py_compile scripts/region-lifecycle.py scripts/test_region_lifecycle.py
+  run_check "Region lifecycle tests" python3 -m unittest scripts/test_region_lifecycle.py
+
   run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py

@@ -35,6 +35,21 @@ and run the regional API. The runtime request/response surface is in
 - Default values: `CLOUDGATEWAY_API_PORT=8000`, `CLOUDGATEWAY_WG_INTERFACE=wg0`,
   `CLOUDGATEWAY_WG_PORT=51820`.
 
+## Regional subnet allocation
+
+`Infrastructure/OCI/terraform/subnet-registry.json` is the authoritative list of regional
+WireGuard allocations and shared aggregate boundaries. The selected region's local gitignored
+tfvars must copy its registry `wg_network_v4`/`wg_network_v6` values exactly. Keep removed
+allocations in the registry with `status: "reserved"`; a missing local tfvars file does not remove
+that inventory entry.
+
+If Firebase was unavailable during bootstrap, rerun registration with systemd's environment-file
+parser rather than shell-sourcing `/etc/cloudgateway/api.env`:
+
+```sh
+sudo systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/opt/cloudgateway/api --property=EnvironmentFile=/etc/cloudgateway/api.env /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region
+```
+
 ## Peer state
 
 - Firebase is the single source of truth for WireGuard peers. Peers are never written to
@@ -42,9 +57,21 @@ and run the regional API. The runtime request/response surface is in
   with interface settings only.
 - The `cloudgateway-sync-peers` entry point (systemd `cloudgateway-sync-peers.service`) rebuilds
   the live peer set from Firebase on every boot and on demand, one-directionally (Firebase wins;
-  unknown server peers are removed; sync never writes to Firebase).
+  unknown server peers are removed). After reconciliation it best-effort writes the server-only
+  `Mesh/{regionId}` status snapshot while holding the WireGuard lock; a status write failure does
+  not fail an otherwise successful sync.
 - API routes hold the `/run/cloudgateway-wireguard.lock` flock across each WireGuard mutation plus
   its matching Firebase write.
+
+## Replacement and destroy handoff
+
+Before replacing or destroying a region, operators must run `prepare-drain`, dashboard **Sync All**
+across remaining enabled regions, `verify-drain`, and only then Terraform apply/destroy. The wrapper
+parses each plan and blocks destructive operations before deploy tag, `source_ref`, or Terraform
+mutation when the drain cannot be proven. A Mesh status snapshot proves freshness and peer omission,
+not a WireGuard handshake; check `wg show` on the host. Re-registration may enable a rebuilt region
+again but keeps `meshEnabled=false` until explicit operator enable plus Sync All. When the host is
+already lost, perform the same flow from an operator workstation.
 
 ## Firestore backup
 

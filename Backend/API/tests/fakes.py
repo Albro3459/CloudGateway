@@ -44,6 +44,7 @@ from src.wireguard import (
     PEER_REMOVED,
     PEER_UPDATED,
     MeshPeer,
+    LivePeerSnapshot,
     MeshPeerChange,
     PeerChange,
     PeerSyncResult,
@@ -86,6 +87,8 @@ class FakeWireGuardCommandRunner:
     ):
         self.calls: list[FakeCommandCall] = []
         self.peers: dict[str, str] = {}
+        self.peer_endpoints: dict[str, str] = {}
+        self.peer_keepalives: dict[str, int | None] = {}
         self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
         self.fail_set_count = fail_set_count
         self.fail_show_count = fail_show_count
@@ -127,7 +130,10 @@ class FakeWireGuardCommandRunner:
                 raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
             lines = [f"{FAKE_PRIVATE_KEY}\t{FAKE_SERVER_PUBLIC_KEY}\t51820\toff"]
             for public_key, allowed_ips in self.peers.items():
-                lines.append(f"{public_key}\t(none)\t(none)\t{allowed_ips or '(none)'}\t0\t0\t0\t25")
+                endpoint = self.peer_endpoints.get(public_key, "(none)")
+                keepalive = self.peer_keepalives.get(public_key, 25)
+                keepalive_text = str(keepalive) if keepalive is not None else "(none)"
+                lines.append(f"{public_key}\t(none)\t{endpoint}\t{allowed_ips or '(none)'}\t0\t0\t0\t{keepalive_text}")
             return subprocess.CompletedProcess(argv, 0, stdout="\n".join(lines) + "\n", stderr="")
         if len(argv) >= 5 and argv[0] == "wg" and argv[1] == "set" and argv[3] == "peer":
             if self.fail_set_count:
@@ -136,8 +142,14 @@ class FakeWireGuardCommandRunner:
             public_key = argv[4]
             if len(argv) == 6 and argv[5] == "remove":
                 self.peers.pop(public_key, None)
+                self.peer_endpoints.pop(public_key, None)
+                self.peer_keepalives.pop(public_key, None)
             else:
                 self.peers[public_key] = argv[argv.index("allowed-ips") + 1]
+                if "endpoint" in argv:
+                    self.peer_endpoints[public_key] = argv[argv.index("endpoint") + 1]
+                if "persistent-keepalive" in argv:
+                    self.peer_keepalives[public_key] = int(argv[argv.index("persistent-keepalive") + 1])
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
         if len(argv) >= 5 and argv[0] == "ip" and argv[1] == "-j" and argv[3] == "route" and argv[4] == "show":
@@ -584,6 +596,8 @@ class FakeWireGuardManager(WireGuardManager):
     ):
         self.peers: dict[str, tuple[str, str]] = {}
         self.mesh_peers: dict[str, MeshPeer] = {}
+        self.mesh_endpoint_addresses: dict[str, frozenset[str]] = {}
+        self.mesh_keepalives: dict[str, int | None] = {}
         self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
         self.tunnel_network_v4 = tunnel_network_v4
         self.tunnel_network_v6 = tunnel_network_v6
@@ -658,15 +672,33 @@ class FakeWireGuardManager(WireGuardManager):
             return OperationResult.NOOP
         self.peers.pop(public_key, None)
         self.mesh_peers.pop(public_key, None)
+        self.mesh_endpoint_addresses.pop(public_key, None)
+        self.mesh_keepalives.pop(public_key, None)
         return OperationResult.SUCCESS
 
     def current_peers(self) -> dict[str, frozenset[str]]:
+        return {
+            public_key: snapshot.allowed_ips
+            for public_key, snapshot in self.peer_snapshots().items()
+        }
+
+    def peer_snapshots(self) -> dict[str, LivePeerSnapshot]:
         current = {
-            public_key: frozenset({tunnel_ipv4, tunnel_ipv6})
+            public_key: LivePeerSnapshot(
+                public_key=public_key,
+                allowed_ips=frozenset({tunnel_ipv4, tunnel_ipv6}),
+                persistent_keepalive=25,
+            )
             for public_key, (tunnel_ipv4, tunnel_ipv6) in self.peers.items()
         }
         for public_key, peer in self.mesh_peers.items():
-            current[public_key] = frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
+            current[public_key] = LivePeerSnapshot(
+                public_key=public_key,
+                endpoint_addresses=self.mesh_endpoint_addresses.get(public_key, frozenset({peer.endpoint_host})),
+                endpoint_port=peer.endpoint_port,
+                allowed_ips=frozenset({peer.allowed_network_v4, peer.allowed_network_v6}),
+                persistent_keepalive=self.mesh_keepalives.get(public_key, 25),
+            )
         return current
 
     def sync_peers(
@@ -697,13 +729,35 @@ class FakeWireGuardManager(WireGuardManager):
         for public_key, peer in mesh_by_key.items():
             self.mesh_apply_calls += 1
             was_live = public_key in self.mesh_peers or public_key in self.peers
+            live = self.peer_snapshots().get(public_key)
+            drifted = was_live and (
+                live is None
+                or live.endpoint_addresses != frozenset({peer.endpoint_host})
+                or live.endpoint_port != peer.endpoint_port
+                or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
+                or live.persistent_keepalive != 25
+            )
             self.mesh_peers[public_key] = peer
+            self.mesh_endpoint_addresses[public_key] = frozenset({peer.endpoint_host})
+            self.mesh_keepalives[public_key] = 25
             if not was_live:
                 mesh_changes.append(
                     MeshPeerChange(
                         public_key=public_key,
                         action=PEER_ADDED,
                         endpoint_host=peer.endpoint_host,
+                        endpoint_port=peer.endpoint_port,
+                        allowed_network_v4=peer.allowed_network_v4,
+                        allowed_network_v6=peer.allowed_network_v6,
+                    )
+                )
+            elif drifted:
+                mesh_changes.append(
+                    MeshPeerChange(
+                        public_key=public_key,
+                        action=PEER_UPDATED,
+                        endpoint_host=peer.endpoint_host,
+                        endpoint_port=peer.endpoint_port,
                         allowed_network_v4=peer.allowed_network_v4,
                         allowed_network_v6=peer.allowed_network_v6,
                     )
@@ -714,6 +768,8 @@ class FakeWireGuardManager(WireGuardManager):
                 continue
             self.peers.pop(public_key, None)
             self.mesh_peers.pop(public_key, None)
+            self.mesh_endpoint_addresses.pop(public_key, None)
+            self.mesh_keepalives.pop(public_key, None)
             if public_key in known_keys:
                 mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
             else:

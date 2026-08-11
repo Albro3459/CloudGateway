@@ -47,6 +47,8 @@ describe("regionsHelper", () => {
             tunnelNetworkV4: null,
             tunnelNetworkV6: null,
             meshEnabled: false,
+            wireguardPort: null,
+            wireguardPortPresent: false,
         });
     });
 

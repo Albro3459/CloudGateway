@@ -129,6 +129,19 @@ converges to peers-and-routes-removed for the disabled region(s) on that one syn
 no redeploy, and no timer to wait on (sync is manual-first by design - see
 [TODO/shared-subnet-mesh.md](../TODO/shared-subnet-mesh.md)).
 
+## Drain, Replacement, and Destroy
+
+Regional replacement and destroy are fan-out operations, not ordinary host restarts. Use this exact order:
+
+1. `python3 scripts/region-lifecycle.py prepare-drain <regionId>`.
+2. Run dashboard **Sync All Regions** across the remaining enabled regions.
+3. `python3 scripts/region-lifecycle.py verify-drain <regionId>`.
+4. Run the Terraform apply or destroy command through `scripts/terraform.sh`.
+
+The wrapper blocks before deploy tag, `source_ref`, apply, or destroy mutations when a plan contains `delete` or `delete+create` and drain verification fails. A subnet-changing replacement also requires no `active` or `creating` reservations; same-subnet replacement may retain clients. There is no break-glass override. If the host is already gone, run prepare-drain from an operator workstation, sync the remaining regions, verify, then rebuild. Re-registration may set `enabled=true` after health checks but leaves `meshEnabled=false` until explicit operator enable plus Sync All.
+
+`Mesh/{regionId}` status and `updatedAt` show the last reconciliation observed by a regional API. They do not prove a WireGuard handshake; use `wg show wg0` for live link state.
+
 ## Quick Triage Order
 
 1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudgateway-api.service`, then Cloudflare DNS/proxy.

@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,10 +20,8 @@ from typing import Any
 INSTANCE_ADDRESS = "oci_core_instance.generated_oci_core_instance"
 API_RECORD_ADDRESS = "cloudflare_record.api"
 WG_RECORD_ADDRESS = "cloudflare_record.wg"
+REGISTRY_PATH = Path(__file__).resolve().parents[1] / "Infrastructure" / "OCI" / "terraform" / "subnet-registry.json"
 
-# WireGuard tunnel subnet fields an operator sets per region in tfvars (see
-# terraform.tfvars.example). All six must be present and consistent for the
-# cross-region subnet check below.
 WG_SUBNET_KEYS = (
     "wg_network_v4",
     "wg_address_v4",
@@ -31,43 +30,149 @@ WG_SUBNET_KEYS = (
     "wg_address_v6",
     "wg_dns_address_v6",
 )
+REGISTRY_REGION_KEYS = {"region_id", "wg_network_v4", "wg_network_v6", "status"}
+REGISTRY_STATUSES = {"active", "reserved"}
+ALLOCATION_PREFIX_V4 = 24
+ALLOCATION_PREFIX_V6 = 64
 
-# Region N gets 10.0.N.0/24 / fd42:42:42:N::/64 (see terraform.tfvars.example). These
-# aggregates are load-bearing, not documentation: the peer sync's route sweep on every
-# host only reclaims `dev wg0` routes inside them, so a region configured outside an
-# aggregate would strand routes the sweep can never clean up.
+# Fallback values keep evaluate_subnet_plan independently useful in unit tests. Runtime
+# preflight always replaces these with the tracked registry aggregates.
 SUBNET_AGGREGATE_V4 = ipaddress.IPv4Network("10.0.0.0/16")
 SUBNET_AGGREGATE_V6 = ipaddress.IPv6Network("fd42:42:42::/48")
 
 
+class RegionValues(dict[str, str]):
+    """Raw tfvars values with the source file retained for diagnostics."""
+
+    def __init__(self, values: Mapping[str, str], source_filename: Path | None = None) -> None:
+        super().__init__(values)
+        self.source_filename = source_filename
+
+
+class RegistryRegion:
+    __slots__ = ("region_id", "network_v4", "network_v6", "status", "source_filename")
+
+    def __init__(
+        self,
+        region_id: str,
+        network_v4: ipaddress.IPv4Network,
+        network_v6: ipaddress.IPv6Network,
+        status: str,
+        source_filename: Path,
+    ) -> None:
+        self.region_id = region_id
+        self.network_v4 = network_v4
+        self.network_v6 = network_v6
+        self.status = status
+        self.source_filename = source_filename
+
+
+class SubnetRegistry:
+    __slots__ = ("aggregate_v4", "aggregate_v6", "regions", "source_filename")
+
+    def __init__(
+        self,
+        aggregate_v4: ipaddress.IPv4Network,
+        aggregate_v6: ipaddress.IPv6Network,
+        regions: tuple[RegistryRegion, ...],
+        source_filename: Path,
+    ) -> None:
+        self.aggregate_v4 = aggregate_v4
+        self.aggregate_v6 = aggregate_v6
+        self.regions = regions
+        self.source_filename = source_filename
+
+
+class TfvarsParseError(RuntimeError):
+    """A tfvars file contains syntax this dependency-free parser cannot trust."""
+
+    def __init__(self, path: Path, line_number: int, message: str) -> None:
+        location = f"{path}:{line_number}" if line_number else str(path)
+        super().__init__(f"{location}: {message}")
+        self.path = path
+        self.line_number = line_number
+
+
 def read_tfvars(path: Path) -> dict[str, str]:
+    """Read the scalar/heredoc tfvars syntax used by the regional wrapper.
+
+    This intentionally is not a general HCL parser. It accepts only the forms used by
+    the checked-in example and rejects unknown lines, duplicate assignments, malformed
+    quoted values, and unterminated heredocs instead of silently dropping them.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        raise TfvarsParseError(path, 0, f"failed to read tfvars ({exc})") from exc
+
     values: dict[str, str] = {}
     heredoc_end: str | None = None
+    heredoc_line = 0
+    list_end = False
+    list_line = 0
 
-    for raw_line in path.read_text().splitlines():
+    def assign(key: str, value: str, line_number: int) -> None:
+        if key in values:
+            raise TfvarsParseError(path, line_number, f"duplicate assignment for {key!r}")
+        values[key] = value
+
+    for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if heredoc_end is not None:
             if line == heredoc_end:
                 heredoc_end = None
             continue
+        if list_end:
+            if line in {"]","] # end","] # end of list",
+            }:
+                list_end = False
+                continue
+            if not re.fullmatch(r'"(?:\\.|[^"\\])*",?', line):
+                raise TfvarsParseError(path, line_number, "unsupported or malformed list item")
+            continue
         if not line or line.startswith("#"):
             continue
 
-        heredoc_match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*<<([A-Za-z0-9_]+)\s*$", line)
+        list_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[\s*", line)
+        if list_match:
+            assign(list_match.group(1), "", line_number)
+            list_end = True
+            list_line = line_number
+            continue
+
+        heredoc_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*<<-?([A-Za-z_][A-Za-z0-9_]*)", line)
         if heredoc_match:
-            values[heredoc_match.group(1)] = ""
+            assign(heredoc_match.group(1), "", line_number)
             heredoc_end = heredoc_match.group(2)
+            heredoc_line = line_number
             continue
 
-        quoted_match = re.match(r'^([A-Za-z0-9_]+)\s*=\s*"([^"]*)"\s*(?:#.*)?$', line)
+        quoted_match = re.fullmatch(
+            r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"((?:\\.|[^"\\])*)"\s*(?:#.*)?',
+            line,
+        )
         if quoted_match:
-            values[quoted_match.group(1)] = quoted_match.group(2)
+            try:
+                value = json.loads(f'"{quoted_match.group(2)}"')
+            except json.JSONDecodeError as exc:
+                raise TfvarsParseError(path, line_number, f"invalid quoted value: {exc.msg}") from exc
+            assign(quoted_match.group(1), value, line_number)
             continue
 
-        bare_match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*([^\s#]+)\s*(?:#.*)?$", line)
+        bare_match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s#\[\]{}(),]+)\s*(?:#.*)?",
+            line,
+        )
         if bare_match:
-            values[bare_match.group(1)] = bare_match.group(2)
+            assign(bare_match.group(1), bare_match.group(2), line_number)
+            continue
 
+        raise TfvarsParseError(path, line_number, "unsupported or malformed tfvars assignment")
+
+    if heredoc_end is not None:
+        raise TfvarsParseError(path, heredoc_line, f"unterminated heredoc; expected {heredoc_end}")
+    if list_end:
+        raise TfvarsParseError(path, list_line, "unterminated list; expected ]")
     return values
 
 
@@ -78,22 +183,21 @@ def required(values: dict[str, str], key: str, varfile: Path) -> str:
     return value
 
 
-def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
-    """Read every *.terraform.tfvars next to varfile (including varfile itself).
+def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, RegionValues], list[str]]:
+    """Read present sibling tfvars as optional consistency checks.
 
-    Returns (region_id -> raw WG_SUBNET_KEYS values, skip notes). A sibling that fails to
-    read or has no region_id is skipped with a note rather than failing the deploy; a
-    sibling with a region_id is always included even if its subnet fields are incomplete,
-    so evaluate_subnet_plan can turn that into a hard failure.
+    The registry, not this directory scan, is the region inventory. Missing registry
+    regions are therefore valid. Duplicate local IDs are retained once for checking,
+    but produce an error note instead of being silently overwritten.
     """
-    regions: dict[str, dict[str, str]] = {}
+    regions: dict[str, RegionValues] = {}
     notes: list[str] = []
 
     for sibling in sorted(varfile.parent.glob("*.terraform.tfvars")):
         try:
             values = read_tfvars(sibling)
-        except OSError as exc:
-            notes.append(f"skipping {sibling.name}: failed to read tfvars ({exc})")
+        except TfvarsParseError as exc:
+            notes.append(f"error: {exc}")
             continue
 
         region_id = values.get("region_id")
@@ -101,9 +205,149 @@ def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, dict[str, str]], l
             notes.append(f"skipping {sibling.name}: no region_id found")
             continue
 
-        regions[region_id] = {key: values.get(key, "") for key in WG_SUBNET_KEYS}
+        region_values = RegionValues(
+            {key: values.get(key, "") for key in WG_SUBNET_KEYS},
+            sibling,
+        )
+        previous = regions.get(region_id)
+        if previous is not None:
+            previous_name = previous.source_filename.name if previous.source_filename else "unknown"
+            notes.append(
+                f"error: duplicate region_id {region_id!r} in {previous_name} and {sibling.name}; "
+                "each local tfvars region_id must be unique."
+            )
+            continue
+        regions[region_id] = region_values
 
     return regions, notes
+
+
+def _parse_registry_network(
+    raw: Any,
+    region_id: str,
+    key: str,
+    family: int,
+    source_filename: Path,
+    errors: list[str],
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    if not isinstance(raw, str) or not raw:
+        errors.append(f"{source_filename}: registry region {region_id!r} has invalid {key}; expected a CIDR string.")
+        return None
+    try:
+        network = ipaddress.ip_network(raw, strict=True)
+    except ValueError as exc:
+        errors.append(
+            f"{source_filename}: registry region {region_id!r} {key} {raw!r} is not a canonical network "
+            f"with no host bits set ({exc})."
+        )
+        return None
+    if network.version != family:
+        errors.append(
+            f"{source_filename}: registry region {region_id!r} {key} {raw!r} must be IPv{family}, "
+            f"got IPv{network.version}."
+        )
+        return None
+    if str(network) != raw:
+        errors.append(
+            f"{source_filename}: registry region {region_id!r} {key} {raw!r} is not canonical; use {network}."
+        )
+    return network
+
+
+def validate_subnet_registry(payload: Any, source_filename: Path = REGISTRY_PATH) -> tuple[list[str], SubnetRegistry | None]:
+    """Validate and decode the tracked authoritative subnet registry."""
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return [f"{source_filename}: registry must be a JSON object."], None
+
+    expected_keys = {"schema_version", "aggregate_v4", "aggregate_v6", "regions"}
+    if set(payload) != expected_keys:
+        errors.append(
+            f"{source_filename}: registry must contain exactly {sorted(expected_keys)}, got {sorted(payload)}."
+        )
+    schema_version = payload.get("schema_version")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version != 1:
+        errors.append(f"{source_filename}: registry schema_version must be integer 1.")
+
+    aggregate_v4_raw = _parse_registry_network(payload.get("aggregate_v4"), "<aggregate>", "aggregate_v4", 4, source_filename, errors)
+    aggregate_v6_raw = _parse_registry_network(payload.get("aggregate_v6"), "<aggregate>", "aggregate_v6", 6, source_filename, errors)
+    aggregate_v4 = aggregate_v4_raw if isinstance(aggregate_v4_raw, ipaddress.IPv4Network) else None
+    aggregate_v6 = aggregate_v6_raw if isinstance(aggregate_v6_raw, ipaddress.IPv6Network) else None
+    if aggregate_v4 is not None and aggregate_v4 != SUBNET_AGGREGATE_V4:
+        errors.append(f"{source_filename}: aggregate_v4 must be exactly {SUBNET_AGGREGATE_V4}.")
+    if aggregate_v6 is not None and aggregate_v6 != SUBNET_AGGREGATE_V6:
+        errors.append(f"{source_filename}: aggregate_v6 must be exactly {SUBNET_AGGREGATE_V6}.")
+    raw_regions = payload.get("regions")
+    if not isinstance(raw_regions, list):
+        errors.append(f"{source_filename}: registry regions must be a JSON list, not an object or scalar.")
+        raw_regions = []
+
+    regions: list[RegistryRegion] = []
+    seen_ids: set[str] = set()
+    for index, raw_region in enumerate(raw_regions):
+        location = f"{source_filename}: registry regions[{index}]"
+        if not isinstance(raw_region, dict):
+            errors.append(f"{location} must be an object.")
+            continue
+        if set(raw_region) != REGISTRY_REGION_KEYS:
+            errors.append(f"{location} must contain exactly {sorted(REGISTRY_REGION_KEYS)}.")
+        region_id = raw_region.get("region_id")
+        if not isinstance(region_id, str) or not region_id.strip() or region_id != region_id.strip():
+            errors.append(f"{location}.region_id must be a non-empty, trimmed string.")
+            continue
+        if region_id in seen_ids:
+            errors.append(f"{source_filename}: duplicate registry region_id {region_id!r}.")
+            continue
+        seen_ids.add(region_id)
+        status = raw_region.get("status")
+        if not isinstance(status, str) or status not in REGISTRY_STATUSES:
+            errors.append(f"{location}.status must be exactly 'active' or 'reserved', got {status!r}.")
+        network_v4_raw = _parse_registry_network(raw_region.get("wg_network_v4"), region_id, "wg_network_v4", 4, source_filename, errors)
+        network_v6_raw = _parse_registry_network(raw_region.get("wg_network_v6"), region_id, "wg_network_v6", 6, source_filename, errors)
+        network_v4 = network_v4_raw if isinstance(network_v4_raw, ipaddress.IPv4Network) else None
+        network_v6 = network_v6_raw if isinstance(network_v6_raw, ipaddress.IPv6Network) else None
+        if network_v4 is None or network_v6 is None or status not in REGISTRY_STATUSES:
+            continue
+        if network_v4.prefixlen != ALLOCATION_PREFIX_V4:
+            errors.append(f"{location}.wg_network_v4 must use /{ALLOCATION_PREFIX_V4}, got {network_v4}.")
+        if network_v6.prefixlen != ALLOCATION_PREFIX_V6:
+            errors.append(f"{location}.wg_network_v6 must use /{ALLOCATION_PREFIX_V6}, got {network_v6}.")
+        regions.append(RegistryRegion(region_id, network_v4, network_v6, status, source_filename))
+
+    if aggregate_v4 is not None:
+        for region in regions:
+            if not region.network_v4.subnet_of(aggregate_v4):
+                errors.append(f"{source_filename}: registry region {region.region_id!r} network {region.network_v4} is outside aggregate_v4 {aggregate_v4}.")
+    if aggregate_v6 is not None:
+        for region in regions:
+            if not region.network_v6.subnet_of(aggregate_v6):
+                errors.append(f"{source_filename}: registry region {region.region_id!r} network {region.network_v6} is outside aggregate_v6 {aggregate_v6}.")
+
+    for index, first in enumerate(regions):
+        for second in regions[index + 1 :]:
+            if first.network_v4.overlaps(second.network_v4):
+                errors.append(f"{source_filename}: registry networks for {first.region_id} and {second.region_id} overlap in IPv4 ({first.network_v4} and {second.network_v4}).")
+            if first.network_v6.overlaps(second.network_v6):
+                errors.append(f"{source_filename}: registry networks for {first.region_id} and {second.region_id} overlap in IPv6 ({first.network_v6} and {second.network_v6}).")
+
+    if errors or aggregate_v4 is None or aggregate_v6 is None:
+        return errors, None
+    return errors, SubnetRegistry(aggregate_v4, aggregate_v6, tuple(regions), source_filename)
+
+
+def load_subnet_registry(path: Path = REGISTRY_PATH) -> tuple[list[str], SubnetRegistry | None]:
+    try:
+        payload = json.loads(path.read_text())
+    except OSError as exc:
+        return [f"{path}: failed to read subnet registry ({exc})."], None
+    except json.JSONDecodeError as exc:
+        return [f"{path}: subnet registry is not valid JSON ({exc})."], None
+    return validate_subnet_registry(payload, path)
+
+
+def _region_label(region_id: str, values: Mapping[str, str]) -> str:
+    source = getattr(values, "source_filename", None)
+    return f"{region_id} ({source.name})" if isinstance(source, Path) else region_id
 
 
 def _parse_subnet_network_v4(region_id: str, key: str, raw: str, errors: list[str]) -> ipaddress.IPv4Network | None:
@@ -130,15 +374,42 @@ def _parse_subnet_network_v6(region_id: str, key: str, raw: str, errors: list[st
     return network
 
 
-def _check_subnet_address(
+def _check_subnet_interface(
     region_id: str,
     key: str,
     raw: str,
     network: ipaddress.IPv4Network | ipaddress.IPv6Network,
     errors: list[str],
+) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface | None:
+    try:
+        interface = ipaddress.ip_interface(raw)
+    except ValueError as exc:
+        errors.append(f"{region_id}: {key} {raw!r} is not a valid IP interface ({exc}).")
+        return None
+    if interface.version != network.version:
+        errors.append(f"{region_id}: {key} {raw!r} is IPv{interface.version} but its network is IPv{network.version}.")
+        return None
+    if interface.network.prefixlen != network.prefixlen:
+        errors.append(
+            f"{region_id}: {key} prefix /{interface.network.prefixlen} does not match its network's /{network.prefixlen} prefix."
+        )
+    if interface.network != network:
+        errors.append(
+            f"{region_id}: {key} {interface} is not inside its own network {network} and does not derive that network."
+        )
+    return interface
+
+
+def _check_dns_address(
+    region_id: str,
+    key: str,
+    raw: str,
+    interface: ipaddress.IPv4Interface | ipaddress.IPv6Interface | None,
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+    errors: list[str],
 ) -> None:
     try:
-        address = ipaddress.ip_interface(raw).ip if "/" in raw else ipaddress.ip_address(raw)
+        address = ipaddress.ip_address(raw)
     except ValueError as exc:
         errors.append(f"{region_id}: {key} {raw!r} is not a valid IP address ({exc}).")
         return
@@ -147,63 +418,81 @@ def _check_subnet_address(
         return
     if address not in network:
         errors.append(f"{region_id}: {key} {address} is not inside its own network {network}.")
+    if interface is not None and address != interface.ip:
+        errors.append(f"{region_id}: {key} {address} must equal {interface.ip}, the corresponding WireGuard interface IP.")
 
 
 def _parse_region_subnets(
-    region_id: str, values: dict[str, str]
+    region_id: str, values: Mapping[str, str], aggregate_v4: ipaddress.IPv4Network = SUBNET_AGGREGATE_V4,
+    aggregate_v6: ipaddress.IPv6Network = SUBNET_AGGREGATE_V6,
 ) -> tuple[list[str], tuple[ipaddress.IPv4Network, ipaddress.IPv6Network] | None]:
+    label = _region_label(region_id, values)
     errors: list[str] = []
     missing = [key for key in WG_SUBNET_KEYS if not values.get(key)]
     if missing:
         errors.append(
-            f"{region_id}: missing {', '.join(missing)} in tfvars; every region's WireGuard subnet fields "
-            "must be complete for the cross-region subnet check to run."
+            f"{label}: missing {', '.join(missing)} in tfvars; every present region's WireGuard subnet fields "
+            "must be complete for the subnet consistency check to run."
         )
         return errors, None
 
-    network_v4 = _parse_subnet_network_v4(region_id, "wg_network_v4", values["wg_network_v4"], errors)
-    network_v6 = _parse_subnet_network_v6(region_id, "wg_network_v6", values["wg_network_v6"], errors)
-
+    network_v4 = _parse_subnet_network_v4(label, "wg_network_v4", values["wg_network_v4"], errors)
+    network_v6 = _parse_subnet_network_v6(label, "wg_network_v6", values["wg_network_v6"], errors)
     if network_v4 is not None:
-        if not network_v4.subnet_of(SUBNET_AGGREGATE_V4):
-            errors.append(
-                f"{region_id}: wg_network_v4 {network_v4} is outside the shared aggregate {SUBNET_AGGREGATE_V4}; "
-                "the peer sync's route sweep on other hosts only reclaims dev wg0 routes inside this aggregate, "
-                "so a region outside it would strand routes."
-            )
-        _check_subnet_address(region_id, "wg_address_v4", values["wg_address_v4"], network_v4, errors)
-        _check_subnet_address(region_id, "wg_dns_address_v4", values["wg_dns_address_v4"], network_v4, errors)
-
+        if network_v4.prefixlen != ALLOCATION_PREFIX_V4:
+            errors.append(f"{label}: wg_network_v4 must use /{ALLOCATION_PREFIX_V4}, got {network_v4}.")
+        if not network_v4.subnet_of(aggregate_v4):
+            errors.append(f"{label}: wg_network_v4 {network_v4} is outside the shared aggregate {aggregate_v4}.")
+        interface_v4 = _check_subnet_interface(label, "wg_address_v4", values["wg_address_v4"], network_v4, errors)
+        _check_dns_address(label, "wg_dns_address_v4", values["wg_dns_address_v4"], interface_v4, network_v4, errors)
     if network_v6 is not None:
-        if not network_v6.subnet_of(SUBNET_AGGREGATE_V6):
-            errors.append(
-                f"{region_id}: wg_network_v6 {network_v6} is outside the shared aggregate {SUBNET_AGGREGATE_V6}; "
-                "the peer sync's route sweep on other hosts only reclaims dev wg0 routes inside this aggregate, "
-                "so a region outside it would strand routes."
-            )
-        _check_subnet_address(region_id, "wg_address_v6", values["wg_address_v6"], network_v6, errors)
-        _check_subnet_address(region_id, "wg_dns_address_v6", values["wg_dns_address_v6"], network_v6, errors)
+        if network_v6.prefixlen != ALLOCATION_PREFIX_V6:
+            errors.append(f"{label}: wg_network_v6 must use /{ALLOCATION_PREFIX_V6}, got {network_v6}.")
+        if not network_v6.subnet_of(aggregate_v6):
+            errors.append(f"{label}: wg_network_v6 {network_v6} is outside the shared aggregate {aggregate_v6}.")
+        interface_v6 = _check_subnet_interface(label, "wg_address_v6", values["wg_address_v6"], network_v6, errors)
+        _check_dns_address(label, "wg_dns_address_v6", values["wg_dns_address_v6"], interface_v6, network_v6, errors)
 
     if network_v4 is None or network_v6 is None:
         return errors, None
     return errors, (network_v4, network_v6)
 
 
-def evaluate_subnet_plan(regions: dict[str, dict[str, str]]) -> list[str]:
-    """Pure cross-region subnet containment/overlap check.
-
-    `regions` maps region_id -> a dict that should carry WG_SUBNET_KEYS (raw tfvars
-    strings). Takes only parsed values, no filesystem or network access, so it stays
-    unit-testable. Returns human-readable error strings; empty means the plan is clean.
-    """
+def evaluate_subnet_plan(
+    regions: Mapping[str, Mapping[str, str]],
+    registry: SubnetRegistry | None = None,
+    selected_region_id: str | None = None,
+) -> list[str]:
+    """Validate present tfvars and compare them with the authoritative registry."""
     errors: list[str] = []
+    aggregate_v4 = registry.aggregate_v4 if registry else SUBNET_AGGREGATE_V4
+    aggregate_v6 = registry.aggregate_v6 if registry else SUBNET_AGGREGATE_V6
     networks: dict[str, tuple[ipaddress.IPv4Network, ipaddress.IPv6Network]] = {}
+    registry_by_id = {region.region_id: region for region in registry.regions} if registry else {}
 
     for region_id, values in sorted(regions.items()):
-        region_errors, parsed = _parse_region_subnets(region_id, values)
+        if registry and region_id not in registry_by_id:
+            errors.append(f"{_region_label(region_id, values)}: region_id is not present in the authoritative subnet registry.")
+        region_errors, parsed = _parse_region_subnets(region_id, values, aggregate_v4, aggregate_v6)
         errors.extend(region_errors)
         if parsed is not None:
             networks[region_id] = parsed
+            if registry and region_id in registry_by_id:
+                expected = registry_by_id[region_id]
+                actual_v4, actual_v6 = parsed
+                if actual_v4 != expected.network_v4 or str(actual_v4) != str(expected.network_v4):
+                    errors.append(f"{_region_label(region_id, values)}: wg_network_v4 {actual_v4} must exactly match registry allocation {expected.network_v4}.")
+                if actual_v6 != expected.network_v6 or str(actual_v6) != str(expected.network_v6):
+                    errors.append(f"{_region_label(region_id, values)}: wg_network_v6 {actual_v6} must exactly match registry allocation {expected.network_v6}.")
+
+    if registry and selected_region_id is not None:
+        selected = [region for region in registry.regions if region.region_id == selected_region_id]
+        if not selected:
+            errors.append(f"{selected_region_id}: no registry entry exists; the selected region must have one active allocation.")
+        elif selected[0].status != "active":
+            errors.append(f"{selected_region_id}: registry allocation is {selected[0].status}, not active; reserved regions cannot be selected.")
+        elif selected_region_id not in regions:
+            errors.append(f"{selected_region_id}: selected tfvars has no matching local registry consistency entry.")
 
     region_ids = sorted(networks)
     for i, a_id in enumerate(region_ids):
@@ -211,16 +500,9 @@ def evaluate_subnet_plan(regions: dict[str, dict[str, str]]) -> list[str]:
         for b_id in region_ids[i + 1 :]:
             b_v4, b_v6 = networks[b_id]
             if a_v4.overlaps(b_v4):
-                errors.append(
-                    f"{a_id} and {b_id}: wg_network_v4 {a_v4} and {b_v4} overlap; each region needs a "
-                    "unique, non-overlapping IPv4 tunnel subnet."
-                )
+                errors.append(f"{_region_label(a_id, regions[a_id])} and {_region_label(b_id, regions[b_id])}: wg_network_v4 {a_v4} and {b_v4} overlap.")
             if a_v6.overlaps(b_v6):
-                errors.append(
-                    f"{a_id} and {b_id}: wg_network_v6 {a_v6} and {b_v6} overlap; each region needs a "
-                    "unique, non-overlapping IPv6 tunnel subnet."
-                )
-
+                errors.append(f"{_region_label(a_id, regions[a_id])} and {_region_label(b_id, regions[b_id])}: wg_network_v6 {a_v6} and {b_v6} overlap.")
     return errors
 
 
@@ -410,7 +692,12 @@ def evaluate_region(
     return errors
 
 
-def check_region(region_id: str, varfile: Path, plan_json_path: Path | None) -> int:
+def check_region(
+    region_id: str,
+    varfile: Path,
+    plan_json_path: Path | None,
+    registry_path: Path = REGISTRY_PATH,
+) -> int:
     values = read_tfvars(varfile)
     zone_id = required(values, "cloudflare_zone_id", varfile)
     token = required(values, "cloudflare_api_token", varfile)
@@ -429,10 +716,14 @@ def check_region(region_id: str, varfile: Path, plan_json_path: Path | None) -> 
         print("\n\n".join(errors), file=sys.stderr)
         return 1
 
+    registry_errors, registry = load_subnet_registry(registry_path)
     sibling_regions, skip_notes = discover_sibling_tfvars(varfile)
     for note in skip_notes:
-        print(f"==> preflight note: {note}")
-    subnet_errors = evaluate_subnet_plan(sibling_regions)
+        stream = sys.stderr if note.startswith("error:") else sys.stdout
+        print(f"==> preflight note: {note}", file=stream)
+    subnet_errors = registry_errors + evaluate_subnet_plan(sibling_regions, registry, region_id)
+    if any(note.startswith("error:") for note in skip_notes):
+        subnet_errors.extend(note.removeprefix("error: ").strip() for note in skip_notes if note.startswith("error:"))
     if subnet_errors:
         print(f"Terraform preflight failed for {region_id}.", file=sys.stderr)
         print("Refusing to continue because manual reconciliation is required.", file=sys.stderr)
@@ -474,9 +765,10 @@ def main() -> int:
     parser.add_argument("--region-id", required=True)
     parser.add_argument("--var-file", required=True, type=Path)
     parser.add_argument("--plan-json", type=Path)
+    parser.add_argument("--registry", type=Path, default=REGISTRY_PATH)
     args = parser.parse_args()
     try:
-        return check_region(args.region_id, args.var_file, args.plan_json)
+        return check_region(args.region_id, args.var_file, args.plan_json, args.registry)
     except RuntimeError as exc:
         print(f"Terraform preflight failed for {args.region_id}.", file=sys.stderr)
         print("Refusing to continue because manual reconciliation is required.", file=sys.stderr)

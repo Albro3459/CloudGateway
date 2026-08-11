@@ -10,11 +10,13 @@ import { Region } from "./regionsHelper";
 type MeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
 
 type MeshPeerEntry = {
-    endpointHostname: string;
-    publicKey: string;
-    allowedNetworkV4: string;
-    allowedNetworkV6: string;
+    endpointHostname: string | null;
+    endpointPort?: number | null;
+    publicKey: string | null;
+    allowedNetworkV4: string | null;
+    allowedNetworkV6: string | null;
     status: MeshPeerStatus;
+    reasonCode?: string | null;
     appliedAt: Date | null;
 };
 
@@ -33,27 +35,46 @@ const parseMeshPeerStatus = (value: unknown): MeshPeerStatus | null => (
     value === "applied" || value === "skipped-overlap" || value === "skipped-incomplete" ? value : null
 );
 
+const numberOrNull = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+};
+
 const parseMeshPeerEntry = (data: unknown): MeshPeerEntry | null => {
     if (!data || typeof data !== "object") return null;
     const entry = data as Record<string, unknown>;
-
     const status = parseMeshPeerStatus(entry.status);
-    const endpointHostname = stringOrNull(entry.endpointHostname);
-    const publicKey = stringOrNull(entry.publicKey);
-    const allowedNetworkV4 = stringOrNull(entry.allowedNetworkV4);
-    const allowedNetworkV6 = stringOrNull(entry.allowedNetworkV6);
-    if (!status || !endpointHostname || !publicKey || !allowedNetworkV4 || !allowedNetworkV6) {
-        return null;
-    }
+    if (!status) return null;
 
-    return {
-        endpointHostname,
-        publicKey,
-        allowedNetworkV4,
-        allowedNetworkV6,
+    const parsed: MeshPeerEntry = {
+        endpointHostname: stringOrNull(entry.endpointHostname),
+        endpointPort: Object.prototype.hasOwnProperty.call(entry, "endpointPort")
+            ? numberOrNull(entry.endpointPort)
+            : (status === "applied" ? undefined : null),
+        publicKey: stringOrNull(entry.publicKey),
+        allowedNetworkV4: stringOrNull(entry.allowedNetworkV4),
+        allowedNetworkV6: stringOrNull(entry.allowedNetworkV6),
         status,
+        reasonCode: stringOrNull(entry.reasonCode),
         appliedAt: dateOrNull(entry.appliedAt),
     };
+
+    // Skipped-incomplete is deliberately status-first. Its empty fields are
+    // useful operator evidence and must survive parsing. Applied snapshots
+    // require every durable field except endpointPort, which was absent from
+    // legacy applied documents and is therefore retained as stale. Overlap
+    // snapshots are only useful for comparison when complete.
+    if (status === "skipped-incomplete") return parsed;
+    if (!parsed.endpointHostname || !parsed.publicKey || !parsed.allowedNetworkV4 || !parsed.allowedNetworkV6) {
+        return null;
+    }
+    if (status === "skipped-overlap" && parsed.endpointPort == null) return null;
+
+    return parsed;
 };
 
 export const parseMeshDocument = (regionId: string, data: Record<string, unknown>): MeshDoc => {
@@ -84,7 +105,7 @@ export const isRegionMeshPending = (region: Region, meshDoc: MeshDoc | null | un
     return desired !== meshDoc.meshEnabled;
 };
 
-export type MeshLinkStatus = "both-applied" | "one-sided" | "not-synced";
+export type MeshLinkStatus = "both-applied" | "one-sided" | "not-synced" | "stale";
 
 export type MeshLinkRow = {
     regionAId: string;
@@ -95,11 +116,55 @@ export type MeshLinkRow = {
     // null means that side has no entry for the peer at all (not just skipped).
     aToB: MeshPeerStatus | null;
     bToA: MeshPeerStatus | null;
+    aToBCurrent: boolean;
+    bToACurrent: boolean;
+    aToBStale: boolean;
+    bToAStale: boolean;
 };
 
-const peerStatusFor = (meshDoc: MeshDoc | null | undefined, peerRegionId: string): MeshPeerStatus | null => (
-    meshDoc?.peers[peerRegionId]?.status ?? null
+const peerFor = (meshDoc: MeshDoc | null | undefined, peerRegionId: string): MeshPeerEntry | null => (
+    meshDoc?.peers[peerRegionId] ?? null
 );
+
+type MeshSnapshot = {
+    publicKey: string | null;
+    endpointHostname: string | null;
+    endpointPort: number | null;
+    allowedNetworkV4: string | null;
+    allowedNetworkV6: string | null;
+};
+
+const getRegionMeshSnapshot = (region: Region): MeshSnapshot => ({
+    publicKey: region.wireguardPublicKey ?? null,
+    endpointHostname: region.wireguardEndpointHostname ?? null,
+    endpointPort: region.wireguardPortPresent === false ? null : (region.wireguardPort ?? null),
+    allowedNetworkV4: region.tunnelNetworkV4 ?? null,
+    allowedNetworkV6: region.tunnelNetworkV6 ?? null,
+});
+
+const snapshotsEqual = (entry: MeshPeerEntry, snapshot: MeshSnapshot): boolean => (
+    entry.publicKey === snapshot.publicKey
+    && entry.endpointHostname === snapshot.endpointHostname
+    && entry.endpointPort === snapshot.endpointPort
+    && entry.allowedNetworkV4 === snapshot.allowedNetworkV4
+    && entry.allowedNetworkV6 === snapshot.allowedNetworkV6
+);
+
+const isCurrentAppliedPeer = (entry: MeshPeerEntry | null | undefined, region: Region): boolean => (
+    entry?.status === "applied"
+    && typeof entry.endpointPort === "number"
+    && snapshotsEqual(entry, getRegionMeshSnapshot(region))
+);
+
+const isStaleAppliedPeer = (entry: MeshPeerEntry | null, region: Region): boolean => (
+    entry?.status === "applied" && !isCurrentAppliedPeer(entry, region)
+);
+
+const isChangedSkippedPeer = (entry: MeshPeerEntry | null, region: Region): boolean => {
+    if (!entry || (entry.status !== "skipped-overlap" && entry.status !== "skipped-incomplete")) return false;
+    const snapshot = getRegionMeshSnapshot(region);
+    return !snapshotsEqual(entry, snapshot);
+};
 
 // One row per unordered region pair (a graph's links, not a per-region list),
 // so an asymmetric failure ("one-sided") is visible instead of being rendered
@@ -113,30 +178,51 @@ export const buildMeshLinkRows = (regions: Region[], meshDocs: MeshDocsById): Me
             const b = regions[j];
             const meshDocA = meshDocs.get(a.regionId) ?? null;
             const meshDocB = meshDocs.get(b.regionId) ?? null;
-            const aToB = peerStatusFor(meshDocA, b.regionId);
-            const bToA = peerStatusFor(meshDocB, a.regionId);
-            const aApplied = aToB === "applied";
-            const bApplied = bToA === "applied";
+            const entryA = peerFor(meshDocA, b.regionId);
+            const entryB = peerFor(meshDocB, a.regionId);
+            const aToB = entryA?.status ?? null;
+            const bToA = entryB?.status ?? null;
+            const aToBCurrent = isCurrentAppliedPeer(entryA, b);
+            const bToACurrent = isCurrentAppliedPeer(entryB, a);
+            const aToBStale = isStaleAppliedPeer(entryA, b);
+            const bToAStale = isStaleAppliedPeer(entryB, a);
 
             let status: MeshLinkStatus;
-            if (aApplied && bApplied) {
+            if (aToBStale || bToAStale) {
+                status = "stale";
+            } else if (aToBCurrent && bToACurrent) {
                 status = "both-applied";
-            } else if (aApplied || bApplied) {
+            } else if (aToBCurrent || bToACurrent) {
                 status = "one-sided";
             } else {
                 status = "not-synced";
             }
 
             const bothEnabled = a.meshEnabled === true && b.meshEnabled === true;
-            const missingEitherEntry = bothEnabled && (aToB === null || bToA === null);
+            const membershipPending = isRegionMeshPending(a, meshDocA) || isRegionMeshPending(b, meshDocB);
+            const stalePending = aToBStale || bToAStale;
+            const removalPending = !bothEnabled && (
+                entryA?.status === "applied" || entryB?.status === "applied"
+            );
+            const skippedPending = isChangedSkippedPeer(entryA, b) || isChangedSkippedPeer(entryB, a);
+            const incompleteDirectionPending = bothEnabled && (
+                entryA === null
+                || entryB === null
+                || aToBCurrent !== bToACurrent
+                || skippedPending
+            );
 
             rows.push({
                 regionAId: a.regionId,
                 regionBId: b.regionId,
                 status,
-                pending: isRegionMeshPending(a, meshDocA) || isRegionMeshPending(b, meshDocB) || missingEitherEntry,
+                pending: membershipPending || stalePending || removalPending || incompleteDirectionPending,
                 aToB,
                 bToA,
+                aToBCurrent,
+                bToACurrent,
+                aToBStale,
+                bToAStale,
             });
         }
     }
@@ -159,9 +245,12 @@ export type MeshWarning = {
     regionId: string;
     peerRegionId: string;
     status: Extract<MeshPeerStatus, "skipped-overlap" | "skipped-incomplete">;
-    endpointHostname: string;
-    allowedNetworkV4: string;
-    allowedNetworkV6: string;
+    endpointHostname: string | null;
+    endpointPort: number | null;
+    publicKey: string | null;
+    allowedNetworkV4: string | null;
+    allowedNetworkV6: string | null;
+    reasonCode: string | null;
     appliedAt: Date | null;
 };
 
@@ -181,8 +270,11 @@ export const collectMeshWarnings = (meshDocs: MeshDocsById): MeshWarning[] => {
                 peerRegionId,
                 status: entry.status,
                 endpointHostname: entry.endpointHostname,
+                endpointPort: entry.endpointPort ?? null,
+                publicKey: entry.publicKey,
                 allowedNetworkV4: entry.allowedNetworkV4,
                 allowedNetworkV6: entry.allowedNetworkV6,
+                reasonCode: entry.reasonCode ?? null,
                 appliedAt: entry.appliedAt,
             });
         }

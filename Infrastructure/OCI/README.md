@@ -12,9 +12,14 @@ Deployment is rare and manual. An operator prepares OCI networking, then deploys
 or rebuilds a region through `./scripts/terraform.sh <region> apply` following
 [docs/regional-deployment.md](../../docs/regional-deployment.md). The wrapper
 manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
-DNS/VM resources must be reconciled or imported before rerunning. There is no
-Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack
-deployment.
+DNS/VM resources must be reconciled or imported before rerunning. Destructive
+plans require `prepare-drain`, dashboard Sync All across remaining enabled
+regions, and `verify-drain` before any deploy tag, source ref, apply, or destroy
+mutation. If a host is already lost, run the same drain flow from an operator
+workstation. Re-registration may restore `enabled=true` after health checks but
+keeps `meshEnabled=false` until explicit operator enable plus Sync All. There is no
+break-glass override. There is no Lambda orchestrator, no OCI Resource Manager
+flow, and no per-user stack deployment.
 
 WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
@@ -69,11 +74,31 @@ resources or import the canonical resources into state before rerunning.
 
 ### Cross-region tunnel subnets
 
-Each region's WireGuard tunnel subnet is operator-managed in tfvars (`wg_address_v4`, `wg_network_v4`, `wg_dns_address_v4`, and the v6 equivalents) - there is no derived/indexed Terraform variable. The scheme: region index N gets `10.0.N.0/24` and `fd42:42:42:N::/64`, and every region's subnet must sit inside the shared aggregates `10.0.0.0/16` and `fd42:42:42::/48`. Those aggregates are load-bearing, not documentation: the regional API's peer sync reconciles cross-region mesh routes by sweeping `dev wg0` routes inside these two aggregates and deleting anything not desired, so a region configured outside them would leave routes the sweep can never reclaim.
+Each region's WireGuard tunnel subnet is recorded first in the tracked
+[`terraform/subnet-registry.json`](terraform/subnet-registry.json), which is the authoritative
+inventory and aggregate boundary. Its `regions` value is a list of active or reserved
+allocations. Keep a removed allocation as `reserved` so it is never silently reused. Local
+`<regionId>.terraform.tfvars` files are gitignored consistency copies and their
+`wg_network_v4`/`wg_network_v6` values must exactly match the registry entry; a missing sibling
+file does not remove a registry allocation or fail another region's deploy.
 
-Current assignments: `us-sanjose-1` = index 0 (`10.0.0.0/24` / `fd42:42:42::/64`, unchanged since `fd42:42:42::/64` **is** `fd42:42:42:0::/64`), `us-chicago-1` = index 1 (`10.0.1.0/24` / `fd42:42:42:1::/64`). Adding a region means picking the next free index and never reusing or overlapping an existing region's subnet.
+The scheme is region index N = `10.0.N.0/24` and `fd42:42:42:N::/64`, inside the registry
+aggregates `10.0.0.0/16` and `fd42:42:42::/48`. Those aggregates are load-bearing, not
+just documentation: the regional API's peer sync reconciles cross-region mesh routes by sweeping
+`dev wg0` routes inside them and deleting anything not desired. A region configured outside them
+would leave routes the sweep can never reclaim. Current assignments are `us-sanjose-1` = index 0
+(`10.0.0.0/24` / `fd42:42:42::/64`) and `us-chicago-1` = index 1 (`10.0.1.0/24` /
+`fd42:42:42:1::/64`).
 
-`scripts/terraform-preflight.py` enforces this programmatically before every plan/apply/destroy: it reads every `*.terraform.tfvars` file next to the one being deployed (not just the region in the current deploy), and fails the deploy if any two regions' `wg_network_v4`/`wg_network_v6` are equal or overlapping, if a region's address/DNS fields fall outside its own network, or if a region's network falls outside the `10.0.0.0/16`/`fd42:42:42::/48` aggregates. A sibling tfvars file that fails to parse or has no `region_id` is skipped with a note; a sibling with a `region_id` but incomplete or invalid subnet fields is a hard failure. `cloudgateway.tf` also validates each `wg_network_v4`/`wg_network_v6` is a real network address (no host bits) and each `wg_address_v4`/`wg_dns_address_v4`/v6 equivalent parses as a valid address, at `terraform plan`/`apply` time.
+`scripts/terraform-preflight.py` uses a strict dependency-free parser for the scalar, list, and
+heredoc forms used by the tfvars example; malformed or duplicate assignments are hard failures.
+It validates the registry itself, including active/reserved overlap, then validates the selected
+region's one active allocation and every present sibling tfvars file. It rejects unknown local
+region IDs, duplicate local IDs, allocation mismatches, wrong interface prefixes, DNS/interface
+mismatches, host-bit networks, wrong families, and aggregate violations. `cloudgateway.tf`
+repeats the address-family, canonical/prefix, interface-derived-network, DNS/interface, and
+selected registry checks with Terraform 1.6-compatible resource preconditions for direct
+Terraform use.
 
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 

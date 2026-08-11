@@ -120,6 +120,34 @@ describe("APIHelper", () => {
         expect(result).toEqual({ success: true, data: responseBody });
     });
 
+    it("defaults absent meshUpdated in legacy sync responses", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse({
+            regionId: "us-sanjose-1",
+            syncedAt: "2026-08-10T00:00:00Z",
+            added: 0,
+            updated: 0,
+            removed: 0,
+            noChanges: true,
+            log: "sync log",
+            meshEnabled: true,
+            meshApplied: 1,
+            meshAdded: 0,
+            meshRemoved: 0,
+            meshSkipped: 0,
+            meshRoutesAdded: 0,
+            meshRoutesRemoved: 0,
+            meshPeers: [],
+        }));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: true,
+            data: { meshUpdated: 0 },
+        });
+    });
+
     it("returns typed FastAPI error details", async () => {
         mockFetch.mockResolvedValue(mockJsonResponse({
             error: {

@@ -4,7 +4,7 @@ import pytest
 
 from src.enums import OperationResult
 from src.errors import WireGuardApplyFailedError
-from src.wireguard import LocalWireGuardManager, MeshPeer
+from src.wireguard import LocalWireGuardManager, MeshPeer, _parse_dump_snapshots
 
 from .fakes import (
     FAKE_MESH_PUBLIC_KEY,
@@ -28,6 +28,7 @@ def make_manager(
     endpoint_host="wg.us-test-1.example.com",
     tunnel_network_v4="10.0.0.0/24",
     tunnel_network_v6="fd42:42:42::/64",
+    endpoint_resolver=None,
 ):
     return LocalWireGuardManager(
         interface="wg0",
@@ -40,6 +41,7 @@ def make_manager(
         tunnel_network_v4=tunnel_network_v4,
         tunnel_network_v6=tunnel_network_v6,
         command_runner=runner,
+        endpoint_resolver=endpoint_resolver,
     )
 
 
@@ -175,6 +177,26 @@ def test_current_peers_parses_dump_and_skips_interface_line(tmp_path):
         FAKE_PUBLIC_KEY_2: frozenset(),
     }
     assert FAKE_PRIVATE_KEY not in str(peers)
+
+
+def test_peer_snapshot_parses_ipv4_ipv6_absent_endpoint_multiple_allowed_ips_and_keepalive():
+    output = (
+        f"{FAKE_PRIVATE_KEY}\t{FAKE_SERVER_PUBLIC_KEY}\t51820\toff\n"
+        f"{FAKE_PUBLIC_KEY}\t(none)\t198.51.100.10:51820\t10.0.1.0/24,fd42:42:42:1::/64\t0\t0\t0\t25\n"
+        f"{FAKE_PUBLIC_KEY_2}\t(none)\t[2001:db8::10]:51821\t10.0.2.0/24,fd42:42:42:2::/64\t0\t0\t0\t(none)\n"
+        f"{FAKE_UNKNOWN_PUBLIC_KEY}\t(none)\t(none)\t(none)\t0\t0\t0\t0\n"
+    )
+
+    snapshots = _parse_dump_snapshots(output)
+
+    assert snapshots[FAKE_PUBLIC_KEY].endpoint_addresses == frozenset({"198.51.100.10"})
+    assert snapshots[FAKE_PUBLIC_KEY].endpoint_port == 51820
+    assert snapshots[FAKE_PUBLIC_KEY].allowed_ips == frozenset({"10.0.1.0/24", "fd42:42:42:1::/64"})
+    assert snapshots[FAKE_PUBLIC_KEY].persistent_keepalive == 25
+    assert snapshots[FAKE_PUBLIC_KEY_2].endpoint_addresses == frozenset({"2001:db8::10"})
+    assert snapshots[FAKE_PUBLIC_KEY_2].endpoint_port == 51821
+    assert snapshots[FAKE_PUBLIC_KEY_2].persistent_keepalive is None
+    assert snapshots[FAKE_UNKNOWN_PUBLIC_KEY].endpoint_addresses == frozenset()
 
 
 def test_sync_adds_updates_and_removes_to_match_desired(tmp_path):
@@ -373,6 +395,29 @@ def test_mesh_peer_is_reapplied_every_pass(tmp_path):
     assert first.mesh_added == 1
     assert second.mesh_added == 0  # already live: re-applied, but not counted as newly added
     assert second.mesh_applied == 1
+
+
+def test_mesh_peer_updated_only_for_live_drift(tmp_path):
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner, endpoint_resolver=lambda _host: ("203.0.113.10",))
+    peer = make_mesh_peer()
+
+    first = manager.sync_peers({}, mesh=[peer])
+    # A real wg dump reports the resolved endpoint address, not the hostname
+    # passed to wg set. Seed that representation for the stable pass.
+    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "203.0.113.10:51820"
+    stable = manager.sync_peers({}, mesh=[peer])
+
+    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "203.0.113.11:51820"
+    runner.peer_keepalives[FAKE_MESH_PUBLIC_KEY] = 10
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.99.0/24,fd42:42:42:99::/64"
+    repaired = manager.sync_peers({}, mesh=[peer])
+
+    assert first.mesh_added == 1
+    assert first.mesh_updated == 0
+    assert stable.mesh_updated == 0
+    assert repaired.mesh_updated == 1
+    assert repaired.mesh_applied == 1
 
 
 # --- Union sync: clients + mesh -------------------------------------------

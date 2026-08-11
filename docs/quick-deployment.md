@@ -97,6 +97,15 @@ Useful forms:
 ./scripts/terraform.sh chicago destroy
 ```
 
+Destructive plans and operations use a mandatory drain gate. Before replacing or destroying a region, run this order:
+
+1. `python3 scripts/region-lifecycle.py prepare-drain <regionId>`.
+2. In the dashboard, run **Sync All Regions** across the remaining enabled regions.
+3. Run `python3 scripts/region-lifecycle.py verify-drain <regionId>`.
+4. Run the Terraform apply or destroy command.
+
+The Terraform wrapper parses every plan and blocks apply/destroy until lifecycle verification passes. Plan-only output warns when the OCI instance action is `delete` or `delete+create` and does not write Firebase. A subnet-changing replacement additionally requires no `active` or `creating` client reservations; same-subnet replacement may retain clients. There is no break-glass override. If a host is already lost, prepare the drain from the dashboard/CLI using the region document, sync all remaining regions, verify, then rebuild. Re-registration may set `enabled=true` after health checks, but preserves `meshEnabled=false` until an operator explicitly enables it and runs Sync All.
+
 If a multi-region apply fails partway through, the script stops. Regions already
 applied stay deployed; fix the failed region and rerun.
 

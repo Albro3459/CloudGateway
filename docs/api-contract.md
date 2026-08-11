@@ -232,6 +232,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "meshEnabled": true,
   "meshApplied": 1,
   "meshAdded": 0,
+  "meshUpdated": 0,
   "meshRemoved": 0,
   "meshSkipped": 0,
   "meshRoutesAdded": 0,
@@ -241,6 +242,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
       "regionId": "us-sanjose-1",
       "status": "applied",
       "endpointHostname": "wg.us-sanjose-1.gocloudlaunch.com",
+      "endpointPort": 51820,
       "allowedNetworkV4": "10.0.0.0/24",
       "allowedNetworkV6": "fd42:42:42::/64"
     }
@@ -250,12 +252,15 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 - `added`/`updated`/`removed` count **client** peer changes only. `meshApplied` counts every
   desired mesh peer applied this pass (re-applies included, so it is not just newly-added peers);
-  `meshAdded`/`meshRemoved` count mesh peers that newly appeared/disappeared on the interface this
-  pass; `meshSkipped` counts candidate regions skipped for overlap or incomplete mesh fields;
+  `meshAdded`/`meshUpdated`/`meshRemoved` count mesh peers that newly appeared, had endpoint/port/
+  allowed-IPs/keepalive drift repaired, or disappeared on the interface this pass; `meshSkipped`
+  counts candidate regions skipped for overlap or incomplete mesh fields;
   `meshRoutesAdded`/`meshRoutesRemoved` count the `wg0` mesh route changes from the route sweep.
   `meshEnabled` is this region's own `Regions/{regionId}.meshEnabled` flag as observed this pass.
-  `noChanges` is true iff nothing changed at all: no client peer changes and every mesh/route
-  counter above is zero.
+  `noChanges` means no live mutation: no client add/update/remove, mesh add/update/remove, or
+  route add/remove. It deliberately excludes `meshApplied` and `meshSkipped`, so a stable pass
+  can report `meshApplied > 0`, `meshUpdated == 0`, and `noChanges == true`; skipped-only passes
+  are also `noChanges == true`.
 - `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
   `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. It deliberately omits the
   peer's WireGuard public key - the durable `Mesh/{regionId}` Firestore doc carries it.
