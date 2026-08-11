@@ -1,234 +1,116 @@
 # Shared Subnet Mesh: Cross-Region Peer-to-Peer
 
-Goal: give every regional server its own tunnel subnet and bridge the servers together so a peer on one server can reach a peer on another server by tunnel IP. Subnet assignment is operator-managed in tfvars; bridging is reconciled from Firestore and triggered manually from the admin dashboard. Hard cutoff, no live clients to preserve (Chicago users recreate their clients).
+Goal: give every regional server its own tunnel subnet and bridge mesh-enabled servers so a peer on one server can reach a peer on another by tunnel IP. Subnet allocation is operator-managed and authoritative in `subnet-registry.json`; bridging is reconciled from Firestore and triggered by boot, registration, or the admin dashboard.
 
-Design decisions settled after discussion:
+## Architectural decisions
 
-* **Manual-first sync, no timer.** Sync triggers are boot, a post-register pass at end of bootstrap, and the admin endpoint from the dashboard. Deploys and membership changes are rare and operator-driven (ready emails arrive per region, then the operator syncs from the dashboard). Periodic polling stays a documented future option.
-* **Mesh membership lives only in Firestore.** `meshEnabled` on the region doc, default `false`, created by register and owned by the dashboard afterward. No tfvars var, no env var - a second copy in tfvars could disagree with Firestore and confuse things. Missing doc or missing field = not in the mesh.
-* **No new keys.** Server-to-server links authenticate with each server's existing interface keypair (private key already in tfvars + `/etc/cloudgateway/wireguard-server.key`, public key already in the region doc). WireGuard's optional pairwise preshared key (post-quantum hardening) is explicitly skipped.
-* **Hostname endpoints.** Mesh peers dial `wg.<regionId>.gocloudlaunch.com:51820`, the same grey-cloud record clients use, already stored as `wireguardEndpointHostname` in the region doc.
-* Top-level `Mesh/{regionId}` status collection; admin-only Server Health page on the web dashboard (iOS later); no reserved subnet block (the whole `10.0.0.0/16` is for regions).
+* **Hard cutoff, no migration.** The mesh PR is unmerged and undeployed. There are no Mesh documents and no mixed mesh versions to support. Chicago clients are disposable: before changing the Chicago subnet, delete every `Regions/us-chicago-1/Instances/*` document. Do not inspect, migrate, retain, or validate old assigned tunnel addresses.
+* A future subnet change uses the same hard cutoff. If mesh is live, disable that region's mesh membership and Sync All, delete all clients, change the registry and tfvars, deploy, then explicitly re-enable mesh and Sync All.
+* **Manual-first sync, no timer.** Sync runs at boot, once after registration, and through the dashboard's Sync All Regions action. Periodic polling remains a possible future option.
+* **Mesh membership lives only in Firestore.** `meshEnabled` is operator-owned, defaults to false on creation, and is not duplicated in tfvars or environment variables. Only literal `true` enables a region or mesh membership; missing and every other value are false.
+* **No new keys.** Server links use each server's existing WireGuard interface keypair. No pairwise preshared keys are required.
+* **Hostname endpoints.** Mesh peers use `wg.<regionId>.gocloudlaunch.com:51820`, the existing grey-cloud client endpoint hostname.
+* `Mesh/{regionId}` is status and observability only. The admin-only Server Health page is web-only for this PR; iOS support can follow later.
 
-## Where We Are Today
+## Lifecycle and operational assumptions
 
-Both regions currently use identical tunnel networks, which makes any bridging impossible until they are split:
+Normal server replacement must not disable the Region or mesh membership. A normal rebuild keeps the same WireGuard key, tunnel subnet, and endpoint hostname. Boot sync re-adds peers, and WireGuard endpoint roaming updates the remote peer when the rebuilt server handshakes from a new public address. No drain lifecycle is needed.
 
-| Region | wg_network_v4 | wg_network_v6 | DNS |
-| --- | --- | --- | --- |
-| us-sanjose-1 | `10.0.0.0/24` | `fd42:42:42::/64` | `10.0.0.1` / `fd42:42:42::1` |
-| us-chicago-1 | `10.0.0.0/24` (same) | `fd42:42:42::/64` (same) | same |
+`enabled=false` means no operational server exists in that region. Permanent region decommission is a separate, explicit future operation: remove the region from desired state and Sync All before permanent deletion. This PR does not require generic decommission automation.
 
-Relevant facts from the current setup:
+The following direction is removed from this plan and checklist: `region-lifecycle.py`, `drainRequestedAt`, prepare-drain, verify-drain, Terraform apply/destroy drain gates, repeated per-target lifecycle verification, and transactional drain snapshots.
 
-* `wg0.conf` is interface-only; peers are applied live with `wg set` and rebuilt from Firebase at boot by `cloudgateway-sync-peers` (`Backend/API/src/sync.py`). `sync_peers` removes **any** live peer not in the desired client set - a mesh peer added out-of-band would be stripped on the next sync. Mesh peers must become part of the desired set.
-* Client configs use `AllowedIPs = 0.0.0.0/0, ::/0`, so clients already send all traffic through their server. **No client-side config change is needed** for cross-region routing; the routing decision happens entirely on the servers.
-* The host firewall already allows `FORWARD -i wg0 ACCEPT` and `FORWARD -o wg0 ACCEPT`, so wg0-to-wg0 forwarding (client-to-client, and client-to-mesh-peer) is already permitted. NAT masquerade only applies `-o $PRIMARY_IFACE`, so cross-tunnel traffic keeps real tunnel source IPs. The `169.254.169.254` metadata DROP still applies. No firewall changes needed.
-* Region docs in Firestore (`Regions/{regionId}`) already carry `wireguardPublicKey`, `wireguardEndpointHostname`, `wireguardPort` - almost everything a peer server needs. Missing: the region's tunnel CIDRs and mesh membership.
-* `api.env` already carries `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR` / `_IPV6_CIDR` per region, and `cloudgateway-register-region` already self-seeds the region doc at the end of bootstrap.
-* Both servers have public IPs and listen on UDP 51820 (ingress already open `0.0.0.0/0` / `::/0`), so either side can initiate the server-to-server handshake. No OCI security-list changes needed.
-* `POST /api/admin/sync` already exists per region - the manual trigger plumbing is mostly there.
+## Current state and subnet plan
 
-## Subnet Plan (operator-managed in tfvars)
+Both regions currently use the same tunnel networks, so bridging is impossible until Chicago moves:
 
-Region index N gets `10.0.N.0/24` and `fd42:42:42:N::/64`. All regions sit inside the aggregates `10.0.0.0/16` and `fd42:42:42::/48` (documentation-only aggregates; nothing routes them as a whole).
-
-| Region | v4 network | server addr / DNS | v6 network | v6 addr / DNS |
+| Region | Current v4 | Current v6 | Planned v4 | Planned v6 |
 | --- | --- | --- | --- | --- |
-| us-sanjose-1 | `10.0.0.0/24` | `10.0.0.1` | `fd42:42:42::/64` | `fd42:42:42::1` |
-| us-chicago-1 | `10.0.1.0/24` | `10.0.1.1` | `fd42:42:42:1::/64` | `fd42:42:42:1::1` |
-| next region | `10.0.2.0/24` | `10.0.2.1` | `fd42:42:42:2::/64` | `fd42:42:42:2::1` |
+| us-sanjose-1 | `10.0.0.0/24` | `fd42:42:42::/64` | `10.0.0.0/24` | `fd42:42:42::/64` |
+| us-chicago-1 | `10.0.0.0/24` | `fd42:42:42::/64` | `10.0.1.0/24` | `fd42:42:42:1::/64` |
+| next region | — | — | `10.0.2.0/24` | `fd42:42:42:2::/64` |
 
-Notes:
+Each region uses an exact `/24` IPv4 interface network and `/64` IPv6 interface network. The interface address is the `.1`/`::1` address and DNS equals that interface address. Region networks derive from the allocation slot and remain inside aggregate `10.0.0.0/16` and `fd42:42:42::/48`; the aggregates are documentation-only and are not routed as a whole.
 
-* `fd42:42:42::/64` **is** `fd42:42:42:0::/64`, so San Jose's v6 network is already slot 0 and does not change. San Jose keeps everything; existing SJ clients survive (a redeploy rebuilds the host, but the endpoint hostname re-resolves and boot sync restores peers).
-* Chicago changes v4, v6, and both DNS IPs. Its client docs in Firestore hold `10.0.0.x` assignments and rendered configs with `DNS = 10.0.0.1`, all invalid after the cutover - they must be deleted so users recreate.
-* This stays in per-region tfvars as today (`wg_address_v4`, `wg_network_v4`, `wg_dns_address_v4`, and v6 equivalents). No derived/indexed Terraform variable needed - but we should add a cross-region overlap preflight (below) since nothing currently stops two regions from shipping the same subnet, which is exactly the bug we have now.
+`subnet-registry.json` is the authoritative non-secret allocation inventory because tfvars are gitignored. Terraform preflight and `terraform.sh` must validate registry uniqueness and overlap, aggregate containment, active/reserved status, and an exact match between the selected region's registry allocation and tfvars before deployment. Runtime skipped-overlap protection remains load-bearing corruption protection against bad Firestore data; it is not legacy compatibility.
 
-## How the Bridge Actually Works
+## How the bridge works
 
-Server-to-server links ride the **same `wg0` interface** - no second interface, no nested tunnel, no MTU change (both hops are independent WG tunnels at MTU 1420). No new keys: each side authenticates with its existing interface keypair, exactly as it does with clients - a peer is a peer, whether it is an iPhone or another server.
+Server-to-server links use the same `wg0` interface. Each mesh-enabled server adds every other eligible mesh-enabled region as a peer with subnet-width AllowedIPs and `persistent-keepalive 25`, then installs routes for the remote `/24` and `/64` on `wg0`. Runtime peers need explicit route management because `wg set` does not install routes. Mesh peers are reapplied on every sync so endpoint hostnames resolve again; WireGuard endpoint roaming handles a remote rebuild without requiring a sync on the other host.
 
-Each server adds every other mesh-enabled region's server as a peer:
+Client configs already use full-tunnel AllowedIPs, and existing forwarding permits wg0-to-wg0 traffic without NAT. No client, firewall, MTU, or OCI ingress change is required. A peer in San Jose can therefore reach a Chicago peer through the remote subnet route, with tunnel source addresses preserved.
 
-```
-wg set wg0 peer <region.wireguardPublicKey> \
-  endpoint wg.<regionId>.gocloudlaunch.com:51820 \
-  allowed-ips 10.0.N.0/24,fd42:42:42:N::/64 \
-  persistent-keepalive 25
-```
+## Sync and Firestore model
 
-Things `wg set` does **not** do that we must handle:
+One reconciliation pass converges client peers, mesh peers, and routes. It runs from boot, the post-register bootstrap pass, and `POST /api/admin/sync` fan-out from Sync All Regions. Sync All targets all enabled regions, including a region whose `meshEnabled` is false, so removal converges everywhere.
 
-1. **Routes.** wg-quick only auto-installs routes for peers present in the conf file. Runtime peers get none. Today that is invisible because client allowed-ips fall inside the interface's own on-link `/24`. A remote region's subnet is not on-link, so after adding a mesh peer the sync must also run `ip -4 route replace 10.0.N.0/24 dev wg0` and `ip -6 route replace fd42:42:42:N::/64 dev wg0` (and delete routes when a mesh peer is removed). `replace` keeps it idempotent.
-2. **Endpoint DNS resolution.** `wg set` resolves the hostname once, at set time. Each sync pass re-applies mesh peers unconditionally, which re-resolves.
+Desired mesh peers are enabled regions other than self with complete, valid current metadata. Malformed metadata is isolated per candidate. `skipped-incomplete` and `skipped-overlap` are configuration failures or warnings while the condition persists, never pending. Pending means valid desired state differs from live state and Sync All can change live state. Once invalid or overlapping metadata is corrected, the candidate becomes pending until Sync All applies it.
 
-**Why no periodic sync is needed for healing:** the server keypair lives in tfvars, so a rebuilt region comes back with the *same public key*. Its own boot sync re-adds all its peers (resolving their endpoints fresh) and initiates handshakes; when the other side receives a valid handshake from the new IP, WireGuard's built-in endpoint roaming updates its stored endpoint for that peer automatically. Rebuilds self-heal with no action on the other servers.
+There is no legacy normalization. `applied` and `skipped-overlap` records must contain the complete current snapshot, including `endpointPort`; `skipped-incomplete` may omit whichever fields are missing or invalid and must preserve its reason code. Responses missing the current `meshUpdated` shape are incompatible. The dashboard requires the current API response shape: an incompatible response renders an explicit failure card and must never crash. There is no mixed-version rollout.
 
-The one ordering gap: a **brand-new** region (new public key) that existing servers have never synced. If A finishes bootstrap before B exists, A won't have B as a peer; B's post-register sync adds A, but A drops B's handshakes until A syncs again. Closing it is the manual flow: wait for both ready emails, then sync from the dashboard.
+Existing pre-feature Region documents are the one real schema rollout case. Missing `meshEnabled` is treated as false; registration backfills tunnel CIDRs; mesh remains disabled until all regions are updated. Malformed metadata must not prevent valid regions from progressing. If current Region documents are known to carry `wireguardPort`, verify and backfill it as a prerequisite rather than defaulting missing values to `51820`.
 
-Traffic path for peer P1 (SJ, `10.0.0.5`) to peer P2 (CHI, `10.0.1.7`):
-P1 sends to `10.0.1.7` -> full-tunnel AllowedIPs push it into P1's tunnel -> SJ server FORWARD accepts, route `10.0.1.0/24 dev wg0` matches, WG cryptokey-routes it to the Chicago mesh peer (allowed-ips cover `10.0.1.0/24`) -> Chicago server receives, forwards out wg0 to P2's `/32`. Return path mirrors it. Source IPs are preserved end to end (no NAT on the wg0-to-wg0 path).
+Region documents contain host-owned tunnel CIDRs and operator-owned `meshEnabled`:
 
-Same-server peer-to-peer already works today (hairpin through the server); this extends it across regions.
-
-## Sync Model (manual-first)
-
-One reconciliation job does everything: read Firestore, converge the live state - client peers, mesh peers, routes. It runs from:
-
-* **Boot** - existing `cloudgateway-sync-peers.service` (client peers restored; mesh peers too, if this region is mesh-enabled in Firestore).
-* **End of bootstrap** - one extra pass after `cloudgateway-register-region`, so the last-deployed region bridges to already-known regions immediately.
-* **Admin dashboard** - a single "Sync All Regions" action that fans out `POST /api/admin/sync` (extended to cover mesh) to every enabled region; no per-region selection (see Web Dashboard Changes). This is the primary operational trigger: new server deployment -> ready emails arrive -> enable mesh in the dashboard -> Sync All.
-
-No timer. Adding/removing servers and clients is infrequent and operator-driven, drift repair stays the manual one-command story it is today, and the "there is no periodic sync" contract in `docs/wireguard-drift-repair.md` stays true. **Future option:** a systemd timer (`OnCalendar=*:0/5` for UTC-aligned runs; simultaneous runs across servers are harmless since each host only mutates its own interface and writes its own status doc). Cost math if ever wanted: ~10 Firestore doc reads per pass, so 2 servers at 5 min ≈ 6k reads/day vs ~29k/day at 1 min against the 50k/day free tier.
-
-### Mesh membership (`meshEnabled`)
-
-* Lives **only** on the Firestore region doc. No tfvars var and no env var - a tfvars copy could disagree with Firestore and confuse things, and the server doesn't need the value before it can read Firestore because the answer to "what does a server do mesh-wise before its first sync?" is *nothing*.
-* `cloudgateway-register-region` sets `meshEnabled: false` **only when creating** a brand-new region doc and never touches it again. Host-owned fields (IP, pubkey, endpoint, CIDRs) stay upserted every deploy; `meshEnabled` is operator-owned via the dashboard.
-* Missing doc or missing field = not in the mesh. A new server cannot join the mesh by accident; joining requires the operator to flip the flag and run a sync.
-* Desired mesh set for a server = enabled regions with `meshEnabled == true` and complete mesh fields, minus self. If the server's **own** flag is false, its desired mesh set is empty - a sync then also *removes* any existing mesh peers and routes.
-* **Removing region C from the mesh:** flip C's flag off, sync all regions. A and B each see C fall out of their desired set and remove its peer + routes; C removes A and B. No SSH, no redeploy - this is the rollback story.
-
-## Firestore Changes
-
-**Region doc (`Regions/{regionId}`)** gains:
-
-```
-tunnelNetworkV4: "10.0.1.0/24"     // host-owned, upserted by register
-tunnelNetworkV6: "fd42:42:42:1::/64"
-meshEnabled: boolean                // operator-owned, created false by register, dashboard-toggled
-drainRequestedAt: timestamp         // lifecycle gate for replacement or destroy
+```text
+Regions/{regionId}
+  tunnelNetworkV4
+  tunnelNetworkV6
+  meshEnabled
 ```
 
-These plus the existing `wireguardPublicKey` / `wireguardEndpointHostname` / `wireguardPort` fully define a mesh peer. Desired mesh state is therefore **derived** from region docs - no separate desired-state doc to keep in sync.
+`Mesh/{regionId}` contains only server metadata and per-peer status such as endpoint hostname, public key, allowed networks, endpoint port, and `applied`, `skipped-incomplete`, or `skipped-overlap` status. Status writes are best effort and never make sync fail. Firestore rules permit admins to update only `meshEnabled`; Mesh reads are admin-only and writes remain Admin-SDK-only.
 
-**New top-level `Mesh` collection** - observability/status only, one doc per region, written by that region's host after each sync pass:
+## Backend and dashboard requirements
 
-```
-Mesh/{regionId}:
-  regionId: string
-  updatedAt: timestamp
-  peers: {
-    [peerRegionId]: {
-      endpointHostname: string
-      publicKey: string            // peer server public key (already public data)
-      allowedNetworkV4: string
-      allowedNetworkV6: string
-      status: "applied" | "skipped-overlap" | "skipped-incomplete"
-      appliedAt: timestamp
-    }
-  }
-```
+The API must reconcile the union of client and mesh peers, remove unknown peers and routes, reject duplicate server public keys, and expose strict current sync counts/statuses. Mesh candidate validation must check keys, endpoint, port, exact network widths, local-network conflicts, and cross-candidate overlap.
 
-* Server-to-server metadata only - no per-user data, no traffic/handshake stats, so it stays inside the logging boundary. (Deliberately not storing `latestHandshake`; it edges toward connection-history logging. `wg show wg0` on the host answers "is the link up" when debugging.)
-* Firestore rules: `Mesh` gets `allow read: if isAdmin()`, writes stay Admin-SDK-only. Region docs need one new rule: admins may update **only** the `meshEnabled` key from the dashboard (`request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meshEnabled'])`); everything else stays `allow write: if false`.
-* This is the one place the peer sync writes to Firebase. Today's contract is "sync never writes to Firebase" (docs/wireguard-drift-repair.md) - the doc must carve out this status write, and the write must be best-effort (a Firestore write failure must not fail the sync).
-* `schema.ts`, rules tests, and `firestore.indexes.json` (no new indexes expected) updated to match. `scripts/backup_firestore.py` walks all collections generically, so backups pick it up automatically.
+The Server Health page shows region enabled state, mesh state, status freshness, per-peer results, and configuration failures. Toggling `meshEnabled` changes no host until Sync All. Auth generation changes must clear syncing and toggling state so controls cannot remain disabled after a session refresh. Live endpoint drift is current when the live endpoint address is one of the DNS answers and the port matches. CloudGateway manages one grey-cloud A record and no AAAA record, so this is cheap defensive correctness.
 
-## Backend/API Changes
+## Terraform and deploy requirements
 
-`src/register.py` + `src/repository.py`
+* Fix Terraform DNS/interface comparison to canonicalize and compare the address component, not `cidrhost(interfaceCIDR, 0)`.
+* Enforce strict booleans: only literal `true` enables Region or mesh; all other values are false.
+* Keep `wg0.conf` interface-only; runtime peers and routes are applied by sync.
+* Keep the planned Chicago values: `10.0.1.1/24`, `10.0.1.0/24`, DNS `10.0.1.1`, `fd42:42:42:1::1/64`, `fd42:42:42:1::/64`, DNS `fd42:42:42:1::1`.
+* Preflight must validate every present tfvars allocation against the registry, including inactive and reserved allocations as appropriate, and reject overlap or aggregate violations before deployment.
 
-* `RegionRegistration` and `RegionDoc` gain `tunnel_network_v4` / `tunnel_network_v6` (registered from settings; the CIDR env vars already exist) and `RegionDoc` gains `mesh_enabled`.
-* `upsert_region` writes the CIDRs every time and `meshEnabled: false` only on create.
-* Repository gains a `write_mesh_status(...)` method (and the fake in `tests/fakes.py` mirrors it).
+## Cutover and rollback
 
-`src/wireguard.py`
+1. Remove the implemented drain and legacy-compatibility machinery and complete the agreed validation fixes.
+2. Before the Chicago subnet change, delete every `Regions/us-chicago-1/Instances/*` document without inspecting or migrating addresses.
+3. Edit the live, gitignored `us-chicago-1.terraform.tfvars` to the planned subnet values.
+4. Deploy Chicago and San Jose together with the normal Terraform flow.
+5. Let registration backfill current tunnel CIDRs. Keep mesh disabled until all Region documents are updated.
+6. After ready emails, explicitly enable mesh for the intended regions and run Sync All Regions.
+7. Verify routes, WireGuard peers/handshakes, cross-region tunnel reachability, and Mesh status documents. Chicago users recreate clients.
 
-* Today `_validate_ip_interface` enforces exactly `/32` + `/128` - correct for clients, wrong for mesh. Introduce a distinct mesh-peer type rather than loosening client validation:
-  * `MeshPeer(public_key, endpoint_host, endpoint_port, allowed_network_v4, allowed_network_v6)` with subnet-width validation (must not equal or overlap the local networks).
-  * `add_mesh_peer(...)` runs `wg set ... endpoint ... allowed-ips <cidrs> persistent-keepalive 25` then `ip route replace` for both CIDRs; removal also deletes the routes.
-* `sync_peers` takes both desired sets (clients + mesh) and reconciles the union, so mesh peers survive client sync and unknown peers still get removed. Notes:
-  * Mesh peers are **always re-applied** each pass (`wg set` is idempotent and cheap; this is also what re-resolves endpoints). Client peers keep the current compare-then-apply behavior.
-  * Classify a live peer as "mesh" iff its public key matches a known region server key; everything else is judged against the client set. A region removed from the mesh falls out of the desired set and gets removed like any unknown peer - routes included.
-* Route ops go through the same `_run` wrapper (`ip` is another root subprocess; same error handling, nothing logged beyond CIDRs).
+Rollback of mesh membership is explicit: disable the affected `meshEnabled` flags and Sync All Regions. A future subnet change repeats the hard cutoff; it is not an address migration. Disabled-region drain concerns are inapplicable because `enabled=false` means the region is dead.
 
-`src/sync.py`
+## Accepted and out-of-scope review findings
 
-* `desired_peers` stays; add `desired_mesh_peers(repository, settings)`: enabled regions with `meshEnabled == true`, minus self, minus any region missing pubkey/CIDRs (`skipped-incomplete`), minus any region whose claimed CIDRs overlap the local networks or another region's (`skipped-overlap`, logged loudly - a region doc claiming someone else's subnet would otherwise blackhole traffic). Empty set when the local region's own flag is false or its doc is missing.
-* After a successful pass, best-effort `write_mesh_status`.
-* Audit log (`build_sync_audit_log`) gains a mesh section (region IDs and CIDRs only).
+* Account-deletion local/remote peer races are accepted for this PR.
+* Destroy applying a newly generated plan is accepted.
+* Client old-address migration is rejected by the hard cutoff.
+* Permanent decommission automation is not required.
+* Per-target repeated lifecycle verification and transactional drain-snapshot concerns are removed with the drain system.
 
-`src/routes.py` (`POST /api/admin/sync`)
+## Checklist and status
 
-* Gets mesh reconciliation for free once `run_sync` includes it. Extend `AdminSyncResponse` with mesh counts/statuses so the dashboard can trigger-and-see. `docs/api-contract.md` updated to match.
+Checked items are implemented and validated on the branch. Live operator actions and newly agreed cleanup/fixes remain unchecked.
 
-## Web Dashboard Changes (`Frontend/Web/`)
+* [x] Region registration and repository models publish tunnel CIDRs and create `meshEnabled: false`.
+* [x] WireGuard mesh peers, subnet-width validation, routes, union reconciliation, and endpoint reapplication.
+* [x] Sync desired mesh calculation, malformed-metadata isolation, overlap protection, status write, and audit output.
+* [x] Admin sync API, Firestore access/rules/schema, and Server Health Sync All UI.
+* [x] Post-register bootstrap sync and subnet documentation.
+* [x] Authoritative subnet registry, exact registry/tfvars matching, aggregate/status validation, fixed `/24`/`/64` invariants, and cross-region overlap preflight.
+* [ ] Remove `region-lifecycle.py`, `drainRequestedAt`, prepare-drain/verify-drain, and Terraform drain-gate direction from implementation, docs, and follow-ups.
+* [ ] Remove legacy applied/skipped response normalization and missing-`endpointPort`/missing-`meshUpdated` compatibility.
+* [ ] Implement strict boolean handling and strict current sync-response failure cards.
+* [ ] Fix Terraform address-component DNS/interface comparison.
+* [ ] Implement pending versus persistent configuration-failure semantics, auth-generation state reset, and multi-address endpoint drift comparison.
+* [ ] Edit live `us-chicago-1.terraform.tfvars`.
+* [ ] Delete Chicago client documents, deploy the cutover, enable mesh, Sync All, and perform live verification.
 
-Admin-only **Server Health** page (web only; iOS later once we're happy with it). The existing sync modal (`Home.tsx` + `RegionSyncCard.tsx`) already fans out `POST /api/admin/sync` per region and shows per-region counts + audit logs; it currently preselects all enabled regions with per-region checkboxes.
-
-* **Drop region selection: "Sync All Regions" is the only sync action.** Mesh changes are inherently all-region operations - a partial sync leaves the mesh half-applied (e.g. toggling C off and syncing only C still leaves A and B holding C's peer and routes until they sync). Client-drift repair on one region is harmless to run everywhere (idempotent; untouched regions report "no changes"). The modal lists every region it will sync, then renders the existing per-region result cards (extended with mesh counts); a failed region shows its failure card and the retry is simply Sync All again.
-* Sync All targets all *enabled* regions regardless of `meshEnabled` - a region leaving the mesh needs a sync to remove its peers.
-* Region list with existing health/enabled state plus mesh state from `Mesh/*` docs (per-peer status, `updatedAt` staleness warning - visibility matters more in a manual-sync world since nothing self-heals unnoticed).
-* `meshEnabled` toggle per region (direct Firestore update under the narrow rules change above). Toggles change nothing on any host until a sync runs, so show a "pending - not yet applied" state by comparing each region's `meshEnabled` flag against what its `Mesh/*` doc says was last applied, and light up Sync All when anything is pending.
-
-## Host / Bootstrap Changes (`Infrastructure/OCI/host/bootstrap.sh`)
-
-* Run one sync pass *after* `cloudgateway-register-region` at the end of bootstrap (the existing early sync runs before registration; the final pass lets the last-deployed region bridge to already-known mesh regions immediately).
-* No timer unit. No wg0.conf changes: it stays interface-only, and the interface `Address`/`PostUp` lines already come from tfvars, which carry the new per-region values.
-* No AdGuard/Unbound changes: clients keep using their own region's DNS. (Cross-region clients cannot query the *remote* region's DNS IP - AdGuard binds only the local tunnel DNS IPs and allowlists only the local networks. That's fine and arguably correct.)
-
-## Terraform / Deploy Script Changes
-
-* `Infrastructure/OCI/terraform/cloudgateway.tf`: no new variables. Optional: variable validation that `wg_dns_address_v4` ∈ `wg_network_v4`, etc.
-* `terraform.tfvars.example`: document the subnet-per-region scheme and the reserved aggregates; add the "next region bumps the third octet / fourth hextet" instructions.
-* `us-chicago-1.terraform.tfvars`: `wg_address_v4 = "10.0.1.1/24"`, `wg_network_v4 = "10.0.1.0/24"`, `wg_dns_address_v4 = "10.0.1.1"`, `wg_address_v6 = "fd42:42:42:1::1/64"`, `wg_network_v6 = "fd42:42:42:1::/64"`, `wg_dns_address_v6 = "fd42:42:42:1::1"`. (Gitignored - operator edit.)
-* `scripts/terraform-preflight.py`: add a subnet-uniqueness check across **all** `*.terraform.tfvars` present (not just the regions being deployed): no two regions may have equal or overlapping `wg_network_v4`/`wg_network_v6`, and each region's address/DNS must sit inside its own networks. This is the programmatic guard for the operator-managed scheme.
-* `scripts/terraform.sh`: nothing structural. Deploying `chicago sanjose` in one invocation already cuts one tag and applies both; bridging happens via register + post-register sync + the operator's dashboard sync once the ready emails arrive.
-
-## Cutover / Rollout Order
-
-1. Land all code/docs changes; both regions need the new API anyway, so both get redeployed.
-2. Delete Chicago's client docs (`Regions/us-chicago-1/Instances/*`) - their `10.0.0.x` assignments and rendered configs are invalid under the new subnet. (Hard cutoff per plan; SJ docs untouched.)
-3. Edit `us-chicago-1.terraform.tfvars` with the new subnet values.
-4. `./scripts/terraform.sh chicago sanjose` - one deploy tag, both instances rebuild. Rebuilds are the normal path; SJ clients survive via endpoint DNS re-resolve + boot peer sync.
-5. Each host registers itself (now with tunnel CIDRs; existing region docs keep their `meshEnabled` value, which starts absent/false).
-6. Ready emails arrive. In the dashboard: enable `meshEnabled` for both regions, then "Sync all regions".
-7. Verify: `wg show wg0` on each host shows the other server's key with subnet-width allowed-ips and a recent handshake; `ip route` shows the remote subnets on wg0; two test clients in different regions ping each other's tunnel IPs; `Mesh/*` docs show `applied`.
-8. Chicago users recreate clients from the dashboard/app as usual.
-
-Rollback = mesh membership: flip `meshEnabled` off (one region or all), sync all regions; every host converges to peers-and-routes-removed. Documented in service-operations.
-
-## Security / Privacy Notes
-
-* Cross-region bridging extends the existing intra-region reality: any active client can reach any other active client's tunnel IP, now across regions. All clients are provisioned by us for known users, but if per-user isolation is ever wanted, it becomes an iptables FORWARD policy question (allow client-to-client only within an owner's peers) - out of scope here, worth a future TODO.
-* Mesh peers are added only from region docs written via the Admin SDK by our own hosts (plus the narrow admin-only `meshEnabled` toggle); a compromised regional host could already tamper with Firestore, so the mesh does not add a new trust boundary - but the overlap guard in `desired_mesh_peers` prevents a bad region doc from hijacking another region's subnet on healthy hosts.
-* No pairwise preshared keys: WG's optional PSK layer would need per-pair distribution for marginal benefit here; interface keys already authenticate both ends.
-* The `Mesh` docs and audit log stay server-metadata-only (region IDs, CIDRs, public keys, endpoints). No per-user connection history, no handshake timestamps in Firestore.
-* Region docs are readable by any signed-in user (rules); adding tunnel CIDRs and `meshEnabled` there exposes nothing sensitive (endpoint + public key are already there, and `10.0.N.0/24` is guessable).
-
-## What Needs To Change (checklist)
-
-Checked items are implemented on this branch. The live, gitignored cutover remains operator work.
-
-* [x] `Backend/API/src/repository.py` - `RegionDoc`/`RegionRegistration` tunnel CIDRs + `mesh_enabled`, mesh-status write, mesh validation helpers
-* [x] `Backend/API/src/register.py` - publish tunnel CIDRs; `meshEnabled: false` on create only
-* [x] `Backend/API/src/wireguard.py` - `MeshPeer`, subnet-width validation, endpoint/keepalive support, route management, union sync
-* [x] `Backend/API/src/sync.py` - desired mesh set, overlap/incomplete guards, status write, audit log section
-* [x] `Backend/API/src/routes.py` + `models.py` - admin sync response mesh fields
-* [x] `Backend/API/src/firebase.py` - Firestore reads/writes for the above
-* [x] `Backend/API/tests/*` - fakes + coverage for all of the above
-* [x] `Frontend/Web/` - admin Server Health page: mesh status, `meshEnabled` toggles with pending-state, Sync All Regions replacing per-region selection
-* [x] `Infrastructure/OCI/host/bootstrap.sh` - post-register sync pass
-* [x] `Infrastructure/OCI/terraform/terraform.tfvars.example` - subnet scheme docs
-* [ ] `us-chicago-1.terraform.tfvars` (local, gitignored) - new subnet values
-* [x] `scripts/terraform-preflight.py` (+ its tests) - cross-region subnet overlap check
-* [x] `Backend/Firebase/schema.ts`, `firestore.rules`, rules tests - region fields, `Mesh` collection, admin `meshEnabled`-only update rule
-* [x] Docs: `Infrastructure/OCI/README.md`, `docs/regional-deployment.md`, `docs/wireguard-drift-repair.md` (mesh in the sync + the status-write carve-out; "no periodic sync" stays true), `docs/service-operations.md` (mesh on/off runbook), `docs/api-contract.md`
-* [x] Validation: `./scripts/test.sh api web infra firebase` (reported clean in the implementation session: 188 API, 98 web, 33 preflight, and 27 Firestore rules tests, plus static checks/builds)
-
-## PR Review Follow-ups
-
-These are confirmed review findings, not completed rollout steps.
-
-* [x] **High - isolate malformed remote region metadata.** Candidate normalization validates malformed keys, endpoints, ports, and networks before WireGuard application, records `skipped-incomplete` reason codes, and keeps valid candidates progressing.
-* [x] **High - reject duplicate region WireGuard public keys.** Enabled-region key collisions are preserved in audit/status output and all conflicting mesh candidates are skipped before peer or route reconciliation.
-* [x] **High - enforce deployable interface and DNS address invariants.** Strict preflight and Terraform 1.6 preconditions enforce canonical `/24`/`/64` interfaces, interface-derived networks, and DNS equality with interface addresses.
-* [x] **Medium - preserve real `skipped-incomplete` warnings in Server Health.** Optional incomplete metadata and reason codes are serialized additively and parsed by the dashboard health view.
-* [x] **Medium - detect stale applied mesh snapshots.** Mesh status includes endpoint ports and reason metadata, while dashboard/backend validation compares current region metadata and freshness before treating snapshots as current.
-* [x] **Medium - prevent out-of-order status and dashboard state writes.** Mesh status writes occur inside the WireGuard lock after reconciliation, with stale dashboard state protections.
-* [x] **Medium - report mesh drift and skipped candidates accurately.** Live endpoint, port, AllowedIPs, and keepalive drift produces `meshUpdated`; `noChanges` counts only live mutations and excludes applied/skipped counters.
-* [x] **Medium - make subnet uniqueness authoritative.** The tracked subnet registry is authoritative, sibling IDs and allocations are checked strictly, and Terraform repeats the registry/network invariants.
-* [x] **Medium - replace the documented shell-sourced systemd environment fallback.** Registration recovery uses `systemd-run --property=EnvironmentFile=...` everywhere in the runbooks.
-* [x] **Medium - define mesh-safe destroy and rebuild handling.** Destructive Terraform plans now require prepare-drain, dashboard Sync All, strict verify-drain, and subnet/client safety checks before any tag, source ref, apply, or destroy mutation.
+Previous full validation passed before this direction change. Validation must be rerun after the cleanup and agreed fixes.
