@@ -199,18 +199,35 @@ Rollback = mesh membership: flip `meshEnabled` off (one region or all), sync all
 
 ## What Needs To Change (checklist)
 
-* [ ] `Backend/API/src/repository.py` - `RegionDoc`/`RegionRegistration` tunnel CIDRs + `mesh_enabled`, mesh-status write, mesh validation helpers
-* [ ] `Backend/API/src/register.py` - publish tunnel CIDRs; `meshEnabled: false` on create only
-* [ ] `Backend/API/src/wireguard.py` - `MeshPeer`, subnet-width validation, endpoint/keepalive support, route management, union sync
-* [ ] `Backend/API/src/sync.py` - desired mesh set, overlap/incomplete guards, status write, audit log section
-* [ ] `Backend/API/src/routes.py` + `models.py` - admin sync response mesh fields
-* [ ] `Backend/API/src/firebase.py` - Firestore reads/writes for the above
-* [ ] `Backend/API/tests/*` - fakes + coverage for all of the above
-* [ ] `Frontend/Web/` - admin Server Health page: mesh status, `meshEnabled` toggles with pending-state, Sync All Regions replacing per-region selection
-* [ ] `Infrastructure/OCI/host/bootstrap.sh` - post-register sync pass
-* [ ] `Infrastructure/OCI/terraform/terraform.tfvars.example` - subnet scheme docs
+Checked items are implemented on this branch. The live, gitignored cutover remains operator work.
+
+* [x] `Backend/API/src/repository.py` - `RegionDoc`/`RegionRegistration` tunnel CIDRs + `mesh_enabled`, mesh-status write, mesh validation helpers
+* [x] `Backend/API/src/register.py` - publish tunnel CIDRs; `meshEnabled: false` on create only
+* [x] `Backend/API/src/wireguard.py` - `MeshPeer`, subnet-width validation, endpoint/keepalive support, route management, union sync
+* [x] `Backend/API/src/sync.py` - desired mesh set, overlap/incomplete guards, status write, audit log section
+* [x] `Backend/API/src/routes.py` + `models.py` - admin sync response mesh fields
+* [x] `Backend/API/src/firebase.py` - Firestore reads/writes for the above
+* [x] `Backend/API/tests/*` - fakes + coverage for all of the above
+* [x] `Frontend/Web/` - admin Server Health page: mesh status, `meshEnabled` toggles with pending-state, Sync All Regions replacing per-region selection
+* [x] `Infrastructure/OCI/host/bootstrap.sh` - post-register sync pass
+* [x] `Infrastructure/OCI/terraform/terraform.tfvars.example` - subnet scheme docs
 * [ ] `us-chicago-1.terraform.tfvars` (local, gitignored) - new subnet values
-* [ ] `scripts/terraform-preflight.py` (+ its tests) - cross-region subnet overlap check
-* [ ] `Backend/Firebase/schema.ts`, `firestore.rules`, rules tests - region fields, `Mesh` collection, admin `meshEnabled`-only update rule
-* [ ] Docs: `Infrastructure/OCI/README.md`, `docs/regional-deployment.md`, `docs/wireguard-drift-repair.md` (mesh in the sync + the status-write carve-out; "no periodic sync" stays true), `docs/service-operations.md` (mesh on/off runbook), `docs/api-contract.md`
-* [ ] Validation: `./scripts/test.sh api web infra firebase`
+* [x] `scripts/terraform-preflight.py` (+ its tests) - cross-region subnet overlap check
+* [x] `Backend/Firebase/schema.ts`, `firestore.rules`, rules tests - region fields, `Mesh` collection, admin `meshEnabled`-only update rule
+* [x] Docs: `Infrastructure/OCI/README.md`, `docs/regional-deployment.md`, `docs/wireguard-drift-repair.md` (mesh in the sync + the status-write carve-out; "no periodic sync" stays true), `docs/service-operations.md` (mesh on/off runbook), `docs/api-contract.md`
+* [x] Validation: `./scripts/test.sh api web infra firebase` (reported clean in the implementation session: 188 API, 98 web, 33 preflight, and 27 Firestore rules tests, plus static checks/builds)
+
+## PR Review Follow-ups
+
+These are confirmed review findings, not completed rollout steps.
+
+* [ ] **High - isolate malformed remote region metadata.** `desired_mesh_peers` validates CIDRs and field presence, but malformed non-empty public keys, endpoint hostnames, or ports reach `LocalWireGuardManager._validate_mesh_peer` and abort the entire reconciliation before valid mesh and client peers are restored. Validate each candidate before application, record it as skipped, and add end-to-end sync coverage.
+* [ ] **High - reject duplicate region WireGuard public keys.** `mesh_by_key` silently keeps one of two regions sharing a key while route reconciliation and `Mesh/*` status still treat both as applied. Detect collisions before reconciliation, skip or fail all conflicting candidates, and cover the case in tests.
+* [ ] **High - enforce deployable interface and DNS address invariants.** Preflight discards the prefix from `wg_address_v4`/`wg_address_v6` and only checks containment; it also allows a DNS address different from the sole address assigned to `wg0`. Require interface prefixes to match their region networks and require DNS IPs to equal the assigned interface IPs unless bootstrap explicitly assigns separate DNS addresses.
+* [ ] **Medium - preserve real `skipped-incomplete` warnings in Server Health.** The backend writes empty peer metadata for incomplete candidates, but `parseMeshPeerEntry` rejects any entry with an empty endpoint, key, or CIDR, so the warning disappears and the link looks merely unsynced. Parse skipped entries without requiring complete applied-peer metadata and add a backend-shaped fixture.
+* [ ] **Medium - detect stale applied mesh snapshots.** Link health uses only the stored `status` strings. Compare each `Mesh/*` peer snapshot with the current region public key, endpoint, port, and tunnel CIDRs so a redeploy or metadata change cannot remain green with stale keys/routes; persist the endpoint port in status if needed.
+* [ ] **Medium - prevent out-of-order status and dashboard state writes.** A completed sync writes `Mesh/*` after releasing the WireGuard lock, so an older pass can overwrite a newer status document. Server Health also lets an older refresh overwrite a successful optimistic `meshEnabled` toggle. Add reconciliation generations/serialization on the backend and stale-request guards or post-toggle reloads on the web page.
+* [ ] **Medium - report mesh drift and skipped candidates accurately.** Reapplying an existing mesh peer with changed endpoint or AllowedIPs produces no mesh update record, so the API/audit log can say `noChanges: true`; `meshSkipped` is also omitted from the `noChanges` calculation despite the API contract. Add an update signal and make `noChanges` semantics consistent with the documented skipped/applied counters.
+* [ ] **Medium - make subnet uniqueness authoritative.** Preflight only sees locally present, gitignored sibling tfvars and silently overwrites duplicate `region_id` entries in its map. Fail duplicate IDs and validate against an authoritative deployed-region inventory, or require and verify that every deployed region tfvars file is present.
+* [ ] **Medium - replace the documented shell-sourced systemd environment fallback.** `docs/regional-deployment.md` tells operators to `source /etc/cloudgateway/api.env`, which uses shell parsing for a file written for systemd `EnvironmentFile` semantics. Use the same `systemd-run --property=EnvironmentFile=...` registration path as bootstrap.
+* [ ] **Medium - define mesh-safe destroy and rebuild handling.** Terraform destroy/rebuild does not first disable the region or fan out a sync, so other hosts can retain a dead peer and route when registration is delayed or fails. Make disable + Sync All a prerequisite or automate equivalent cleanup.
