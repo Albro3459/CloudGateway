@@ -120,31 +120,64 @@ variable "wg_listen_port" {
 variable "wg_address_v4" {
   type        = string
   description = "WireGuard server IPv4 address CIDR"
+
+  validation {
+    condition     = can(cidrhost(var.wg_address_v4, 0))
+    error_message = "wg_address_v4 must be a valid IPv4 address CIDR, for example 10.0.1.1/24."
+  }
 }
 
 variable "wg_address_v6" {
   type        = string
   description = "WireGuard server IPv6 address CIDR"
+
+  validation {
+    condition     = can(cidrhost(var.wg_address_v6, 0))
+    error_message = "wg_address_v6 must be a valid IPv6 address CIDR, for example fd42:42:42:1::1/64."
+  }
 }
 
+# wg_address_v4/v6 and wg_dns_address_v4/v6 containment inside wg_network_v4/v6 is enforced by
+# scripts/terraform-preflight.py (evaluate_subnet_plan), not here: cross-variable references in
+# validation blocks need Terraform 1.9+, and this package is pinned to 1.6+ (docs/tool-versions.md).
 variable "wg_network_v4" {
   type        = string
   description = "WireGuard IPv4 network CIDR for NAT"
+
+  validation {
+    condition     = can(cidrhost(var.wg_network_v4, 0)) && var.wg_network_v4 == cidrsubnet(var.wg_network_v4, 0, 0)
+    error_message = "wg_network_v4 must be a valid IPv4 network address CIDR with no host bits set, for example 10.0.1.0/24."
+  }
 }
 
 variable "wg_network_v6" {
   type        = string
   description = "WireGuard IPv6 network CIDR for NAT"
+
+  validation {
+    condition     = can(cidrhost(var.wg_network_v6, 0)) && var.wg_network_v6 == cidrsubnet(var.wg_network_v6, 0, 0)
+    error_message = "wg_network_v6 must be a valid IPv6 network address CIDR with no host bits set, for example fd42:42:42:1::/64."
+  }
 }
 
 variable "wg_dns_address_v4" {
   type        = string
   description = "WireGuard DNS server IPv4 address"
+
+  validation {
+    condition     = can(cidrhost("${var.wg_dns_address_v4}/32", 0))
+    error_message = "wg_dns_address_v4 must be a valid IPv4 address, for example 10.0.1.1."
+  }
 }
 
 variable "wg_dns_address_v6" {
   type        = string
   description = "WireGuard DNS server IPv6 address"
+
+  validation {
+    condition     = can(cidrhost("${var.wg_dns_address_v6}/128", 0))
+    error_message = "wg_dns_address_v6 must be a valid IPv6 address, for example fd42:42:42:1::1."
+  }
 }
 
 variable "wg_rate_limit" {

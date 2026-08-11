@@ -95,6 +95,40 @@ journalctl -u unbound -f
 * Query logging must stay off (`verbosity` low, no `log-queries`). DNS query logs are forbidden VPN traffic logs.
 * If resolution fails, verify the host can reach the DoT upstreams on port 853 and that `/var/lib/unbound/root.key` exists for validation.
 
+## Cross-Region Mesh: Enable / Verify / Rollback
+
+The mesh bridges regional servers together over `wg0` so a peer on one region can reach a peer on
+another region by tunnel IP. Membership lives only in Firestore (`meshEnabled` on each region doc,
+operator-toggled from the admin dashboard); there is no tfvars var or env var for it. No SSH and no
+redeploy are needed to enable, verify, or roll back mesh membership - only a dashboard sync.
+
+**Enable:**
+
+1. Deploy (or confirm already deployed) every region that should join the mesh, with each region's
+   tunnel subnet inside the shared aggregates and non-overlapping with every other region's -
+   `scripts/terraform-preflight.py` enforces this at deploy time (see
+   [regional-deployment.md](regional-deployment.md)).
+2. Wait for each region's deployment-ready email (bootstrap self-registers the region doc with its
+   tunnel CIDRs at the end of bootstrap).
+3. In the admin dashboard, flip `meshEnabled` on for each region that should join.
+4. Click "Sync All Regions". This is the only sync action - there is no per-region selection,
+   because a partial sync can leave the mesh half-applied on the regions left out.
+
+**Verify (per host, over SSH):**
+
+* `wg show wg0` lists the other mesh region's server public key with subnet-width `allowed-ips`
+  (`10.0.N.0/24, fd42:42:42:N::/64`) and a recent handshake.
+* `ip route` shows the remote region's subnets routed `dev wg0`.
+* Two test clients in different regions can ping each other's tunnel IPs.
+* The `Mesh/{regionId}` Firestore docs show `status: "applied"` for each peer, with a recent
+  `updatedAt`.
+
+**Rollback:** flip `meshEnabled` off - for one region to remove just that region from the mesh, or
+for every region to tear the mesh down entirely - then "Sync All Regions" again. Every host
+converges to peers-and-routes-removed for the disabled region(s) on that one sync pass; no SSH,
+no redeploy, and no timer to wait on (sync is manual-first by design - see
+[TODO/shared-subnet-mesh.md](../TODO/shared-subnet-mesh.md)).
+
 ## Quick Triage Order
 
 1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudgateway-api.service`, then Cloudflare DNS/proxy.

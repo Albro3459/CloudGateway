@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
-from .enums import ClientStatus, ErrorCode, Role
+from .enums import ClientStatus, ErrorCode, MeshPeerStatus, Role
 
 
 class ApiModel(BaseModel):
@@ -113,6 +113,16 @@ class AdminSyncRequest(ApiModel):
     region_id: str = Field(min_length=1)
 
 
+class AdminSyncMeshPeer(ApiModel):
+    # Deliberately omits the peer public key; the durable Mesh/{regionId}
+    # Firestore doc carries it. Server metadata only.
+    region_id: str
+    status: MeshPeerStatus
+    endpoint_hostname: str
+    allowed_network_v4: str
+    allowed_network_v6: str
+
+
 class AdminSyncResponse(ApiModel):
     region_id: str
     synced_at: datetime
@@ -121,6 +131,14 @@ class AdminSyncResponse(ApiModel):
     removed: int
     no_changes: bool
     log: str
+    mesh_enabled: bool
+    mesh_applied: int
+    mesh_added: int
+    mesh_removed: int
+    mesh_skipped: int
+    mesh_routes_added: int
+    mesh_routes_removed: int
+    mesh_peers: list[AdminSyncMeshPeer]
 
 
 class ErrorDetail(ApiModel):

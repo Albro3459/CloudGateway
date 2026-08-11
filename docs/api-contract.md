@@ -200,9 +200,16 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 - Requires Firebase bearer auth with admin role.
 - Regional: reconciles this host's live WireGuard peer set against the region's `active` client
-  docs in Firebase (the same reconcile run at boot and by `cloudgateway-sync-peers`). Idempotent.
+  docs in Firebase (the same reconcile run at boot and by `cloudgateway-sync-peers`), **and**
+  reconciles the cross-region mesh: every other enabled region with `meshEnabled == true` and
+  complete/non-overlapping mesh fields becomes a server-to-server peer with matching routes on
+  `wg0` (see [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)). Idempotent -
+  mesh peers are re-applied every pass (this is what re-resolves each endpoint hostname); client
+  peers keep the existing compare-then-apply behavior.
 - `regionId` must equal this host's region or the request is rejected with `REGION_MISMATCH`; the
-  dashboard fans out one call per region so each regional API only syncs itself.
+  dashboard fans out one call per region so each regional API only syncs itself. Mesh changes are
+  inherently all-region operations, so the dashboard always syncs every enabled region ("Sync All
+  Regions"), not a subset.
 - Request:
 
 ```json
@@ -221,17 +228,45 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "updated": 0,
   "removed": 1,
   "noChanges": false,
-  "log": "CloudGateway peer sync audit log\nregion: ...\n"
+  "log": "CloudGateway peer sync audit log\nregion: ...\n",
+  "meshEnabled": true,
+  "meshApplied": 1,
+  "meshAdded": 0,
+  "meshRemoved": 0,
+  "meshSkipped": 0,
+  "meshRoutesAdded": 0,
+  "meshRoutesRemoved": 0,
+  "meshPeers": [
+    {
+      "regionId": "us-sanjose-1",
+      "status": "applied",
+      "endpointHostname": "wg.us-sanjose-1.gocloudlaunch.com",
+      "allowedNetworkV4": "10.0.0.0/24",
+      "allowedNetworkV6": "fd42:42:42::/64"
+    }
+  ]
 }
 ```
 
+- `added`/`updated`/`removed` count **client** peer changes only. `meshApplied` counts every
+  desired mesh peer applied this pass (re-applies included, so it is not just newly-added peers);
+  `meshAdded`/`meshRemoved` count mesh peers that newly appeared/disappeared on the interface this
+  pass; `meshSkipped` counts candidate regions skipped for overlap or incomplete mesh fields;
+  `meshRoutesAdded`/`meshRoutesRemoved` count the `wg0` mesh route changes from the route sweep.
+  `meshEnabled` is this region's own `Regions/{regionId}.meshEnabled` flag as observed this pass.
+  `noChanges` is true iff nothing changed at all: no client peer changes and every mesh/route
+  counter above is zero.
+- `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
+  `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. It deliberately omits the
+  peer's WireGuard public key - the durable `Mesh/{regionId}` Firestore doc carries it.
 - `log` is an admin audit artifact. It can include user emails, client names,
   client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 
 - `log` is a plaintext audit report (no ANSI/color) listing each added/updated/removed peer:
   added/updated peers include the owning `clientId`/`email`, removed peers (host peers with no
   matching active client) are listed by public key only. It never contains private keys, full
-  configs, or tokens.
+  configs, or tokens. Its mesh section is server metadata only (region IDs, CIDRs, endpoint
+  hostnames, route changes) and never includes a mesh peer's public key or any per-user data.
 
 ## Error Responses
 

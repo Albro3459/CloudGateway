@@ -5,16 +5,16 @@ import { Eye, EyeOff, KeyRound, Link, LogOut, RefreshCw, Trash2, UserCircle, Use
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
-import { createAdminUser, createClient, deleteAccount, deleteClient, runRegionsSync } from "../helpers/APIHelper";
-import type { ApiHelperFailure, RegionSyncResult } from "../helpers/APIHelper";
+import { createAdminUser, createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
+import type { ApiHelperFailure } from "../helpers/APIHelper";
 import { appleProvider, auth, EmailAuthProvider, googleProvider, linkWithCredential, linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
-import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region, resolveActiveRegionId } from "../helpers/regionsHelper";
+import { getEnabledRegions, getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, resolveActiveRegionId } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
 import { NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { AppNav } from "../components/AppNav";
-import { RegionSyncCard } from "../components/RegionSyncCard";
+import { SyncRegionsConfirmModal } from "../components/SyncRegionsConfirmModal";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
@@ -35,10 +35,6 @@ const PULL_REFRESH_MAX_DISTANCE = 96;
 const ALL_AUTH_PROVIDER_IDS = ["password", "apple.com", "google.com"] as const;
 
 type AuthProviderId = typeof ALL_AUTH_PROVIDER_IDS[number];
-
-const getEnabledRegions = (regions: Region[] | null) => (
-    (regions || []).filter(region => region.enabled !== false)
-);
 
 const getProviderLabel = (providerId: AuthProviderId) => {
     if (providerId === "password") return "Email and password";
@@ -74,10 +70,6 @@ const Home: React.FC = () => {
     const [grantAccessError, setGrantAccessError] = useState<string | null>(null);
     const [grantAccessSuccess, setGrantAccessSuccess] = useState<string | null>(null);
     const [syncRegionsModalOpen, setSyncRegionsModalOpen] = useState(false);
-    const [selectedSyncRegionIds, setSelectedSyncRegionIds] = useState<Set<string>>(new Set());
-    const [syncingRegions, setSyncingRegions] = useState(false);
-    const [syncRegionResults, setSyncRegionResults] = useState<RegionSyncResult[] | null>(null);
-    const [syncRegionsError, setSyncRegionsError] = useState<string | null>(null);
 
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
     const enabledRegions = useMemo(() => getEnabledRegions(ociRegions), [ociRegions]);
@@ -112,10 +104,6 @@ const Home: React.FC = () => {
         : "No region selected";
 
     const showRegionTabs = enabledRegions.length > 1;
-    const allSyncRegionsSelected = enabledRegions.length > 0 && selectedSyncRegionIds.size === enabledRegions.length;
-    const syncRegionDisplayNames = useMemo(() => (
-        new Map(enabledRegions.map(region => [region.regionId, region.displayName]))
-    ), [enabledRegions]);
 
     const activeRegionEntries = useMemo(() => {
         if (VPNTableEntries === null || !activeRegionId) return null;
@@ -302,61 +290,19 @@ const Home: React.FC = () => {
     };
 
     const openSyncRegionsModal = () => {
-        setSelectedSyncRegionIds(new Set(enabledRegions.map(region => region.regionId)));
-        setSyncRegionResults(null);
-        setSyncRegionsError(null);
         setSyncRegionsModalOpen(true);
     };
 
     const closeSyncRegionsModal = () => {
-        if (syncingRegions) return;
         setSyncRegionsModalOpen(false);
     };
 
-    const toggleSyncRegion = (regionId: string) => {
-        setSelectedSyncRegionIds(current => {
-            const next = new Set(current);
-            if (next.has(regionId)) {
-                next.delete(regionId);
-            } else {
-                next.add(regionId);
-            }
-            return next;
-        });
-    };
-
-    const toggleAllSyncRegions = () => {
-        setSelectedSyncRegionIds(current => (
-            current.size === enabledRegions.length
-                ? new Set()
-                : new Set(enabledRegions.map(region => region.regionId))
-        ));
-    };
-
-    const handleSyncRegions = async () => {
-        if (!jwtToken) {
-            setSyncRegionsError("Your session is not ready. Try again in a moment.");
-            return;
-        }
-        if (!selectedSyncRegionIds.size) {
-            setSyncRegionsError("Select at least one region to sync.");
-            return;
-        }
-
-        setSyncingRegions(true);
-        setSyncRegionsError(null);
-        setSyncRegionResults(null);
-        try {
-            setSyncRegionResults(await runRegionsSync([...selectedSyncRegionIds], jwtToken));
-            if (auth.currentUser) {
-                await refreshVPNs(auth.currentUser);
-            }
-        } catch (error) {
-            console.error("Error syncing regions:", error);
-            setSyncRegionsError("Unable to sync regions.");
-        } finally {
-            setSyncingRegions(false);
-        }
+    // Mesh changes are all-region, so confirming here never runs the sync
+    // itself - it hands off to Server Health (via navigation state) so the
+    // fan-out survives the route change instead of racing it.
+    const confirmSyncRegions = () => {
+        setSyncRegionsModalOpen(false);
+        navigate("/server-health", { state: { runSync: true } });
     };
 
     const closeDeleteAccountModal = () => {
@@ -777,7 +723,6 @@ const Home: React.FC = () => {
     const configModalRef = useModalDialog<HTMLDivElement>(!!configData, closeConfigModal);
     const deleteAccountModalRef = useModalDialog<HTMLDivElement>(deleteAccountModalOpen, closeDeleteAccountModal);
     const grantAccessModalRef = useModalDialog<HTMLDivElement>(grantAccessModalOpen, closeGrantAccessModal);
-    const syncRegionsModalRef = useModalDialog<HTMLDivElement>(syncRegionsModalOpen, closeSyncRegionsModal);
 
     const handleDownloadConfig = (vpn: VPNTableEntry) => {
         if (!vpn.wireguardConfig) {
@@ -933,6 +878,7 @@ const Home: React.FC = () => {
                 onRefresh={() => void refreshDashboard()}
                 refreshDisabled={loading || pullRefreshing}
                 refreshing={pullRefreshing}
+                serverHealthPath={role === "admin" ? "/server-health" : undefined}
             >
                 <div className="relative" ref={accountMenuRef}>
                     <button
@@ -1029,7 +975,7 @@ const Home: React.FC = () => {
                             className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
                         >
                             <RefreshCw size={18} aria-hidden="true" />
-                            Sync Region Clients
+                            Sync All Regions
                         </button>
                         <button
                             type="button"
@@ -1247,117 +1193,13 @@ const Home: React.FC = () => {
                 </div>
             )}
 
-            {syncRegionsModalOpen && (
-                <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-                    onClick={closeSyncRegionsModal}
-                >
-                    <div
-                        ref={syncRegionsModalRef}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="sync-regions-modal-title"
-                        tabIndex={-1}
-                        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-edge-faint bg-card text-left shadow-lg focus:outline-none"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="flex items-start justify-between gap-4 border-b border-edge-faint p-6">
-                            <div>
-                                <h3 id="sync-regions-modal-title" className="text-2xl font-semibold text-content">Sync Region Clients</h3>
-                                <p className="mt-2 text-sm text-content-muted">
-                                    Reconcile live WireGuard peers with the desired clients in each selected region.
-                                </p>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={closeSyncRegionsModal}
-                                disabled={syncingRegions}
-                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted transition hover:bg-inset hover:text-content disabled:cursor-not-allowed"
-                                aria-label="Close sync regions"
-                            >
-                                <X size={20} aria-hidden="true" />
-                            </button>
-                        </div>
-
-                        <div className="min-h-0 flex-1 overflow-y-auto p-6">
-                            {syncRegionsError && (
-                                <div className="mb-4 rounded-lg border border-danger-soft-edge bg-danger-soft px-4 py-3 text-sm text-danger-content">
-                                    {syncRegionsError}
-                                </div>
-                            )}
-
-                            <div className="rounded-lg border border-edge-subtle bg-inset p-4">
-                                <label className="flex cursor-pointer items-center gap-3 border-b border-edge-subtle pb-3 text-sm font-semibold text-content">
-                                    <input
-                                        type="checkbox"
-                                        checked={allSyncRegionsSelected}
-                                        onChange={toggleAllSyncRegions}
-                                        disabled={syncingRegions}
-                                        className="h-4 w-4 accent-primary"
-                                    />
-                                    Select all regions
-                                </label>
-                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                                    {enabledRegions.map(region => (
-                                        <label
-                                            key={region.regionId}
-                                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-edge-faint bg-card p-3 text-sm text-content transition hover:border-primary-soft-edge"
-                                        >
-                                            <input
-                                                type="checkbox"
-                                                checked={selectedSyncRegionIds.has(region.regionId)}
-                                                onChange={() => toggleSyncRegion(region.regionId)}
-                                                disabled={syncingRegions}
-                                                className="mt-0.5 h-4 w-4 accent-primary"
-                                            />
-                                            <span className="min-w-0">
-                                                <span className="block font-medium">{region.displayName}</span>
-                                                <span className="block truncate text-xs text-content-muted">{region.regionId}</span>
-                                            </span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {syncRegionResults && (
-                                <div className="mt-5 space-y-3">
-                                    <h4 className="text-sm font-semibold text-content">Sync results</h4>
-                                    {syncRegionResults.map(({ regionId, result }) => (
-                                        <RegionSyncCard
-                                            key={regionId}
-                                            regionId={regionId}
-                                            displayName={syncRegionDisplayNames.get(regionId)}
-                                            result={result}
-                                        />
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="flex flex-col-reverse gap-3 border-t border-edge-faint bg-card p-4 sm:flex-row sm:justify-end sm:px-6">
-                            <button
-                                type="button"
-                                onClick={closeSyncRegionsModal}
-                                disabled={syncingRegions}
-                                className="rounded-lg bg-inset-strong px-5 py-3 text-sm font-semibold text-content-secondary transition hover:bg-inset-strong-hover disabled:cursor-not-allowed"
-                            >
-                                {syncRegionResults ? "Done" : "Cancel"}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => void handleSyncRegions()}
-                                disabled={syncingRegions || selectedSyncRegionIds.size === 0}
-                                className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
-                            >
-                                <RefreshCw className={syncingRegions ? "animate-spin" : ""} size={17} aria-hidden="true" />
-                                {syncingRegions
-                                    ? "Syncing..."
-                                    : `Sync ${selectedSyncRegionIds.size} region${selectedSyncRegionIds.size === 1 ? "" : "s"}`}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <SyncRegionsConfirmModal
+                open={syncRegionsModalOpen}
+                regions={enabledRegions.map(region => ({ regionId: region.regionId, displayName: region.displayName }))}
+                syncing={false}
+                onConfirm={confirmSyncRegions}
+                onClose={closeSyncRegionsModal}
+            />
 
             {linkAccountModalOpen && (
                 <div

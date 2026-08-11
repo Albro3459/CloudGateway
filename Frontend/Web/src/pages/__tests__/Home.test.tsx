@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const mockNavigate = jest.fn();
 
@@ -452,18 +452,23 @@ describe("Home admin tools", () => {
         expect(await screen.findByText("new@example.com now has CloudGateway access.")).toBeTruthy();
     });
 
-    it("selects every enabled region when the sync modal opens", async () => {
+    it("lists every enabled region in the sync modal and hands off to Server Health on confirm", async () => {
         const { runRegionsSync } = require("../../helpers/APIHelper");
         const { default: Home } = require("../Home");
 
         render(<Home />);
-        fireEvent.click(await screen.findByRole("button", { name: "Sync Region Clients" }));
-        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Sync All Regions" }));
 
-        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(
-            ["us-sanjose-1", "us-ashburn-1"],
-            "firebase-token",
-        ));
+        const modal = screen.getByRole("dialog", { name: "Sync All Regions" });
+        expect(within(modal).getByText("San Jose")).toBeTruthy();
+        expect(within(modal).getByText("Ashburn")).toBeTruthy();
+
+        fireEvent.click(within(modal).getByRole("button", { name: "Sync 2 regions" }));
+
+        // Home hands off to Server Health via navigation state rather than
+        // running the fan-out itself, so the sync race doesn't survive a route change.
+        expect(mockNavigate).toHaveBeenCalledWith("/server-health", { state: { runSync: true } });
+        expect(runRegionsSync).not.toHaveBeenCalled();
     });
 });
 

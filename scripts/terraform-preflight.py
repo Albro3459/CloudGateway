@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import subprocess
@@ -18,6 +19,25 @@ from typing import Any
 INSTANCE_ADDRESS = "oci_core_instance.generated_oci_core_instance"
 API_RECORD_ADDRESS = "cloudflare_record.api"
 WG_RECORD_ADDRESS = "cloudflare_record.wg"
+
+# WireGuard tunnel subnet fields an operator sets per region in tfvars (see
+# terraform.tfvars.example). All six must be present and consistent for the
+# cross-region subnet check below.
+WG_SUBNET_KEYS = (
+    "wg_network_v4",
+    "wg_address_v4",
+    "wg_dns_address_v4",
+    "wg_network_v6",
+    "wg_address_v6",
+    "wg_dns_address_v6",
+)
+
+# Region N gets 10.0.N.0/24 / fd42:42:42:N::/64 (see terraform.tfvars.example). These
+# aggregates are load-bearing, not documentation: the peer sync's route sweep on every
+# host only reclaims `dev wg0` routes inside them, so a region configured outside an
+# aggregate would strand routes the sweep can never clean up.
+SUBNET_AGGREGATE_V4 = ipaddress.IPv4Network("10.0.0.0/16")
+SUBNET_AGGREGATE_V6 = ipaddress.IPv6Network("fd42:42:42::/48")
 
 
 def read_tfvars(path: Path) -> dict[str, str]:
@@ -56,6 +76,152 @@ def required(values: dict[str, str], key: str, varfile: Path) -> str:
     if value is None or value == "":
         raise SystemExit(f"Missing required {key} in {varfile}")
     return value
+
+
+def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Read every *.terraform.tfvars next to varfile (including varfile itself).
+
+    Returns (region_id -> raw WG_SUBNET_KEYS values, skip notes). A sibling that fails to
+    read or has no region_id is skipped with a note rather than failing the deploy; a
+    sibling with a region_id is always included even if its subnet fields are incomplete,
+    so evaluate_subnet_plan can turn that into a hard failure.
+    """
+    regions: dict[str, dict[str, str]] = {}
+    notes: list[str] = []
+
+    for sibling in sorted(varfile.parent.glob("*.terraform.tfvars")):
+        try:
+            values = read_tfvars(sibling)
+        except OSError as exc:
+            notes.append(f"skipping {sibling.name}: failed to read tfvars ({exc})")
+            continue
+
+        region_id = values.get("region_id")
+        if not region_id:
+            notes.append(f"skipping {sibling.name}: no region_id found")
+            continue
+
+        regions[region_id] = {key: values.get(key, "") for key in WG_SUBNET_KEYS}
+
+    return regions, notes
+
+
+def _parse_subnet_network_v4(region_id: str, key: str, raw: str, errors: list[str]) -> ipaddress.IPv4Network | None:
+    try:
+        network = ipaddress.ip_network(raw, strict=True)
+    except ValueError as exc:
+        errors.append(f"{region_id}: {key} {raw!r} is not a valid network with no host bits set ({exc}).")
+        return None
+    if not isinstance(network, ipaddress.IPv4Network):
+        errors.append(f"{region_id}: {key} {raw!r} must be an IPv4 network, got IPv{network.version}.")
+        return None
+    return network
+
+
+def _parse_subnet_network_v6(region_id: str, key: str, raw: str, errors: list[str]) -> ipaddress.IPv6Network | None:
+    try:
+        network = ipaddress.ip_network(raw, strict=True)
+    except ValueError as exc:
+        errors.append(f"{region_id}: {key} {raw!r} is not a valid network with no host bits set ({exc}).")
+        return None
+    if not isinstance(network, ipaddress.IPv6Network):
+        errors.append(f"{region_id}: {key} {raw!r} must be an IPv6 network, got IPv{network.version}.")
+        return None
+    return network
+
+
+def _check_subnet_address(
+    region_id: str,
+    key: str,
+    raw: str,
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+    errors: list[str],
+) -> None:
+    try:
+        address = ipaddress.ip_interface(raw).ip if "/" in raw else ipaddress.ip_address(raw)
+    except ValueError as exc:
+        errors.append(f"{region_id}: {key} {raw!r} is not a valid IP address ({exc}).")
+        return
+    if address.version != network.version:
+        errors.append(f"{region_id}: {key} {raw!r} is IPv{address.version} but its network is IPv{network.version}.")
+        return
+    if address not in network:
+        errors.append(f"{region_id}: {key} {address} is not inside its own network {network}.")
+
+
+def _parse_region_subnets(
+    region_id: str, values: dict[str, str]
+) -> tuple[list[str], tuple[ipaddress.IPv4Network, ipaddress.IPv6Network] | None]:
+    errors: list[str] = []
+    missing = [key for key in WG_SUBNET_KEYS if not values.get(key)]
+    if missing:
+        errors.append(
+            f"{region_id}: missing {', '.join(missing)} in tfvars; every region's WireGuard subnet fields "
+            "must be complete for the cross-region subnet check to run."
+        )
+        return errors, None
+
+    network_v4 = _parse_subnet_network_v4(region_id, "wg_network_v4", values["wg_network_v4"], errors)
+    network_v6 = _parse_subnet_network_v6(region_id, "wg_network_v6", values["wg_network_v6"], errors)
+
+    if network_v4 is not None:
+        if not network_v4.subnet_of(SUBNET_AGGREGATE_V4):
+            errors.append(
+                f"{region_id}: wg_network_v4 {network_v4} is outside the shared aggregate {SUBNET_AGGREGATE_V4}; "
+                "the peer sync's route sweep on other hosts only reclaims dev wg0 routes inside this aggregate, "
+                "so a region outside it would strand routes."
+            )
+        _check_subnet_address(region_id, "wg_address_v4", values["wg_address_v4"], network_v4, errors)
+        _check_subnet_address(region_id, "wg_dns_address_v4", values["wg_dns_address_v4"], network_v4, errors)
+
+    if network_v6 is not None:
+        if not network_v6.subnet_of(SUBNET_AGGREGATE_V6):
+            errors.append(
+                f"{region_id}: wg_network_v6 {network_v6} is outside the shared aggregate {SUBNET_AGGREGATE_V6}; "
+                "the peer sync's route sweep on other hosts only reclaims dev wg0 routes inside this aggregate, "
+                "so a region outside it would strand routes."
+            )
+        _check_subnet_address(region_id, "wg_address_v6", values["wg_address_v6"], network_v6, errors)
+        _check_subnet_address(region_id, "wg_dns_address_v6", values["wg_dns_address_v6"], network_v6, errors)
+
+    if network_v4 is None or network_v6 is None:
+        return errors, None
+    return errors, (network_v4, network_v6)
+
+
+def evaluate_subnet_plan(regions: dict[str, dict[str, str]]) -> list[str]:
+    """Pure cross-region subnet containment/overlap check.
+
+    `regions` maps region_id -> a dict that should carry WG_SUBNET_KEYS (raw tfvars
+    strings). Takes only parsed values, no filesystem or network access, so it stays
+    unit-testable. Returns human-readable error strings; empty means the plan is clean.
+    """
+    errors: list[str] = []
+    networks: dict[str, tuple[ipaddress.IPv4Network, ipaddress.IPv6Network]] = {}
+
+    for region_id, values in sorted(regions.items()):
+        region_errors, parsed = _parse_region_subnets(region_id, values)
+        errors.extend(region_errors)
+        if parsed is not None:
+            networks[region_id] = parsed
+
+    region_ids = sorted(networks)
+    for i, a_id in enumerate(region_ids):
+        a_v4, a_v6 = networks[a_id]
+        for b_id in region_ids[i + 1 :]:
+            b_v4, b_v6 = networks[b_id]
+            if a_v4.overlaps(b_v4):
+                errors.append(
+                    f"{a_id} and {b_id}: wg_network_v4 {a_v4} and {b_v4} overlap; each region needs a "
+                    "unique, non-overlapping IPv4 tunnel subnet."
+                )
+            if a_v6.overlaps(b_v6):
+                errors.append(
+                    f"{a_id} and {b_id}: wg_network_v6 {a_v6} and {b_v6} overlap; each region needs a "
+                    "unique, non-overlapping IPv6 tunnel subnet."
+                )
+
+    return errors
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -261,6 +427,17 @@ def check_region(region_id: str, varfile: Path, plan_json_path: Path | None) -> 
         print("Refusing to continue because manual reconciliation is required.", file=sys.stderr)
         print("", file=sys.stderr)
         print("\n\n".join(errors), file=sys.stderr)
+        return 1
+
+    sibling_regions, skip_notes = discover_sibling_tfvars(varfile)
+    for note in skip_notes:
+        print(f"==> preflight note: {note}")
+    subnet_errors = evaluate_subnet_plan(sibling_regions)
+    if subnet_errors:
+        print(f"Terraform preflight failed for {region_id}.", file=sys.stderr)
+        print("Refusing to continue because manual reconciliation is required.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("\n\n".join(subnet_errors), file=sys.stderr)
         return 1
 
     api_hostname = required(values, "api_hostname", varfile)

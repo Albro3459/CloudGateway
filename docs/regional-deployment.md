@@ -42,6 +42,37 @@ workspace state. It also stops on duplicates. The script reports the region and
 resource IDs; manually reconcile or import the canonical resources before
 rerunning.
 
+The same preflight also enforces the cross-region WireGuard tunnel subnet scheme: region index N
+gets `10.0.N.0/24` and `fd42:42:42:N::/64` (`us-sanjose-1` = index 0, `us-chicago-1` = index 1),
+and every region's `wg_network_v4`/`wg_network_v6` must sit inside the aggregates `10.0.0.0/16`
+and `fd42:42:42::/48`. It reads every `*.terraform.tfvars` next to the one being deployed (not
+just the region in this deploy) and fails if any two regions' networks are equal or overlapping,
+if an address/DNS field falls outside its own region's network, or if a region's network falls
+outside the aggregates - the aggregates are load-bearing because the API peer sync reconciles
+mesh routes by sweeping `dev wg0` routes inside them. A new region picks the next free index and
+must not reuse or overlap an existing region's subnet; see
+[Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
+for the full scheme.
+
+**One-time cutover note (shared-subnet mesh):** `us-chicago-1` moves from index 0 (shared with
+San Jose, the pre-mesh bug this scheme fixes) to index 1. Before deploying, an operator edits the
+gitignored `Infrastructure/OCI/terraform/us-chicago-1.terraform.tfvars` by hand:
+
+```
+wg_address_v4     = "10.0.1.1/24"
+wg_network_v4     = "10.0.1.0/24"
+wg_dns_address_v4 = "10.0.1.1"
+wg_address_v6     = "fd42:42:42:1::1/64"
+wg_network_v6     = "fd42:42:42:1::/64"
+wg_dns_address_v6 = "fd42:42:42:1::1"
+```
+
+Before that deploy, also delete Chicago's client docs (`Regions/us-chicago-1/Instances/*`): their
+`10.0.0.x` assignments and rendered configs (`DNS = 10.0.0.1`) are invalid under the new subnet.
+This is a hard cutoff per the mesh design - San Jose's docs are untouched, and Chicago users
+recreate their clients from the dashboard/app after the region redeploys and re-registers with
+its new tunnel CIDRs.
+
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
 # oci_config_profile, region ID, API hostname, CORS origin, FastAPI port, WireGuard endpoint
@@ -79,7 +110,7 @@ Record the instance's public IPv4. After cloud-init finishes, confirm on the hos
 * `wg0` is up: `sudo wg show wg0`
 * `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudgateway-sync-peers` rebuilds the live peer set at boot)
 * `cloudgateway-api.service` is active and listening only on `127.0.0.1`
-* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
+* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work). Bootstrap runs it twice: once early at boot (client peers only) and once more at the end, after `cloudgateway-register-region`, so this region can pick up mesh peers for already-known mesh-enabled regions immediately.
 * Caddy is active on `80`/`443`
 * `/etc/cloudgateway/api.env` is mode `0600`, root-owned, and `CLOUDGATEWAY_REGION_ID` matches this region
 

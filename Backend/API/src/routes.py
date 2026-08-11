@@ -11,7 +11,7 @@ from urllib.request import urlopen
 from fastapi import APIRouter, Depends, Path, Request
 
 from .auth import AuthenticatedUser, bearer_token, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
-from .enums import ClientStatus, ErrorCode, Event, OperationResult, Role
+from .enums import ClientStatus, ErrorCode, Event, MeshPeerStatus, OperationResult, Role
 from .errors import (
     ApiError,
     AuthRequiredError,
@@ -24,6 +24,7 @@ from .errors import (
 from .logs import log_event
 from .models import (
     AccessCheckResponse,
+    AdminSyncMeshPeer,
     AdminSyncRequest,
     AdminSyncResponse,
     CapacityResponse,
@@ -514,7 +515,7 @@ def admin_sync(
         region_id=settings.region_id,
     )
     try:
-        result = run_sync(repository=repository, wireguard=wireguard, region_id=settings.region_id)
+        outcome = run_sync(repository=repository, wireguard=wireguard, settings=settings)
     except ApiError:
         log_event(
             logger,
@@ -537,6 +538,7 @@ def admin_sync(
         )
         raise InternalError() from exc
 
+    result = outcome.result
     synced_at = utc_now()
     # Best-effort enrichment only: the reconcile above is consistent under the
     # lock, but this re-list runs unlocked, so a concurrent create/delete could
@@ -547,11 +549,22 @@ def admin_sync(
         for client in repository.list_clients_by_public_key(settings.region_id, changed_public_keys)
         if client.client_public_key
     }
+    mesh_skipped = sum(1 for candidate in outcome.mesh_candidates if candidate.status != MeshPeerStatus.APPLIED)
+    no_changes = (
+        not result.changes
+        and result.mesh_added == 0
+        and result.mesh_removed == 0
+        and result.routes_added == 0
+        and result.routes_removed == 0
+    )
     audit_log = build_sync_audit_log(
         region_id=settings.region_id,
         synced_at=synced_at,
         result=result,
         clients_by_key=clients_by_key,
+        mesh_enabled=outcome.mesh_enabled,
+        mesh_candidates=outcome.mesh_candidates,
+        mesh_region_by_key=outcome.mesh_region_by_key,
     )
 
     log_event(
@@ -571,8 +584,25 @@ def admin_sync(
         added=result.added,
         updated=result.updated,
         removed=result.removed,
-        no_changes=not result.changes,
+        no_changes=no_changes,
         log=audit_log,
+        mesh_enabled=outcome.mesh_enabled,
+        mesh_applied=result.mesh_applied,
+        mesh_added=result.mesh_added,
+        mesh_removed=result.mesh_removed,
+        mesh_skipped=mesh_skipped,
+        mesh_routes_added=result.routes_added,
+        mesh_routes_removed=result.routes_removed,
+        mesh_peers=[
+            AdminSyncMeshPeer(
+                region_id=candidate.region_id,
+                status=candidate.status,
+                endpoint_hostname=candidate.endpoint_hostname,
+                allowed_network_v4=candidate.allowed_network_v4,
+                allowed_network_v6=candidate.allowed_network_v6,
+            )
+            for candidate in outcome.mesh_candidates
+        ],
     )
 
 

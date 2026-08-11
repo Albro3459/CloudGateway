@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ipaddress import ip_network
 from uuid import uuid4
 
-from .enums import ClientStatus, Role
+from .enums import ClientStatus, MeshPeerStatus, Role
 from .errors import (
     AdminRequiredError,
     CapacityReachedError,
@@ -33,6 +34,9 @@ class RegionDoc:
     display_order: int | None = None
     health_status: str | None = None
     updated_at: datetime | None = None
+    tunnel_network_v4: str = ""
+    tunnel_network_v6: str = ""
+    mesh_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,8 @@ class RegionRegistration:
     wireguard_dns_ipv4: str
     wireguard_dns_ipv6: str
     wireguard_public_key: str
+    tunnel_network_v4: str
+    tunnel_network_v6: str
     wireguard_endpoint_ipv6: str | None = None
 
 
@@ -101,6 +107,16 @@ class ClientDoc:
     removed_at: datetime | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class MeshPeerState:
+    region_id: str
+    endpoint_hostname: str
+    public_key: str
+    allowed_network_v4: str
+    allowed_network_v6: str
+    status: MeshPeerStatus
 
 
 def clean_client_name(value: str) -> str:
@@ -198,6 +214,10 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
         """Create or update a region metadata doc from host-reported infra fields."""
+
+    @abstractmethod
+    def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:
+        """Write this region's mesh status doc (observability only; best-effort caller)."""
 
     @abstractmethod
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:

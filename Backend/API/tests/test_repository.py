@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from src.enums import ClientStatus, Role
+from src.enums import ClientStatus, MeshPeerStatus, Role
 from src.errors import (
     AdminRequiredError,
     CapacityReachedError,
@@ -13,7 +13,7 @@ from src.errors import (
     RegionMismatchError,
 )
 from src.firebase import FirestoreRepository, _user_write_data
-from src.repository import RegionDoc, UserDoc, assign_tunnel_ips
+from src.repository import MeshPeerState, RegionDoc, UserDoc, assign_tunnel_ips
 
 from .fakes import FakeRepository
 
@@ -368,3 +368,34 @@ def test_delete_missing_client_raises_not_found(repository: FakeRepository):
             region_id=REGION_ID,
             client_id="missing-client",
         )
+
+
+def test_region_doc_defaults_mesh_disabled_and_no_tunnel_cidrs():
+    region = enabled_region()
+    assert region.mesh_enabled is False
+    assert region.tunnel_network_v4 == ""
+    assert region.tunnel_network_v6 == ""
+
+
+def test_write_mesh_status_records_last_write_per_region(repository: FakeRepository):
+    peer = MeshPeerState(
+        region_id="us-other-1",
+        endpoint_hostname="wg.us-other-1.example.com",
+        public_key="peer-public-key",
+        allowed_network_v4="10.0.1.0/24",
+        allowed_network_v6="fd42:42:42:1::/64",
+        status=MeshPeerStatus.APPLIED,
+    )
+
+    repository.write_mesh_status(region_id=REGION_ID, mesh_enabled=True, peers=[peer])
+
+    mesh_enabled, peers = repository.mesh_status[REGION_ID]
+    assert mesh_enabled is True
+    assert peers == (peer,)
+
+
+def test_write_mesh_status_can_be_forced_to_fail(repository: FakeRepository):
+    repository.write_mesh_status_error = RuntimeError("simulated Firestore write failure")
+
+    with pytest.raises(RuntimeError):
+        repository.write_mesh_status(region_id=REGION_ID, mesh_enabled=True, peers=[])

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import src.register as register
 from src.enums import Role
 from src.register import build_registration, notify_region_deployment, run_register
@@ -63,6 +65,9 @@ def test_build_registration_maps_settings():
     assert reg.wireguard_endpoint_ipv4 == "203.0.113.5"
     assert reg.wireguard_public_key == "server-pub-key"
     assert reg.wireguard_endpoint_hostname == "wg.us-test-1.example.com"
+    # Tunnel CIDRs are host-owned and reported every deploy from settings.
+    assert reg.tunnel_network_v4 == "10.0.0.0/24"
+    assert reg.tunnel_network_v6 == "fd42:42:42::/64"
 
 
 def test_upsert_inserts_enabled_region_metadata():
@@ -70,6 +75,10 @@ def test_upsert_inserts_enabled_region_metadata():
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     assert region.enabled is True
     assert region.wireguard_endpoint_ipv4 == "203.0.113.5"
+    assert region.tunnel_network_v4 == "10.0.0.0/24"
+    assert region.tunnel_network_v6 == "fd42:42:42::/64"
+    # meshEnabled is created false and is operator-owned from the dashboard afterward.
+    assert region.mesh_enabled is False
 
 
 def test_upsert_updates_region_metadata_and_follows_ready():
@@ -78,6 +87,17 @@ def test_upsert_updates_region_metadata_and_follows_ready():
 
     region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
     assert region.enabled is False
+    assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
+
+
+def test_upsert_region_preserves_mesh_enabled_across_updates():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    repo.regions[REGION_ID] = replace(repo.regions[REGION_ID], mesh_enabled=True)
+
+    # A later re-register (e.g. a redeploy) must not clobber the operator-owned flag.
+    region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=True)
+    assert region.mesh_enabled is True
     assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
 
 

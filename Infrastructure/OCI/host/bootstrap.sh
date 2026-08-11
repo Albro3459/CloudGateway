@@ -788,6 +788,13 @@ else
   log "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
 fi
 
+# Second sync pass, now that this region's own doc (tunnel CIDRs, pubkey, endpoint) exists in
+# Firestore. The early sync above only restores client peers; this pass also picks up mesh
+# peers for already-known mesh-enabled regions, so the last-deployed region bridges immediately
+# instead of waiting for the next boot or an operator-triggered sync. Non-fatal, same as the
+# early pass: a brand-new region with nothing to sync yet is a successful empty sync.
+systemctl start cloudgateway-sync-peers || true
+
 log "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"
 log "==> Bootstrap complete"

@@ -9,6 +9,8 @@ export type FirebaseClientStatus = "creating" | "active" | "failed" | "removed";
 
 export type FirebaseOperationResult = "success" | "failed" | "noop";
 
+export type FirebaseMeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
+
 export type FirebaseRegionDoc = {
     regionId: string;
     displayName: string;
@@ -21,9 +23,28 @@ export type FirebaseRegionDoc = {
     wireguardDnsIpv6: string;
     wireguardPublicKey: string;
     capacityLimit: number;
+    tunnelNetworkV4: string;
+    tunnelNetworkV6: string;
+    meshEnabled: boolean;
     displayOrder?: number;
     healthStatus?: string;
     updatedAt: FirestoreTimestamp;
+};
+
+export type FirebaseMeshPeerEntry = {
+    endpointHostname: string;
+    publicKey: string;
+    allowedNetworkV4: string;
+    allowedNetworkV6: string;
+    status: FirebaseMeshPeerStatus;
+    appliedAt: FirestoreTimestamp;
+};
+
+export type FirebaseMeshDoc = {
+    regionId: string;
+    meshEnabled: boolean;
+    updatedAt: FirestoreTimestamp;
+    peers: Record<string, FirebaseMeshPeerEntry>;
 };
 
 export type FirebaseRoleDoc = {
@@ -83,5 +104,8 @@ export type FirebaseDocumentTree = {
     };
     Users: {
         "{uid}": FirebaseUserDoc;
+    };
+    Mesh: {
+        "{regionId}": FirebaseMeshDoc;
     };
 };

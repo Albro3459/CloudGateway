@@ -40,6 +40,18 @@ service cloud.firestore {
 
     match /Regions/{regionId} {
       allow get, list: if isUser() && (resource.data.enabled == true || isAdmin());
+      // Dashboard mesh toggle: admins may flip meshEnabled only. Every other
+      // host-owned field (endpoint, keys, CIDRs, capacity...) stays API-only.
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['meshEnabled'])
+        && request.resource.data.meshEnabled is bool;
+    }
+
+    // Mesh status is observability-only, written by each region's host via the
+    // Admin SDK (which bypasses these rules) after a sync pass.
+    match /Mesh/{regionId} {
+      allow get, list: if isAdmin();
+      allow write: if false;
     }
 
     match /Users/{userId} {

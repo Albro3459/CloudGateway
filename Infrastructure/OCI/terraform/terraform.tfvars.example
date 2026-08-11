@@ -55,6 +55,22 @@ caddy_api_rate_limit_events    = 300
 caddy_api_rate_limit_window    = "1m"
 
 # --- WireGuard interface / NAT ---
+# Subnet-per-region scheme (cross-region mesh): region index N gets 10.0.N.0/24 and
+# fd42:42:42:N::/64. All regions must sit inside the shared aggregates 10.0.0.0/16 and
+# fd42:42:42::/48 - these are load-bearing, not documentation-only: the API peer sync
+# reconciles cross-region routes by sweeping `dev wg0` routes inside these two aggregates
+# and deleting anything not desired, so a region configured outside them would leave
+# routes the sweep can never reclaim.
+#
+# Current region assignments:
+#   us-sanjose-1 = index 0  -> 10.0.0.0/24  / fd42:42:42::/64   (fd42:42:42::/64 IS fd42:42:42:0::/64)
+#   us-chicago-1 = index 1  -> 10.0.1.0/24  / fd42:42:42:1::/64
+#
+# A new region bumps the third octet / fourth hextet to the next free index (10.0.2.0/24 /
+# fd42:42:42:2::/64, then 10.0.3.0/24, ...) and must never reuse or overlap an existing
+# region's subnet. scripts/terraform-preflight.py enforces this across every
+# *.terraform.tfvars file before a deploy (uniqueness/overlap, containment in the
+# region's own network, and containment in the two aggregates above).
 wg_interface                    = "wg0"
 wg_listen_port                  = 51820
 wg_address_v4                   = "10.0.0.1/24"

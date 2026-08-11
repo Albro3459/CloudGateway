@@ -24,7 +24,7 @@ Cloud-init is a small stub: Terraform bakes only the per-region config and secre
 
 The fetched bootstrap installs and configures:
 
-* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
+* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase and runs twice during bootstrap: once early at boot (client peers only - this region isn't registered in Firestore yet), and once more at the very end, after `cloudgateway-register-region`, so this region's own tunnel CIDRs exist in Firestore and it can pick up mesh peers for already-known mesh-enabled regions immediately instead of waiting for the next boot or a dashboard-triggered sync. Both passes retry until Firebase is reachable and are non-fatal to bootstrap.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to local Unbound.
 * Unbound on `127.0.0.1:5335` as the AdGuard Home upstream: a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. DoT keeps the cloud provider from seeing the domains clients resolve; local validation means answer integrity does not depend on trusting the upstreams. Unbound never recurses, so it never queries authoritative servers over plaintext port 53.
@@ -66,6 +66,14 @@ Exactly one matching resource is safe only when it is already in the selected
 Terraform workspace state. More than one matching DNS record or VM is unsafe.
 Any unsafe region stops the whole deploy so the operator can manually reconcile
 resources or import the canonical resources into state before rerunning.
+
+### Cross-region tunnel subnets
+
+Each region's WireGuard tunnel subnet is operator-managed in tfvars (`wg_address_v4`, `wg_network_v4`, `wg_dns_address_v4`, and the v6 equivalents) - there is no derived/indexed Terraform variable. The scheme: region index N gets `10.0.N.0/24` and `fd42:42:42:N::/64`, and every region's subnet must sit inside the shared aggregates `10.0.0.0/16` and `fd42:42:42::/48`. Those aggregates are load-bearing, not documentation: the regional API's peer sync reconciles cross-region mesh routes by sweeping `dev wg0` routes inside these two aggregates and deleting anything not desired, so a region configured outside them would leave routes the sweep can never reclaim.
+
+Current assignments: `us-sanjose-1` = index 0 (`10.0.0.0/24` / `fd42:42:42::/64`, unchanged since `fd42:42:42::/64` **is** `fd42:42:42:0::/64`), `us-chicago-1` = index 1 (`10.0.1.0/24` / `fd42:42:42:1::/64`). Adding a region means picking the next free index and never reusing or overlapping an existing region's subnet.
+
+`scripts/terraform-preflight.py` enforces this programmatically before every plan/apply/destroy: it reads every `*.terraform.tfvars` file next to the one being deployed (not just the region in the current deploy), and fails the deploy if any two regions' `wg_network_v4`/`wg_network_v6` are equal or overlapping, if a region's address/DNS fields fall outside its own network, or if a region's network falls outside the `10.0.0.0/16`/`fd42:42:42::/48` aggregates. A sibling tfvars file that fails to parse or has no `region_id` is skipped with a note; a sibling with a `region_id` but incomplete or invalid subnet fields is a hard failure. `cloudgateway.tf` also validates each `wg_network_v4`/`wg_network_v6` is a real network address (no host bits) and each `wg_address_v4`/`wg_dns_address_v4`/v6 equivalent parses as a valid address, at `terraform plan`/`apply` time.
 
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 

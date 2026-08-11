@@ -33,13 +33,23 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
         );
     }
 
-    const { added, updated, removed, noChanges, log, syncedAt } = result.data;
+    const {
+        added, updated, removed, noChanges, log, syncedAt,
+        meshEnabled, meshApplied, meshAdded, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
+    } = result.data;
 
     return (
         <div className="rounded-lg border border-edge-subtle bg-card p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-semibold text-content">{title}</h3>
-                <span className="text-xs text-content-muted">{new Date(syncedAt).toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                    <span className={`rounded-md px-2 py-1 text-xs ${
+                        meshEnabled ? "bg-success-soft text-success-strong" : "bg-inset text-content-muted"
+                    }`}>
+                        {meshEnabled ? "Mesh enabled" : "Mesh disabled"}
+                    </span>
+                    <span className="text-xs text-content-muted">{new Date(syncedAt).toLocaleString()}</span>
+                </div>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -48,8 +58,34 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
                 <Count label="Removed" value={removed} />
             </div>
 
+            <div className="mt-2 flex flex-wrap gap-2">
+                <Count label="Mesh applied" value={meshApplied} />
+                <Count label="Mesh added" value={meshAdded} />
+                <Count label="Mesh removed" value={meshRemoved} />
+                <Count label="Mesh skipped" value={meshSkipped} />
+                <Count label="Routes added" value={meshRoutesAdded} />
+                <Count label="Routes removed" value={meshRoutesRemoved} />
+            </div>
+
             {noChanges && (
                 <p className="mt-2 text-sm text-content-muted">No changes were required.</p>
+            )}
+
+            {meshPeers.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                    {meshPeers.map((peer) => (
+                        <span
+                            key={peer.regionId}
+                            className={`rounded-md border px-2 py-1 text-xs ${
+                                peer.status === "applied"
+                                    ? "border-success-soft-edge bg-success-soft text-success-strong"
+                                    : "border-warning-soft-edge bg-warning-soft text-warning-strong"
+                            }`}
+                        >
+                            {peer.regionId}: {peer.status}
+                        </span>
+                    ))}
+                </div>
             )}
 
             <div className="mt-3 flex flex-wrap gap-2">

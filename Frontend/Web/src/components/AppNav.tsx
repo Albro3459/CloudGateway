@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowLeft, Home, Info, RefreshCw } from "lucide-react";
+import { Activity, ArrowLeft, Home, Info, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { ThemeToggle } from "./ThemeToggle";
@@ -12,6 +12,9 @@ type AppNavProps = {
     onRefresh?: () => void;
     refreshDisabled?: boolean;
     refreshing?: boolean;
+    // Admin-only link into the Server Health page; omit for non-admins so the
+    // affordance never renders rather than rendering disabled.
+    serverHealthPath?: string;
     children?: React.ReactNode;
 };
 
@@ -25,6 +28,7 @@ export const AppNav: React.FC<AppNavProps> = ({
     onRefresh,
     refreshDisabled = false,
     refreshing = false,
+    serverHealthPath,
     children,
 }) => {
     const navigate = useNavigate();
@@ -72,6 +76,17 @@ export const AppNav: React.FC<AppNavProps> = ({
                             disabled={refreshDisabled}
                         >
                             <RefreshCw className={refreshing ? "animate-spin" : ""} size={19} aria-hidden="true" />
+                        </button>
+                    )}
+                    {serverHealthPath && (
+                        <button
+                            type="button"
+                            onClick={() => navigate(serverHealthPath)}
+                            className={navButtonClasses}
+                            aria-label="Server Health"
+                            title="Server Health"
+                        >
+                            <Activity size={19} aria-hidden="true" />
                         </button>
                     )}
                     <ThemeToggle />

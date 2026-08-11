@@ -93,6 +93,16 @@ export type RegionsResponse = {
     regions: RegionSummary[];
 };
 
+type RegionSyncMeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
+
+type RegionSyncMeshPeer = {
+    regionId: string;
+    status: RegionSyncMeshPeerStatus;
+    endpointHostname: string;
+    allowedNetworkV4: string;
+    allowedNetworkV6: string;
+};
+
 export type RegionSyncResponse = {
     regionId: string;
     syncedAt: string;
@@ -101,6 +111,14 @@ export type RegionSyncResponse = {
     removed: number;
     noChanges: boolean;
     log: string;
+    meshEnabled: boolean;
+    meshApplied: number;
+    meshAdded: number;
+    meshRemoved: number;
+    meshSkipped: number;
+    meshRoutesAdded: number;
+    meshRoutesRemoved: number;
+    meshPeers: RegionSyncMeshPeer[];
 };
 
 export type RegionSyncResult = {

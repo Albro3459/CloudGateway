@@ -1,8 +1,11 @@
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
 from src.enums import ClientStatus, Role
 from src.models import (
+    AdminSyncResponse,
     CreateClientRequest,
     CreateClientResponse,
     CreateUserRequest,
@@ -74,6 +77,31 @@ def test_delete_response_serializes_camel_case():
         "regionId": "us-test-1",
         "status": "removed",
     }
+
+
+def test_admin_sync_response_exposes_mesh_route_counts():
+    response = AdminSyncResponse(
+        region_id="us-test-1",
+        synced_at=datetime.now(timezone.utc),
+        added=0,
+        updated=0,
+        removed=0,
+        no_changes=True,
+        log="log",
+        mesh_enabled=True,
+        mesh_applied=1,
+        mesh_added=0,
+        mesh_removed=0,
+        mesh_skipped=0,
+        mesh_routes_added=2,
+        mesh_routes_removed=1,
+        mesh_peers=[],
+    )
+
+    assert response.mesh_routes_added == 2
+    assert response.mesh_routes_removed == 1
+    assert response.model_dump(by_alias=True)["meshRoutesAdded"] == 2
+    assert response.model_dump(by_alias=True)["meshRoutesRemoved"] == 1
 
 
 def test_user_models_serialize_camel_case():

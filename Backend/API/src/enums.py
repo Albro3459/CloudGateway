@@ -19,6 +19,12 @@ class OperationResult(str, Enum):
     NOOP = "noop"
 
 
+class MeshPeerStatus(str, Enum):
+    APPLIED = "applied"
+    SKIPPED_OVERLAP = "skipped-overlap"
+    SKIPPED_INCOMPLETE = "skipped-incomplete"
+
+
 class ErrorCode(str, Enum):
     AUTH_REQUIRED = "AUTH_REQUIRED"
     ADMIN_REQUIRED = "ADMIN_REQUIRED"
@@ -66,3 +72,7 @@ class Event(str, Enum):
     REGION_REGISTER_FAILED = "region_register_failed"
     REGION_DEPLOYMENT_EMAIL_COMPLETED = "region_deployment_email_completed"
     REGION_DEPLOYMENT_EMAIL_FAILED = "region_deployment_email_failed"
+    MESH_PEER_SKIPPED = "mesh_peer_skipped"
+    MESH_ROUTE_RECLAIMED = "mesh_route_reclaimed"
+    MESH_STATUS_WRITE_FAILED = "mesh_status_write_failed"
+    MESH_LOCAL_NETWORK_INVALID = "mesh_local_network_invalid"

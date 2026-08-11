@@ -55,6 +55,8 @@ def create_app(
         listen_port=settings.wg_port,
         dns_ipv4=settings.wg_dns_ipv4,
         dns_ipv6=settings.wg_dns_ipv6,
+        tunnel_network_v4=settings.wg_tunnel_ipv4_cidr,
+        tunnel_network_v6=settings.wg_tunnel_ipv6_cidr,
     )
 
     @app.middleware("http")

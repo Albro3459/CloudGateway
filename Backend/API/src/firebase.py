@@ -1,5 +1,5 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, cast
 
@@ -23,6 +23,7 @@ from .repository import (
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
+    MeshPeerState,
     RegionDoc,
     RegionRegistration,
     RoleDefaultDoc,
@@ -135,25 +136,30 @@ class FirestoreRepository(FirebaseRepository):
 
         @transactional
         def _apply(transaction) -> None:
-            transaction.set(
-                ref,
-                {
-                    "regionId": registration.region_id,
-                    "displayName": registration.display_name,
-                    "enabled": set_enabled,
-                    "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
-                    "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
-                    "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
-                    "wireguardPort": registration.wireguard_port,
-                    "wireguardDnsIpv4": registration.wireguard_dns_ipv4,
-                    "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
-                    "wireguardPublicKey": registration.wireguard_public_key,
-                    "capacityLimit": registration.capacity_limit,
-                    "displayOrder": registration.display_order,
-                    "updatedAt": _server_timestamp(),
-                },
-                merge=True,
-            )
+            # Firestore transactions require all reads before any write; this read
+            # decides whether meshEnabled needs seeding (create-only, operator-owned
+            # afterward).
+            exists = _sync_snapshot(ref.get(transaction=transaction)).exists
+            data: dict[str, Any] = {
+                "regionId": registration.region_id,
+                "displayName": registration.display_name,
+                "enabled": set_enabled,
+                "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
+                "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
+                "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
+                "wireguardPort": registration.wireguard_port,
+                "wireguardDnsIpv4": registration.wireguard_dns_ipv4,
+                "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
+                "wireguardPublicKey": registration.wireguard_public_key,
+                "capacityLimit": registration.capacity_limit,
+                "displayOrder": registration.display_order,
+                "tunnelNetworkV4": registration.tunnel_network_v4,
+                "tunnelNetworkV6": registration.tunnel_network_v6,
+                "updatedAt": _server_timestamp(),
+            }
+            if not exists:
+                data["meshEnabled"] = False
+            transaction.set(ref, data, merge=True)
 
         try:
             _apply(db.transaction())
@@ -164,6 +170,33 @@ class FirestoreRepository(FirebaseRepository):
         if region is None:
             raise FirebaseWriteFailedError()
         return region
+
+    def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:
+        # Full replacement (not merge): peers that fell out of the desired set must
+        # disappear from the doc rather than lingering as stale entries.
+        applied_at = utc_now()
+        peers_data = {
+            peer.region_id: {
+                "endpointHostname": peer.endpoint_hostname,
+                "publicKey": peer.public_key,
+                "allowedNetworkV4": peer.allowed_network_v4,
+                "allowedNetworkV6": peer.allowed_network_v6,
+                "status": peer.status.value,
+                "appliedAt": applied_at,
+            }
+            for peer in peers
+        }
+        try:
+            self._db().collection("Mesh").document(region_id).set(
+                {
+                    "regionId": region_id,
+                    "meshEnabled": mesh_enabled,
+                    "updatedAt": _server_timestamp(),
+                    "peers": peers_data,
+                }
+            )
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         doc = _sync_snapshot(_client_ref(self._db(), region_id, client_id).get())
@@ -774,6 +807,9 @@ def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
         display_order=data.get("displayOrder"),
         health_status=data.get("healthStatus"),
         updated_at=data.get("updatedAt"),
+        tunnel_network_v4=data.get("tunnelNetworkV4") or "",
+        tunnel_network_v6=data.get("tunnelNetworkV6") or "",
+        mesh_enabled=bool(data.get("meshEnabled")),
     )
 
 

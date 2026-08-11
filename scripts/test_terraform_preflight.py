@@ -156,6 +156,192 @@ class ReadTfvarsTests(unittest.TestCase):
         self.assertEqual(values["wg_server_private_key"], "")
 
 
+def region_values(
+    network_v4="10.0.0.0/24",
+    address_v4="10.0.0.1/24",
+    dns_v4="10.0.0.1",
+    network_v6="fd42:42:42::/64",
+    address_v6="fd42:42:42::1/64",
+    dns_v6="fd42:42:42::1",
+):
+    return {
+        "wg_network_v4": network_v4,
+        "wg_address_v4": address_v4,
+        "wg_dns_address_v4": dns_v4,
+        "wg_network_v6": network_v6,
+        "wg_address_v6": address_v6,
+        "wg_dns_address_v6": dns_v6,
+    }
+
+
+class EvaluateSubnetPlanTests(unittest.TestCase):
+    def test_single_region_is_clean(self):
+        self.assertEqual(pf.evaluate_subnet_plan({"us-sanjose-1": region_values()}), [])
+
+    def test_multiple_non_overlapping_regions_are_clean(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+            "us-next-1": region_values(
+                network_v4="10.0.2.0/24",
+                address_v4="10.0.2.1/24",
+                dns_v4="10.0.2.1",
+                network_v6="fd42:42:42:2::/64",
+                address_v6="fd42:42:42:2::1/64",
+                dns_v6="fd42:42:42:2::1",
+            ),
+        }
+        self.assertEqual(pf.evaluate_subnet_plan(regions), [])
+
+    def test_overlapping_v4_networks_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.0.0/25",
+                address_v4="10.0.0.1/25",
+                dns_v4="10.0.0.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_network_v4", errors[0])
+        self.assertIn("overlap", errors[0])
+
+    def test_overlapping_v6_networks_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+            ),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_network_v6", errors[0])
+        self.assertIn("overlap", errors[0])
+
+    def test_identical_subnets_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any("wg_network_v4" in e for e in errors))
+        self.assertTrue(any("wg_network_v6" in e for e in errors))
+
+    def test_address_outside_own_network_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(address_v4="10.0.5.1/24")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_address_v4", errors[0])
+        self.assertIn("not inside its own network", errors[0])
+
+    def test_dns_address_outside_own_network_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(dns_v6="fd42:42:42:9::1")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_dns_address_v6", errors[0])
+        self.assertIn("not inside its own network", errors[0])
+
+    def test_network_outside_v4_aggregate_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(
+                network_v4="10.1.0.0/24", address_v4="10.1.0.1/24", dns_v4="10.1.0.1"
+            )
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("outside the shared aggregate", errors[0])
+        self.assertIn("10.0.0.0/16", errors[0])
+
+    def test_network_outside_v6_aggregate_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(
+                network_v6="fd43:42:42::/64", address_v6="fd43:42:42::1/64", dns_v6="fd43:42:42::1"
+            )
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("outside the shared aggregate", errors[0])
+        self.assertIn("fd42:42:42::/48", errors[0])
+
+    def test_host_bits_set_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(network_v4="10.0.0.5/24")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no host bits set", errors[0])
+
+    def test_wrong_family_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(network_v4="fd42:42:42::/64")
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("must be an IPv4 network", errors[0])
+
+    def test_incomplete_region_is_hard_failure(self):
+        values = region_values()
+        del values["wg_network_v6"]
+        errors = pf.evaluate_subnet_plan({"us-chicago-1": values})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("missing", errors[0])
+        self.assertIn("wg_network_v6", errors[0])
+
+
+class DiscoverSiblingTfvarsTests(unittest.TestCase):
+    def _write(self, directory: Path, name: str, body: str) -> Path:
+        path = directory / name
+        path.write_text(body)
+        return path
+
+    def test_skips_malformed_and_region_id_less_siblings_and_flags_broken_sibling(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            self._write(
+                directory,
+                "us-sanjose-1.terraform.tfvars",
+                'region_id = "us-sanjose-1"\n'
+                'wg_network_v4 = "10.0.0.0/24"\n'
+                'wg_address_v4 = "10.0.0.1/24"\n'
+                'wg_dns_address_v4 = "10.0.0.1"\n'
+                'wg_network_v6 = "fd42:42:42::/64"\n'
+                'wg_address_v6 = "fd42:42:42::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42::1"\n',
+            )
+            self._write(directory, "no-region-id.terraform.tfvars", 'region = "us-x-1"\n')
+            self._write(
+                directory,
+                "us-chicago-1.terraform.tfvars",
+                'region_id = "us-chicago-1"\n',
+            )
+
+            varfile = directory / "us-sanjose-1.terraform.tfvars"
+            regions, notes = pf.discover_sibling_tfvars(varfile)
+
+            self.assertIn("us-sanjose-1", regions)
+            self.assertIn("us-chicago-1", regions)
+            self.assertEqual(regions["us-chicago-1"]["wg_network_v4"], "")
+            self.assertEqual(len(notes), 1)
+            self.assertIn("no-region-id.terraform.tfvars", notes[0])
+
+            errors = pf.evaluate_subnet_plan(regions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("us-chicago-1", errors[0])
+            self.assertIn("missing", errors[0])
+
+
 class LoadPlanChangesTests(unittest.TestCase):
     def test_none_path_returns_none(self):
         self.assertIsNone(pf.load_plan_changes(None))

@@ -53,6 +53,7 @@ beforeAll(async () => {
     await setDoc(doc(db, "Regions/us-1/Instances/inst2"), { ownerUid: "other" });
     await setDoc(doc(db, "Regions/us-1/Instances/disabled-inst"), { ownerUid: "disabled1" });
     await setDoc(doc(db, "Regions/us-1/Instances/nofield-inst"), { ownerUid: "nofield1" });
+    await setDoc(doc(db, "Mesh/us-1"), { regionId: "us-1", meshEnabled: true, peers: {} });
   });
 });
 
@@ -119,6 +120,46 @@ describe("reads stay allowed for the clients that use them", () => {
       getDocs(query(collectionGroup(authed("disabled1"), "Instances"), where("ownerUid", "==", "disabled1"))),
     );
   });
+
+  it("mesh status: admin reads, non-admin and unauthenticated cannot", async () => {
+    await assertSucceeds(getDoc(doc(authed("admin1"), "Mesh/us-1")));
+    await assertSucceeds(getDocs(collection(authed("admin1"), "Mesh")));
+    await assertFails(getDoc(doc(authed("user1"), "Mesh/us-1")));
+    await assertFails(getDocs(collection(authed("user1"), "Mesh")));
+    await assertFails(getDoc(doc(unauthed(), "Mesh/us-1")));
+  });
+});
+
+describe("region meshEnabled toggle", () => {
+  it("admin can flip meshEnabled alone", async () => {
+    await assertSucceeds(updateDoc(doc(authed("admin1"), "Regions/us-1"), { meshEnabled: true }));
+  });
+
+  it("admin cannot change another field alone", async () => {
+    await assertFails(updateDoc(doc(authed("admin1"), "Regions/us-1"), { displayName: "Changed" }));
+  });
+
+  it("admin cannot bundle another field with meshEnabled", async () => {
+    await assertFails(
+      updateDoc(doc(authed("admin1"), "Regions/us-1"), { meshEnabled: true, displayName: "Changed" }),
+    );
+  });
+
+  it("admin cannot set meshEnabled to a non-boolean", async () => {
+    await assertFails(updateDoc(doc(authed("admin1"), "Regions/us-1"), { meshEnabled: "yes" }));
+  });
+
+  it("a plain user cannot flip meshEnabled", async () => {
+    await assertFails(updateDoc(doc(authed("user1"), "Regions/us-1"), { meshEnabled: true }));
+  });
+
+  it("admin cannot create a region doc via the meshEnabled-only rule", async () => {
+    await assertFails(setDoc(doc(authed("admin1"), "Regions/us-new"), { meshEnabled: false }));
+  });
+
+  it("admin cannot delete a region doc", async () => {
+    await assertFails(deleteDoc(doc(authed("admin1"), "Regions/us-1")));
+  });
 });
 
 describe("every client write is denied — including admins", () => {
@@ -129,6 +170,7 @@ describe("every client write is denied — including admins", () => {
     "Regions/us-1",
     "Users/user1",
     "Regions/us-1/Instances/inst1",
+    "Mesh/us-1",
   ];
 
   for (const path of writeTargets) {

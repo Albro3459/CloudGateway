@@ -100,6 +100,8 @@ def build_registration(settings: Settings, public_ipv4: str) -> RegionRegistrati
         wireguard_dns_ipv4=settings.wg_dns_ipv4,
         wireguard_dns_ipv6=settings.wg_dns_ipv6,
         wireguard_public_key=settings.wg_server_public_key,
+        tunnel_network_v4=settings.wg_tunnel_ipv4_cidr,
+        tunnel_network_v6=settings.wg_tunnel_ipv6_cidr,
     )
 
 

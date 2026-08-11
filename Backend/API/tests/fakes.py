@@ -1,5 +1,8 @@
+import json
 import subprocess
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
+from ipaddress import ip_network
 from typing import Iterator
 from dataclasses import dataclass, replace
 from threading import Lock
@@ -18,6 +21,7 @@ from src.repository import (
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
+    MeshPeerState,
     RegionDoc,
     RegionRegistration,
     UserDoc,
@@ -34,19 +38,32 @@ from src.repository import (
     utc_now,
 )
 from src.wireguard import (
+    MESH_AGGREGATE_V4,
+    MESH_AGGREGATE_V6,
     PEER_ADDED,
     PEER_REMOVED,
     PEER_UPDATED,
+    MeshPeer,
+    MeshPeerChange,
     PeerChange,
     PeerSyncResult,
+    RouteChange,
     WireGuardKeypair,
     WireGuardManager,
+    is_subnet_of,
 )
 
 FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
 FAKE_PUBLIC_KEY="eZEOz7uD1jjbTD70Uv+aJcZ0ASxsxz9bTKZQ9vdOQCo="
 FAKE_PUBLIC_KEY_2="QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
 FAKE_SERVER_PUBLIC_KEY="4jVSiiUySTwbsm72pcNxtEUhE37gESbsLPo3nCAaBks="
+# Mesh-peer (region server) test keys, distinct from client keys above.
+FAKE_MESH_PUBLIC_KEY="Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQkI="
+FAKE_MESH_PUBLIC_KEY_2="RUVGRUVGRUVGRUVGRUVGRUVGRUVGRUVGRUVGRUVGQkI="
+FAKE_MESH_PUBLIC_KEY_3="SElKSElKSElKSElKSElKSElKSElKSElKSElKSElKQkI="
+# A live host peer with no matching Firebase doc (client or mesh) - still a
+# valid WireGuard key, since LocalWireGuardManager validates before removal.
+FAKE_UNKNOWN_PUBLIC_KEY="VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU="
 
 
 @dataclass(frozen=True)
@@ -57,7 +74,8 @@ class FakeCommandCall:
 
 
 class FakeWireGuardCommandRunner:
-    """Emulates the wg CLI: peer state lives in self.peers (pubkey -> allowed-ips csv)."""
+    """Emulates the wg/ip CLIs: peer state lives in self.peers (pubkey -> allowed-ips csv),
+    route state lives in self.routes (family -> cidr -> protocol)."""
 
     def __init__(
         self,
@@ -68,53 +86,81 @@ class FakeWireGuardCommandRunner:
     ):
         self.calls: list[FakeCommandCall] = []
         self.peers: dict[str, str] = {}
+        self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
         self.fail_set_count = fail_set_count
         self.fail_show_count = fail_show_count
         self.failure_stderr = failure_stderr
 
     def __call__(
         self,
-        args,
+        args: Sequence[str],
         *,
-        input=None,
-        capture_output=False,
-        text=False,
-        check=False,
-        shell=False,
-    ):
+        input: str | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        shell: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
         # Signature-compat params for subprocess.run callers; consumed here so
         # vulture doesn't need repo-wide ignore_names entries for them.
         del capture_output, text, check
         if shell is not False:
             raise AssertionError("WireGuard commands must run with shell=False.")
 
-        args = tuple(args)
-        self.calls.append(FakeCommandCall(args=args, input=input, shell=shell))
+        # Converted once to a distinct, explicitly-typed local (not reassigned
+        # onto the `args` parameter name). Matching below uses `len(argv) >= N`
+        # plus per-index equality rather than slice-equality against tuple
+        # literals (e.g. `argv[:2] == (...)`) - pyright's tuple narrowing
+        # collapses a `tuple[str, ...]` to an impossible zero-length type
+        # across a chain of slice-equality checks like that (a known pyright
+        # limitation, not a real type error).
+        argv: tuple[str, ...] = tuple(args)
+        self.calls.append(FakeCommandCall(args=argv, input=input, shell=shell))
 
-        if args == ("wg", "genkey"):
-            return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PRIVATE_KEY}\n", stderr="")
-        if args == ("wg", "pubkey"):
-            return subprocess.CompletedProcess(args, 0, stdout=f"{FAKE_PUBLIC_KEY}\n", stderr="")
-        if args[:2] == ("wg", "show") and args[3:] == ("dump",):
+        if argv == ("wg", "genkey"):
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{FAKE_PRIVATE_KEY}\n", stderr="")
+        if argv == ("wg", "pubkey"):
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{FAKE_PUBLIC_KEY}\n", stderr="")
+        if len(argv) == 4 and argv[0] == "wg" and argv[1] == "show" and argv[3] == "dump":
             if self.fail_show_count:
                 self.fail_show_count -= 1
-                raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
+                raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
             lines = [f"{FAKE_PRIVATE_KEY}\t{FAKE_SERVER_PUBLIC_KEY}\t51820\toff"]
             for public_key, allowed_ips in self.peers.items():
                 lines.append(f"{public_key}\t(none)\t(none)\t{allowed_ips or '(none)'}\t0\t0\t0\t25")
-            return subprocess.CompletedProcess(args, 0, stdout="\n".join(lines) + "\n", stderr="")
-        if args[:2] == ("wg", "set") and len(args) >= 5 and args[3] == "peer":
+            return subprocess.CompletedProcess(argv, 0, stdout="\n".join(lines) + "\n", stderr="")
+        if len(argv) >= 5 and argv[0] == "wg" and argv[1] == "set" and argv[3] == "peer":
             if self.fail_set_count:
                 self.fail_set_count -= 1
-                raise subprocess.CalledProcessError(1, args, stderr=self.failure_stderr)
-            public_key = args[4]
-            if args[5:] == ("remove",):
+                raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
+            public_key = argv[4]
+            if len(argv) == 6 and argv[5] == "remove":
                 self.peers.pop(public_key, None)
             else:
-                self.peers[public_key] = args[args.index("allowed-ips") + 1]
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                self.peers[public_key] = argv[argv.index("allowed-ips") + 1]
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        raise AssertionError(f"Unexpected WireGuard command: {args}")
+        if len(argv) >= 5 and argv[0] == "ip" and argv[1] == "-j" and argv[3] == "route" and argv[4] == "show":
+            version = int(argv[2].lstrip("-"))
+            entries = [
+                {"dst": cidr, "dev": argv[-1], "protocol": protocol}
+                for cidr, protocol in self.routes[version].items()
+            ]
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(entries), stderr="")
+
+        if len(argv) >= 5 and argv[0] == "ip" and argv[2] == "route" and argv[3] == "replace":
+            version = int(argv[1].lstrip("-"))
+            cidr = argv[4]
+            self.routes[version][cidr] = "static"
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        if len(argv) >= 5 and argv[0] == "ip" and argv[2] == "route" and argv[3] == "del":
+            version = int(argv[1].lstrip("-"))
+            cidr = argv[4]
+            self.routes[version].pop(cidr, None)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        raise AssertionError(f"Unexpected WireGuard command: {argv}")
 
 
 class FakeTokenVerifier(TokenVerifier):
@@ -159,6 +205,9 @@ class FakeRepository(FirebaseRepository):
         self.delete_client_error: Exception | None = None
         self.hard_delete_account_error: Exception | None = None
         self.delete_auth_user_error: Exception | None = None
+        # Last mesh status written per region, keyed by region_id: (mesh_enabled, peers).
+        self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
+        self.write_mesh_status_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
@@ -176,6 +225,11 @@ class FakeRepository(FirebaseRepository):
         )
 
     def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+        # meshEnabled mirrors the real Firestore create-only semantics: seeded false
+        # only when the region doc does not yet exist, otherwise carried forward
+        # untouched (operator-owned via the dashboard afterward).
+        existing = self.regions.get(registration.region_id)
+        mesh_enabled = existing.mesh_enabled if existing is not None else False
         region = RegionDoc(
             region_id=registration.region_id,
             display_name=registration.display_name,
@@ -190,9 +244,17 @@ class FakeRepository(FirebaseRepository):
             wireguard_endpoint_hostname=registration.wireguard_endpoint_hostname,
             display_order=registration.display_order,
             updated_at=utc_now(),
+            tunnel_network_v4=registration.tunnel_network_v4,
+            tunnel_network_v6=registration.tunnel_network_v6,
+            mesh_enabled=mesh_enabled,
         )
         self.regions[registration.region_id] = region
         return region
+
+    def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:
+        if self.write_mesh_status_error is not None:
+            raise self.write_mesh_status_error
+        self.mesh_status[region_id] = (mesh_enabled, tuple(peers))
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         return self.clients.get((owner_uid, region_id, client_id))
@@ -514,12 +576,22 @@ class FakeRepository(FirebaseRepository):
 
 
 class FakeWireGuardManager(WireGuardManager):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        tunnel_network_v4: str = "10.0.0.0/24",
+        tunnel_network_v6: str = "fd42:42:42::/64",
+    ):
         self.peers: dict[str, tuple[str, str]] = {}
+        self.mesh_peers: dict[str, MeshPeer] = {}
+        self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
+        self.tunnel_network_v4 = tunnel_network_v4
+        self.tunnel_network_v6 = tunnel_network_v6
         self.keypair_count = 0
         self.add_peer_calls = 0
         self.remove_peer_calls = 0
         self.sync_calls = 0
+        self.mesh_apply_calls = 0
         self.fail_generate_count = 0
         self.fail_add_count = 0
         self.fail_remove_count = 0
@@ -582,30 +654,127 @@ class FakeWireGuardManager(WireGuardManager):
         if self.fail_remove_count:
             self.fail_remove_count -= 1
             raise WireGuardApplyFailedError("Simulated remove peer failure.", transient=self.fail_remove_transient)
-        if public_key not in self.peers:
+        if public_key not in self.peers and public_key not in self.mesh_peers:
             return OperationResult.NOOP
-        del self.peers[public_key]
+        self.peers.pop(public_key, None)
+        self.mesh_peers.pop(public_key, None)
         return OperationResult.SUCCESS
 
     def current_peers(self) -> dict[str, frozenset[str]]:
-        return {
+        current = {
             public_key: frozenset({tunnel_ipv4, tunnel_ipv6})
             for public_key, (tunnel_ipv4, tunnel_ipv6) in self.peers.items()
         }
+        for public_key, peer in self.mesh_peers.items():
+            current[public_key] = frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
+        return current
 
-    def sync_peers(self, desired: dict[str, tuple[str, str]]) -> PeerSyncResult:
+    def sync_peers(
+        self,
+        desired: dict[str, tuple[str, str]],
+        *,
+        mesh: Sequence[MeshPeer] = (),
+        known_mesh_networks: Sequence[str] = (),
+        known_region_keys: Sequence[str] = (),
+    ) -> PeerSyncResult:
         self._require_lock()
         self.sync_calls += 1
+        mesh_by_key = {peer.public_key: peer for peer in mesh}
+        known_keys = set(known_region_keys) | set(mesh_by_key)
+
         changes: list[PeerChange] = []
         for public_key, ips in desired.items():
+            if public_key in mesh_by_key:
+                continue
             if public_key not in self.peers:
                 self.peers[public_key] = ips
                 changes.append(PeerChange(public_key, PEER_ADDED, ips[0], ips[1]))
             elif self.peers[public_key] != ips:
                 self.peers[public_key] = ips
                 changes.append(PeerChange(public_key, PEER_UPDATED, ips[0], ips[1]))
-        for public_key in list(self.peers):
-            if public_key not in desired:
-                del self.peers[public_key]
+
+        mesh_changes: list[MeshPeerChange] = []
+        for public_key, peer in mesh_by_key.items():
+            self.mesh_apply_calls += 1
+            was_live = public_key in self.mesh_peers or public_key in self.peers
+            self.mesh_peers[public_key] = peer
+            if not was_live:
+                mesh_changes.append(
+                    MeshPeerChange(
+                        public_key=public_key,
+                        action=PEER_ADDED,
+                        endpoint_host=peer.endpoint_host,
+                        allowed_network_v4=peer.allowed_network_v4,
+                        allowed_network_v6=peer.allowed_network_v6,
+                    )
+                )
+
+        for public_key in set(self.peers) | set(self.mesh_peers):
+            if public_key in desired or public_key in mesh_by_key:
+                continue
+            self.peers.pop(public_key, None)
+            self.mesh_peers.pop(public_key, None)
+            if public_key in known_keys:
+                mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
+            else:
                 changes.append(PeerChange(public_key, PEER_REMOVED))
-        return PeerSyncResult(changes=tuple(changes))
+
+        route_changes = self._reconcile_routes(mesh_by_key.values(), known_mesh_networks)
+
+        return PeerSyncResult(
+            changes=tuple(changes),
+            mesh_changes=tuple(mesh_changes),
+            mesh_applied_peers=tuple(mesh_by_key.values()),
+            route_changes=tuple(route_changes),
+        )
+
+    def _reconcile_routes(
+        self,
+        mesh_peers: Iterable[MeshPeer],
+        known_mesh_networks: Sequence[str],
+    ) -> list[RouteChange]:
+        known = set(known_mesh_networks)
+        changes: list[RouteChange] = []
+        changes += self._reconcile_routes_for_family(
+            4,
+            {peer.allowed_network_v4 for peer in mesh_peers},
+            MESH_AGGREGATE_V4,
+            self.tunnel_network_v4,
+            known,
+        )
+        changes += self._reconcile_routes_for_family(
+            6,
+            {peer.allowed_network_v6 for peer in mesh_peers},
+            MESH_AGGREGATE_V6,
+            self.tunnel_network_v6,
+            known,
+        )
+        return changes
+
+    def _reconcile_routes_for_family(
+        self,
+        version: int,
+        desired: set[str],
+        aggregate: str,
+        local_network: str,
+        known: set[str],
+    ) -> list[RouteChange]:
+        aggregate_net = ip_network(aggregate)
+        current = self.routes[version]
+        changes: list[RouteChange] = []
+
+        for cidr in desired:
+            existed = cidr in current
+            current[cidr] = "static"
+            if not existed:
+                changes.append(RouteChange(cidr, PEER_ADDED))
+
+        for cidr in list(current):
+            if cidr in desired or cidr == local_network or current[cidr] == "kernel":
+                continue
+            if not is_subnet_of(ip_network(cidr), aggregate_net):
+                continue
+            del current[cidr]
+            changes.append(RouteChange(cidr, PEER_REMOVED, reclaimed=cidr not in known))
+
+        return changes

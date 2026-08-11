@@ -22,6 +22,9 @@ export type Region = {
     displayOrder: number;
     healthStatus?: string | null;
     capacity?: RegionCapacity;
+    tunnelNetworkV4?: string | null;
+    tunnelNetworkV6?: string | null;
+    meshEnabled?: boolean;
 }
 
 export const parseRegionDocument = (regionId: string, data: Record<string, unknown>): Region | null => {
@@ -43,8 +46,17 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),
         displayOrder: numberOrDefault(data.displayOrder, 1000),
         healthStatus: stringOrNull(data.healthStatus),
+        tunnelNetworkV4: stringOrNull(data.tunnelNetworkV4),
+        tunnelNetworkV6: stringOrNull(data.tunnelNetworkV6),
+        meshEnabled: data.meshEnabled === true,
     };
 };
+
+// Regions missing/false `enabled` are excluded from every enabled-region view:
+// the create-client picker, the sync fan-out, and the Server Health strip.
+export const getEnabledRegions = (regions: Region[] | null): Region[] => (
+    (regions || []).filter(region => region.enabled !== false)
+);
 
 export const sortRegions = (regions: Region[]) => (
     [...regions].sort((a, b) => {
