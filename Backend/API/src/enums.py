@@ -84,6 +84,7 @@ class Event(str, Enum):
     PEER_SYNC_STARTED = "peer_sync_started"
     PEER_SYNC_COMPLETED = "peer_sync_completed"
     PEER_SYNC_FAILED = "peer_sync_failed"
+    PEER_SYNC_ENRICHMENT_FAILED = "peer_sync_enrichment_failed"
     REGION_REGISTER_STARTED = "region_register_started"
     REGION_REGISTER_COMPLETED = "region_register_completed"
     REGION_REGISTER_FAILED = "region_register_failed"

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -484,6 +487,46 @@ class RegistryConsistencyTests(unittest.TestCase):
         errors = pf.evaluate_subnet_plan({"us-sanjose-1": values}, registry, "us-sanjose-1")
         self.assertTrue(any("must exactly match registry allocation" in error for error in errors))
 
+    def test_noncanonical_selected_network_text_is_flagged(self):
+        registry = decoded_registry()
+        values = region_values(
+            network_v4="10.0.0.0/024",
+            network_v6="FD42:42:42::/64",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values}, registry, "us-sanjose-1")
+        self.assertTrue(any("wg_network_v4" in error and "not canonical" in error for error in errors))
+        self.assertTrue(any("wg_network_v6" in error and "not canonical" in error for error in errors))
+
+    def test_noncanonical_sibling_network_text_is_flagged(self):
+        registry = decoded_registry()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            selected = directory / "us-sanjose-1.terraform.tfvars"
+            sibling = directory / "us-chicago-1.terraform.tfvars"
+            selected.write_text(
+                'region_id = "us-sanjose-1"\n'
+                'wg_network_v4 = "10.0.0.0/24"\n'
+                'wg_address_v4 = "10.0.0.1/24"\n'
+                'wg_dns_address_v4 = "10.0.0.1"\n'
+                'wg_network_v6 = "fd42:42:42::/64"\n'
+                'wg_address_v6 = "fd42:42:42::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42::1"\n'
+            )
+            sibling.write_text(
+                'region_id = "us-chicago-1"\n'
+                'wg_network_v4 = "10.0.1.0/024"\n'
+                'wg_address_v4 = "10.0.1.1/24"\n'
+                'wg_dns_address_v4 = "10.0.1.1"\n'
+                'wg_network_v6 = "FD42:42:42:1::/64"\n'
+                'wg_address_v6 = "fd42:42:42:1::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42:1::1"\n'
+            )
+            regions, notes = pf.discover_sibling_tfvars(selected)
+            self.assertEqual(notes, [])
+            errors = pf.evaluate_subnet_plan(regions, registry, "us-sanjose-1")
+        self.assertTrue(any("us-chicago-1" in error and "wg_network_v4" in error for error in errors))
+        self.assertTrue(any("us-chicago-1" in error and "wg_network_v6" in error for error in errors))
+
     def test_unknown_local_region_id_is_flagged(self):
         registry = decoded_registry()
         errors = pf.evaluate_subnet_plan({"us-local-only": region_values()}, registry, "us-sanjose-1")
@@ -508,17 +551,198 @@ class RegistryConsistencyTests(unittest.TestCase):
 
 
 class InterfaceAndDnsTests(unittest.TestCase):
+    def test_documented_san_jose_and_chicago_first_hosts_are_clean(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+        }
+        self.assertEqual(pf.evaluate_subnet_plan(regions), [])
+
+    def test_matching_non_first_hosts_are_flagged(self):
+        values = region_values(address_v4="10.0.0.2/24", dns_v4="10.0.0.2", address_v6="fd42:42:42::2/64", dns_v6="fd42:42:42::2")
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("first host address" in error and "wg_address_v4" in error for error in errors))
+        self.assertTrue(any("first host address" in error and "wg_address_v6" in error for error in errors))
+
     def test_v4_and_v6_interface_prefix_mismatch_are_flagged(self):
         values = region_values(address_v4="10.0.0.1/32", address_v6="fd42:42:42::1/128")
         errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
         self.assertTrue(any("wg_address_v4 prefix" in error for error in errors))
         self.assertTrue(any("wg_address_v6 prefix" in error for error in errors))
 
+    def test_terminal_ipv4_network_is_reported_without_overflow(self):
+        values = region_values(
+            network_v4="255.255.255.255/32",
+            address_v4="255.255.255.255/32",
+            dns_v4="255.255.255.255",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("wg_network_v4 must use /24" in error for error in errors))
+        self.assertTrue(any("has no first host address" in error for error in errors))
+
+    def test_terminal_ipv6_network_is_reported_without_overflow(self):
+        values = region_values(
+            network_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128",
+            address_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128",
+            dns_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("wg_network_v6 must use /64" in error for error in errors))
+        self.assertTrue(any("has no first host address" in error for error in errors))
+
     def test_dns_mismatch_is_flagged(self):
         values = region_values(dns_v4="10.0.0.2", dns_v6="fd42:42:42::2")
         errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
         self.assertTrue(any("must equal" in error and "wg_dns_address_v4" in error for error in errors))
         self.assertTrue(any("must equal" in error and "wg_dns_address_v6" in error for error in errors))
+
+
+class TerraformDnsPreconditionTests(unittest.TestCase):
+    _CONFIG = Path(__file__).resolve().parents[1] / "Infrastructure" / "OCI" / "terraform" / "cloudgateway.tf"
+
+    def _expression(self, local_name: str) -> str:
+        text = self._CONFIG.read_text()
+        match = re.search(
+            rf"(?ms)^ *{re.escape(local_name)} * = *try\(.*?^ *\)",
+            text,
+        )
+        self.assertIsNotNone(match, f"missing {local_name} expression")
+        assert match is not None
+        return match.group(0).split("=", 1)[1].strip()
+
+    def _probe_module(self) -> str:
+        expression_names = (
+            "wg_address_v4_is_first_host",
+            "wg_address_v6_is_first_host",
+            "wg_dns_v4_matches_interface",
+            "wg_dns_v6_matches_interface",
+        )
+        expressions = {name: self._expression(name) for name in expression_names}
+        return f'''\
+variable "wg_network_v4" {{
+  type = string
+}}
+
+variable "wg_address_v4" {{
+  type = string
+}}
+
+variable "wg_dns_address_v4" {{
+  type = string
+}}
+
+variable "wg_network_v6" {{
+  type = string
+}}
+
+variable "wg_address_v6" {{
+  type = string
+}}
+
+variable "wg_dns_address_v6" {{
+  type = string
+}}
+
+locals {{
+  actual_v4 = {expressions["wg_address_v4_is_first_host"]}
+  actual_v6 = {expressions["wg_address_v6_is_first_host"]}
+  dns_v4 = {expressions["wg_dns_v4_matches_interface"]}
+  dns_v6 = {expressions["wg_dns_v6_matches_interface"]}
+}}
+'''
+
+    def _evaluate(self, values: dict[str, str], local_name: str) -> bool:
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.fail("Terraform is required to evaluate the DNS precondition")
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "main.tf").write_text(self._probe_module())
+            command = [terraform, f"-chdir={directory}", "console"]
+            command.extend(f"-var={name}={value}" for name, value in values.items())
+            result = subprocess.run(
+                command,
+                input=f"local.{local_name}\n",
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.strip() == "true"
+
+    def test_documented_san_jose_and_chicago_values_are_accepted_by_hcl_expression(self):
+        documented = (
+            ("10.0.0.0/24", "10.0.0.1/24", "10.0.0.1", "fd42:42:42::/64", "fd42:42:42::1/64", "fd42:42:42::1"),
+            ("10.0.1.0/24", "10.0.1.1/24", "10.0.1.1", "fd42:42:42:1::/64", "fd42:42:42:1::1/64", "fd42:42:42:1::1"),
+        )
+        for network_v4, address_v4, dns_v4, network_v6, address_v6, dns_v6 in documented:
+            values = {
+                "wg_network_v4": network_v4,
+                "wg_address_v4": address_v4,
+                "wg_dns_address_v4": dns_v4,
+                "wg_network_v6": network_v6,
+                "wg_address_v6": address_v6,
+                "wg_dns_address_v6": dns_v6,
+            }
+            self.assertTrue(self._evaluate(values, "actual_v4"))
+            self.assertTrue(self._evaluate(values, "actual_v6"))
+            self.assertTrue(self._evaluate(values, "dns_v4"))
+            self.assertTrue(self._evaluate(values, "dns_v6"))
+
+    def test_matching_non_first_hosts_are_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.2/24",
+            "wg_dns_address_v4": "10.0.1.2",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::2/64",
+            "wg_dns_address_v6": "fd42:42:42:1::2",
+        }
+        self.assertFalse(self._evaluate(values, "actual_v4"))
+        self.assertFalse(self._evaluate(values, "actual_v6"))
+
+    def test_ipv4_dns_mismatch_is_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.1/24",
+            "wg_dns_address_v4": "10.0.1.2",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::1/64",
+            "wg_dns_address_v6": "fd42:42:42:1::1",
+        }
+        self.assertFalse(self._evaluate(values, "dns_v4"))
+
+    def test_ipv6_dns_mismatch_is_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.1/24",
+            "wg_dns_address_v4": "10.0.1.1",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::1/64",
+            "wg_dns_address_v6": "fd42:42:42:1::2",
+        }
+        self.assertFalse(self._evaluate(values, "dns_v6"))
+
+    def test_instance_lifecycle_preconditions_reference_dns_and_interface_locals(self):
+        text = self._CONFIG.read_text()
+        resource_start = text.index('resource "oci_core_instance"')
+        lifecycle_start = text.index("  lifecycle {", resource_start)
+        lifecycle_end = text.index("  agent_config {", lifecycle_start)
+        lifecycle = text[lifecycle_start:lifecycle_end]
+        for local_name in (
+            "wg_address_v4_is_first_host",
+            "wg_address_v6_is_first_host",
+            "wg_dns_v4_matches_interface",
+            "wg_dns_v6_matches_interface",
+        ):
+            self.assertIn(f"local.{local_name}", lifecycle)
 
 
 class DuplicateSiblingTests(unittest.TestCase):

@@ -483,12 +483,20 @@ locals {
     !can(cidrnetmask("${var.wg_dns_address_v6}/128")),
     false
   )
+  wg_address_v4_is_first_host = try(
+    cidrhost("${split("/", var.wg_address_v4)[0]}/32", 0) == cidrhost(var.wg_network_v4, 1),
+    false
+  )
+  wg_address_v6_is_first_host = try(
+    cidrhost("${split("/", var.wg_address_v6)[0]}/128", 0) == cidrhost(var.wg_network_v6, 1),
+    false
+  )
   wg_dns_v4_matches_interface = try(
-    cidrhost("${var.wg_address_v4}", 0) == cidrhost("${var.wg_dns_address_v4}/32", 0),
+    cidrhost("${split("/", var.wg_address_v4)[0]}/32", 0) == cidrhost("${var.wg_dns_address_v4}/32", 0),
     false
   )
   wg_dns_v6_matches_interface = try(
-    cidrhost("${var.wg_address_v6}", 0) == cidrhost("${var.wg_dns_address_v6}/128", 0),
+    cidrhost("${split("/", var.wg_address_v6)[0]}/128", 0) == cidrhost("${var.wg_dns_address_v6}/128", 0),
     false
   )
 
@@ -567,6 +575,10 @@ resource "oci_core_instance" "generated_oci_core_instance" {
     precondition {
       condition     = local.wg_address_v4_valid && local.wg_address_v6_valid
       error_message = "wg_address_v4 must be an IPv4 interface with /24 and wg_address_v6 must be an IPv6 interface with /64."
+    }
+    precondition {
+      condition     = local.wg_address_v4_is_first_host && local.wg_address_v6_is_first_host
+      error_message = "wg_address_v4/v6 must use the first host address (.1/::1) of their exact networks."
     }
     precondition {
       condition     = local.wg_address_v4_network_matches && local.wg_address_v6_network_matches

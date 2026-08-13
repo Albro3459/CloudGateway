@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from .fakes import FAKE_MESH_PUBLIC_KEY, FAKE_MESH_PUBLIC_KEY_2
 from .test_errors import assert_error_shape
 from .test_routes_clients import auth_header, create_active_client, enabled_region, seed_region
@@ -69,6 +71,21 @@ def test_admin_sync_reports_no_changes_when_state_matches(client, repository, wi
     assert "\x1b" not in payload["log"]
 
 
+def test_admin_sync_returns_success_when_audit_enrichment_fails(client, repository, wireguard, caplog):
+    seed_region(repository)
+    create_active_client(repository, wireguard)
+    repository.list_clients_by_public_key_error = RuntimeError("enrichment unavailable")
+
+    with caplog.at_level("WARNING", logger="src.routes"):
+        response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert (payload["added"], payload["updated"], payload["removed"]) == (0, 0, 0)
+    assert payload["noChanges"] is True
+    assert "peer_sync_enrichment_failed" in caplog.text
+
+
 def test_admin_sync_adds_missing_and_removes_unknown_with_audit_detail(client, repository, wireguard):
     seed_region(repository)
     active = create_active_client(repository, wireguard)
@@ -125,6 +142,48 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
     assert "mesh: enabled=True" in payload["log"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "omitted", "retained"),
+    [
+        ("wireguard_endpoint_hostname", "", "endpointHostname", ["endpointPort", "allowedNetworkV4", "allowedNetworkV6"]),
+        ("tunnel_network_v4", "10.0.1.0/25", "allowedNetworkV4", ["endpointHostname", "endpointPort", "allowedNetworkV6"]),
+    ],
+)
+def test_admin_sync_skipped_incomplete_omits_invalid_optional_fields(
+    client, repository, wireguard, field, value, omitted, retained
+):
+    seed_mesh_enabled_region(repository)
+    seed_mesh_candidate(repository)
+    repository.regions["us-other-1"] = replace(repository.regions["us-other-1"], **{field: value})
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    peer = response.json()["meshPeers"][0]
+    assert peer["status"] == "skipped-incomplete"
+    assert omitted not in peer
+    for field_name in retained:
+        assert field_name in peer
+
+
+def test_admin_sync_skipped_incomplete_retains_independent_valid_fields(client, repository, wireguard):
+    seed_mesh_enabled_region(repository)
+    seed_mesh_candidate(repository)
+    repository.regions["us-other-1"] = replace(
+        repository.regions["us-other-1"],
+        tunnel_network_v4="not-a-network",
+    )
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    peer = response.json()["meshPeers"][0]
+    assert peer["status"] == "skipped-incomplete"
+    assert peer["endpointHostname"] == "wg.us-other-1.example.com"
+    assert peer["endpointPort"] == 51820
+    assert peer["allowedNetworkV6"] == "fd42:42:42:1::/64"
+    assert "allowedNetworkV4" not in peer
+
+
 def test_admin_sync_no_changes_is_false_then_true_across_two_mesh_passes(client, repository, wireguard):
     seed_mesh_enabled_region(repository)
     seed_mesh_candidate(repository)
@@ -150,7 +209,7 @@ def test_admin_sync_reports_skipped_overlap_candidates_pairwise_and_never_leaks_
         region_id="us-conflict-1",
         wireguard_public_key=FAKE_MESH_PUBLIC_KEY_2,
         wireguard_endpoint_hostname="wg.us-conflict-1.example.com",
-        tunnel_network_v4="10.0.1.0/25",  # overlaps us-other-1's 10.0.1.0/24
+        tunnel_network_v4="10.0.1.0/24",  # overlaps us-other-1's 10.0.1.0/24
         tunnel_network_v6="fd42:42:42:9::/64",
         mesh_enabled=True,
     )
@@ -160,8 +219,10 @@ def test_admin_sync_reports_skipped_overlap_candidates_pairwise_and_never_leaks_
     payload = response.json()
     assert payload["meshSkipped"] == 2
     assert payload["meshApplied"] == 0
-    statuses = {peer["regionId"]: peer["status"] for peer in payload["meshPeers"]}
-    assert statuses["us-conflict-1"] == "skipped-overlap"
-    assert statuses["us-other-1"] == "skipped-overlap"
+    peers = {peer["regionId"]: peer for peer in payload["meshPeers"]}
+    assert peers["us-conflict-1"]["status"] == "skipped-overlap"
+    assert peers["us-other-1"]["status"] == "skipped-overlap"
+    assert peers["us-conflict-1"]["endpointPort"] == 51820
+    assert peers["us-other-1"]["endpointPort"] == 51820
     assert FAKE_MESH_PUBLIC_KEY not in response.text
     assert FAKE_MESH_PUBLIC_KEY_2 not in response.text

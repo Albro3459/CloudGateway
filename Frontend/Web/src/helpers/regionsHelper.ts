@@ -1,13 +1,9 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
+import { isValidMeshEndpointPort } from "./meshValidation";
 
-const numberOrNull = (value: unknown): number | null => {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "") {
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-};
+const numberOrNull = (value: unknown): number | null => (
+    isValidMeshEndpointPort(value) ? value : null
+);
 
 type RegionCapacity = {
     status: "known";
@@ -65,10 +61,10 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
     };
 };
 
-// Regions missing/false `enabled` are excluded from every enabled-region view:
+// Only literal true `enabled` values are included in every enabled-region view:
 // the create-client picker, the sync fan-out, and the Server Health strip.
 export const getEnabledRegions = (regions: Region[] | null): Region[] => (
-    (regions || []).filter(region => region.enabled !== false)
+    (regions || []).filter(region => region.enabled === true)
 );
 
 export const sortRegions = (regions: Region[]) => (

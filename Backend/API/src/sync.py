@@ -26,7 +26,16 @@ from .wireguard import (
 logger = logging.getLogger("src.sync")
 
 
-def desired_peers(repository: FirebaseRepository, region_id: str) -> dict[str, tuple[str, str]]:
+def desired_peers(
+    repository: FirebaseRepository,
+    region_id: str,
+    *,
+    local_region: RegionDoc | None = None,
+) -> dict[str, tuple[str, str]]:
+    if local_region is None:
+        local_region = repository.get_region(region_id)
+    if local_region is None or local_region.enabled is not True:
+        return {}
     return {
         client.client_public_key: (client.assigned_tunnel_ipv4, client.assigned_tunnel_ipv6)
         for client in repository.list_active_clients(region_id)
@@ -44,14 +53,25 @@ def desired_mesh_peers(
     repository: FirebaseRepository,
     settings: Settings,
     enabled_regions: Sequence[RegionDoc],
+    *,
+    local_region: RegionDoc | None = None,
 ) -> DesiredMesh:
-    local_region = repository.get_region(settings.region_id)
-    mesh_enabled = bool(local_region and local_region.mesh_enabled)
+    if local_region is None:
+        local_region = repository.get_region(settings.region_id)
+    mesh_enabled = (
+        local_region is not None
+        and local_region.enabled is True
+        and local_region.mesh_enabled is True
+    )
     if not mesh_enabled:
         return DesiredMesh(mesh_enabled=False)
 
     candidates = [
-        region for region in enabled_regions if region.region_id != settings.region_id and region.mesh_enabled
+        region
+        for region in enabled_regions
+        if region.enabled is True
+        and region.region_id != settings.region_id
+        and region.mesh_enabled is True
     ]
     local_networks = _local_networks(settings)
     if local_networks is None:
@@ -74,13 +94,18 @@ def desired_mesh_peers(
         raw_key = region.wireguard_public_key if isinstance(region.wireguard_public_key, str) else ""
         if raw_key in duplicate_keys:
             endpoint_host = region.wireguard_endpoint_hostname if isinstance(region.wireguard_endpoint_hostname, str) else ""
-            endpoint_port = region.wireguard_port if is_valid_port(region.wireguard_port) else None
+            network_v4 = region.tunnel_network_v4 if isinstance(region.tunnel_network_v4, str) else ""
+            network_v6 = region.tunnel_network_v6 if isinstance(region.tunnel_network_v6, str) else ""
+            parsed_v4, _ = _parse_mesh_network(network_v4, 4)
+            parsed_v6, _ = _parse_mesh_network(network_v6, 6)
             states[region.region_id] = _incomplete_state(
                 region,
-                endpoint_host if is_valid_endpoint_host(endpoint_host) else "",
-                raw_key,
-                endpoint_port,
-                MeshPeerReasonCode.DUPLICATE_PUBLIC_KEY.value,
+                endpoint_hostname=endpoint_host if is_valid_endpoint_host(endpoint_host) else "",
+                public_key=raw_key,
+                endpoint_port=region.wireguard_port if is_valid_port(region.wireguard_port) else None,
+                reason_code=MeshPeerReasonCode.DUPLICATE_PUBLIC_KEY.value,
+                allowed_network_v4=str(parsed_v4) if isinstance(parsed_v4, ipaddress.IPv4Network) else "",
+                allowed_network_v6=str(parsed_v6) if isinstance(parsed_v6, ipaddress.IPv6Network) else "",
             )
             log_event(
                 logger,
@@ -165,28 +190,55 @@ def normalize_mesh_candidate(region: RegionDoc) -> tuple[MeshPeer | None, MeshPe
     endpoint_host = region.wireguard_endpoint_hostname if isinstance(region.wireguard_endpoint_hostname, str) else ""
     network_v4 = region.tunnel_network_v4 if isinstance(region.tunnel_network_v4, str) else ""
     network_v6 = region.tunnel_network_v6 if isinstance(region.tunnel_network_v6, str) else ""
-    endpoint_port = region.wireguard_port if isinstance(region.wireguard_port, int) and not isinstance(region.wireguard_port, bool) else None
+    endpoint_port = (
+        region.wireguard_port
+        if isinstance(region.wireguard_port, int) and not isinstance(region.wireguard_port, bool)
+        else None
+    )
     valid_public_key = public_key if is_valid_wireguard_key(public_key) else ""
     valid_endpoint_host = endpoint_host if is_valid_endpoint_host(endpoint_host) else ""
     valid_endpoint_port = endpoint_port if is_valid_port(endpoint_port) else None
-    if not public_key:
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.MISSING_PUBLIC_KEY.value)
-    if not valid_public_key:
-        return None, _incomplete_state(region, valid_endpoint_host, "", valid_endpoint_port, MeshPeerReasonCode.INVALID_PUBLIC_KEY.value)
-    if not endpoint_host:
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.MISSING_ENDPOINT_HOSTNAME.value)
-    if not valid_endpoint_host:
-        return None, _incomplete_state(region, "", valid_public_key, valid_endpoint_port, MeshPeerReasonCode.INVALID_ENDPOINT_HOSTNAME.value)
-    if valid_endpoint_port is None:
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, None, MeshPeerReasonCode.INVALID_ENDPOINT_PORT.value)
     parsed_v4, reason_v4 = _parse_mesh_network(network_v4, 4)
-    if parsed_v4 is None:
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, reason_v4)
     parsed_v6, reason_v6 = _parse_mesh_network(network_v6, 6)
-    if parsed_v6 is None:
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, reason_v6, str(parsed_v4))
+    valid_network_v4 = str(parsed_v4) if isinstance(parsed_v4, ipaddress.IPv4Network) else ""
+    valid_network_v6 = str(parsed_v6) if isinstance(parsed_v6, ipaddress.IPv6Network) else ""
+
+    reason_code = None
+    if not public_key:
+        reason_code = MeshPeerReasonCode.MISSING_PUBLIC_KEY.value
+    elif not valid_public_key:
+        reason_code = MeshPeerReasonCode.INVALID_PUBLIC_KEY.value
+    elif not endpoint_host:
+        reason_code = MeshPeerReasonCode.MISSING_ENDPOINT_HOSTNAME.value
+    elif not valid_endpoint_host:
+        reason_code = MeshPeerReasonCode.INVALID_ENDPOINT_HOSTNAME.value
+    elif valid_endpoint_port is None:
+        reason_code = MeshPeerReasonCode.INVALID_ENDPOINT_PORT.value
+    elif parsed_v4 is None:
+        reason_code = reason_v4
+    elif parsed_v6 is None:
+        reason_code = reason_v6
+
+    if reason_code is not None:
+        return None, _incomplete_state(
+            region,
+            valid_endpoint_host,
+            valid_public_key,
+            valid_endpoint_port,
+            reason_code,
+            valid_network_v4,
+            valid_network_v6,
+        )
     if not isinstance(parsed_v4, ipaddress.IPv4Network) or not isinstance(parsed_v6, ipaddress.IPv6Network):
-        return None, _incomplete_state(region, valid_endpoint_host, valid_public_key, valid_endpoint_port, MeshPeerReasonCode.INVALID_NETWORK_V4.value)
+        return None, _incomplete_state(
+            region,
+            valid_endpoint_host,
+            valid_public_key,
+            valid_endpoint_port,
+            MeshPeerReasonCode.INVALID_NETWORK_V4.value,
+            valid_network_v4,
+            valid_network_v6,
+        )
     if not is_subnet_of(parsed_v4, ipaddress.ip_network(MESH_AGGREGATE_V4)) or not is_subnet_of(
         parsed_v6, ipaddress.ip_network(MESH_AGGREGATE_V6)
     ):
@@ -194,13 +246,13 @@ def normalize_mesh_candidate(region: RegionDoc) -> tuple[MeshPeer | None, MeshPe
             region_id=region.region_id,
             endpoint_hostname=valid_endpoint_host,
             public_key=valid_public_key,
-            allowed_network_v4=str(parsed_v4),
-            allowed_network_v6=str(parsed_v6),
+            allowed_network_v4=valid_network_v4,
+            allowed_network_v6=valid_network_v6,
             status=MeshPeerStatus.SKIPPED_INCOMPLETE,
             endpoint_port=valid_endpoint_port,
             reason_code=MeshPeerReasonCode.OUTSIDE_AGGREGATE.value,
         )
-    peer = MeshPeer(valid_public_key, valid_endpoint_host, valid_endpoint_port, str(parsed_v4), str(parsed_v6))
+    peer = MeshPeer(valid_public_key, valid_endpoint_host, valid_endpoint_port, valid_network_v4, valid_network_v6)
     return peer, _mesh_state(region, MeshPeerStatus.APPLIED, peer=peer)
 
 
@@ -211,13 +263,14 @@ def _incomplete_state(
     endpoint_port: int | None,
     reason_code: str,
     allowed_network_v4: str = "",
+    allowed_network_v6: str = "",
 ) -> MeshPeerState:
     return MeshPeerState(
         region_id=region.region_id,
         endpoint_hostname=endpoint_hostname,
         public_key=public_key,
         allowed_network_v4=allowed_network_v4,
-        allowed_network_v6="",
+        allowed_network_v6=allowed_network_v6,
         status=MeshPeerStatus.SKIPPED_INCOMPLETE,
         endpoint_port=endpoint_port,
         reason_code=reason_code,
@@ -233,7 +286,8 @@ def _parse_mesh_network(value: str, version: int) -> tuple[ipaddress.IPv4Network
         network = ipaddress.ip_network(value, strict=True)
     except ValueError:
         return None, invalid_code.value
-    if network.version != version or str(network) != value:
+    expected_prefix = 24 if version == 4 else 64
+    if network.version != version or network.prefixlen != expected_prefix or str(network) != value:
         return None, invalid_code.value
     return network, ""
 
@@ -287,9 +341,10 @@ def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, set
     # the same lock. This prevents an older pass from writing status after a
     # newer reconciliation has completed.
     with wireguard.lock():
-        desired = desired_peers(repository, settings.region_id)
+        local_region = repository.get_region(settings.region_id)
+        desired = desired_peers(repository, settings.region_id, local_region=local_region)
         enabled_regions = repository.list_enabled_regions()
-        mesh = desired_mesh_peers(repository, settings, enabled_regions)
+        mesh = desired_mesh_peers(repository, settings, enabled_regions, local_region=local_region)
         other_regions = [region for region in enabled_regions if region.region_id != settings.region_id]
         key_owners: dict[str, list[str]] = {}
         for region in other_regions:

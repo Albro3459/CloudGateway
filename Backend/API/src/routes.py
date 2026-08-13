@@ -544,11 +544,23 @@ def admin_sync(
     # lock, but this re-list runs unlocked, so a concurrent create/delete could
     # leave a peer without its join details in the audit log.
     changed_public_keys = {change.public_key for change in result.changes}
-    clients_by_key = {
-        client.client_public_key: client
-        for client in repository.list_clients_by_public_key(settings.region_id, changed_public_keys)
-        if client.client_public_key
-    }
+    clients_by_key = {}
+    try:
+        clients_by_key = {
+            client.client_public_key: client
+            for client in repository.list_clients_by_public_key(settings.region_id, changed_public_keys)
+            if client.client_public_key
+        }
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.PEER_SYNC_ENRICHMENT_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            region_id=settings.region_id,
+            error_type=type(exc).__name__,
+        )
     mesh_skipped = sum(1 for candidate in outcome.mesh_candidates if candidate.status != MeshPeerStatus.APPLIED)
     no_changes = (
         not result.changes
@@ -599,10 +611,10 @@ def admin_sync(
             AdminSyncMeshPeer(
                 region_id=candidate.region_id,
                 status=candidate.status,
-                endpoint_hostname=candidate.endpoint_hostname,
+                endpoint_hostname=candidate.endpoint_hostname or None,
                 endpoint_port=candidate.endpoint_port,
-                allowed_network_v4=candidate.allowed_network_v4,
-                allowed_network_v6=candidate.allowed_network_v6,
+                allowed_network_v4=candidate.allowed_network_v4 or None,
+                allowed_network_v6=candidate.allowed_network_v6 or None,
                 reason_code=candidate.reason_code,
             )
             for candidate in outcome.mesh_candidates

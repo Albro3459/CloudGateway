@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockNavigate = jest.fn();
 
@@ -39,8 +39,10 @@ jest.mock("../../stores/ociRegionsStore", () => {
 
 describe("Login", () => {
     const user = {
+        uid: "user-old",
         getIdToken: jest.fn().mockResolvedValue("firebase-token"),
     };
+    let authCallback: ((user: unknown) => void) | undefined;
 
     beforeEach(() => {
         jest.clearAllMocks();
@@ -49,7 +51,7 @@ describe("Login", () => {
         const { checkAccountAccess } = require("../../helpers/APIHelper");
         const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
         onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
-            setTimeout(() => callback(null), 0);
+            authCallback = callback;
             return () => undefined;
         });
         signInWithEmailAndPassword.mockReset();
@@ -61,6 +63,75 @@ describe("Login", () => {
         useOciRegionsStore.getState.mockReturnValue({
             ociRegions: [{ regionId: "us-sanjose-1", enabled: true }],
             error: null,
+        });
+    });
+
+    it("ignores a stale provisioning result after a newer auth generation", async () => {
+        const { signInWithEmailAndPassword, signOut } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        const newerUser = { uid: "user-new", getIdToken: jest.fn().mockResolvedValue("new-token") };
+        let resolveAccess!: (value: { success: boolean; data?: unknown; error?: string }) => void;
+        const pendingAccess = new Promise<{ success: boolean; data?: unknown; error?: string }>(resolve => {
+            resolveAccess = resolve;
+        });
+
+        signInWithEmailAndPassword.mockResolvedValue({ user });
+        checkAccountAccess.mockReturnValue(pendingAccess);
+
+        render(<Login />);
+        await act(async () => authCallback?.(null));
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
+            target: { value: "user@example.com" },
+        });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), {
+            target: { value: "Password1!" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
+
+        await act(async () => authCallback?.(newerUser));
+        await act(async () => {
+            resolveAccess({ success: false, error: "stale provisioning failure" });
+            await pendingAccess;
+        });
+
+        expect(signOut).not.toHaveBeenCalled();
+        expect(mockNavigate).not.toHaveBeenCalledWith("/home", { replace: true });
+        expect(screen.queryByText("stale provisioning failure")).toBeNull();
+    });
+
+    it("keeps a manual sign-in alive when the auth observer repeats the same UID", async () => {
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        const { default: Login } = require("../Login");
+        let resolveAccess!: (value: { success: boolean; data?: unknown; error?: string }) => void;
+        const pendingAccess = new Promise<{ success: boolean; data?: unknown; error?: string }>(resolve => {
+            resolveAccess = resolve;
+        });
+        signInWithEmailAndPassword.mockResolvedValue({ user });
+        checkAccountAccess.mockReturnValue(pendingAccess);
+
+        render(<Login />);
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
+            target: { value: "user@example.com" },
+        });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), {
+            target: { value: "Password1!" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
+
+        await act(async () => authCallback?.(user));
+        await act(async () => {
+            resolveAccess({ success: true, data: { userId: user.uid } });
+            await pendingAccess;
+        });
+
+        await waitFor(() => {
+            expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
+            expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
         });
     });
 

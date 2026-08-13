@@ -15,21 +15,43 @@ before Terraform can safely manage the region again.
 
 ## Standard Recovery (server key retained)
 
-A rebuild or destroy uses the same mandatory drain order, even when the host is already lost:
+A lost host is self-healing when rebuilt with the same
+`wg_server_private_key`, tunnel subnets, and endpoint hostname. The normal
+self-healing sequence is:
 
-1. Run `python3 scripts/region-lifecycle.py prepare-drain <regionId>`; this disables the target and mesh membership and records the drain timestamp.
-2. In the dashboard, run **Sync All Regions** across every remaining enabled region.
-3. Run `python3 scripts/region-lifecycle.py verify-drain <regionId>`.
-4. Rebuild the host with `./scripts/terraform.sh <region> apply` per [docs/regional-deployment.md](regional-deployment.md). The wrapper blocks before deploy tag, `source_ref`, or Terraform mutation if verification fails. Use the same `wg_server_private_key` when it is retained and a `source_ref` matching what should run.
-5. Let Terraform update the **grey-cloud** `wg.<regionId>.<origin>` A record to the new public IPv4, and the proxied API record if the IP changed. Touch Cloudflare manually only when reconciling/importing resources before rerunning Terraform.
-6. Update `Regions/{regionId}.wireguardEndpointIpv4` (and `wireguardEndpointIpv6` if used) to the new IP. `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs are unchanged.
-7. Confirm the boot peer sync succeeded: `systemctl status cloudgateway-sync-peers` (or run `sudo cloudgateway-sync-peers`). The live peer set is rebuilt from Firebase.
-8. Validate `/api/health` through Cloudflare. Registration may restore `enabled=true`, but preserves `meshEnabled=false`; explicitly enable mesh and run Sync All only after validation.
-9. Tell affected users to toggle their WireGuard tunnel off and on (clients resolve the endpoint DNS at tunnel-up). No config changes are needed.
+1. Rebuild the host with `./scripts/terraform.sh <region> apply` per
+   [docs/regional-deployment.md](regional-deployment.md), using a `source_ref`
+   matching what should run.
+2. Let Terraform update the **grey-cloud** `wg.<regionId>.<origin>` A record to
+   the new public IPv4, and the proxied API record if the IP changed. Touch
+   Cloudflare manually only when reconciling/importing resources before rerunning
+   Terraform.
+3. Registration updates `Regions/{regionId}` with the current endpoint metadata;
+   `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs remain
+   unchanged.
+4. Confirm boot peer sync succeeded with `systemctl status
+   cloudgateway-sync-peers` (or run `sudo cloudgateway-sync-peers`). Firebase is
+   the source of truth and the live peer set is rebuilt from it.
+5. Validate `/api/health` through Cloudflare and inspect `wg show wg0` for peers
+   and handshakes. WireGuard endpoint roaming updates remote mesh peers after
+   the rebuilt host connects.
+6. Tell affected users to toggle their WireGuard tunnel off and on so clients
+   re-resolve the endpoint DNS. No config changes are needed.
 
-A Mesh status document records the last reconciliation snapshot and does not prove a live WireGuard handshake; use `wg show wg0` on the host for that check.
+A subnet change is different and is never address migration. Use this exact order:
+disable mesh membership and run **Sync All Regions**, delete all
+`Regions/{regionId}/Instances/*` documents without inspecting or migrating
+addresses, update the authoritative registry and matching tfvars, deploy, then
+explicitly re-enable mesh and run **Sync All Regions**. Verify registration and
+health before enabling mesh. Users recreate clients after the new subnet is live.
+Before enabling mesh, verify and backfill `wireguardPort` on every existing Region
+document; this repository cannot prove live Firestore state or support a missing-
+port fallback.
 
-Capacity stays correct because it is derived from Firebase client docs, which did not change.
+A Mesh status document records the last reconciliation snapshot and does not prove
+a live WireGuard handshake; use `wg show wg0` on the host for that check.
+
+For a normal rebuild, capacity stays correct because it is derived from the Firebase client docs, which remain unchanged. A subnet cutover deletes the target region's client docs by design; users recreate clients after deployment.
 
 ## Key-Loss Recovery (server key rotated or compromised)
 

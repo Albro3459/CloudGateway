@@ -1,5 +1,13 @@
 import { buildAccessCheckApiEndpoint, buildApexApiEndpoint, buildCreateUserApiEndpoint, buildRegionalApiEndpoint } from "./apiEndpoints";
 import type { ApiRegionOption } from "./apiEndpoints";
+import {
+    isValidEndpointHostname,
+    isValidMeshEndpointPort,
+    isValidMeshNetworkSyntaxV4,
+    isValidMeshNetworkSyntaxV6,
+    isValidMeshNetworkV4,
+    isValidMeshNetworkV6,
+} from "./meshValidation";
 
 type FastApiError = {
     code?: string;
@@ -23,6 +31,13 @@ export type ApiHelperFailure = {
     requestId?: string;
     status?: number;
     data?: unknown;
+    failureType?: "incompatible-response";
+};
+
+type IncompatibleResponseFailure = ApiHelperFailure & {
+    success: false;
+    failureType: "incompatible-response";
+    errorCode: "INCOMPATIBLE_RESPONSE";
 };
 
 export type ApiHelperResult<T> = ApiHelperSuccess<T> | ApiHelperFailure;
@@ -94,6 +109,21 @@ export type RegionsResponse = {
 };
 
 type RegionSyncMeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
+type RegionSyncMeshPeerReasonCode =
+    | "missing-public-key"
+    | "invalid-public-key"
+    | "missing-endpoint-hostname"
+    | "invalid-endpoint-hostname"
+    | "invalid-endpoint-port"
+    | "missing-network-v4"
+    | "invalid-network-v4"
+    | "missing-network-v6"
+    | "invalid-network-v6"
+    | "outside-aggregate"
+    | "duplicate-public-key"
+    | "local-network-invalid"
+    | "overlap-local"
+    | "overlap-candidate";
 
 type RegionSyncMeshPeer = {
     regionId: string;
@@ -102,7 +132,7 @@ type RegionSyncMeshPeer = {
     endpointPort?: number | null;
     allowedNetworkV4?: string;
     allowedNetworkV6?: string;
-    reasonCode?: string | null;
+    reasonCode?: RegionSyncMeshPeerReasonCode | null;
 };
 
 export type RegionSyncResponse = {
@@ -113,7 +143,7 @@ export type RegionSyncResponse = {
     removed: number;
     noChanges: boolean;
     log: string;
-    meshUpdated?: number;
+    meshUpdated: number;
     meshEnabled: boolean;
     meshApplied: number;
     meshAdded: number;
@@ -348,13 +378,184 @@ export const createAdminUser = (
     }
 };
 
-const normalizeRegionSyncResponse = (response: RegionSyncResponse): RegionSyncResponse => ({
-    ...response,
-    // Older regional APIs omit this additive counter. Keep the web shape
-    // stable while mixed-version sync fan-outs are still possible.
-    meshUpdated: typeof response.meshUpdated === "number" && Number.isFinite(response.meshUpdated)
-        ? response.meshUpdated
-        : 0,
+const regionSyncReasonCodes = new Set<RegionSyncMeshPeerReasonCode>([
+    "missing-public-key",
+    "invalid-public-key",
+    "missing-endpoint-hostname",
+    "invalid-endpoint-hostname",
+    "invalid-endpoint-port",
+    "missing-network-v4",
+    "invalid-network-v4",
+    "missing-network-v6",
+    "invalid-network-v6",
+    "outside-aggregate",
+    "duplicate-public-key",
+    "local-network-invalid",
+    "overlap-local",
+    "overlap-candidate",
+]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+    Boolean(value) && typeof value === "object" && !Array.isArray(value)
+);
+
+const hasOwn = (value: Record<string, unknown>, key: string): boolean => (
+    Object.prototype.hasOwnProperty.call(value, key)
+);
+
+const isNonEmptyString = (value: unknown): value is string => (
+    typeof value === "string" && value.trim() !== ""
+);
+
+const isNonNegativeInteger = (value: unknown): value is number => (
+    typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+);
+
+const parseReasonCode = (value: unknown): RegionSyncMeshPeerReasonCode | null | undefined => {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    return typeof value === "string" && regionSyncReasonCodes.has(value as RegionSyncMeshPeerReasonCode)
+        ? value as RegionSyncMeshPeerReasonCode
+        : null;
+};
+
+const parseRequiredMeshPeer = (
+    value: unknown,
+    status: "applied" | "skipped-overlap",
+): RegionSyncMeshPeer | null => {
+    if (!isRecord(value) || !isNonEmptyString(value.regionId)) return null;
+    if (
+        !isValidEndpointHostname(value.endpointHostname)
+        || !isValidMeshEndpointPort(value.endpointPort)
+        || !isValidMeshNetworkV4(value.allowedNetworkV4)
+        || !isValidMeshNetworkV6(value.allowedNetworkV6)
+    ) {
+        return null;
+    }
+
+    const reasonCode = parseReasonCode(value.reasonCode);
+    if (
+        (value.reasonCode !== undefined && value.reasonCode !== null && reasonCode === null)
+        || (status === "skipped-overlap" && typeof reasonCode !== "string")
+    ) return null;
+
+    return {
+        regionId: value.regionId,
+        status,
+        endpointHostname: value.endpointHostname,
+        endpointPort: value.endpointPort,
+        allowedNetworkV4: value.allowedNetworkV4,
+        allowedNetworkV6: value.allowedNetworkV6,
+        ...(reasonCode === undefined ? {} : { reasonCode }),
+    };
+};
+
+const parseOptionalNonBlankField = <TValue>(
+    value: unknown,
+    isValid: (fieldValue: unknown) => fieldValue is TValue,
+): TValue | null | undefined => {
+    if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
+        return undefined;
+    }
+    return isValid(value) ? value : null;
+};
+
+const parseIncompleteMeshPeer = (value: Record<string, unknown>): RegionSyncMeshPeer | null => {
+    if (!isNonEmptyString(value.regionId)) return null;
+    const reasonCode = parseReasonCode(value.reasonCode);
+    if (!reasonCode) return null;
+
+    const endpointHostname = parseOptionalNonBlankField(value.endpointHostname, isValidEndpointHostname);
+    const endpointPort = parseOptionalNonBlankField(value.endpointPort, isValidMeshEndpointPort);
+    const allowedNetworkV4 = parseOptionalNonBlankField(value.allowedNetworkV4, isValidMeshNetworkSyntaxV4);
+    const allowedNetworkV6 = parseOptionalNonBlankField(value.allowedNetworkV6, isValidMeshNetworkSyntaxV6);
+    if (
+        endpointHostname === null
+        || endpointPort === null
+        || allowedNetworkV4 === null
+        || allowedNetworkV6 === null
+    ) {
+        return null;
+    }
+
+    return {
+        regionId: value.regionId,
+        status: "skipped-incomplete",
+        ...(endpointHostname === undefined ? {} : { endpointHostname }),
+        ...(endpointPort === undefined ? {} : { endpointPort }),
+        ...(allowedNetworkV4 === undefined ? {} : { allowedNetworkV4 }),
+        ...(allowedNetworkV6 === undefined ? {} : { allowedNetworkV6 }),
+        reasonCode,
+    };
+};
+
+const parseRegionSyncResponse = (value: unknown): RegionSyncResponse | null => {
+    if (!isRecord(value)) return null;
+
+    const requiredFields = [
+        "regionId", "syncedAt", "added", "updated", "removed", "noChanges", "log", "meshUpdated",
+        "meshEnabled", "meshApplied", "meshAdded", "meshRemoved", "meshSkipped", "meshRoutesAdded",
+        "meshRoutesRemoved", "meshPeers",
+    ];
+    if (requiredFields.some(field => !hasOwn(value, field))) return null;
+    if (
+        !isNonEmptyString(value.regionId)
+        || !isNonEmptyString(value.syncedAt)
+        || Number.isNaN(Date.parse(value.syncedAt))
+        || typeof value.log !== "string"
+        || typeof value.noChanges !== "boolean"
+        || typeof value.meshEnabled !== "boolean"
+    ) {
+        return null;
+    }
+
+    const counterFields = [
+        "added", "updated", "removed", "meshUpdated", "meshApplied", "meshAdded", "meshRemoved",
+        "meshSkipped", "meshRoutesAdded", "meshRoutesRemoved",
+    ];
+    if (counterFields.some(field => !isNonNegativeInteger(value[field]))) return null;
+    if (!Array.isArray(value.meshPeers)) return null;
+
+    const meshPeers: RegionSyncMeshPeer[] = [];
+    for (const rawPeer of value.meshPeers) {
+        if (!isRecord(rawPeer)) return null;
+        const peer = rawPeer.status === "applied"
+            ? parseRequiredMeshPeer(rawPeer, "applied")
+            : rawPeer.status === "skipped-overlap"
+                ? parseRequiredMeshPeer(rawPeer, "skipped-overlap")
+                : rawPeer.status === "skipped-incomplete"
+                    ? parseIncompleteMeshPeer(rawPeer)
+                    : null;
+        if (!peer) return null;
+        meshPeers.push(peer);
+    }
+
+    return {
+        regionId: value.regionId,
+        syncedAt: value.syncedAt,
+        added: value.added as number,
+        updated: value.updated as number,
+        removed: value.removed as number,
+        noChanges: value.noChanges,
+        log: value.log,
+        meshUpdated: value.meshUpdated as number,
+        meshEnabled: value.meshEnabled,
+        meshApplied: value.meshApplied as number,
+        meshAdded: value.meshAdded as number,
+        meshRemoved: value.meshRemoved as number,
+        meshSkipped: value.meshSkipped as number,
+        meshRoutesAdded: value.meshRoutesAdded as number,
+        meshRoutesRemoved: value.meshRoutesRemoved as number,
+        meshPeers,
+    };
+};
+
+const incompatibleResponse = (regionId: string, data: unknown): IncompatibleResponseFailure => ({
+    success: false,
+    failureType: "incompatible-response",
+    errorCode: "INCOMPATIBLE_RESPONSE",
+    error: `Incompatible admin sync response from ${regionId}.`,
+    data,
 });
 
 const runRegionSync = async (
@@ -368,7 +569,10 @@ const runRegionSync = async (
             "POST",
             { regionId },
         );
-        return result.success ? { ...result, data: normalizeRegionSyncResponse(result.data) } : result;
+        if (!result.success) return result;
+        const response = parseRegionSyncResponse(result.data);
+        if (!response || response.regionId !== regionId) return incompatibleResponse(regionId, result.data);
+        return { success: true, data: response };
     } catch (error) {
         return {
             success: false,

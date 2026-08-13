@@ -41,23 +41,40 @@ export type FirebaseRegionDoc = {
     capacityLimit: number;
     tunnelNetworkV4: string;
     tunnelNetworkV6: string;
-    meshEnabled: boolean;
-    drainRequestedAt?: FirestoreTimestamp;
+    meshEnabled?: boolean;
     displayOrder?: number;
     healthStatus?: string;
     updatedAt: FirestoreTimestamp;
 };
 
-export type FirebaseMeshPeerEntry = {
-    endpointHostname?: string;
-    endpointPort?: number;
-    publicKey?: string;
-    allowedNetworkV4?: string;
-    allowedNetworkV6?: string;
-    status: FirebaseMeshPeerStatus;
-    reasonCode?: FirebaseMeshPeerReasonCode | string;
+type FirebaseMeshPeerMetadata = {
+    endpointHostname: string;
+    endpointPort: number;
+    publicKey: string;
+    allowedNetworkV4: string;
+    allowedNetworkV6: string;
     appliedAt: FirestoreTimestamp;
 };
+
+export type FirebaseMeshPeerEntry =
+    | (FirebaseMeshPeerMetadata & {
+        status: "applied";
+        reasonCode?: FirebaseMeshPeerReasonCode | string;
+    })
+    | (FirebaseMeshPeerMetadata & {
+        status: "skipped-overlap";
+        reasonCode: FirebaseMeshPeerReasonCode | string;
+    })
+    | {
+        status: "skipped-incomplete";
+        endpointHostname?: string;
+        endpointPort?: number;
+        publicKey?: string;
+        allowedNetworkV4?: string;
+        allowedNetworkV6?: string;
+        reasonCode: FirebaseMeshPeerReasonCode | string;
+        appliedAt: FirestoreTimestamp;
+    };
 
 export type FirebaseMeshDoc = {
     regionId: string;

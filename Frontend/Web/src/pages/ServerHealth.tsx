@@ -5,8 +5,8 @@ import { RefreshCw } from "lucide-react";
 import { auth, onAuthStateChanged } from "../firebase";
 import { runRegionsSync } from "../helpers/APIHelper";
 import type { RegionSyncResult } from "../helpers/APIHelper";
-import { getAllRegionDocs, getMeshDocs, logout, setRegionMeshEnabled } from "../helpers/firebaseDbHelper";
-import { getEnabledRegions, Region } from "../helpers/regionsHelper";
+import { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } from "../helpers/firebaseDbHelper";
+import { getEnabledRegions, Region, sortRegions } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 import {
     buildMeshLinkRows,
@@ -170,7 +170,7 @@ const ServerHealth: React.FC = () => {
                 }
             }
 
-            const overlaidRegions = regionDocs.map(region => {
+            const overlaidRegions = sortRegions(regionDocs).map(region => {
                 const override = overridesRef.current.get(region.regionId);
                 return override ? { ...region, meshEnabled: override.enabled } : region;
             });
@@ -269,14 +269,31 @@ const ServerHealth: React.FC = () => {
         const authGenerationRefForCleanup = authGenerationRef;
         const loadGenerationRefForCleanup = loadGenerationRef;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
+            if (!mountedRef.current) return;
             const authGeneration = ++authGenerationRef.current;
             ++loadGenerationRef.current;
             toggleRevisionsRef.current.clear();
             overridesRef.current.clear();
+            autoRunHandled.current = false;
+
+            // Reset all session-scoped controls and ephemeral results before
+            // loading the new auth generation. Stale async work is rejected by
+            // isCurrent and cannot restore the previous session's state.
+            setRole(null);
+            setJwtToken(null);
+            setBanner(null);
+            setRegions(null);
+            setMeshDocs(new Map());
+            setDataLoading(false);
+            setTogglingRegionIds(new Set());
+            setSyncModalOpen(false);
+            setSyncing(false);
+            setSyncResults(null);
+            setSyncError(null);
 
             const fetchUserData = async () => {
                 if (!user) {
-                    if (mountedRef.current) await logout(navigate);
+                    if (isCurrent(authGeneration) && !auth.currentUser) navigate("/", { replace: true });
                     return;
                 }
 

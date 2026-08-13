@@ -56,24 +56,42 @@ prefixes, interface-derived networks, DNS/interface equality, and all active/res
 before every plan/apply/destroy. A new region is added to the
 registry first with the next free allocation; see
 [Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
-for the operator workflow.
+for the operator workflow. Before enabling mesh, an operator must verify and
+backfill `wireguardPort` on every existing Region document. The repository cannot
+prove live Firestore state, so missing-port fallback must not be removed or relied
+on until that prerequisite is complete.
 
-### Drain gate for replacement and destroy
+### Replacement, subnet changes, and destroy
 
-A replacement or destroy must follow this exact order, including when the host is already lost:
+A normal replacement is self-healing. Keep the same WireGuard private key, tunnel
+subnets, and endpoint hostname; run `./scripts/terraform.sh <regionId> apply`, let
+boot registration and sync rebuild the live peers from Firebase, and validate
+`wg show` plus the API health endpoint. Existing client documents and configs stay
+valid, and clients recover when WireGuard re-resolves the endpoint hostname after
+a public-IP change.
 
-1. `python3 scripts/region-lifecycle.py prepare-drain <regionId>` writes `enabled=false`, `meshEnabled=false`, and a server timestamp to the target Region document.
-2. In the dashboard, run **Sync All Regions** across every remaining enabled region.
-3. `python3 scripts/region-lifecycle.py verify-drain <regionId>` confirms fresh Mesh status from every remaining enabled region and that the drained region is absent from peer maps.
-4. Run `./scripts/terraform.sh <regionId> apply` or `destroy`.
+A subnet change uses a hard cutoff, never address migration. Use this exact
+order: disable the region's mesh membership and run **Sync All Regions**, delete
+every `Regions/{regionId}/Instances/*` document without inspecting or migrating
+its assigned addresses, update the authoritative registry and matching tfvars,
+then run the Terraform deployment. After registration and health checks,
+explicitly enable mesh and run **Sync All Regions** again. Chicago users recreate
+clients. There is no mixed-version rollout and no existing live Mesh document/API
+compatibility path to support.
 
-The wrapper parses every saved Terraform plan before tag, `source_ref`, apply, or destroy mutation. `delete` and `delete+create` instance actions require the drain verification; a replacement that changes either tunnel subnet also requires no `active` or `creating` client reservations. Same-subnet replacement may retain clients. Plan-only mode only warns and never writes Firebase. There is no break-glass override.
-
-After a rebuild, registration may set `enabled=true` once health checks pass, but it leaves `meshEnabled=false`. Explicitly enable mesh in the dashboard and run Sync All only after the replacement is validated. A `Mesh/{regionId}` status document proves what a sync observed, not a WireGuard handshake; use `wg show` on the host for live link verification.
+The wrapper's registry, Terraform, and resource-ownership preflights still run
+before every plan, apply, and destroy. Permanent decommission is an explicit
+operator operation: remove the region from desired state and run Sync All before
+permanently deleting its infrastructure. A `Mesh/{regionId}` status document
+proves what a sync observed, not a WireGuard handshake; use `wg show` on the host
+for live link verification.
 
 **One-time cutover note (shared-subnet mesh):** `us-chicago-1` moves from index 0 (shared with
-San Jose, the pre-mesh bug this scheme fixes) to index 1. Before deploying, an operator edits the
-gitignored `Infrastructure/OCI/terraform/us-chicago-1.terraform.tfvars` by hand:
+San Jose, the pre-mesh bug this scheme fixes) to index 1. The values below are non-operational
+reference values only. Do not edit the tfvars from this note before the authoritative cutover
+sequence below. Use these values only at that sequence's registry/tfvars update step, after
+Chicago mesh membership is disabled, **Sync All Regions** has run, and Chicago's client docs have
+been deleted:
 
 ```
 wg_address_v4     = "10.0.1.1/24"
@@ -84,11 +102,13 @@ wg_network_v6     = "fd42:42:42:1::/64"
 wg_dns_address_v6 = "fd42:42:42:1::1"
 ```
 
-Before that deploy, also delete Chicago's client docs (`Regions/us-chicago-1/Instances/*`): their
-`10.0.0.x` assignments and rendered configs (`DNS = 10.0.0.1`) are invalid under the new subnet.
-This is a hard cutoff per the mesh design - San Jose's docs are untouched, and Chicago users
-recreate their clients from the dashboard/app after the region redeploys and re-registers with
-its new tunnel CIDRs.
+For the Chicago cutover, first disable Chicago mesh membership and run **Sync All Regions**.
+Then, before the subnet deployment, delete Chicago's client docs
+(`Regions/us-chicago-1/Instances/*`): their `10.0.0.x` assignments and rendered configs
+(`DNS = 10.0.0.1`) are invalid under the new subnet. Next update the authoritative registry and
+matching tfvars using the reference values above, then deploy. This is a hard cutoff per the mesh
+design - San Jose's docs are untouched, and Chicago users recreate their clients from the
+dashboard/app after the region redeploys and re-registers with its new tunnel CIDRs.
 
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
@@ -106,11 +126,12 @@ cp Infrastructure/OCI/terraform/terraform.tfvars.example Infrastructure/OCI/terr
 
 For `apply`, the script validates all requested var files and `source_ref` lines
 before side effects, saves every region's plan against the new deploy tag, performs
-all required drain and subnet/client checks, then creates and pushes one `Deploy v<x>`
-commit plus `deploy-v<x>` tag, writes that tag into every listed `source_ref`, and
-applies the saved plans one at a time. If one
-region fails, the script stops and already applied regions remain deployed; fix
-the failure and rerun.
+all required preflight checks, then creates and pushes one `Deploy v<x>` commit
+plus `deploy-v<x>` tag, writes that tag into every listed `source_ref`, and
+applies the saved plans one at a time. Do not enable mesh or run Sync All until all
+participating regions are on that current ref; Mesh/API versions are not mixed-
+version compatible. If one region fails, the script stops and already applied
+regions remain deployed; fix the failed region and rerun.
 
 The matching OCI profile must exist in `~/.oci/config`, for example:
 

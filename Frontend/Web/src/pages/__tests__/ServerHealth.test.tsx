@@ -5,6 +5,7 @@ import type { RegionSyncResponse } from "../../helpers/APIHelper";
 
 const mockNavigate = jest.fn();
 let mockLocation: { pathname: string; state: unknown } = { pathname: "/server-health", state: null };
+let authStateCallback: ((user: unknown) => void) | null = null;
 
 jest.mock("react-router-dom", () => ({
     useNavigate: () => mockNavigate,
@@ -53,7 +54,7 @@ const region = (regionId: string, displayName: string, meshEnabled: boolean, dis
     wireguardEndpointHostname: "wg.example.com",
     wireguardPort: 51820,
     wireguardPortPresent: true,
-    wireguardPublicKey: "public-key",
+    wireguardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     tunnelNetworkV4: "10.0.1.0/24",
     tunnelNetworkV6: "fd42:42:42:1::/64",
 });
@@ -61,7 +62,7 @@ const region = (regionId: string, displayName: string, meshEnabled: boolean, dis
 const meshPeer = (overrides: Partial<MeshDoc["peers"][string]> = {}) => ({
     endpointHostname: "wg.example.com",
     endpointPort: 51820,
-    publicKey: "public-key",
+    publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     allowedNetworkV4: "10.0.1.0/24",
     allowedNetworkV6: "fd42:42:42:1::/64",
     status: "applied" as const,
@@ -120,7 +121,9 @@ describe("ServerHealth", () => {
         const { runRegionsSync } = require("../../helpers/APIHelper");
 
         auth.currentUser = mockUser;
+        authStateCallback = null;
         onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            authStateCallback = callback;
             callback(mockUser);
             return () => undefined;
         });
@@ -311,6 +314,126 @@ describe("ServerHealth", () => {
         // A single region failing inside the fan-out isn't a page-level error:
         // the top-level sync error banner should stay unset.
         expect(screen.queryByText("Unable to sync regions.")).toBeNull();
+    });
+
+    it("clears syncing when auth generation changes during Sync All", async () => {
+        mockLocation = { pathname: "/server-health", state: null };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const syncPending = deferred<unknown>();
+        const regions = [
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+        ];
+
+        getAllRegionDocs.mockResolvedValue(regions);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockReturnValue(syncPending.promise);
+
+        render(<ServerHealth />);
+        const syncButton = await screen.findByRole("button", { name: "Sync All Regions" });
+        fireEvent.click(syncButton);
+        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalled());
+        expect((screen.getByRole("button", { name: "Syncing..." }) as HTMLButtonElement).disabled).toBe(true);
+
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+
+        await waitFor(() => {
+            expect((screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled).toBe(false);
+        });
+        await act(async () => {
+            syncPending.resolve([]);
+            await syncPending.promise;
+        });
+    });
+
+    it("clears toggling state when auth generation changes during a toggle", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const togglePending = deferred<void>();
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        setRegionMeshEnabled.mockReturnValue(togglePending.promise);
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        expect(checkbox.disabled).toBe(true);
+
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+
+        await waitFor(() => {
+            expect((screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).disabled).toBe(false);
+        });
+        await act(async () => {
+            togglePending.resolve();
+            await togglePending.promise;
+        });
+    });
+
+    it("ignores an older operation that resolves after a new auth generation", async () => {
+        mockLocation = { pathname: "/server-health", state: null };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const syncPending = deferred<unknown>();
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockReturnValue(syncPending.promise);
+
+        render(<ServerHealth />);
+        fireEvent.click(await screen.findByRole("button", { name: "Sync All Regions" }));
+        fireEvent.click(screen.getByRole("button", { name: "Sync 1 region" }));
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalled());
+
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+        await waitFor(() => {
+            expect((screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled).toBe(false);
+        });
+
+        await act(async () => {
+            syncPending.resolve([{ regionId: "us-sanjose-1", result: { success: false, error: "stale result" } }]);
+            await syncPending.promise;
+        });
+
+        expect(screen.queryByText("stale result")).toBeNull();
+    });
+
+    it("renders an incompatible sync response as an explicit failed card", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([{
+            regionId: "us-sanjose-1",
+            result: {
+                success: false,
+                failureType: "incompatible-response",
+                errorCode: "INCOMPATIBLE_RESPONSE",
+                error: "Incompatible admin sync response from us-sanjose-1.",
+            },
+        }]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Incompatible response")).toBeTruthy();
+        expect(screen.getByText("The sync result was discarded because the regional API returned an unsupported shape.")).toBeTruthy();
     });
 
     it("redirects non-admins away from the page", async () => {

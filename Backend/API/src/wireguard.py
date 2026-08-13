@@ -228,10 +228,17 @@ class LocalWireGuardManager(WireGuardManager):
         self.server_public_key = _validate_key(server_public_key, "server public key")
         self.endpoint_host = _validate_endpoint_host(endpoint_host)
         self.listen_port = _validate_port(listen_port)
-        self.dns_ipv4 = _validate_ip_address(dns_ipv4, 4, "DNS IPv4")
-        self.dns_ipv6 = _validate_ip_address(dns_ipv6, 6, "DNS IPv6")
-        self.tunnel_network_v4 = _validate_network(tunnel_network_v4, 4, "tunnel network v4")
-        self.tunnel_network_v6 = _validate_network(tunnel_network_v6, 6, "tunnel network v6")
+        (
+            self.tunnel_network_v4,
+            self.tunnel_network_v6,
+            self.dns_ipv4,
+            self.dns_ipv6,
+        ) = validate_local_tunnel_settings(
+            tunnel_network_v4=tunnel_network_v4,
+            tunnel_network_v6=tunnel_network_v6,
+            dns_ipv4=dns_ipv4,
+            dns_ipv6=dns_ipv6,
+        )
         self.command_runner = command_runner
         self.endpoint_resolver = endpoint_resolver or _resolve_endpoint_addresses
 
@@ -411,9 +418,12 @@ class LocalWireGuardManager(WireGuardManager):
             desired_addresses = frozenset(self.endpoint_resolver(peer.endpoint_host))
         except OSError:
             desired_addresses = frozenset()
+        endpoint_current = (
+            bool(live.endpoint_addresses & desired_addresses)
+            and live.endpoint_port == peer.endpoint_port
+        )
         return (
-            live.endpoint_addresses != desired_addresses
-            or live.endpoint_port != peer.endpoint_port
+            not endpoint_current
             or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
             or live.persistent_keepalive != PERSISTENT_KEEPALIVE_SECONDS
         )
@@ -671,9 +681,14 @@ def _normalize_route_dst(dst: str, version: int) -> str | None:
 
 def _soft_normalize_network(value: str) -> str | None:
     try:
-        return str(ipaddress.ip_network(value, strict=False))
+        network = ipaddress.ip_network(value, strict=False)
     except ValueError:
         return None
+    if network.version == 4 and network.prefixlen != 24:
+        return None
+    if network.version == 6 and network.prefixlen != 64:
+        return None
+    return str(network)
 
 
 def _validate_interface(interface: str) -> str:
@@ -736,8 +751,31 @@ def _validate_network(value: str, version: int, label: str) -> str:
     return str(network)
 
 
+def validate_local_tunnel_settings(
+    *,
+    tunnel_network_v4: str,
+    tunnel_network_v6: str,
+    dns_ipv4: str,
+    dns_ipv6: str,
+) -> tuple[str, str, str, str]:
+    network_v4 = _validate_network(tunnel_network_v4, 4, "tunnel network v4")
+    network_v6 = _validate_network(tunnel_network_v6, 6, "tunnel network v6")
+    parsed_v4 = ipaddress.ip_network(network_v4)
+    parsed_v6 = ipaddress.ip_network(network_v6)
+    if parsed_v4.prefixlen != 24 or parsed_v6.prefixlen != 64:
+        raise WireGuardApplyFailedError("Invalid WireGuard tunnel network prefix length.")
+    dns_v4 = _validate_ip_address(dns_ipv4, 4, "DNS IPv4")
+    dns_v6 = _validate_ip_address(dns_ipv6, 6, "DNS IPv6")
+    if dns_v4 != str(parsed_v4.network_address + 1) or dns_v6 != str(parsed_v6.network_address + 1):
+        raise WireGuardApplyFailedError("WireGuard DNS addresses must be the first tunnel network hosts.")
+    return network_v4, network_v6, dns_v4, dns_v6
+
+
 def _validate_mesh_network(value: str, version: int, label: str) -> str:
     network = ipaddress.ip_network(_validate_network(value, version, label))
+    expected_prefix = 24 if version == 4 else 64
+    if network.prefixlen != expected_prefix:
+        raise WireGuardApplyFailedError(f"Invalid WireGuard {label}: expected /{expected_prefix}.")
     aggregate = ipaddress.ip_network(MESH_AGGREGATE_V4 if version == 4 else MESH_AGGREGATE_V6)
     if not is_subnet_of(network, aggregate):
         raise WireGuardApplyFailedError(f"Invalid WireGuard {label}: outside the mesh aggregate.")

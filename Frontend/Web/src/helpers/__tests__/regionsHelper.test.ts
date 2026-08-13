@@ -52,14 +52,24 @@ describe("regionsHelper", () => {
         });
     });
 
-    it("filters out disabled regions", () => {
+    it("filters out every non-literal-true enabled value", () => {
         const regions = [
             parseRegionDocument("us-sanjose-1", { displayName: "San Jose", enabled: true }),
             parseRegionDocument("us-chicago-1", { displayName: "Chicago", enabled: false }),
             parseRegionDocument("us-dallas-1", { displayName: "Dallas" }),
+            parseRegionDocument("us-frankfurt-1", { displayName: "Frankfurt", enabled: "true" }),
+            parseRegionDocument("us-ashburn-1", { displayName: "Ashburn", enabled: 1 }),
+            parseRegionDocument("us-seattle-1", { displayName: "Seattle", enabled: {} }),
         ].filter((region): region is Region => region !== null);
 
         expect(getEnabledRegions(regions).map(region => region.regionId)).toEqual(["us-sanjose-1"]);
+        expect(getEnabledRegions([
+            { regionId: "missing", displayName: "Missing", displayOrder: 1 },
+            { regionId: "string", displayName: "String", displayOrder: 2, enabled: "true" as unknown as boolean },
+            { regionId: "number", displayName: "Number", displayOrder: 3, enabled: 1 as unknown as boolean },
+            { regionId: "object", displayName: "Object", displayOrder: 4, enabled: {} as unknown as boolean },
+            { regionId: "yes", displayName: "Yes", displayOrder: 5, enabled: true },
+        ])).toEqual([expect.objectContaining({ regionId: "yes" })]);
         expect(getEnabledRegions(null)).toEqual([]);
     });
 

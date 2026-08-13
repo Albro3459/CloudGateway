@@ -20,7 +20,7 @@ const region = (regionId: string, meshEnabled: boolean): Region => ({
     wireguardEndpointHostname: "wg.example.com",
     wireguardPort: 51820,
     wireguardPortPresent: true,
-    wireguardPublicKey: "public-key",
+    wireguardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     tunnelNetworkV4: "10.0.1.0/24",
     tunnelNetworkV6: "fd42:42:42:1::/64",
 });
@@ -28,7 +28,7 @@ const region = (regionId: string, meshEnabled: boolean): Region => ({
 const appliedPeer = (overrides: Partial<MeshDoc["peers"][string]> = {}) => ({
     endpointHostname: "wg.example.com",
     endpointPort: 51820,
-    publicKey: "public-key",
+    publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     allowedNetworkV4: "10.0.1.0/24",
     allowedNetworkV6: "fd42:42:42:1::/64",
     status: "applied" as const,
@@ -46,7 +46,8 @@ describe("meshHelper", () => {
                 peers: {
                     "us-chicago-1": {
                         endpointHostname: "wg.us-chicago-1.example.com",
-                        publicKey: "chicago-key",
+                        endpointPort: 51820,
+                        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
                         allowedNetworkV4: "10.0.1.0/24",
                         allowedNetworkV6: "fd42:42:42:1::/64",
                         status: "applied",
@@ -97,10 +98,10 @@ describe("meshHelper", () => {
             });
         });
 
-        it("retains legacy applied entries without endpointPort for stale detection", () => {
+        it("drops applied entries without the current endpointPort snapshot", () => {
             const legacyPeer = {
                 endpointHostname: "wg.example.com",
-                publicKey: "public-key",
+                publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 allowedNetworkV4: "10.0.1.0/24",
                 allowedNetworkV6: "fd42:42:42:1::/64",
                 status: "applied" as const,
@@ -109,8 +110,7 @@ describe("meshHelper", () => {
                 peers: { "us-chicago-1": legacyPeer },
             });
 
-            expect(doc.peers["us-chicago-1"]).toBeDefined();
-            expect(doc.peers["us-chicago-1"].endpointPort).toBeUndefined();
+            expect(doc.peers["us-chicago-1"]).toBeUndefined();
         });
 
         it("preserves future reason codes instead of dropping entries", () => {
@@ -147,7 +147,7 @@ describe("meshHelper", () => {
     });
 
     describe("buildMeshLinkRows", () => {
-        it("marks legacy applied state stale and pending", () => {
+        it("does not treat an applied entry without endpointPort as current state", () => {
             const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
             const legacy = appliedPeer({ endpointPort: undefined });
             const rows = buildMeshLinkRows(regions, new Map([
@@ -155,11 +155,11 @@ describe("meshHelper", () => {
                 ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
             ]));
 
-            expect(rows[0]).toMatchObject({ status: "stale", pending: true, aToBStale: true });
+            expect(rows[0]).toMatchObject({ status: "one-sided", pending: true, aToBStale: false });
         });
 
         it.each([
-            ["public key", { publicKey: "different-key" }],
+            ["public key", { publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" }],
             ["hostname", { endpointHostname: "other.example.com" }],
             ["port", { endpointPort: 51821 }],
             ["tunnel v4", { allowedNetworkV4: "10.0.2.0/24" }],
@@ -175,14 +175,14 @@ describe("meshHelper", () => {
             expect(rows[0].pending).toBe(true);
         });
 
-        it("gives stale precedence over a current applied direction", () => {
+        it("does not classify a dropped legacy direction as stale", () => {
             const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
             const rows = buildMeshLinkRows(regions, new Map([
                 ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": appliedPeer({ endpointPort: undefined }) } })],
                 ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
             ]));
 
-            expect(rows[0].status).toBe("stale");
+            expect(rows[0].status).toBe("one-sided");
         });
 
         it("marks an applied entry pending when mesh membership is disabled", () => {
@@ -216,15 +216,86 @@ describe("meshHelper", () => {
             expect(rows[0].pending).toBe(false);
         });
 
-        it("makes a skipped entry pending when its metadata is repaired", () => {
-            const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
-            const invalid = { status: "skipped-incomplete" as const, reasonCode: "invalid-endpoint-port" };
+        it.each([
+            ["missing public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "missing-public-key" }],
+            ["invalid public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "invalid-public-key" }],
+            ["missing hostname", { wireguardEndpointHostname: null }, { endpointHostname: null, reasonCode: "missing-endpoint-hostname" }],
+            ["invalid hostname", { wireguardEndpointHostname: null }, { endpointHostname: null, reasonCode: "invalid-endpoint-hostname" }],
+            ["invalid port", { wireguardPort: null, wireguardPortPresent: true }, { endpointPort: null, reasonCode: "invalid-endpoint-port" }],
+            ["invalid IPv4 network", { tunnelNetworkV4: null }, { allowedNetworkV4: null, reasonCode: "invalid-network-v4" }],
+            ["invalid IPv6 network", { tunnelNetworkV6: null }, { allowedNetworkV6: null, reasonCode: "invalid-network-v6" }],
+        ])("does not mark unchanged backend-shaped %s as pending", (_label, regionOverrides, peerOverrides) => {
+            const invalidRegion = (regionId: string) => ({
+                ...region(regionId, true),
+                ...regionOverrides,
+            });
+            const regions = [invalidRegion("us-sanjose-1"), invalidRegion("us-chicago-1")];
+            const skippedPeer = {
+                ...appliedPeer(),
+                ...peerOverrides,
+                status: "skipped-incomplete" as const,
+            };
             const rows = buildMeshLinkRows(regions, new Map([
-                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": invalid } })],
-                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": skippedPeer } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": skippedPeer } })],
             ]));
 
-            expect(rows[0].pending).toBe(true);
+            expect(rows[0].pending).toBe(false);
+        });
+
+        it.each([
+            ["zero", 0],
+            ["negative", -1],
+            ["above the maximum", 65536],
+            ["non-integer", 51820.5],
+            ["missing", undefined],
+            ["null", null],
+            ["malformed", "not-a-port"],
+            ["NaN", Number.NaN],
+        ] as const)("does not mark an invalid %s endpoint port as pending", (_label, wireguardPort) => {
+            const invalidPort = wireguardPort as unknown as Region["wireguardPort"];
+            const peerEndpointPort = typeof wireguardPort === "number" && Number.isFinite(wireguardPort)
+                ? wireguardPort
+                : null;
+            const invalidRegion = (regionId: string) => ({
+                ...region(regionId, true),
+                wireguardPort: invalidPort,
+                wireguardPortPresent: wireguardPort !== undefined,
+            });
+            const skippedPeer = {
+                ...appliedPeer({ endpointPort: peerEndpointPort }),
+                status: "skipped-incomplete" as const,
+                reasonCode: "invalid-endpoint-port",
+            };
+            const regions = [invalidRegion("us-sanjose-1"), invalidRegion("us-chicago-1")];
+            const rows = buildMeshLinkRows(regions, new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": skippedPeer } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": skippedPeer } })],
+            ]));
+
+            expect(rows[0].pending).toBe(false);
+        });
+
+        it("marks a repaired valid endpoint port pending until sync applies it", () => {
+            const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
+            const invalidPort = {
+                ...appliedPeer({ endpointPort: 0 }),
+                status: "skipped-incomplete" as const,
+                reasonCode: "invalid-endpoint-port",
+            };
+            const pendingDocs = new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": invalidPort } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
+            ]);
+
+            expect(buildMeshLinkRows(regions, pendingDocs)[0].pending).toBe(true);
+
+            const syncedDocs = new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": appliedPeer() } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
+            ]);
+
+            expect(buildMeshLinkRows(regions, syncedDocs)[0].pending).toBe(false);
         });
 
         it("marks one-sided current application pending when both regions are enabled", () => {
@@ -307,7 +378,7 @@ describe("meshHelper", () => {
             expect(rows[0].pending).toBe(true);
         });
 
-        it("keeps a skipped direction visible while a one-sided current apply is pending", () => {
+        it("keeps an unchanged skipped direction visible without marking it pending", () => {
             const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
             const meshDocs: MeshDocsById = new Map([
                 ["us-sanjose-1", parseMeshDocument("us-sanjose-1", {
@@ -320,7 +391,7 @@ describe("meshHelper", () => {
             const rows = buildMeshLinkRows(regions, meshDocs);
 
             expect(rows[0].status).toBe("one-sided");
-            expect(rows[0].pending).toBe(true);
+            expect(rows[0].pending).toBe(false);
         });
 
         it("builds one row per pair for more than two regions", () => {

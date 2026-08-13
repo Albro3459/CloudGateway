@@ -1,7 +1,10 @@
 from dataclasses import replace
 
+import pytest
+
 import src.register as register
 from src.enums import Role
+from src.errors import WireGuardApplyFailedError
 from src.register import build_registration, notify_region_deployment, run_register
 from src.repository import RegionDoc, UserDoc
 from src.settings import Settings
@@ -54,6 +57,43 @@ class RecordingDeploymentEmailSender:
         if self.error is not None:
             raise self.error
         return "message-1"
+
+
+def test_build_registration_rejects_invalid_local_tunnel_invariants():
+    settings = _settings().model_copy(update={"wg_dns_ipv4": "10.0.0.2"})
+
+    with pytest.raises(WireGuardApplyFailedError):
+        build_registration(settings, "203.0.113.5")
+
+
+@pytest.mark.parametrize("wg_port", [0, 65536, True, False, "51820"])
+def test_build_registration_rejects_invalid_wireguard_port(wg_port):
+    settings = _settings().model_copy(update={"wg_port": wg_port})
+
+    with pytest.raises(WireGuardApplyFailedError, match="listen port"):
+        build_registration(settings, "203.0.113.5")
+
+
+def test_run_register_invalid_wireguard_port_preserves_existing_region():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    existing = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    settings = _settings().model_copy(update={"wg_port": 0})
+
+    with pytest.raises(WireGuardApplyFailedError, match="listen port"):
+        run_register(repository=repo, settings=settings, public_ipv4="198.51.100.9", ready=True)
+
+    assert repo.regions[REGION_ID] == existing
+
+
+def test_run_register_invalid_local_settings_preserves_existing_region():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    existing = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    settings = _settings().model_copy(update={"wg_dns_ipv4": "10.0.0.2"})
+
+    with pytest.raises(WireGuardApplyFailedError):
+        run_register(repository=repo, settings=settings, public_ipv4="198.51.100.9", ready=True)
+
+    assert repo.regions[REGION_ID] == existing
 
 
 def test_build_registration_maps_settings():

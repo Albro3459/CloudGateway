@@ -12,7 +12,7 @@ from src.errors import (
     RegionDisabledError,
     RegionMismatchError,
 )
-from src.firebase import FirestoreRepository, _user_write_data
+from src.firebase import FirestoreRepository, _region_from_data, _user_write_data
 from src.repository import MeshPeerState, RegionDoc, UserDoc, assign_tunnel_ips
 
 from .fakes import FakeRepository
@@ -74,6 +74,22 @@ def reserve(
         region_id=REGION_ID,
         client_name=client_name,
     )
+
+
+@pytest.mark.parametrize("field", ["enabled", "meshEnabled"])
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, [], {}])
+def test_region_decode_only_accepts_literal_true_for_booleans(field, value):
+    data = {field: value}
+
+    region = _region_from_data(data, REGION_ID)
+
+    assert getattr(region, "mesh_enabled" if field == "meshEnabled" else field) is False
+
+
+def test_region_decode_missing_wireguard_port_is_incomplete():
+    region = _region_from_data({}, REGION_ID)
+
+    assert region.wireguard_port is None
 
 
 def test_rollback_does_not_delete_auth_when_role_exists():

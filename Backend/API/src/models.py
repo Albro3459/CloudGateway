@@ -118,10 +118,10 @@ class AdminSyncMeshPeer(ApiModel):
     # Firestore doc carries it. Server metadata only.
     region_id: str
     status: MeshPeerStatus
-    endpoint_hostname: str = ""
+    endpoint_hostname: str | None = None
     endpoint_port: int | None = None
-    allowed_network_v4: str = ""
-    allowed_network_v6: str = ""
+    allowed_network_v4: str | None = None
+    allowed_network_v6: str | None = None
     reason_code: str | None = None
 
 
@@ -133,7 +133,7 @@ class AdminSyncResponse(ApiModel):
     removed: int
     no_changes: bool
     log: str
-    mesh_updated: int = 0
+    mesh_updated: int
     mesh_enabled: bool
     mesh_applied: int
     mesh_added: int

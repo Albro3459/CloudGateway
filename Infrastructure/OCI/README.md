@@ -12,14 +12,16 @@ Deployment is rare and manual. An operator prepares OCI networking, then deploys
 or rebuilds a region through `./scripts/terraform.sh <region> apply` following
 [docs/regional-deployment.md](../../docs/regional-deployment.md). The wrapper
 manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
-DNS/VM resources must be reconciled or imported before rerunning. Destructive
-plans require `prepare-drain`, dashboard Sync All across remaining enabled
-regions, and `verify-drain` before any deploy tag, source ref, apply, or destroy
-mutation. If a host is already lost, run the same drain flow from an operator
-workstation. Re-registration may restore `enabled=true` after health checks but
-keeps `meshEnabled=false` until explicit operator enable plus Sync All. There is no
-break-glass override. There is no Lambda orchestrator, no OCI Resource Manager
-flow, and no per-user stack deployment.
+DNS/VM resources must be reconciled or imported before rerunning. Normal host
+rebuilds keep the region's WireGuard key, tunnel subnets, and endpoint hostname,
+so boot sync restores the live peer set and WireGuard endpoint roaming handles a
+new public IP. A subnet change is a hard cutoff: disable mesh membership, run
+Sync All Regions, delete every `Regions/{regionId}/Instances/*` document, update
+the authoritative registry and matching tfvars, deploy, then explicitly
+re-enable mesh and run Sync All Regions again. There is no mixed-version rollout
+or legacy Mesh/API compatibility path; the repository cannot prove live Firestore
+state. There is no Lambda orchestrator, no OCI Resource Manager flow, and no
+per-user stack deployment.
 
 WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
@@ -80,7 +82,10 @@ inventory and aggregate boundary. Its `regions` value is a list of active or res
 allocations. Keep a removed allocation as `reserved` so it is never silently reused. Local
 `<regionId>.terraform.tfvars` files are gitignored consistency copies and their
 `wg_network_v4`/`wg_network_v6` values must exactly match the registry entry; a missing sibling
-file does not remove a registry allocation or fail another region's deploy.
+file does not remove a registry allocation or fail another region's deploy. Before
+mesh is enabled, an operator must verify and backfill `wireguardPort` on every
+existing Region document. The repository cannot prove live Firestore state, so do
+not depend on a missing-port fallback or assume that prerequisite is complete.
 
 The scheme is region index N = `10.0.N.0/24` and `fd42:42:42:N::/64`, inside the registry
 aggregates `10.0.0.0/16` and `fd42:42:42::/48`. Those aggregates are load-bearing, not

@@ -220,6 +220,7 @@ class FakeRepository(FirebaseRepository):
         # Last mesh status written per region, keyed by region_id: (mesh_enabled, peers).
         self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
         self.write_mesh_status_error: Exception | None = None
+        self.list_clients_by_public_key_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
@@ -232,7 +233,7 @@ class FakeRepository(FirebaseRepository):
 
     def list_enabled_regions(self) -> list[RegionDoc]:
         return sorted(
-            [region for region in self.regions.values() if region.enabled],
+            [region for region in self.regions.values() if region.enabled is True],
             key=region_display_order,
         )
 
@@ -284,6 +285,8 @@ class FakeRepository(FirebaseRepository):
         return self._allocated_region_clients(region_id)
 
     def list_clients_by_public_key(self, region_id: str, public_keys: set[str]) -> list[ClientDoc]:
+        if self.list_clients_by_public_key_error is not None:
+            raise self.list_clients_by_public_key_error
         return [
             client
             for client in self.clients.values()

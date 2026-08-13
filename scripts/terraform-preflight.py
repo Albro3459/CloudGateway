@@ -359,6 +359,8 @@ def _parse_subnet_network_v4(region_id: str, key: str, raw: str, errors: list[st
     if not isinstance(network, ipaddress.IPv4Network):
         errors.append(f"{region_id}: {key} {raw!r} must be an IPv4 network, got IPv{network.version}.")
         return None
+    if str(network) != raw:
+        errors.append(f"{region_id}: {key} {raw!r} is not canonical; use {network}.")
     return network
 
 
@@ -371,6 +373,8 @@ def _parse_subnet_network_v6(region_id: str, key: str, raw: str, errors: list[st
     if not isinstance(network, ipaddress.IPv6Network):
         errors.append(f"{region_id}: {key} {raw!r} must be an IPv6 network, got IPv{network.version}.")
         return None
+    if str(network) != raw:
+        errors.append(f"{region_id}: {key} {raw!r} is not canonical; use {network}.")
     return network
 
 
@@ -396,6 +400,16 @@ def _check_subnet_interface(
     if interface.network != network:
         errors.append(
             f"{region_id}: {key} {interface} is not inside its own network {network} and does not derive that network."
+        )
+    if network.prefixlen == network.max_prefixlen:
+        errors.append(
+            f"{region_id}: {key} exact network {network} has no first host address; use a network with host space."
+        )
+        return interface
+    expected_ip = network.network_address + 1
+    if interface.ip != expected_ip:
+        errors.append(
+            f"{region_id}: {key} {interface.ip} must be the first host address {expected_ip} of its exact network {network}."
         )
     return interface
 
@@ -480,10 +494,12 @@ def evaluate_subnet_plan(
             if registry and region_id in registry_by_id:
                 expected = registry_by_id[region_id]
                 actual_v4, actual_v6 = parsed
-                if actual_v4 != expected.network_v4 or str(actual_v4) != str(expected.network_v4):
-                    errors.append(f"{_region_label(region_id, values)}: wg_network_v4 {actual_v4} must exactly match registry allocation {expected.network_v4}.")
-                if actual_v6 != expected.network_v6 or str(actual_v6) != str(expected.network_v6):
-                    errors.append(f"{_region_label(region_id, values)}: wg_network_v6 {actual_v6} must exactly match registry allocation {expected.network_v6}.")
+                expected_v4 = str(expected.network_v4)
+                expected_v6 = str(expected.network_v6)
+                if actual_v4 != expected.network_v4 or values["wg_network_v4"] != expected_v4:
+                    errors.append(f"{_region_label(region_id, values)}: wg_network_v4 {values['wg_network_v4']!r} must exactly match registry allocation {expected_v4}.")
+                if actual_v6 != expected.network_v6 or values["wg_network_v6"] != expected_v6:
+                    errors.append(f"{_region_label(region_id, values)}: wg_network_v6 {values['wg_network_v6']!r} must exactly match registry allocation {expected_v6}.")
 
     if registry and selected_region_id is not None:
         selected = [region for region in registry.regions if region.region_id == selected_region_id]

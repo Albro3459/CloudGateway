@@ -79,6 +79,11 @@ def test_delete_response_serializes_camel_case():
     }
 
 
+def test_admin_sync_response_requires_current_mesh_updated_field():
+    with pytest.raises(ValidationError):
+        AdminSyncResponse.model_validate({"regionId": "us-test-1"})
+
+
 def test_admin_sync_response_exposes_mesh_route_counts():
     response = AdminSyncResponse(
         region_id="us-test-1",
@@ -88,6 +93,7 @@ def test_admin_sync_response_exposes_mesh_route_counts():
         removed=0,
         no_changes=True,
         log="log",
+        mesh_updated=0,
         mesh_enabled=True,
         mesh_applied=1,
         mesh_added=0,

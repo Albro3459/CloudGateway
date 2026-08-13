@@ -5,6 +5,14 @@
 // firebaseDbHelper.ts for the reads/writes that feed it.
 
 import { dateOrNull, stringOrNull } from "./coerce";
+import {
+    isValidEndpointHostname,
+    isValidMeshEndpointPort,
+    isValidMeshNetworkV4,
+    isValidMeshNetworkV6,
+    isValidWireGuardPublicKey,
+    networksOverlap,
+} from "./meshValidation";
 import { Region } from "./regionsHelper";
 
 type MeshPeerStatus = "applied" | "skipped-overlap" | "skipped-incomplete";
@@ -35,14 +43,13 @@ const parseMeshPeerStatus = (value: unknown): MeshPeerStatus | null => (
     value === "applied" || value === "skipped-overlap" || value === "skipped-incomplete" ? value : null
 );
 
-const numberOrNull = (value: unknown): number | null => {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "") {
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-};
+const numberOrNull = (value: unknown): number | null => (
+    isValidMeshEndpointPort(value) ? value : null
+);
+
+const isValidEndpointPort = (value: number | null | undefined): value is number => (
+    isValidMeshEndpointPort(value)
+);
 
 const parseMeshPeerEntry = (data: unknown): MeshPeerEntry | null => {
     if (!data || typeof data !== "object") return null;
@@ -52,9 +59,7 @@ const parseMeshPeerEntry = (data: unknown): MeshPeerEntry | null => {
 
     const parsed: MeshPeerEntry = {
         endpointHostname: stringOrNull(entry.endpointHostname),
-        endpointPort: Object.prototype.hasOwnProperty.call(entry, "endpointPort")
-            ? numberOrNull(entry.endpointPort)
-            : (status === "applied" ? undefined : null),
+        endpointPort: numberOrNull(entry.endpointPort),
         publicKey: stringOrNull(entry.publicKey),
         allowedNetworkV4: stringOrNull(entry.allowedNetworkV4),
         allowedNetworkV6: stringOrNull(entry.allowedNetworkV6),
@@ -64,15 +69,22 @@ const parseMeshPeerEntry = (data: unknown): MeshPeerEntry | null => {
     };
 
     // Skipped-incomplete is deliberately status-first. Its empty fields are
-    // useful operator evidence and must survive parsing. Applied snapshots
-    // require every durable field except endpointPort, which was absent from
-    // legacy applied documents and is therefore retained as stale. Overlap
-    // snapshots are only useful for comparison when complete.
+    // useful operator evidence and must survive parsing. Applied and overlap
+    // snapshots require the complete current metadata, including endpointPort.
     if (status === "skipped-incomplete") return parsed;
-    if (!parsed.endpointHostname || !parsed.publicKey || !parsed.allowedNetworkV4 || !parsed.allowedNetworkV6) {
+    if (
+        !parsed.endpointHostname
+        || !isValidEndpointHostname(parsed.endpointHostname)
+        || !isValidEndpointPort(parsed.endpointPort)
+        || !parsed.publicKey
+        || !isValidWireGuardPublicKey(parsed.publicKey)
+        || !parsed.allowedNetworkV4
+        || !isValidMeshNetworkV4(parsed.allowedNetworkV4)
+        || !parsed.allowedNetworkV6
+        || !isValidMeshNetworkV6(parsed.allowedNetworkV6)
+    ) {
         return null;
     }
-    if (status === "skipped-overlap" && parsed.endpointPort == null) return null;
 
     return parsed;
 };
@@ -142,6 +154,17 @@ const getRegionMeshSnapshot = (region: Region): MeshSnapshot => ({
     allowedNetworkV6: region.tunnelNetworkV6 ?? null,
 });
 
+const hasCompleteMeshSnapshot = (region: Region): boolean => {
+    const snapshot = getRegionMeshSnapshot(region);
+    return Boolean(
+        isValidWireGuardPublicKey(snapshot.publicKey)
+        && isValidEndpointHostname(snapshot.endpointHostname)
+        && isValidMeshNetworkV4(snapshot.allowedNetworkV4)
+        && isValidMeshNetworkV6(snapshot.allowedNetworkV6)
+        && isValidEndpointPort(snapshot.endpointPort)
+    );
+};
+
 const snapshotsEqual = (entry: MeshPeerEntry, snapshot: MeshSnapshot): boolean => (
     entry.publicKey === snapshot.publicKey
     && entry.endpointHostname === snapshot.endpointHostname
@@ -160,10 +183,86 @@ const isStaleAppliedPeer = (entry: MeshPeerEntry | null, region: Region): boolea
     entry?.status === "applied" && !isCurrentAppliedPeer(entry, region)
 );
 
-const isChangedSkippedPeer = (entry: MeshPeerEntry | null, region: Region): boolean => {
-    if (!entry || (entry.status !== "skipped-overlap" && entry.status !== "skipped-incomplete")) return false;
+const hasValidSnapshotField = (region: Region, field: keyof MeshSnapshot): boolean => {
     const snapshot = getRegionMeshSnapshot(region);
-    return !snapshotsEqual(entry, snapshot);
+    const value = snapshot[field];
+    if (field === "publicKey") return isValidWireGuardPublicKey(value);
+    if (field === "endpointHostname") return isValidEndpointHostname(value);
+    if (field === "endpointPort") return isValidMeshEndpointPort(value);
+    if (field === "allowedNetworkV4") return isValidMeshNetworkV4(value);
+    if (field === "allowedNetworkV6") return isValidMeshNetworkV6(value);
+    return false;
+};
+
+const hasDuplicatePublicKey = (region: Region, regions: Region[]): boolean => {
+    const key = region.wireguardPublicKey;
+    return isValidWireGuardPublicKey(key)
+        && regions.filter(candidate => isValidWireGuardPublicKey(candidate.wireguardPublicKey)
+            && candidate.wireguardPublicKey === key).length > 1;
+};
+
+const isReasonStillPresent = (
+    entry: MeshPeerEntry,
+    targetRegion: Region,
+    sourceRegion: Region,
+    regions: Region[],
+): boolean => {
+    switch (entry.reasonCode) {
+        case "missing-public-key":
+            return !targetRegion.wireguardPublicKey;
+        case "invalid-public-key":
+            return !hasValidSnapshotField(targetRegion, "publicKey");
+        case "missing-endpoint-hostname":
+            return !targetRegion.wireguardEndpointHostname;
+        case "invalid-endpoint-hostname":
+            return !hasValidSnapshotField(targetRegion, "endpointHostname");
+        case "invalid-endpoint-port":
+            return !hasValidSnapshotField(targetRegion, "endpointPort");
+        case "missing-network-v4":
+            return !targetRegion.tunnelNetworkV4;
+        case "invalid-network-v4":
+            return !hasValidSnapshotField(targetRegion, "allowedNetworkV4");
+        case "missing-network-v6":
+            return !targetRegion.tunnelNetworkV6;
+        case "invalid-network-v6":
+            return !hasValidSnapshotField(targetRegion, "allowedNetworkV6");
+        case "outside-aggregate":
+            return !hasValidSnapshotField(targetRegion, "allowedNetworkV4")
+                || !hasValidSnapshotField(targetRegion, "allowedNetworkV6");
+        case "duplicate-public-key":
+            return hasDuplicatePublicKey(targetRegion, regions);
+        case "local-network-invalid":
+            return !hasValidSnapshotField(sourceRegion, "allowedNetworkV4")
+                || !hasValidSnapshotField(sourceRegion, "allowedNetworkV6");
+        case "overlap-local":
+            return networksOverlap(targetRegion.tunnelNetworkV4 ?? "", sourceRegion.tunnelNetworkV4 ?? "")
+                || networksOverlap(targetRegion.tunnelNetworkV6 ?? "", sourceRegion.tunnelNetworkV6 ?? "");
+        case "overlap-candidate":
+            return regions.some(candidate => (
+                candidate.regionId !== sourceRegion.regionId
+                && candidate.regionId !== targetRegion.regionId
+                && candidate.meshEnabled === true
+                && (networksOverlap(targetRegion.tunnelNetworkV4 ?? "", candidate.tunnelNetworkV4 ?? "")
+                    || networksOverlap(targetRegion.tunnelNetworkV6 ?? "", candidate.tunnelNetworkV6 ?? ""))
+            ));
+        default:
+            return hasCompleteMeshSnapshot(targetRegion) && !snapshotsEqual(entry, getRegionMeshSnapshot(targetRegion));
+    }
+};
+
+const isDirectionPending = (
+    entry: MeshPeerEntry | null,
+    targetRegion: Region,
+    sourceRegion: Region,
+    regions: Region[],
+): boolean => {
+    if (!entry) return hasCompleteMeshSnapshot(targetRegion);
+    if (entry.status === "applied") return !isCurrentAppliedPeer(entry, targetRegion);
+    if (entry.reasonCode && isReasonStillPresent(entry, targetRegion, sourceRegion, regions)) return false;
+    if (!entry.reasonCode && hasCompleteMeshSnapshot(targetRegion)) {
+        return !snapshotsEqual(entry, getRegionMeshSnapshot(targetRegion));
+    }
+    return true;
 };
 
 // One row per unordered region pair (a graph's links, not a per-region list),
@@ -200,23 +299,18 @@ export const buildMeshLinkRows = (regions: Region[], meshDocs: MeshDocsById): Me
 
             const bothEnabled = a.meshEnabled === true && b.meshEnabled === true;
             const membershipPending = isRegionMeshPending(a, meshDocA) || isRegionMeshPending(b, meshDocB);
-            const stalePending = aToBStale || bToAStale;
             const removalPending = !bothEnabled && (
                 entryA?.status === "applied" || entryB?.status === "applied"
             );
-            const skippedPending = isChangedSkippedPeer(entryA, b) || isChangedSkippedPeer(entryB, a);
-            const incompleteDirectionPending = bothEnabled && (
-                entryA === null
-                || entryB === null
-                || aToBCurrent !== bToACurrent
-                || skippedPending
+            const desiredDirectionPending = bothEnabled && (
+                isDirectionPending(entryA, b, a, regions) || isDirectionPending(entryB, a, b, regions)
             );
 
             rows.push({
                 regionAId: a.regionId,
                 regionBId: b.regionId,
                 status,
-                pending: membershipPending || stalePending || removalPending || incompleteDirectionPending,
+                pending: membershipPending || removalPending || desiredDirectionPending,
                 aToB,
                 bToA,
                 aToBCurrent,

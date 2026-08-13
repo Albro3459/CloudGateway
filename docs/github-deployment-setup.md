@@ -69,13 +69,17 @@ sudo cloudgateway-install-api deploy-v1.1.0
 
 With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `Backend/API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
 
-**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next wrapper deploy plans to destroy and recreate the regional server. A rebuild gets a new ephemeral public IPv4, so the recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies (Terraform updates the API/WireGuard `A` records, operators update the Firebase region doc IP, and DNS is touched manually only when preflight reports unmanaged state to reconcile/import before rerunning; the boot peer sync restores peers from Firebase and users just toggle their tunnels). Treat a rebuild as a planned event, not a variable refresh.
+**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next wrapper deploy plans to destroy and recreate the regional server. A normal rebuild keeps the WireGuard key, tunnel subnets, and endpoint hostname. The recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies: Terraform updates the API/WireGuard `A` records, registration refreshes the Firebase region metadata, and DNS is touched manually only when preflight reports unmanaged state to reconcile/import before rerunning. Boot peer sync restores peers from Firebase and users just toggle their tunnels so the endpoint is re-resolved. Treat a rebuild as a planned event, not a variable refresh.
 
 The operating rule for a live region:
 
 * API change: `sudo cloudgateway-install-api <ref>`. Running tunnels are unaffected.
 * Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `./scripts/terraform.sh <region> apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
 * Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
+
+Mesh/API changes are not mixed-version compatible. Put the same current ref on every
+participating regional API before enabling mesh or running Sync All Regions; the
+current `meshUpdated` response shape and complete endpoint metadata are required.
 
 ## Troubleshooting Fetch Failures
 

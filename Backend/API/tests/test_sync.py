@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 
@@ -124,6 +125,22 @@ def test_run_sync_with_no_clients_clears_all_peers():
     assert wireguard.peers == {}
 
 
+def test_run_sync_with_disabled_local_region_clears_client_peers():
+    repository = make_repository()
+    active = activate(repository, reserve(repository), "active-public-key")
+    repository.regions[REGION_ID] = replace(repository.regions[REGION_ID], enabled=False)
+    wireguard = FakeWireGuardManager()
+    wireguard.peers[active.client_public_key] = (
+        active.assigned_tunnel_ipv4,
+        active.assigned_tunnel_ipv6,
+    )
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.removed == 1
+    assert wireguard.peers == {}
+
+
 def test_run_sync_with_missing_region_doc_is_an_empty_success():
     repository = FakeRepository(local_region_id=REGION_ID)
     wireguard = FakeWireGuardManager()
@@ -133,6 +150,26 @@ def test_run_sync_with_missing_region_doc_is_an_empty_success():
     assert (outcome.result.added, outcome.result.updated, outcome.result.removed) == (0, 0, 0)
     assert outcome.mesh_enabled is False
     assert wireguard.sync_calls == 1
+
+
+def test_run_sync_with_active_client_and_missing_region_doc_does_not_readd_peer():
+    repository = make_repository()
+    active = activate(repository, reserve(repository), "active-public-key")
+    repository.regions.pop(REGION_ID)
+    wireguard = FakeWireGuardManager()
+    wireguard.peers[active.client_public_key] = (
+        active.assigned_tunnel_ipv4,
+        active.assigned_tunnel_ipv6,
+    )
+    repository.clients[(active.owner_uid, active.region_id, active.client_id)] = replace(
+        active,
+        region_id=REGION_ID,
+    )
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.removed == 1
+    assert wireguard.peers == {}
 
 
 # --- desired_mesh_peers -----------------------------------------------------
@@ -176,6 +213,29 @@ def test_desired_mesh_peers_empty_when_local_mesh_disabled():
     assert desired.candidates == ()
 
 
+def test_desired_mesh_peers_requires_literal_true_mesh_flags():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region(
+        "us-other-1",
+        public_key=FAKE_MESH_PUBLIC_KEY,
+        mesh_enabled=cast(bool, "true"),
+    )
+
+    desired = desired_mesh_peers(repository, make_settings(), repository.list_enabled_regions())
+
+    assert desired.mesh_enabled is True
+    assert desired.peers == ()
+    assert desired.candidates == ()
+
+    repository.regions[REGION_ID] = mesh_ready_local_region(mesh_enabled=cast(bool, "true"))
+    desired = desired_mesh_peers(repository, make_settings(), repository.list_enabled_regions())
+
+    assert desired.mesh_enabled is False
+    assert desired.peers == ()
+    assert desired.candidates == ()
+
+
 def test_desired_mesh_peers_empty_when_local_region_doc_missing():
     repository = FakeRepository(local_region_id=REGION_ID)
     repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
@@ -195,6 +255,8 @@ def test_desired_mesh_peers_empty_when_local_region_doc_missing():
         ("tunnel_network_v6", ""),
         ("tunnel_network_v4", "not-a-cidr"),
         ("tunnel_network_v6", "not-a-cidr"),
+        ("tunnel_network_v4", "10.0.3.0/25"),
+        ("tunnel_network_v6", "fd42:42:42:3::/65"),
         ("tunnel_network_v4", "192.168.1.0/24"),  # outside the mesh aggregate
         ("tunnel_network_v6", "fd00:aaaa::/64"),  # outside the mesh aggregate
     ],
@@ -224,8 +286,8 @@ def test_desired_mesh_peers_skips_both_sides_of_an_overlap_pairwise_but_not_a_th
     repository.regions["us-b-1"] = remote_region(
         "us-b-1",
         public_key=FAKE_MESH_PUBLIC_KEY_2,
-        tunnel_network_v4="10.0.1.0/25",  # overlaps A
-        tunnel_network_v6="fd42:42:42:1::/65",  # overlaps A
+        tunnel_network_v4="10.0.1.0/24",  # overlaps A
+        tunnel_network_v6="fd42:42:42:1::/64",  # overlaps A
     )
     repository.regions["us-c-1"] = remote_region(
         "us-c-1",
@@ -243,13 +305,50 @@ def test_desired_mesh_peers_skips_both_sides_of_an_overlap_pairwise_but_not_a_th
     assert {peer.public_key for peer in desired.peers} == {FAKE_MESH_PUBLIC_KEY_3}
 
 
+def test_desired_mesh_peers_preserves_independently_valid_fields_when_network_invalid():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region(
+        "us-other-1",
+        public_key=FAKE_MESH_PUBLIC_KEY,
+        tunnel_network_v4="10.0.3.0/25",
+    )
+
+    desired = desired_mesh_peers(repository, make_settings(), repository.list_enabled_regions())
+
+    state = desired.candidates[0]
+    assert state.status == MeshPeerStatus.SKIPPED_INCOMPLETE
+    assert state.endpoint_hostname == "wg.us-other-1.example.com"
+    assert state.endpoint_port == 51820
+    assert state.public_key == FAKE_MESH_PUBLIC_KEY
+    assert state.allowed_network_v6 == "fd42:42:42:1::/64"
+    assert state.reason_code == "invalid-network-v4"
+
+
+def test_desired_mesh_peers_missing_port_is_skipped_incomplete():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region(
+        "us-other-1",
+        public_key=FAKE_MESH_PUBLIC_KEY,
+        wireguard_port=None,
+    )
+
+    desired = desired_mesh_peers(repository, make_settings(), repository.list_enabled_regions())
+
+    assert desired.peers == ()
+    assert desired.candidates[0].status == MeshPeerStatus.SKIPPED_INCOMPLETE
+    assert desired.candidates[0].endpoint_port is None
+    assert desired.candidates[0].reason_code == "invalid-endpoint-port"
+
+
 def test_desired_mesh_peers_skips_remote_that_overlaps_local():
     repository = make_repository()
     repository.regions[REGION_ID] = mesh_ready_local_region()  # 10.0.0.0/24, fd42:42:42::/64
     repository.regions["us-other-1"] = remote_region(
         "us-other-1",
         public_key=FAKE_MESH_PUBLIC_KEY,
-        tunnel_network_v4="10.0.0.0/25",  # overlaps local
+        tunnel_network_v4="10.0.0.0/24",  # overlaps local
         tunnel_network_v6="fd42:42:42:1::/64",
     )
 
@@ -272,7 +371,7 @@ def test_desired_mesh_peers_local_overlap_guard_uses_settings_not_region_doc():
     repository.regions["us-other-1"] = remote_region(
         "us-other-1",
         public_key=FAKE_MESH_PUBLIC_KEY,
-        tunnel_network_v4="10.0.0.0/25",  # overlaps settings' local network (10.0.0.0/24)
+        tunnel_network_v4="10.0.0.0/24",  # overlaps settings' local network (10.0.0.0/24)
         tunnel_network_v6="fd42:42:42:1::/64",
     )
 

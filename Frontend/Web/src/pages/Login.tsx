@@ -19,6 +19,14 @@ const Login: React.FC = () => {
     const [success, setSuccess] = useState<string | null>();
     const [signingIn, setSigningIn] = useState(false);
     const manualSignInRef = useRef(false);
+    const manualAttemptRef = useRef(0);
+    const manualUserUidRef = useRef<string | null>(null);
+    const manualStartGenerationRef = useRef(0);
+    const manualStartUidRef = useRef<string | null>(null);
+    const manualInvalidatedRef = useRef(false);
+    const mountedRef = useRef(false);
+    const authGenerationRef = useRef(0);
+    const authUidRef = useRef<string | null>(null);
 
     const getAuthErrorCode = (err: unknown) => (
         err && typeof err === "object" && "code" in err
@@ -72,9 +80,14 @@ const Login: React.FC = () => {
         return "Unable to sign in with Google.";
     };
 
-    const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
+    const navigateProvisionedUser = useCallback(async (
+        user: User,
+        showAccessError = false,
+        isCurrent: () => boolean = () => true,
+    ) => {
         try {
             const token = await user.getIdToken();
+            if (!isCurrent()) return;
 
             // Verify apex account access before any regional capacity call. The
             // capacity endpoints disable and revoke unprovisioned users, which
@@ -83,8 +96,11 @@ const Login: React.FC = () => {
             // still-valid token and returns the specific reason. Regions are
             // unused by the endpoint builder, so none are needed here.
             const access = await checkAccountAccess(token, null);
+            if (!isCurrent()) return;
             if (!access.success) {
+                if (!isCurrent()) return;
                 await signOut(auth);
+                if (!isCurrent()) return;
                 if (showAccessError) {
                     setError(
                         access.errorCode === "USER_NOT_PROVISIONED"
@@ -96,6 +112,7 @@ const Login: React.FC = () => {
             }
 
             await fetchOciRegions(token, true);
+            if (!isCurrent()) return;
             const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
 
             if (regionsError) {
@@ -103,33 +120,59 @@ const Login: React.FC = () => {
             }
 
             if (!ociRegions?.length) {
+                if (!isCurrent()) return;
                 await signOut(auth);
+                if (!isCurrent()) return;
                 if (showAccessError) {
                     setError(getNoRegionsMessage());
                 }
                 return;
             }
         } catch {
+            if (!isCurrent()) return;
             await signOut(auth);
+            if (!isCurrent()) return;
             if (showAccessError) {
                 setError("Unable to verify account access. Please try again.");
             }
             return;
         }
 
-        navigate("/home", { replace: true });
+        if (isCurrent()) navigate("/home", { replace: true });
     }, [navigate]);
+
+    const beginManualAttempt = () => {
+        const attempt = ++manualAttemptRef.current;
+        manualSignInRef.current = true;
+        manualUserUidRef.current = null;
+        manualStartGenerationRef.current = authGenerationRef.current;
+        manualStartUidRef.current = authUidRef.current;
+        manualInvalidatedRef.current = false;
+        return attempt;
+    };
+
+    const isCurrentManualAttempt = (attempt: number, uid: string) => (
+        mountedRef.current
+        && manualAttemptRef.current === attempt
+        && !manualInvalidatedRef.current
+        && manualUserUidRef.current === uid
+        && (authUidRef.current === null || authUidRef.current === uid)
+        && (
+            authGenerationRef.current === manualStartGenerationRef.current
+            || authUidRef.current === uid
+        )
+    );
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         try {
             if (!email.includes('@') || !email.includes('.')) {
-                setError("Not a valid email.");
+                if (mountedRef.current && manualAttemptRef.current === attempt) setError("Not a valid email.");
                 return;
             }
             if (!password.length) {
-                setError("Password is required.");
+                if (mountedRef.current && manualAttemptRef.current === attempt) setError("Password is required.");
                 return;
             }
 
@@ -137,52 +180,77 @@ const Login: React.FC = () => {
             setSuccess(null);
             setSigningIn(true);
             const result = await signInWithEmailAndPassword(auth, email, password);
-            await navigateProvisionedUser(result.user, true);
+            manualUserUidRef.current = result.user.uid;
+            if (authUidRef.current && authUidRef.current !== result.user.uid) {
+                manualInvalidatedRef.current = true;
+            }
+            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
+            await navigateProvisionedUser(result.user, true, isCurrent);
         } catch (err) {
-            setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
+            if (mountedRef.current && manualAttemptRef.current === attempt) {
+                setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
+            }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            if (manualAttemptRef.current === attempt) {
+                manualSignInRef.current = false;
+                if (mountedRef.current) setSigningIn(false);
+            }
         }
     };
 
     const handleGoogleLogin = async () => {
         setError(null);
         setSuccess(null);
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         setSigningIn(true);
 
         try {
             const result = await signInWithGoogle();
-            await navigateProvisionedUser(result.user, true);
+            manualUserUidRef.current = result.user.uid;
+            if (authUidRef.current && authUidRef.current !== result.user.uid) {
+                manualInvalidatedRef.current = true;
+            }
+            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
+            await navigateProvisionedUser(result.user, true, isCurrent);
         } catch (err) {
+            if (manualAttemptRef.current !== attempt || !mountedRef.current) return;
             const message = getGoogleSignInError(err);
             if (message) {
                 setError(message);
             }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            if (manualAttemptRef.current === attempt) {
+                manualSignInRef.current = false;
+                if (mountedRef.current) setSigningIn(false);
+            }
         }
     };
 
     const handleAppleLogin = async () => {
         setError(null);
         setSuccess(null);
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         setSigningIn(true);
 
         try {
             const result = await signInWithApple();
-            await navigateProvisionedUser(result.user, true);
+            manualUserUidRef.current = result.user.uid;
+            if (authUidRef.current && authUidRef.current !== result.user.uid) {
+                manualInvalidatedRef.current = true;
+            }
+            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
+            await navigateProvisionedUser(result.user, true, isCurrent);
         } catch (err) {
+            if (manualAttemptRef.current !== attempt || !mountedRef.current) return;
             const message = getAppleSignInError(err);
             if (message) {
                 setError(message);
             }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            if (manualAttemptRef.current === attempt) {
+                manualSignInRef.current = false;
+                if (mountedRef.current) setSigningIn(false);
+            }
         }
     };
 
@@ -210,22 +278,39 @@ const Login: React.FC = () => {
     };
 
     useEffect(() => {
-        let cancelled = false;
+        mountedRef.current = true;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
+            const uid = user?.uid || null;
+            const authGeneration = ++authGenerationRef.current;
+            authUidRef.current = uid;
+            if (manualSignInRef.current) {
+                if (manualUserUidRef.current && (!uid || uid !== manualUserUidRef.current)) {
+                    manualInvalidatedRef.current = true;
+                } else if (!manualUserUidRef.current && manualStartUidRef.current && (!uid || uid !== manualStartUidRef.current)) {
+                    manualInvalidatedRef.current = true;
+                }
+            }
+            const isCurrentObserver = () => (
+                mountedRef.current
+                && authGenerationRef.current === authGeneration
+                && authUidRef.current === uid
+            );
             const fetchUserData = async () => {
-                if (user && !cancelled && !manualSignInRef.current) {
+                if (user && isCurrentObserver() && !manualSignInRef.current) {
                     setSigningIn(true);
                     try {
-                        await navigateProvisionedUser(user, true);
+                        await navigateProvisionedUser(user, true, isCurrentObserver);
                     } finally {
-                        setSigningIn(false);
+                        if (isCurrentObserver()) setSigningIn(false);
                     }
                 }
             };
-            fetchUserData();
+            void fetchUserData();
         });
+        const generationAtCleanup = authGenerationRef;
         return () => {
-            cancelled = true;
+            mountedRef.current = false;
+            ++generationAtCleanup.current;
             unsubscribe();
         };
     }, [navigateProvisionedUser]);

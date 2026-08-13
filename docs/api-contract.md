@@ -262,8 +262,14 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   can report `meshApplied > 0`, `meshUpdated == 0`, and `noChanges == true`; skipped-only passes
   are also `noChanges == true`.
 - `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
-  `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. It deliberately omits the
-  peer's WireGuard public key - the durable `Mesh/{regionId}` Firestore doc carries it.
+  `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. `skipped-overlap` and
+  `skipped-incomplete` are persistent configuration failures, not pending work; runtime overlap
+  defense remains active. `applied` and `skipped-overlap` entries carry the complete current
+  snapshot, including `endpointPort`; incomplete entries retain their reason code and may omit
+  invalid fields. It deliberately omits the peer's WireGuard public key - the durable
+  `Mesh/{regionId}` Firestore doc carries it. The current response shape is strict: missing
+  `meshUpdated` or other required fields is incompatible, and mixed-version rollout or legacy
+  Mesh/API response normalization is not supported.
 - `log` is an admin audit artifact. It can include user emails, client names,
   client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 

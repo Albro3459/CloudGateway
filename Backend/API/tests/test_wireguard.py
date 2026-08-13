@@ -302,7 +302,29 @@ def test_constructor_rejects_invalid_tunnel_networks(tmp_path):
     with pytest.raises(WireGuardApplyFailedError):
         make_manager(tmp_path, runner, tunnel_network_v4="10.0.0.5/24")  # host bits set
     with pytest.raises(WireGuardApplyFailedError):
+        make_manager(tmp_path, runner, tunnel_network_v4="10.1.0.0/25")  # wrong width
+    with pytest.raises(WireGuardApplyFailedError):
         make_manager(tmp_path, runner, tunnel_network_v6="10.0.0.0/24")  # wrong family
+    with pytest.raises(WireGuardApplyFailedError):
+        make_manager(tmp_path, runner, tunnel_network_v6="fd42:42:42:2::/65")  # wrong width
+
+
+def test_constructor_requires_dns_to_be_first_host_of_each_tunnel_network(tmp_path):
+    runner = FakeWireGuardCommandRunner()
+
+    with pytest.raises(WireGuardApplyFailedError):
+        LocalWireGuardManager(
+            interface="wg0",
+            lock_path=str(tmp_path / "cloudgateway-wireguard.lock"),
+            server_public_key=FAKE_SERVER_PUBLIC_KEY,
+            endpoint_host="wg.us-test-1.example.com",
+            listen_port=51820,
+            dns_ipv4="10.0.0.2",
+            dns_ipv6="fd42:42:42::1",
+            tunnel_network_v4="10.0.0.0/24",
+            tunnel_network_v6="fd42:42:42::/64",
+            command_runner=runner,
+        )
 
 
 @pytest.mark.parametrize(
@@ -399,16 +421,20 @@ def test_mesh_peer_is_reapplied_every_pass(tmp_path):
 
 def test_mesh_peer_updated_only_for_live_drift(tmp_path):
     runner = FakeWireGuardCommandRunner()
-    manager = make_manager(tmp_path, runner, endpoint_resolver=lambda _host: ("203.0.113.10",))
+    manager = make_manager(
+        tmp_path,
+        runner,
+        endpoint_resolver=lambda _host: ("203.0.113.10", "203.0.113.11"),
+    )
     peer = make_mesh_peer()
 
     first = manager.sync_peers({}, mesh=[peer])
     # A real wg dump reports the resolved endpoint address, not the hostname
-    # passed to wg set. Seed that representation for the stable pass.
+    # passed to wg set. One live address matching the DNS answer set is current.
     runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "203.0.113.10:51820"
     stable = manager.sync_peers({}, mesh=[peer])
 
-    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "203.0.113.11:51820"
+    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "203.0.113.12:51820"
     runner.peer_keepalives[FAKE_MESH_PUBLIC_KEY] = 10
     runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.99.0/24,fd42:42:42:99::/64"
     repaired = manager.sync_peers({}, mesh=[peer])

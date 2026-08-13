@@ -80,13 +80,15 @@ See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
 Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
 
-This deploys new VPN servers from your local branch. It validates every listed
-tfvars file has a `source_ref`, saves the final plan for each region, then bumps
-`Backend/API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
-`deploy-v<x>` tag, writes that same tag to every listed region's `source_ref`,
-and applies each saved plan in sequence. The host downloads the pinned Caddy
-binary release and verifies it against `caddy_binary_sha256` during bootstrap.
-**This destroys and replaces the existing VPN server in each listed region.**
+This deploys new or rebuilt VPN servers from your local branch. It validates every
+listed tfvars file has a `source_ref`, saves the final plan for each region, then
+bumps `Backend/API/src/version.py`, makes and pushes one `Deploy v<x>` commit and
+matching `deploy-v<x>` tag, writes that same tag to every listed region's
+`source_ref`, and applies each saved plan in sequence. The host downloads the
+pinned Caddy binary release and verifies it against `caddy_binary_sha256` during
+bootstrap. A normal rebuild keeps the existing WireGuard key, tunnel subnets, and
+endpoint hostname; boot sync restores peers and clients only need to re-resolve
+the endpoint after the public IP changes.
 
 Useful forms:
 
@@ -97,14 +99,9 @@ Useful forms:
 ./scripts/terraform.sh chicago destroy
 ```
 
-Destructive plans and operations use a mandatory drain gate. Before replacing or destroying a region, run this order:
+The wrapper's authoritative subnet-registry, Terraform, and resource-ownership preflights remain mandatory for every plan, apply, and destroy. A normal rebuild needs no client migration: keep the same WireGuard key, tunnel subnets, and endpoint hostname, then let boot sync restore peers from Firebase. Existing clients continue to work after they re-resolve the endpoint. Before enabling mesh, verify and backfill `wireguardPort` on every existing Region document; this repository cannot prove live Firestore state, so do not depend on a missing-port fallback.
 
-1. `python3 scripts/region-lifecycle.py prepare-drain <regionId>`.
-2. In the dashboard, run **Sync All Regions** across the remaining enabled regions.
-3. Run `python3 scripts/region-lifecycle.py verify-drain <regionId>`.
-4. Run the Terraform apply or destroy command.
-
-The Terraform wrapper parses every plan and blocks apply/destroy until lifecycle verification passes. Plan-only output warns when the OCI instance action is `delete` or `delete+create` and does not write Firebase. A subnet-changing replacement additionally requires no `active` or `creating` client reservations; same-subnet replacement may retain clients. There is no break-glass override. If a host is already lost, prepare the drain from the dashboard/CLI using the region document, sync all remaining regions, verify, then rebuild. Re-registration may set `enabled=true` after health checks, but preserves `meshEnabled=false` until an operator explicitly enables it and runs Sync All.
+A subnet-changing deployment is a hard cutoff. Use this exact order: disable that region's mesh membership, run **Sync All Regions**, delete every `Regions/{regionId}/Instances/*` document without inspecting or migrating assigned addresses, update the authoritative registry and matching tfvars, and deploy. After registration and health checks, explicitly enable mesh and run **Sync All Regions** again. If a host is already lost, the normal rebuild remains self-healing as long as its key and subnet values are retained. There is no mixed-version rollout or legacy Mesh/API compatibility path. Permanent region decommission is explicit: remove the region from desired state and run Sync All before deleting infrastructure.
 
 If a multi-region apply fails partway through, the script stops. Regions already
 applied stay deployed; fix the failed region and rerun.

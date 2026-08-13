@@ -19,13 +19,21 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
     const title = displayName ? `${displayName} (${regionId})` : regionId;
 
     if (!result.success) {
+        const incompatibleResponse = result.failureType === "incompatible-response";
         return (
             <div className="rounded-lg border border-danger bg-card p-4 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="font-semibold text-content">{title}</h3>
-                    <span className="rounded-md bg-danger px-2 py-1 text-sm text-white">Failed</span>
+                    <span className="rounded-md bg-danger px-2 py-1 text-sm text-white">
+                        {incompatibleResponse ? "Incompatible response" : "Failed"}
+                    </span>
                 </div>
                 <p className="mt-2 text-sm text-danger">{result.error}</p>
+                {incompatibleResponse && (
+                    <p className="mt-1 text-xs text-content-muted">
+                        The sync result was discarded because the regional API returned an unsupported shape.
+                    </p>
+                )}
                 {result.requestId && (
                     <p className="mt-1 text-xs text-content-muted">Request ID: {result.requestId}</p>
                 )}
@@ -35,7 +43,7 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
 
     const {
         added, updated, removed, noChanges, log, syncedAt,
-        meshEnabled, meshApplied, meshAdded, meshUpdated = 0, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
+        meshEnabled, meshApplied, meshAdded, meshUpdated, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
     } = result.data;
 
     return (
