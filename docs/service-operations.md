@@ -110,12 +110,8 @@ redeploy are needed to enable, verify, or roll back mesh membership - only a das
    [regional-deployment.md](regional-deployment.md)).
 2. Wait for each region's deployment-ready email (bootstrap self-registers the region doc with its
    tunnel CIDRs at the end of bootstrap).
-3. Verify and backfill `wireguardPort` on every existing Region document before enabling mesh.
-   The repository cannot prove live Firestore state; do not remove or depend on a missing-port
-   fallback until this prerequisite is complete. There is no mixed-version rollout and no existing
-   live Mesh document/API compatibility path to support.
-4. In the admin dashboard, flip `meshEnabled` on for each region that should join.
-5. Click "Sync All Regions". This is the only sync action - there is no per-region selection,
+3. In the admin dashboard, flip `meshEnabled` on for each region that should join.
+4. Click "Sync All Regions". This is the only sync action - there is no per-region selection,
    because a partial sync can leave the mesh half-applied on the regions left out.
 
 **Verify (per host, over SSH):**
@@ -133,29 +129,7 @@ redeploy are needed to enable, verify, or roll back mesh membership - only a das
 **Rollback:** flip `meshEnabled` off - for one region to remove just that region from the mesh, or
 for every region to tear the mesh down entirely - then "Sync All Regions" again. Every host
 converges to peers-and-routes-removed for the disabled region(s) on that one sync pass; no SSH,
-no redeploy, and no timer to wait on (sync is manual-first by design - see
-[TODO/shared-subnet-mesh.md](../TODO/shared-subnet-mesh.md)).
-
-## Replacement, subnet changes, and destroy
-
-A normal host rebuild is self-healing. Retain the
-same WireGuard private key, tunnel subnets, and endpoint hostname. Boot sync
-rebuilds client and mesh peers from Firebase, and WireGuard endpoint roaming
-updates a remote peer after the rebuilt host receives a new public IP. Confirm
-`wg show wg0`, API health, and the sync service after the rebuild.
-
-A subnet change is a hard cutoff. Use this exact order: disable the affected
-region's mesh membership and run **Sync All Regions**, delete every
-`Regions/{regionId}/Instances/*` document without inspecting or migrating assigned
-addresses, update the authoritative registry and matching tfvars, and deploy.
-After registration and health checks, explicitly enable mesh and run **Sync All
-Regions** again. Permanent decommission is separate: remove the region from
-desired state and run Sync All before permanently deleting infrastructure.
-
-The wrapper continues to enforce registry, Terraform, and regional resource
-ownership preflights before plan, apply, and destroy. `Mesh/{regionId}` status and
-`updatedAt` show the last reconciliation observed by a regional API; they do not
-prove a WireGuard handshake. Use `wg show wg0` for live link state.
+redeploy, or timer is required.
 
 ## Quick Triage Order
 

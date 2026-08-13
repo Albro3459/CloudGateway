@@ -41,10 +41,7 @@ and run the regional API. The runtime request/response surface is in
 WireGuard allocations and shared aggregate boundaries. The selected region's local gitignored
 tfvars must copy its registry `wg_network_v4`/`wg_network_v6` values exactly. Keep removed
 allocations in the registry with `status: "reserved"`; a missing local tfvars file does not remove
-that inventory entry. Before enabling mesh, an operator must verify and backfill
-`wireguardPort` on every existing Region document. This repository cannot prove
-live Firestore state; do not remove or depend on a missing-port fallback until that
-live prerequisite is complete.
+that inventory entry.
 
 If Firebase was unavailable during bootstrap, rerun registration with systemd's environment-file
 parser rather than shell-sourcing `/etc/cloudgateway/api.env`:
@@ -66,23 +63,16 @@ sudo systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/op
 - API routes hold the `/run/cloudgateway-wireguard.lock` flock across each WireGuard mutation plus
   its matching Firebase write.
 
-## Replacement and destroy handoff
+## Replacement handoff
 
 A normal rebuild is self-healing. Keep the region's WireGuard private key, tunnel
-subnets, and endpoint hostname unchanged; boot sync rebuilds client and mesh peers
-from Firebase, and WireGuard endpoint roaming updates peers after the host gets a
-new public IP. Check `wg show` on the rebuilt host and validate the API before
-leaving the region enabled.
+subnets, and endpoint hostname unchanged; boot sync rebuilds peers from Firebase
+and WireGuard endpoint roaming handles a new public IP. Check `wg show` on the
+rebuilt host and validate the API before leaving the region enabled.
 
-A subnet change is not an address migration. Use this exact order: disable the
-region's mesh membership, run **Sync All Regions**, delete every
-`Regions/{regionId}/Instances/*` document without inspecting or migrating assigned
-addresses, update the authoritative subnet registry and matching tfvars, then
-deploy. After registration and health checks, explicitly re-enable mesh and run
-**Sync All Regions** again. There is no mixed-version rollout and no existing live
-Mesh document/API compatibility path to support. Permanent region decommission is
-a separate operator action: remove the region from desired state and run Sync All
-before deleting infrastructure.
+For mesh changes, follow [service-operations.md](service-operations.md). After
+all Terraform regions are deployed and ready, run **Sync All Regions** from the
+admin dashboard.
 
 ## Firestore backup
 

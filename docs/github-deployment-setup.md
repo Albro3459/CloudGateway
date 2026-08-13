@@ -77,10 +77,6 @@ The operating rule for a live region:
 * Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `./scripts/terraform.sh <region> apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
 * Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
 
-Mesh/API changes are not mixed-version compatible. Put the same current ref on every
-participating regional API before enabling mesh or running Sync All Regions; the
-current `meshUpdated` response shape and complete endpoint metadata are required.
-
 ## Troubleshooting Fetch Failures
 
 Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl -t wireguard-bootstrap`).

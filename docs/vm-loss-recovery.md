@@ -38,20 +38,8 @@ self-healing sequence is:
 6. Tell affected users to toggle their WireGuard tunnel off and on so clients
    re-resolve the endpoint DNS. No config changes are needed.
 
-A subnet change is different and is never address migration. Use this exact order:
-disable mesh membership and run **Sync All Regions**, delete all
-`Regions/{regionId}/Instances/*` documents without inspecting or migrating
-addresses, update the authoritative registry and matching tfvars, deploy, then
-explicitly re-enable mesh and run **Sync All Regions**. Verify registration and
-health before enabling mesh. Users recreate clients after the new subnet is live.
-Before enabling mesh, verify and backfill `wireguardPort` on every existing Region
-document; this repository cannot prove live Firestore state or support a missing-
-port fallback.
-
 A Mesh status document records the last reconciliation snapshot and does not prove
 a live WireGuard handshake; use `wg show wg0` on the host for that check.
-
-For a normal rebuild, capacity stays correct because it is derived from the Firebase client docs, which remain unchanged. A subnet cutover deletes the target region's client docs by design; users recreate clients after deployment.
 
 ## Key-Loss Recovery (server key rotated or compromised)
 

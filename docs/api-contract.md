@@ -268,8 +268,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   snapshot, including `endpointPort`; incomplete entries retain their reason code and may omit
   invalid fields. It deliberately omits the peer's WireGuard public key - the durable
   `Mesh/{regionId}` Firestore doc carries it. The current response shape is strict: missing
-  `meshUpdated` or other required fields is incompatible, and mixed-version rollout or legacy
-  Mesh/API response normalization is not supported.
+  `meshUpdated` or other required fields is incompatible.
 - `log` is an admin audit artifact. It can include user emails, client names,
   client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 

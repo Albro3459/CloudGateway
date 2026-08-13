@@ -35,80 +35,17 @@ that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, w
 workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
 share one state file, so a second region would plan to destroy the first.
 
-`./scripts/terraform.sh` also runs a regional preflight before every plan, apply, and
-destroy. It stops the entire deploy if Cloudflare has existing regional API/WireGuard records or OCI
-has a `CloudGatewayManaged=true` VM that is not already in the selected Terraform
-workspace state. It also stops on duplicates. The script reports the region and
-resource IDs; manually reconcile or import the canonical resources before
+`./scripts/terraform.sh` runs a regional preflight before every plan, apply, and destroy. It stops
+on unmanaged or duplicate regional resources; reconcile or import the canonical resources before
 rerunning.
 
 The tracked [subnet-registry.json](../Infrastructure/OCI/terraform/subnet-registry.json) is the
-authoritative inventory and boundary for the cross-region WireGuard tunnel subnet scheme. It lists
-active and reserved allocations as a JSON `regions` list; keep removed allocations as `reserved`
-and never reuse or overlap them. Region index N gets `10.0.N.0/24` and `fd42:42:42:N::/64`
-(`us-sanjose-1` = index 0, `us-chicago-1` = index 1), inside the registry aggregates
-`10.0.0.0/16` and `fd42:42:42::/48`. Every local tfvars file must match its registry entry
-exactly. The registry remains authoritative when a region's local tfvars file is absent; sibling
-files are only optional consistency checks. `scripts/terraform-preflight.py` uses a strict
-stdlib parser for the supported tfvars scalar/list/heredoc forms and rejects malformed or duplicate
-assignments, then validates the registry, selected active allocation, present tfvars, interface
-prefixes, interface-derived networks, DNS/interface equality, and all active/reserved overlap
-before every plan/apply/destroy. A new region is added to the
-registry first with the next free allocation; see
-[Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
-for the operator workflow. Before enabling mesh, an operator must verify and
-backfill `wireguardPort` on every existing Region document. The repository cannot
-prove live Firestore state, so missing-port fallback must not be removed or relied
-on until that prerequisite is complete.
+authoritative inventory for regional WireGuard tunnel networks. Every local tfvars file must match
+its registry entry exactly.
 
-### Replacement, subnet changes, and destroy
-
-A normal replacement is self-healing. Keep the same WireGuard private key, tunnel
-subnets, and endpoint hostname; run `./scripts/terraform.sh <regionId> apply`, let
-boot registration and sync rebuild the live peers from Firebase, and validate
-`wg show` plus the API health endpoint. Existing client documents and configs stay
-valid, and clients recover when WireGuard re-resolves the endpoint hostname after
-a public-IP change.
-
-A subnet change uses a hard cutoff, never address migration. Use this exact
-order: disable the region's mesh membership and run **Sync All Regions**, delete
-every `Regions/{regionId}/Instances/*` document without inspecting or migrating
-its assigned addresses, update the authoritative registry and matching tfvars,
-then run the Terraform deployment. After registration and health checks,
-explicitly enable mesh and run **Sync All Regions** again. Chicago users recreate
-clients. There is no mixed-version rollout and no existing live Mesh document/API
-compatibility path to support.
-
-The wrapper's registry, Terraform, and resource-ownership preflights still run
-before every plan, apply, and destroy. Permanent decommission is an explicit
-operator operation: remove the region from desired state and run Sync All before
-permanently deleting its infrastructure. A `Mesh/{regionId}` status document
-proves what a sync observed, not a WireGuard handshake; use `wg show` on the host
-for live link verification.
-
-**One-time cutover note (shared-subnet mesh):** `us-chicago-1` moves from index 0 (shared with
-San Jose, the pre-mesh bug this scheme fixes) to index 1. The values below are non-operational
-reference values only. Do not edit the tfvars from this note before the authoritative cutover
-sequence below. Use these values only at that sequence's registry/tfvars update step, after
-Chicago mesh membership is disabled, **Sync All Regions** has run, and Chicago's client docs have
-been deleted:
-
-```
-wg_address_v4     = "10.0.1.1/24"
-wg_network_v4     = "10.0.1.0/24"
-wg_dns_address_v4 = "10.0.1.1"
-wg_address_v6     = "fd42:42:42:1::1/64"
-wg_network_v6     = "fd42:42:42:1::/64"
-wg_dns_address_v6 = "fd42:42:42:1::1"
-```
-
-For the Chicago cutover, first disable Chicago mesh membership and run **Sync All Regions**.
-Then, before the subnet deployment, delete Chicago's client docs
-(`Regions/us-chicago-1/Instances/*`): their `10.0.0.x` assignments and rendered configs
-(`DNS = 10.0.0.1`) are invalid under the new subnet. Next update the authoritative registry and
-matching tfvars using the reference values above, then deploy. This is a hard cutoff per the mesh
-design - San Jose's docs are untouched, and Chicago users recreate their clients from the
-dashboard/app after the region redeploys and re-registers with its new tunnel CIDRs.
+After deployment, verify registration, `/api/health`, `wg show wg0`, and the sync service. For mesh
+operations and host recovery, see [service-operations.md](service-operations.md) and
+[vm-loss-recovery.md](vm-loss-recovery.md).
 
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
@@ -125,13 +62,11 @@ cp Infrastructure/OCI/terraform/terraform.tfvars.example Infrastructure/OCI/terr
 ```
 
 For `apply`, the script validates all requested var files and `source_ref` lines
-before side effects, saves every region's plan against the new deploy tag, performs
-all required preflight checks, then creates and pushes one `Deploy v<x>` commit
-plus `deploy-v<x>` tag, writes that tag into every listed `source_ref`, and
-applies the saved plans one at a time. Do not enable mesh or run Sync All until all
-participating regions are on that current ref; Mesh/API versions are not mixed-
-version compatible. If one region fails, the script stops and already applied
-regions remain deployed; fix the failed region and rerun.
+before side effects, saves every region's plan, performs the required preflight
+checks, and applies the saved plans one at a time. If one region fails, the script
+stops and already applied regions remain deployed; fix the failed region and rerun.
+After the regions are deployed and ready, run **Sync All Regions** from the admin
+dashboard.
 
 The matching OCI profile must exist in `~/.oci/config`, for example:
 

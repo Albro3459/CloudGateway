@@ -12,16 +12,10 @@ Deployment is rare and manual. An operator prepares OCI networking, then deploys
 or rebuilds a region through `./scripts/terraform.sh <region> apply` following
 [docs/regional-deployment.md](../../docs/regional-deployment.md). The wrapper
 manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
-DNS/VM resources must be reconciled or imported before rerunning. Normal host
-rebuilds keep the region's WireGuard key, tunnel subnets, and endpoint hostname,
-so boot sync restores the live peer set and WireGuard endpoint roaming handles a
-new public IP. A subnet change is a hard cutoff: disable mesh membership, run
-Sync All Regions, delete every `Regions/{regionId}/Instances/*` document, update
-the authoritative registry and matching tfvars, deploy, then explicitly
-re-enable mesh and run Sync All Regions again. There is no mixed-version rollout
-or legacy Mesh/API compatibility path; the repository cannot prove live Firestore
-state. There is no Lambda orchestrator, no OCI Resource Manager flow, and no
-per-user stack deployment.
+DNS/VM resources must be reconciled or imported before rerunning. A normal host
+rebuild keeps the region's WireGuard key, tunnel subnets, and endpoint hostname,
+so boot sync restores the live peer set after deployment. There is no Lambda
+orchestrator, OCI Resource Manager flow, or per-user stack deployment.
 
 WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
@@ -31,7 +25,7 @@ Cloud-init is a small stub: Terraform bakes only the per-region config and secre
 
 The fetched bootstrap installs and configures:
 
-* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase and runs twice during bootstrap: once early at boot (client peers only - this region isn't registered in Firestore yet), and once more at the very end, after `cloudgateway-register-region`, so this region's own tunnel CIDRs exist in Firestore and it can pick up mesh peers for already-known mesh-enabled regions immediately instead of waiting for the next boot or a dashboard-triggered sync. Both passes retry until Firebase is reachable and are non-fatal to bootstrap.
+* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` rebuilds the live peer set from Firebase at boot and after region registration.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to local Unbound.
 * Unbound on `127.0.0.1:5335` as the AdGuard Home upstream: a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. DoT keeps the cloud provider from seeing the domains clients resolve; local validation means answer integrity does not depend on trusting the upstreams. Unbound never recurses, so it never queries authoritative servers over plaintext port 53.
@@ -77,33 +71,14 @@ resources or import the canonical resources into state before rerunning.
 ### Cross-region tunnel subnets
 
 Each region's WireGuard tunnel subnet is recorded first in the tracked
-[`terraform/subnet-registry.json`](terraform/subnet-registry.json), which is the authoritative
-inventory and aggregate boundary. Its `regions` value is a list of active or reserved
-allocations. Keep a removed allocation as `reserved` so it is never silently reused. Local
-`<regionId>.terraform.tfvars` files are gitignored consistency copies and their
-`wg_network_v4`/`wg_network_v6` values must exactly match the registry entry; a missing sibling
-file does not remove a registry allocation or fail another region's deploy. Before
-mesh is enabled, an operator must verify and backfill `wireguardPort` on every
-existing Region document. The repository cannot prove live Firestore state, so do
-not depend on a missing-port fallback or assume that prerequisite is complete.
+[`terraform/subnet-registry.json`](terraform/subnet-registry.json), the authoritative
+allocation inventory. Keep removed allocations as `reserved` so they are not reused.
+Local `<regionId>.terraform.tfvars` files are gitignored copies and their
+`wg_network_v4`/`wg_network_v6` values must match the registry entry exactly.
 
-The scheme is region index N = `10.0.N.0/24` and `fd42:42:42:N::/64`, inside the registry
-aggregates `10.0.0.0/16` and `fd42:42:42::/48`. Those aggregates are load-bearing, not
-just documentation: the regional API's peer sync reconciles cross-region mesh routes by sweeping
-`dev wg0` routes inside them and deleting anything not desired. A region configured outside them
-would leave routes the sweep can never reclaim. Current assignments are `us-sanjose-1` = index 0
-(`10.0.0.0/24` / `fd42:42:42::/64`) and `us-chicago-1` = index 1 (`10.0.1.0/24` /
-`fd42:42:42:1::/64`).
-
-`scripts/terraform-preflight.py` uses a strict dependency-free parser for the scalar, list, and
-heredoc forms used by the tfvars example; malformed or duplicate assignments are hard failures.
-It validates the registry itself, including active/reserved overlap, then validates the selected
-region's one active allocation and every present sibling tfvars file. It rejects unknown local
-region IDs, duplicate local IDs, allocation mismatches, wrong interface prefixes, DNS/interface
-mismatches, host-bit networks, wrong families, and aggregate violations. `cloudgateway.tf`
-repeats the address-family, canonical/prefix, interface-derived-network, DNS/interface, and
-selected registry checks with Terraform 1.6-compatible resource preconditions for direct
-Terraform use.
+Each region uses a unique `/24` IPv4 and `/64` IPv6 tunnel network within the registry
+aggregates. Terraform preflight validates the registry, matching tfvars, and selected
+region before deployment.
 
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 

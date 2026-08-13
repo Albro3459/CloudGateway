@@ -8,7 +8,7 @@ Because of that, drift repair is one command on the regional host:
 sudo cloudgateway-sync-peers
 ```
 
-It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot (twice - once early for client peers, once more at the end of bootstrap after region registration, so mesh peers for already-known regions are picked up), and it also runs on demand from the admin dashboard's sync action.
+It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot and on demand from the admin dashboard's **Sync All Regions** action.
 
 ## What the Sync Does
 
@@ -32,7 +32,7 @@ A missing region doc or an empty client list is a successful empty sync (the liv
 
 Mesh peers need routes, not just `wg set` allowed-ips: `wg-quick` only auto-installs routes for peers present in the conf file, and runtime-added peers get none. Each pass sweeps `dev wg0` routes rather than deleting per-peer, so the route table converges to the desired mesh set the same way the peer set does:
 
-* Scope: only routes inside the aggregates `10.0.0.0/16` (v4) and `fd42:42:42::/48` (v6) - documentation-only ranges that every region's tunnel subnet sits inside. Nothing outside them is ever touched.
+* Scope: only routes inside the managed aggregates `10.0.0.0/16` (v4) and `fd42:42:42::/48` (v6). Every region's tunnel subnet sits inside them. Nothing outside them is ever touched.
 * Skipped unconditionally: this region's own on-link tunnel network, and any route with `proto kernel`.
 * Everything else in scope that isn't a currently-desired mesh CIDR is deleted. A deleted route whose CIDR doesn't belong to any current region doc is logged as `mesh_route_reclaimed` (WARNING) - the operator should treat that as a signal a region doc was deleted or rewritten out from under a live route.
 * Desired mesh CIDRs are always `ip route replace`d (idempotent), matching the always-re-apply behavior for mesh peers.
