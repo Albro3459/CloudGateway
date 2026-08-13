@@ -83,6 +83,8 @@ class FakeWireGuardCommandRunner:
         *,
         fail_set_count: int = 0,
         fail_show_count: int = 0,
+        fail_route_replace_versions: set[int] | None = None,
+        fail_route_delete_versions: set[int] | None = None,
         failure_stderr: str = "simulated command failure",
     ):
         self.calls: list[FakeCommandCall] = []
@@ -92,6 +94,8 @@ class FakeWireGuardCommandRunner:
         self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
         self.fail_set_count = fail_set_count
         self.fail_show_count = fail_show_count
+        self.fail_route_replace_versions = fail_route_replace_versions or set()
+        self.fail_route_delete_versions = fail_route_delete_versions or set()
         self.failure_stderr = failure_stderr
 
     def __call__(
@@ -162,12 +166,18 @@ class FakeWireGuardCommandRunner:
 
         if len(argv) >= 5 and argv[0] == "ip" and argv[2] == "route" and argv[3] == "replace":
             version = int(argv[1].lstrip("-"))
+            if version in self.fail_route_replace_versions:
+                self.fail_route_replace_versions.remove(version)
+                raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
             cidr = argv[4]
             self.routes[version][cidr] = "static"
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
         if len(argv) >= 5 and argv[0] == "ip" and argv[2] == "route" and argv[3] == "del":
             version = int(argv[1].lstrip("-"))
+            if version in self.fail_route_delete_versions:
+                self.fail_route_delete_versions.remove(version)
+                raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
             cidr = argv[4]
             self.routes[version].pop(cidr, None)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
@@ -612,6 +622,10 @@ class FakeWireGuardManager(WireGuardManager):
         self.fail_generate_count = 0
         self.fail_add_count = 0
         self.fail_remove_count = 0
+        self.fail_mesh_apply_count = 0
+        self.fail_mesh_remove_count = 0
+        self.fail_route_replace_versions: set[int] = set()
+        self.fail_route_delete_versions: set[int] = set()
         self.fail_add_transient = False
         self.fail_remove_transient = False
         self.locked = False
@@ -731,6 +745,9 @@ class FakeWireGuardManager(WireGuardManager):
         mesh_changes: list[MeshPeerChange] = []
         for public_key, peer in mesh_by_key.items():
             self.mesh_apply_calls += 1
+            if self.fail_mesh_apply_count:
+                self.fail_mesh_apply_count -= 1
+                raise WireGuardApplyFailedError("Simulated mesh peer apply failure.")
             was_live = public_key in self.mesh_peers or public_key in self.peers
             live = self.peer_snapshots().get(public_key)
             drifted = was_live and (
@@ -769,6 +786,9 @@ class FakeWireGuardManager(WireGuardManager):
         for public_key in set(self.peers) | set(self.mesh_peers):
             if public_key in desired or public_key in mesh_by_key:
                 continue
+            if public_key in self.mesh_peers and self.fail_mesh_remove_count:
+                self.fail_mesh_remove_count -= 1
+                raise WireGuardApplyFailedError("Simulated mesh peer removal failure.")
             self.peers.pop(public_key, None)
             self.mesh_peers.pop(public_key, None)
             self.mesh_endpoint_addresses.pop(public_key, None)
@@ -824,6 +844,9 @@ class FakeWireGuardManager(WireGuardManager):
 
         for cidr in desired:
             existed = cidr in current
+            if version in self.fail_route_replace_versions:
+                self.fail_route_replace_versions.remove(version)
+                raise WireGuardApplyFailedError("Simulated mesh route apply failure.")
             current[cidr] = "static"
             if not existed:
                 changes.append(RouteChange(cidr, PEER_ADDED))
@@ -833,6 +856,9 @@ class FakeWireGuardManager(WireGuardManager):
                 continue
             if not is_subnet_of(ip_network(cidr), aggregate_net):
                 continue
+            if version in self.fail_route_delete_versions:
+                self.fail_route_delete_versions.remove(version)
+                raise WireGuardApplyFailedError("Simulated mesh route removal failure.")
             del current[cidr]
             changes.append(RouteChange(cidr, PEER_REMOVED, reclaimed=cidr not in known))
 

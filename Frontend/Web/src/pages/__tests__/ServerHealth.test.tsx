@@ -134,6 +134,58 @@ describe("ServerHealth", () => {
         runRegionsSync.mockResolvedValue([]);
     });
 
+    it("shows loading state while the initial Firestore data is pending", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const regionDocs = deferred<Region[]>();
+        const meshDocs = deferred<Map<string, MeshDoc | null>>();
+        getAllRegionDocs.mockReturnValue(regionDocs.promise);
+        getMeshDocs.mockReturnValue(meshDocs.promise);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Loading server health data...")).toBeTruthy();
+        expect(screen.queryByText("No enabled regions.")).toBeNull();
+        expect(screen.queryByText("Add another enabled region to form mesh links.")).toBeNull();
+
+        await act(async () => {
+            regionDocs.resolve([]);
+            meshDocs.resolve(new Map());
+            await Promise.all([regionDocs.promise, meshDocs.promise]);
+        });
+    });
+
+    it("shows a retry state when the initial Firestore load fails", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        getAllRegionDocs.mockRejectedValue(new Error("Firestore unavailable"));
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Unable to load server health data.")).toBeTruthy();
+        expect(screen.getByText("Server health data is unavailable. Use Refresh to try again.")).toBeTruthy();
+        expect(screen.queryByText("Loading server health data...")).toBeNull();
+    });
+
+    it("recovers syncing state after a regional timeout failure", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([{
+            regionId: "us-sanjose-1",
+            result: { success: false, error: "Regional API request timed out." },
+        }]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Regional API request timed out.")).toBeTruthy();
+        expect((screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
     it("renders durable last-applied mesh state from Mesh/* docs without running a sync", async () => {
         const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
         const { runRegionsSync } = require("../../helpers/APIHelper");

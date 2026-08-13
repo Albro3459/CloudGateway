@@ -206,6 +206,35 @@ describe("APIHelper", () => {
         });
     });
 
+    it("times out one regional sync without blocking another region", async () => {
+        jest.useFakeTimers();
+        try {
+            mockFetch
+                .mockImplementationOnce((_endpoint: string, request: RequestInit) => (
+                    new Promise((_resolve, reject) => {
+                        request.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+                    })
+                ))
+                .mockResolvedValueOnce(mockJsonResponse(syncResponse({ regionId: "us-chicago-1" })));
+            const { runRegionsSync, REGION_SYNC_TIMEOUT_MS } = require("../APIHelper");
+
+            const resultPromise = runRegionsSync(["us-sanjose-1", "us-chicago-1"], "firebase-token");
+            jest.advanceTimersByTime(REGION_SYNC_TIMEOUT_MS);
+            const results = await resultPromise;
+
+            expect(results[0]).toEqual({
+                regionId: "us-sanjose-1",
+                result: { success: false, error: "Regional API request timed out." },
+            });
+            expect(results[1]).toEqual({
+                regionId: "us-chicago-1",
+                result: { success: true, data: syncResponse({ regionId: "us-chicago-1" }) },
+            });
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
     it("validates the current admin sync peer shape without requiring a public key", async () => {
         const responseBody = {
             regionId: "us-sanjose-1",

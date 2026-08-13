@@ -65,7 +65,7 @@ Regions/{regionId}
 
 The API must reconcile the union of client and mesh peers, remove unknown peers and routes, reject duplicate server public keys, and expose strict current sync counts/statuses. Mesh candidate validation must check keys, endpoint, port, exact network widths, local-network conflicts, and cross-candidate overlap.
 
-The Server Health page shows region enabled state, mesh state, status freshness, per-peer results, and configuration failures. Toggling `meshEnabled` changes no host until Sync All. Auth generation changes must clear syncing and toggling state so controls cannot remain disabled after a session refresh. Live endpoint drift is current when the live endpoint address is one of the DNS answers and the port matches. CloudGateway manages one grey-cloud A record and no AAAA record, so this is cheap defensive correctness.
+The Server Health page shows region enabled state, mesh state, status freshness, per-peer results, and configuration failures. Toggling `meshEnabled` changes no host until Sync All. Each regional Sync All request times out after 45 seconds and renders as an independent regional failure so one hung API cannot block the remaining results. Auth generation changes must clear syncing and toggling state so controls cannot remain disabled after a session refresh. Live endpoint drift is current when the live endpoint address is one of the DNS answers and the port matches. CloudGateway manages one grey-cloud A record and no AAAA record, so this is cheap defensive correctness.
 
 ## Terraform and deploy requirements
 

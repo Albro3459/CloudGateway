@@ -91,7 +91,7 @@ const formatWarningReason = (status: "skipped-overlap" | "skipped-incomplete", r
         "missing-network-v6": "tunnel IPv6 network is missing",
         "invalid-network-v6": "tunnel IPv6 network is invalid",
         "outside-aggregate": "tunnel network is outside the mesh aggregate",
-        "local-network-invalid": "tunnel network overlaps the local network check",
+        "local-network-invalid": "regional host local-network configuration rejects this tunnel network",
         "overlap-local": "claimed subnet overlaps the local region",
         "overlap-candidate": "claimed subnet overlaps another region",
     };
@@ -372,6 +372,12 @@ const ServerHealth: React.FC = () => {
                 </div>
             )}
 
+            {regions === null ? (
+                <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-6 text-sm text-content-muted shadow-lg">
+                    {dataLoading ? "Loading server health data..." : "Server health data is unavailable. Use Refresh to try again."}
+                </div>
+            ) : (
+                <>
             <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -501,6 +507,8 @@ const ServerHealth: React.FC = () => {
                 onConfirm={confirmSync}
                 onClose={() => setSyncModalOpen(false)}
             />
+                </>
+            )}
         </div>
     );
 };

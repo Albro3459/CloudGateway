@@ -582,3 +582,90 @@ def test_route_sweep_never_touches_out_of_aggregate_route(tmp_path):
 
     assert result.routes_removed == 0
     assert "192.168.50.0/24" in runner.routes[4]
+
+
+# --- Partial mutation recovery ---------------------------------------------
+
+
+def test_mesh_peer_apply_failure_leaves_no_false_change_and_next_sync_converges(tmp_path):
+    runner = FakeWireGuardCommandRunner(fail_set_count=1)
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer()
+
+    with pytest.raises(WireGuardApplyFailedError, match="peer apply failed"):
+        manager.sync_peers({}, mesh=[peer])
+
+    assert runner.peers == {}
+    result = manager.sync_peers({}, mesh=[peer])
+
+    assert result.mesh_added == 1
+    assert runner.peers == {FAKE_MESH_PUBLIC_KEY: "10.0.1.0/24,fd42:42:42:1::/64"}
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+
+
+def test_mesh_peer_removal_failure_during_rollback_converges_next_sync(tmp_path):
+    runner = FakeWireGuardCommandRunner(fail_set_count=1)
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.1.0/24,fd42:42:42:1::/64"
+    runner.routes[4]["10.0.1.0/24"] = "static"
+    runner.routes[6]["fd42:42:42:1::/64"] = "static"
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError, match="peer removal failed"):
+        manager.sync_peers({}, mesh=[], known_region_keys=[FAKE_MESH_PUBLIC_KEY])
+
+    assert FAKE_MESH_PUBLIC_KEY in runner.peers
+    result = manager.sync_peers({}, mesh=[], known_region_keys=[FAKE_MESH_PUBLIC_KEY])
+
+    assert result.mesh_removed == 1
+    assert runner.peers == {}
+    assert runner.routes == {4: {}, 6: {}}
+
+
+def test_route_add_failure_after_peer_mutation_repairs_on_next_sync(tmp_path):
+    runner = FakeWireGuardCommandRunner(fail_route_replace_versions={6})
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer()
+
+    with pytest.raises(WireGuardApplyFailedError, match="route apply failed"):
+        manager.sync_peers({}, mesh=[peer])
+
+    assert runner.peers == {FAKE_MESH_PUBLIC_KEY: "10.0.1.0/24,fd42:42:42:1::/64"}
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {}
+    result = manager.sync_peers({}, mesh=[peer])
+
+    assert result.mesh_applied == 1
+    assert result.routes_added == 1
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+
+
+@pytest.mark.parametrize(
+    "fail_version, initial_routes, expected_after_failure, expected_removed",
+    [
+        (4, {4: {"10.0.1.0/24": "static"}, 6: {"fd42:42:42:1::/64": "static"}},
+         {4: {"10.0.1.0/24": "static"}, 6: {"fd42:42:42:1::/64": "static"}}, 2),
+        (6, {4: {"10.0.1.0/24": "static"}, 6: {"fd42:42:42:1::/64": "static"}},
+         {4: {}, 6: {"fd42:42:42:1::/64": "static"}}, 1),
+    ],
+)
+def test_route_removal_failure_preserves_partial_state_until_next_rollback_sync(
+    tmp_path, fail_version, initial_routes, expected_after_failure, expected_removed
+):
+    runner = FakeWireGuardCommandRunner(fail_route_delete_versions={fail_version})
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.1.0/24,fd42:42:42:1::/64"
+    runner.routes = initial_routes
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError, match="route removal failed"):
+        manager.sync_peers({}, mesh=[], known_region_keys=[FAKE_MESH_PUBLIC_KEY])
+
+    assert runner.peers == {}
+    assert runner.routes == expected_after_failure
+    result = manager.sync_peers({}, mesh=[], known_region_keys=[FAKE_MESH_PUBLIC_KEY])
+
+    assert result.mesh_removed == 0
+    assert result.routes_removed == expected_removed
+    assert runner.peers == {}
+    assert runner.routes == {4: {}, 6: {}}

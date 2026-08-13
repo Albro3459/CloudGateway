@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from src.enums import ClientStatus, MeshPeerStatus
+from src.errors import WireGuardApplyFailedError
 from src.repository import MeshPeerState, RegionDoc
 from src.sync import build_sync_audit_log, desired_mesh_peers, desired_peers, run_sync
 from src.wireguard import PEER_ADDED, PEER_REMOVED, MeshPeer, MeshPeerChange, PeerSyncResult, RouteChange
@@ -504,6 +505,46 @@ def test_run_sync_rollback_removes_existing_mesh_peer_and_routes_when_local_flag
     assert outcome.result.routes_removed == 2
     assert wireguard.routes[4] == {}
     assert wireguard.routes[6] == {}
+
+
+def test_run_sync_mesh_apply_failure_does_not_publish_success_and_next_sync_converges():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
+    wireguard = FakeWireGuardManager()
+    wireguard.fail_mesh_apply_count = 1
+
+    with pytest.raises(WireGuardApplyFailedError):
+        run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert REGION_ID not in repository.mesh_status
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.mesh_applied == 1
+    assert repository.mesh_status[REGION_ID][1][0].status == MeshPeerStatus.APPLIED
+
+
+def test_run_sync_mesh_rollback_failure_does_not_publish_success_and_next_sync_converges():
+    repository = make_repository()
+    repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
+    wireguard = FakeWireGuardManager()
+    wireguard.mesh_peers[FAKE_MESH_PUBLIC_KEY] = MeshPeer(
+        FAKE_MESH_PUBLIC_KEY, "wg.us-other-1.example.com", 51820, "10.0.1.0/24", "fd42:42:42:1::/64"
+    )
+    wireguard.routes[4]["10.0.1.0/24"] = "static"
+    wireguard.routes[6]["fd42:42:42:1::/64"] = "static"
+    wireguard.fail_mesh_remove_count = 1
+
+    with pytest.raises(WireGuardApplyFailedError):
+        run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert REGION_ID not in repository.mesh_status
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.mesh_removed == 1
+    assert wireguard.mesh_peers == {}
+    assert wireguard.routes == {4: {}, 6: {}}
+    assert repository.mesh_status[REGION_ID][0] is False
 
 
 def test_run_sync_write_mesh_status_failure_does_not_fail_sync():

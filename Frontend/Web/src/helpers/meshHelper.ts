@@ -232,8 +232,10 @@ const isReasonStillPresent = (
         case "duplicate-public-key":
             return hasDuplicatePublicKey(targetRegion, regions);
         case "local-network-invalid":
-            return !hasValidSnapshotField(sourceRegion, "allowedNetworkV4")
-                || !hasValidSnapshotField(sourceRegion, "allowedNetworkV6");
+            // The host's local-network configuration is not represented in
+            // Region Firestore fields, so only a later sync can clear this
+            // persistent configuration failure.
+            return true;
         case "overlap-local":
             return networksOverlap(targetRegion.tunnelNetworkV4 ?? "", sourceRegion.tunnelNetworkV4 ?? "")
                 || networksOverlap(targetRegion.tunnelNetworkV6 ?? "", sourceRegion.tunnelNetworkV6 ?? "");

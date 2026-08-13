@@ -216,6 +216,21 @@ describe("meshHelper", () => {
             expect(rows[0].pending).toBe(false);
         });
 
+        it("keeps local-network-invalid as a persistent configuration failure", () => {
+            const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
+            const localNetworkInvalid = {
+                ...appliedPeer(),
+                status: "skipped-incomplete" as const,
+                reasonCode: "local-network-invalid",
+            };
+            const rows = buildMeshLinkRows(regions, new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": localNetworkInvalid } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
+            ]));
+
+            expect(rows[0].pending).toBe(false);
+        });
+
         it.each([
             ["missing public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "missing-public-key" }],
             ["invalid public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "invalid-public-key" }],

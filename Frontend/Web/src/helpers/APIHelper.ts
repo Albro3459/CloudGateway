@@ -222,18 +222,29 @@ const authHeaders = (token: string) => {
     return headers;
 };
 
+type SendJsonRequestOptions = {
+    timeoutMs?: number;
+};
+
 const sendJsonRequest = async <TResponse>(
     endpoint: string,
     token: string,
     method: "GET" | "POST" | "DELETE",
     body?: unknown,
+    options: SendJsonRequestOptions = {},
 ): Promise<ApiHelperResult<TResponse>> => {
+    const controller = options.timeoutMs === undefined ? null : new AbortController();
+    const timeoutId = options.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => controller?.abort(), options.timeoutMs);
+
     try {
         const response = await fetch(endpoint, {
             method,
             headers: authHeaders(token),
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             redirect: "follow",
+            ...(controller ? { signal: controller.signal } : {}),
         });
         const result = await parseApiResponse(response);
 
@@ -246,10 +257,18 @@ const sendJsonRequest = async <TResponse>(
             data: result as TResponse,
         };
     } catch (error) {
+        if (controller?.signal.aborted) {
+            return {
+                success: false,
+                error: "Regional API request timed out.",
+            };
+        }
         return {
             success: false,
             error: error instanceof Error ? error.message : "Unknown API Error",
         };
+    } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
 };
 
@@ -558,6 +577,8 @@ const incompatibleResponse = (regionId: string, data: unknown): IncompatibleResp
     data,
 });
 
+export const REGION_SYNC_TIMEOUT_MS = 45_000;
+
 const runRegionSync = async (
     regionId: string,
     token: string,
@@ -568,6 +589,7 @@ const runRegionSync = async (
             token,
             "POST",
             { regionId },
+            { timeoutMs: REGION_SYNC_TIMEOUT_MS },
         );
         if (!result.success) return result;
         const response = parseRegionSyncResponse(result.data);
