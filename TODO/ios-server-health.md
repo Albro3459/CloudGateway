@@ -26,21 +26,25 @@ This supersedes the note in `shared-subnet-mesh.md` that Server Health is web-on
 * **Strict response parsing, per-region isolation.** A malformed or old-shape response fails that region's card only, mirroring the web's `incompatible-response` failure type. One region failing never aborts the others.
 * **Separate view model.** `CloudGatewayViewModel` is already 1.5k lines and owns tunnel/auth state. Server Health gets its own `@MainActor ObservableObject` with its own `isSyncing`/`isLoading`, so a 45s fan-out never sits behind the dashboard's working overlay.
 * **Simple, gated state.** No revision-stamped overrides or load generations (see stage 5). A toggle is disabled while its own write is in flight, which is what makes the simpler model correct.
-* **New iOS Swift files need no `.xcodeproj` edit.** The app target uses file-system synchronized groups.
+* **New iOS Swift files join the app target automatically, but not Screenshots.** The `CloudGateway` folder is a file-system synchronized group for the app target only; the `CloudGatewayScreenshots` target opts into exactly three files via a `membershipExceptions` list in the pbxproj (`ContentView.swift`, `CloudGatewayTheme.swift`, `Assets.xcassets`). `ContentView` will reference `ServerHealthView`, so every new view file it pulls in must be added to that exception set or the Screenshots target stops building. This is a small, deliberate pbxproj edit.
 
 ## Resolved blockers
 
-**Request timeout.** `CloudGatewayAPISession.requestTimeout` is 10s (deliberate: a dead full-tunnel blackholes traffic). A region sync routinely exceeds that; the web uses `REGION_SYNC_TIMEOUT_MS = 45_000`. Do not raise the session default. Add `CloudGatewayAPISession.adminSyncRequestTimeout: TimeInterval = 45` and set `URLRequest.timeoutInterval` on the admin-sync request only, which overrides the session configuration for that request.
+**Request timeout.** `CloudGatewayAPISession.requestTimeout` is 10s (deliberate: a dead full-tunnel blackholes traffic). A region sync routinely exceeds that; the web uses `REGION_SYNC_TIMEOUT_MS = 45_000`. Do not raise the session default. Add `CloudGatewayAPISession.adminSyncRequestTimeout: TimeInterval = 45` and set `URLRequest.timeoutInterval` on the admin-sync request only, which overrides the session configuration for that request. Note the semantic difference from the web: `timeoutInterval` is an idle timer (reset by incoming bytes), not the web's wall-clock abort. For a POST that returns a single body after the pass finishes they behave the same, and the idle form is fine here.
+
+A sync pass has no server-side duration bound (only 20s-per-subprocess and 5s-per-DNS-resolve limits inside it), so a client-side timeout can fire while the host still holds its sync flock. The next attempt then gets `409 SYNC_IN_PROGRESS` — see failure classification below.
 
 **Per-region failure isolation.** The generic `send` throws `.invalidAPIResponse` on any decode failure and `.accessDenied` on any non-2xx, which collapses "this one host is unreachable" into the same shape as "the whole call failed" and drops the request ID. Rather than catching and re-classifying thrown errors, the admin-sync path is non-throwing end to end:
 
 * A private `sendAdminSync(regionId:idToken:) async -> CloudGatewayRegionSyncOutcome` owns the request and classifies the result. It never throws, so the task group has nothing to catch.
 * The transport call itself is shared with the rest of the client via a small private helper returning `(Data, HTTPURLResponse)`; only the classification is sync-specific. No duplicated URLSession handling, and no changes to how any other endpoint reports errors.
 * `ErrorResponse.Detail` gains `requestId` so an API failure can render it the way the web's failure card does.
+* **`409 SYNC_IN_PROGRESS` is a first-class outcome, not a generic failure.** The API takes a non-blocking flock around the whole reconcile pass; a concurrent sync (another admin, the web dashboard, or a boot pass) makes the second request fail fast with 409. Classify it as `.alreadyRunning` and render "A sync is already running on this region — try again shortly," not a red failure card. This also covers the orphaned-pass case where our own 45s timeout fired but the host is still reconciling. (The web renders this as a generic failure; iOS does better.)
+* **Never assume the error body is JSON.** The FastAPI app always emits the JSON envelope, but the API sits behind Caddy and orange-cloud Cloudflare, which can answer 502/524 with HTML on origin timeout. If the envelope doesn't decode, fall back to a generic message with the HTTP status; never surface raw body text.
 
 This is also why the public `syncRegion` is removed instead of kept alongside: the fan-out is its only consumer, and one seam keeps `MockGatewayService` honest.
 
-**`syncedAt` parsing.** `JSONDecoder.gatewayAPI` uses `.iso8601`, which rejects fractional seconds; FastAPI serializes `datetime` as `2026-08-15T12:34:56.789012+00:00`. This is invisible today only because `syncedAt` is typed `String`. Keep it a `String` on the wire model and parse explicitly with `ISO8601DateFormatter`, trying `.withFractionalSeconds` first and falling back to the plain format. An unparseable value is an incompatible response, matching the web's `Date.parse` check. Do not switch the field to `Date` and do not change the shared decoder's date strategy.
+**`syncedAt` parsing.** `JSONDecoder.gatewayAPI` uses `.iso8601`, which rejects fractional seconds; pydantic v2 serializes the tz-aware UTC `datetime` as `2026-08-15T20:38:37.814426Z` (fractional seconds, `Z` suffix — not the `+00:00` offset form the api-contract example shows). This is invisible today only because `syncedAt` is typed `String`. Keep it a `String` on the wire model and parse explicitly with `ISO8601DateFormatter`, trying `.withFractionalSeconds` first and falling back to the plain format (both handle `Z` and offset forms). An unparseable value is an incompatible response, matching the web's `Date.parse` check. Do not switch the field to `Date` and do not change the shared decoder's date strategy.
 
 ## Work stages
 
@@ -70,16 +74,21 @@ Port the semantics exactly, including the parts the web comments call out: `skip
 ### 3. Firestore access
 
 * `CloudGatewayAppServiceFacade.swift`: extend `CloudGatewayClientRepository` with `fetchMeshRegions() async throws -> [CloudGatewayMeshRegion]`, `fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc]`, and `setRegionMeshEnabled(regionId:enabled:) async throws`. Surface all three on `CloudGatewayServicing` and forward them in the facade.
+* Every conformer updates with the protocols: `CloudGatewayAppServiceFacade` + `CloudGatewayIOSFirestoreRepository` (production), `CloudGatewayScreenshotService` (implements `CloudGatewayServicing` directly — give it static mesh fixtures so Server Health is screenshotable), `MockGatewayService`, and `FacadeRepositoryFake`/`FacadeControlPlaneFake` in the facade tests.
 * New pure mapper `CloudGatewayFirestoreMeshMapper` next to `CloudGatewayFirestoreClientMapper` (`[String: Any]` in, models out) so parsing is unit-testable without Firebase.
-* `CloudGatewayIOSFirestoreRepository`: implement the three methods against `collection("Regions")`, `collection("Mesh")`, and a single-field `updateData(["meshEnabled": enabled])`. Convert `Timestamp` to `Date` before handing dictionaries to the mapper, as `clients(from:)` already does.
+* `CloudGatewayIOSFirestoreRepository`: implement the three methods against `collection("Regions")`, `collection("Mesh")`, and a single-field `updateData(["meshEnabled": enabled])`. `Timestamp` → `Date` conversion must be recursive, not top-level like `clients(from:)`: the mapper lives in AppCore and cannot import FirebaseFirestore, and `Mesh/*` docs carry `appliedAt` timestamps nested inside every `peers.{regionId}` entry as well as the top-level `updatedAt`.
+* The Firestore cache is memory-only (composition root), so these reads always hit the server: a permission-denied from a stale admin role surfaces immediately rather than being masked by a disk cache.
 * Sort regions with the existing display-order-then-id rule (`CloudGatewayConfigSelection.sortedRegions` semantics) so the page order matches the dashboard.
+* The enabled-region list for the confirm sheet and the fan-out comes from these Firestore docs, not from `fetchRegions()`: the API-shaped `CloudGatewayRegion.enabled` is hardcoded `true` by the client and never carries the real flag.
 
 ### 4. Sync response contract and fan-out
 
 * Extend `CloudGatewayRegionSyncResponse` with `meshUpdated`, `meshEnabled`, `meshApplied`, `meshAdded`, `meshRemoved`, `meshSkipped`, `meshRoutesAdded`, `meshRoutesRemoved`, `meshStatusWritten: Bool?`, `meshPeers: [CloudGatewayRegionSyncMeshPeer]`. `meshStatusWritten` stays optional: absent means an older regional host, which is unknown, not a failure. Present-but-wrong-type is malformed (`decodeIfPresent` throwing on a type mismatch gives this for free).
 * New `CloudGatewayAppCore/CloudGatewayRegionSyncParsing.swift`. Decode a lenient DTO, then validate, mirroring `parseRegionSyncResponse`: counters non-negative (Decodable rejects non-integers; the `>= 0` check is explicit), `syncedAt` non-empty and parseable per the rule above, `meshPeers` present; `applied`/`skipped-overlap` peers require hostname, port, v4 and v6 to be valid, and `skipped-overlap` additionally requires a known reason code; `skipped-incomplete` requires a known reason code and tolerates absent or blank optional fields but rejects present-and-invalid ones. Unknown `status` or unknown reason code ⇒ malformed. Also require `response.regionId == requestedRegionId`.
-* `CloudGatewayRegionSyncOutcome`: `regionId` plus `success(CloudGatewayRegionSyncResponse)` | `failure(message:, requestId:, isIncompatibleResponse:)`. Built only by `sendAdminSync`, which classifies transport error, non-2xx (message + code + request ID from the error envelope), strict-parse rejection, and success.
-* `syncRegions(regionIds:idToken:) async -> [CloudGatewayRegionSyncOutcome]` on the control-plane client and `CloudGatewayServicing`: `withTaskGroup`, one non-throwing child per region, results re-ordered to the input order. Regions number in the low single digits, so full parallelism matches the web's `Promise.allSettled`.
+* `CloudGatewayRegionSyncOutcome`: `regionId` plus `success(CloudGatewayRegionSyncResponse)` | `alreadyRunning` | `failure(message:, requestId:, isIncompatibleResponse:)`. Built only by `sendAdminSync`, which classifies transport error, HTTP 409 (`SYNC_IN_PROGRESS`), other non-2xx (message + code + request ID from the JSON envelope when it decodes, generic message with status otherwise), strict-parse rejection, and success. All types `Sendable` — the protocol requires it and the task group crosses isolation.
+* `syncRegions(regionIds:idToken:) async -> [CloudGatewayRegionSyncOutcome]` on the control-plane client and `CloudGatewayServicing`: `withTaskGroup`, one non-throwing child per region, results re-ordered to the input order. Regions number in the low single digits, so full parallelism matches the web's `Promise.allSettled`. (The API's flock makes parallel requests to *different* hosts safe; same-host contention is the 409 case.)
+* One `idToken` fetched immediately before the fan-out and reused across it, like the web. No mid-fan-out refresh/retry: an expiry surfaces as that region's `AUTH_REQUIRED` failure card.
+* Rendering note: `meshEnabled` in the response is the combined `region.enabled && region.meshEnabled`, not the raw Firestore flag — label the chip "Mesh enabled/disabled" exactly as the web does and don't cross-check it against the toggle state.
 * Failure messages must stay short and safe: the API error message or a generic fallback. Never fold response bodies or log text into a banner.
 
 ### 5. Server Health view model
@@ -98,9 +107,10 @@ New `CloudGatewayAppCore/CloudGatewayServerHealthViewModel.swift`:
 * New `Frontend/Apple/iOS/CloudGateway/ServerHealthView.swift` (do not grow `ContentView.swift`, already 2281 lines): header + Sync All button with the pending ring treatment, mesh membership toggles with `Disabled`/`Pending`/last-applied labels, link rows in the four status colors, warnings section with the reason-code sentences from `formatWarningReason`, and per-region result cards.
 * New `RegionSyncResultCard` view: counts, mesh counts, mesh peer chips, the `meshStatusWritten == false` warning sentence, expandable log, and `ShareLink` for the `.log` export (reuse the pattern already in `SyncResultView` before it is deleted).
 * `ContentView.swift`: add an admin-only Server Health nav button, replace the admin panel's "Sync <Region>" button with "Server Health", present `.fullScreenCover`, and delete the `syncResultPresented` sheet and `SyncResultView`.
-* Shared view helpers currently `private` in `ContentView.swift` (`ThemedPanel`, `SectionHeader`, `DetailLine`, `PrimaryButtonStyle`, `SecondaryButtonStyle`, `MessageBanner`) must be demoted to internal for reuse from the new file. Same target, so Periphery stays quiet as long as each is actually used.
-* Dismiss the cover when `appMode != .signedIn` or the role stops being admin, mirroring the web's redirect.
-* Theme: add mesh status colors to `CloudGatewayTheme` alongside the existing success/warning/danger tokens rather than hard-coding.
+* Shared view helpers currently `private` in `ContentView.swift` (`ThemedPanel`, `SectionHeader`, `DetailLine`, `MessageBanner`, `PrimaryButtonStyle`, `SecondaryButtonStyle`, and `EmptyState`/`FlowLayout` if used) must be demoted to internal for reuse from the new file. Keep them in `ContentView.swift` — moving them to a new file would force that file into the Screenshots exception set too. The Periphery app scan builds both the app and Screenshots schemes; internal helpers used from either are retained.
+* Add `ServerHealthView.swift` (and `RegionSyncResultCard` if it's a separate file) to the Screenshots target's `membershipExceptions` so `ContentView` still compiles there.
+* Dismiss the cover when `appMode != .signedIn` or the role stops being admin (`role` and `appMode` are both `@Published`, so `.onChange` on either works; role is re-resolved on every refresh/pull-to-refresh).
+* Theme: add mesh status colors to `CloudGatewayTheme` alongside the existing tokens. Note the existing warning family is `warningSoft`/`warningStrong`/`warningSoftEdge` (no bare `warning`); follow that naming.
 
 ## Deliberate deltas from web
 
@@ -114,18 +124,30 @@ New `CloudGatewayAppCore/CloudGatewayServerHealthViewModel.swift`:
 
 * `CloudGatewayMeshValidationTests` — port `meshValidation.test.ts`
 * `CloudGatewayMeshStatusTests` — port `meshHelper.test.ts` (link statuses, pending matrix, stale detection, warnings, reason-still-present cases)
-* `CloudGatewayRegionSyncParsingTests` — port the sync cases from `APIHelper.test.ts` (missing fields, bad counters, unknown status, unknown reason code, absent vs. malformed `meshStatusWritten`, region-id mismatch)
-* `CloudGatewayServerHealthViewModelTests` — port behaviors from `ServerHealth.test.tsx`: admin gating, toggle rollback on write failure, a refresh landing mid-toggle not clobbering it, fan-out with one region failing while the rest succeed, mesh re-read after sync, sign-out mid-flight drops results
+* `CloudGatewayRegionSyncParsingTests` — port the sync cases from `APIHelper.test.ts` (missing fields, bad counters, unknown status, unknown reason code, absent vs. malformed `meshStatusWritten`, region-id mismatch), plus the real `syncedAt` shapes: fractional-seconds `Z`, plain `Z`, and offset form
+* `CloudGatewayServerHealthViewModelTests` — port behaviors from `ServerHealth.test.tsx`: admin gating, toggle rollback on write failure, a refresh landing mid-toggle not clobbering it, fan-out with one region failing while the rest succeed, a 409 rendering as already-running rather than failure, mesh re-read after sync, sign-out mid-flight drops results
 
-`MockGatewayService` gains the three repository methods, a `syncRegions` seam with call counts and per-region outcome injection, and loses its `syncRegion` stub. Existing `CloudGatewayViewModelTests` and `CloudGatewayControlPlaneClientTests` cases covering `syncSelectedRegion`/`syncRegion` are deleted or retargeted with the feature.
+`MockGatewayService` gains the three repository methods, a `syncRegions` seam with call counts and per-region outcome injection, and loses its `syncRegion` stub. Known casualties by name:
 
-Web, API, Firebase, and infra are untouched — no `./scripts/test.sh` targets beyond `apple` are needed.
+* `CloudGatewayViewModelTests`: `testSyncSelectedRegionCapturesResult` and `testSyncCompletionCannotPublishPreviousUsersAuditLog` are deleted (their auth-isolation intent moves to the Server Health view-model tests). `testDeferredAuthReloadRunsOnceAndSkipsWhenUserUnchanged` only uses sync as its in-flight operation — retarget it to another gated operation, don't delete it.
+* `CloudGatewayControlPlaneClientTests`: `controlPlaneEndpointContractsStayStable` drops its `syncRegion` leg; add fan-out coverage (per-region 409 / non-JSON 502 / incompatible-shape classification) either there or in a dedicated test.
+* `CloudGatewayAppServiceFacadeTests`: `FacadeRepositoryFake` and `FacadeControlPlaneFake` implement the new methods; add forwarding assertions matching the existing style.
+
+Web, API, Firebase, and infra are untouched by this work — no `./scripts/test.sh` targets beyond `apple` are needed. The items in "Flagged during audit" below are deliberately out of scope here; picking any of them up means running that surface's target too.
 
 ## Docs
 
 * `Frontend/Apple/iOS/README.md`: replace the per-region `POST /admin/sync` paragraph with the Server Health surface, the all-region fan-out, the Firestore `Regions`/`Mesh` reads, and the `meshEnabled`-only write. Keep the admin-only log-sensitivity warning.
 * `Frontend/Apple/macOS/README.md`: add the mesh repository methods to the "not yet conformed on macOS" table.
 * `TODO/shared-subnet-mesh.md`: drop the "Server Health page is web-only for this PR" line once this lands.
+
+## Flagged during audit (web/API, not iOS work)
+
+Found while auditing this plan; none block the iOS work, but they belong to the owning surfaces:
+
+* **`docs/api-contract.md` `syncedAt` example is wrong.** The example shows `2026-06-17T18:30:00+00:00`; pydantic v2 actually emits fractional seconds with a `Z` suffix. Any parser built strictly against the example fails on real responses. Fix the doc when convenient.
+* **Web renders `409 SYNC_IN_PROGRESS` as a generic red failure card.** It's an expected concurrency outcome (flock contention), not an error. Small web follow-up: give it the same "already running" treatment iOS gets.
+* **Firestore rules let an admin set `meshEnabled=true` on a disabled region.** The web only disables the toggle client-side; the rule checks `hasOnly(['meshEnabled'])` but not `resource.data.enabled`. Verified inert — every sync path re-filters on `enabled is True` — so this is defense-in-depth, not a vulnerability. Optionally tighten the rule to require `resource.data.enabled == true` when setting `true`.
 
 ## Risks
 
