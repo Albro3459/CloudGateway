@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Region } from "../../helpers/regionsHelper";
 import type { MeshDoc } from "../../helpers/meshHelper";
 import type { RegionSyncResponse } from "../../helpers/APIHelper";
@@ -18,10 +18,18 @@ const mockUser = {
     getIdToken: jest.fn().mockResolvedValue("firebase-token"),
 };
 
+// Firebase delivers the first observer callback asynchronously ("the callback
+// needs to be called asynchronously per the spec"), so it always lands after
+// React has flushed the mount effects. Mocking it synchronously inverts that
+// ordering and hides anything the mount effects set up before it.
+const deferFirstAuthCallback = (callback: (user: unknown) => void, user: unknown) => {
+    void Promise.resolve().then(() => callback(user));
+};
+
 jest.mock("../../firebase", () => ({
     auth: { currentUser: mockUser },
     onAuthStateChanged: jest.fn((_auth, callback) => {
-        callback(mockUser);
+        void Promise.resolve().then(() => callback(mockUser));
         return () => undefined;
     }),
 }));
@@ -45,15 +53,20 @@ jest.mock("../../components/ThemeToggle", () => ({
     ThemeToggle: () => <button type="button">Theme</button>,
 }));
 
-const region = (regionId: string, displayName: string, meshEnabled: boolean, displayOrder = 1): Region => ({
+const region = (
+    regionId: string,
+    displayName: string,
+    meshEnabled: boolean,
+    displayOrder = 1,
+    enabled = true,
+): Region => ({
     regionId,
     displayName,
-    enabled: true,
+    enabled,
     displayOrder,
     meshEnabled,
     wireguardEndpointHostname: "wg.example.com",
     wireguardPort: 51820,
-    wireguardPortPresent: true,
     wireguardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     tunnelNetworkV4: "10.0.1.0/24",
     tunnelNetworkV6: "fd42:42:42:1::/64",
@@ -124,7 +137,7 @@ describe("ServerHealth", () => {
         authStateCallback = null;
         onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
             authStateCallback = callback;
-            callback(mockUser);
+            deferFirstAuthCallback(callback, mockUser);
             return () => undefined;
         });
         getUserRole.mockResolvedValue("admin");
@@ -145,8 +158,8 @@ describe("ServerHealth", () => {
         render(<ServerHealth />);
 
         expect(await screen.findByText("Loading server health data...")).toBeTruthy();
-        expect(screen.queryByText("No enabled regions.")).toBeNull();
-        expect(screen.queryByText("Add another enabled region to form mesh links.")).toBeNull();
+        expect(screen.queryByText("No regions.")).toBeNull();
+        expect(screen.queryByText("Add another region to form mesh links.")).toBeNull();
 
         await act(async () => {
             regionDocs.resolve([]);
@@ -164,8 +177,104 @@ describe("ServerHealth", () => {
         render(<ServerHealth />);
 
         expect(await screen.findByText("Unable to load server health data.")).toBeTruthy();
-        expect(screen.getByText("Server health data is unavailable. Use Refresh to try again.")).toBeTruthy();
+        expect(screen.getByText("Server health data is unavailable.")).toBeTruthy();
         expect(screen.queryByText("Loading server health data...")).toBeNull();
+    });
+
+    it("retries the failed load from the in-card Try again button", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        getAllRegionDocs.mockRejectedValueOnce(new Error("Firestore unavailable"));
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+
+        // The nav Refresh button is hidden below the sm breakpoint, so the card
+        // needs its own retry affordance or a mobile load failure is terminal.
+        const retry = await screen.findByRole("button", { name: "Try again" });
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
+        fireEvent.click(retry);
+
+        expect(await screen.findByText("San Jose")).toBeTruthy();
+        expect(screen.queryByText("Server health data is unavailable.")).toBeNull();
+    });
+
+    it("keeps a confirmed Sync All outstanding when the initial load fails, then runs it after a retry", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        getAllRegionDocs.mockRejectedValueOnce(new Error("Firestore unavailable"));
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText(
+            "The Sync All Regions you confirmed has not run yet. It starts as soon as region data loads."
+        )).toBeTruthy();
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
+        fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(["us-sanjose-1"], "firebase-token"));
+    });
+
+    it("keeps a confirmed Sync All when the observer fires again for the same user", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const firstLoad = deferred<Region[]>();
+        getAllRegionDocs.mockReturnValueOnce(firstLoad.promise);
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+
+        // The run-now signal is navigation-derived intent from this tab, so an
+        // observer callback for the same user must not discard it.
+        expect(await screen.findByText("Loading server health data...")).toBeTruthy();
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(["us-sanjose-1"], "firebase-token"));
+        await act(async () => {
+            firstLoad.resolve([]);
+            await firstLoad.promise;
+        });
+    });
+
+    it("discards a confirmed Sync All when a different user takes over the session", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const firstLoad = deferred<Region[]>();
+        getAllRegionDocs.mockReturnValueOnce(firstLoad.promise);
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Loading server health data...")).toBeTruthy();
+        const otherAdmin = {
+            uid: "admin-2",
+            email: "other-admin@example.com",
+            getIdToken: jest.fn().mockResolvedValue("other-token"),
+        };
+        await act(async () => {
+            authStateCallback?.(otherAdmin);
+        });
+
+        // One admin's confirmed fan-out must not fire under another's session.
+        expect(await screen.findByText("San Jose")).toBeTruthy();
+        expect(runRegionsSync).not.toHaveBeenCalled();
+        await act(async () => {
+            firstLoad.resolve([]);
+            await firstLoad.promise;
+        });
     });
 
     it("recovers syncing state after a regional timeout failure", async () => {
@@ -250,11 +359,18 @@ describe("ServerHealth", () => {
         const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
         const { default: ServerHealth } = require("../ServerHealth");
 
-        getAllRegionDocs.mockResolvedValue([
+        // The confirming read has to see the write, or the test would be
+        // exercising the cross-tab race instead of the happy path.
+        const authoritativeRegions = [
             region("us-sanjose-1", "San Jose", false, 1),
             region("us-chicago-1", "Chicago", false, 2),
-        ]);
+        ];
+        getAllRegionDocs.mockImplementation(() => Promise.resolve([...authoritativeRegions]));
         getMeshDocs.mockResolvedValue(new Map());
+        setRegionMeshEnabled.mockImplementation(async (regionId: string, meshEnabled: boolean) => {
+            const index = authoritativeRegions.findIndex(r => r.regionId === regionId);
+            authoritativeRegions[index] = { ...authoritativeRegions[index], meshEnabled };
+        });
 
         render(<ServerHealth />);
 
@@ -286,6 +402,10 @@ describe("ServerHealth", () => {
         const checkbox = await screen.findByLabelText("Mesh enabled for San Jose");
         const staleRegions = deferred<Region[]>();
         getAllRegionDocs.mockImplementationOnce(() => staleRegions.promise);
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
         getMeshDocs.mockResolvedValueOnce(new Map());
         fireEvent.click(screen.getByLabelText("Refresh"));
         fireEvent.click(checkbox);
@@ -486,6 +606,147 @@ describe("ServerHealth", () => {
 
         expect(await screen.findByText("Incompatible response")).toBeTruthy();
         expect(screen.getByText("The sync result was discarded because the regional API returned an unsupported shape.")).toBeTruthy();
+    });
+
+    it("drops a stale optimistic override when the confirming read fails", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        // Authoritative state never changes: the write is what fails to be
+        // confirmed, so the optimistic value must not survive the next load.
+        const authoritativeRegions = [
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ];
+        getAllRegionDocs.mockResolvedValue(authoritativeRegions);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        getAllRegionDocs.mockRejectedValueOnce(new Error("confirming read failed"));
+        fireEvent.click(checkbox);
+
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        expect(await screen.findByText("Unable to load server health data.")).toBeTruthy();
+
+        fireEvent.click(screen.getByLabelText("Refresh"));
+
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+    });
+
+    it("drops the optimistic override when the confirming read disagrees", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        // Another admin flips the same flag back between this tab's write and
+        // its confirming read. The read started after the write, so it is the
+        // newer truth and the override must not pin the optimistic value.
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        fireEvent.click(checkbox);
+
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+    });
+
+    it("renders disabled regions with an explicit state and keeps their stale peers visible", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2, false),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", meshDoc("us-sanjose-1", { peers: { "us-chicago-1": meshPeer() } })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Disabled")).toBeTruthy();
+        // San Jose still has Chicago's peer installed even though Chicago is
+        // dead, so the link stays on the page and reads as pending removal.
+        expect(screen.getByText(
+            "San Jose ↔ Chicago (disabled) · one-sided · San Jose applied, Chicago (disabled) not synced"
+        )).toBeTruthy();
+        expect(screen.getByText("(pending)")).toBeTruthy();
+        expect(screen.getByText("Pending mesh changes - run Sync All Regions to apply them.")).toBeTruthy();
+
+        // A disabled region's host is dead and no other region will peer with
+        // it, so the toggle would write a flag that changes nothing. The
+        // control says so instead of accepting a silent no-op.
+        const disabledToggle = screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement;
+        expect(disabledToggle.disabled).toBe(true);
+        fireEvent.click(disabledToggle);
+        expect(setRegionMeshEnabled).not.toHaveBeenCalled();
+
+        // Sync All still targets enabled regions only.
+        fireEvent.click(screen.getByRole("button", { name: "Sync All Regions" }));
+        const modal = screen.getByRole("dialog", { name: "Sync All Regions" });
+        expect(within(modal).getByText("us-sanjose-1")).toBeTruthy();
+        expect(within(modal).queryByText("us-chicago-1")).toBeNull();
+        expect(within(modal).getByRole("button", { name: "Sync 1 region" })).toBeTruthy();
+    });
+
+    it("renders mesh configuration failures with a readable reason", async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", meshDoc("us-sanjose-1", {
+                peers: {
+                    "us-chicago-1": meshPeer({ status: "skipped-overlap", reasonCode: "overlap-candidate" }),
+                },
+            })],
+            ["us-chicago-1", meshDoc("us-chicago-1", {
+                peers: {
+                    "us-sanjose-1": meshPeer({ status: "skipped-incomplete", reasonCode: "not-a-known-code" }),
+                },
+            })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Warnings")).toBeTruthy();
+        expect(screen.getByText(
+            "San Jose skipped Chicago: claimed subnet overlaps another region [overlap-candidate]"
+        )).toBeTruthy();
+        // An unknown reason code still renders, falling back to the status text.
+        expect(screen.getByText(
+            "Chicago skipped San Jose: mesh peer was skipped because required metadata is incomplete or invalid [not-a-known-code]"
+        )).toBeTruthy();
+    });
+
+    it("sends a signed-out visitor to the login page", async () => {
+        const { auth } = require("../../firebase");
+        const { getAllRegionDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        auth.currentUser = null;
+        const { onAuthStateChanged } = require("../../firebase");
+        onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            authStateCallback = callback;
+            deferFirstAuthCallback(callback, null);
+            return () => undefined;
+        });
+
+        render(<ServerHealth />);
+
+        await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+        expect(screen.queryByText("Mesh membership")).toBeNull();
+        expect(getAllRegionDocs).not.toHaveBeenCalled();
     });
 
     it("redirects non-admins away from the page", async () => {

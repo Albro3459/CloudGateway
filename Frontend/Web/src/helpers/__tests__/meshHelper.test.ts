@@ -19,7 +19,6 @@ const region = (regionId: string, meshEnabled: boolean): Region => ({
     meshEnabled,
     wireguardEndpointHostname: "wg.example.com",
     wireguardPort: 51820,
-    wireguardPortPresent: true,
     wireguardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
     tunnelNetworkV4: "10.0.1.0/24",
     tunnelNetworkV6: "fd42:42:42:1::/64",
@@ -144,6 +143,16 @@ describe("meshHelper", () => {
             const meshDoc = parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: {} });
             expect(isRegionMeshPending(region("us-sanjose-1", true), meshDoc)).toBe(false);
         });
+
+        it("is never pending for a disabled region", () => {
+            // A disabled region has no operational server and is not a Sync All
+            // target, so its own Mesh doc can never be reconciled.
+            const disabled = { ...region("us-chicago-1", true), enabled: false };
+            const meshDoc = parseMeshDocument("us-chicago-1", { meshEnabled: false, peers: {} });
+
+            expect(isRegionMeshPending(disabled, null)).toBe(false);
+            expect(isRegionMeshPending(disabled, meshDoc)).toBe(false);
+        });
     });
 
     describe("buildMeshLinkRows", () => {
@@ -200,7 +209,6 @@ describe("meshHelper", () => {
                 ...region(regionId, true),
                 wireguardEndpointHostname: null,
                 wireguardPort: null,
-                wireguardPortPresent: true,
                 wireguardPublicKey: null,
                 tunnelNetworkV4: null,
                 tunnelNetworkV6: null,
@@ -236,7 +244,7 @@ describe("meshHelper", () => {
             ["invalid public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "invalid-public-key" }],
             ["missing hostname", { wireguardEndpointHostname: null }, { endpointHostname: null, reasonCode: "missing-endpoint-hostname" }],
             ["invalid hostname", { wireguardEndpointHostname: null }, { endpointHostname: null, reasonCode: "invalid-endpoint-hostname" }],
-            ["invalid port", { wireguardPort: null, wireguardPortPresent: true }, { endpointPort: null, reasonCode: "invalid-endpoint-port" }],
+            ["invalid port", { wireguardPort: null }, { endpointPort: null, reasonCode: "invalid-endpoint-port" }],
             ["invalid IPv4 network", { tunnelNetworkV4: null }, { allowedNetworkV4: null, reasonCode: "invalid-network-v4" }],
             ["invalid IPv6 network", { tunnelNetworkV6: null }, { allowedNetworkV6: null, reasonCode: "invalid-network-v6" }],
         ])("does not mark unchanged backend-shaped %s as pending", (_label, regionOverrides, peerOverrides) => {
@@ -275,7 +283,6 @@ describe("meshHelper", () => {
             const invalidRegion = (regionId: string) => ({
                 ...region(regionId, true),
                 wireguardPort: invalidPort,
-                wireguardPortPresent: wireguardPort !== undefined,
             });
             const skippedPeer = {
                 ...appliedPeer({ endpointPort: peerEndpointPort }),
@@ -414,6 +421,39 @@ describe("meshHelper", () => {
             const rows = buildMeshLinkRows(regions, new Map());
 
             expect(rows.map(row => `${row.regionAId}-${row.regionBId}`)).toEqual(["a-b", "a-c", "b-c"]);
+        });
+
+        it("marks a live host's peer for a disabled region as pending removal", () => {
+            const regions = [
+                region("us-sanjose-1", true),
+                { ...region("us-chicago-1", true), enabled: false },
+            ];
+            const rows = buildMeshLinkRows(regions, new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", {
+                    meshEnabled: true,
+                    peers: { "us-chicago-1": appliedPeer() },
+                })],
+            ]));
+
+            expect(rows[0].pending).toBe(true);
+            expect(rows[0].status).toBe("one-sided");
+        });
+
+        it("does not mark a dead host's own stale peer as pending", () => {
+            // Only a live host runs a sync pass, so nothing can reconcile an
+            // entry that lives in a disabled region's own Mesh doc.
+            const regions = [
+                { ...region("us-sanjose-1", true), enabled: false },
+                { ...region("us-chicago-1", true), enabled: false },
+            ];
+            const rows = buildMeshLinkRows(regions, new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", {
+                    meshEnabled: true,
+                    peers: { "us-chicago-1": appliedPeer() },
+                })],
+            ]));
+
+            expect(rows[0].pending).toBe(false);
         });
     });
 

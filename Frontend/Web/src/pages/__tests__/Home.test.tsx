@@ -57,13 +57,18 @@ jest.mock("../../stores/ociRegionsStore", () => {
         displayOrder: 1,
     };
 
+    const clearOciRegions = jest.fn();
+
     return {
         fetchOciRegions: jest.fn().mockResolvedValue(undefined),
-        useOciRegionsStore: jest.fn(() => ({
-            ociRegions: [region],
-            loading: false,
-            error: null,
-        })),
+        useOciRegionsStore: Object.assign(
+            jest.fn(() => ({
+                ociRegions: [region],
+                loading: false,
+                error: null,
+            })),
+            { getState: () => ({ clearOciRegions }) },
+        ),
     };
 });
 
@@ -452,6 +457,30 @@ describe("Home admin tools", () => {
         expect(await screen.findByText("new@example.com now has CloudGateway access.")).toBeTruthy();
     });
 
+    it("renders the Server Health nav affordance for admins", async () => {
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+
+        expect(await screen.findByRole("button", { name: "Server Health" })).toBeTruthy();
+    });
+
+    it("omits the Server Health nav affordance for non-admins", async () => {
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        getUserRole.mockResolvedValue("user");
+
+        render(<Home />);
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalled());
+        // Wait until the role has actually resolved, so this can't pass just
+        // because the admin affordance has not rendered yet.
+        await act(async () => { await Promise.resolve(); });
+
+        expect(screen.queryByRole("button", { name: "Grant User Access" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Server Health" })).toBeNull();
+    });
+
     it("lists every enabled region in the sync modal and hands off to Server Health on confirm", async () => {
         const { runRegionsSync } = require("../../helpers/APIHelper");
         const { default: Home } = require("../Home");
@@ -701,6 +730,37 @@ describe("Home auth transitions", () => {
     });
 
     let authCallback: ((user: unknown) => void) | undefined;
+
+    it("clears the OCI regions store on an observer-driven sign-out", async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+        getUsersVPNs.mockResolvedValue([]);
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userA));
+
+        testAuth.currentUser = null;
+        await act(async () => { authCallback?.(null); });
+
+        // Both sign-out paths must tear the previous account's region list down.
+        expect(useOciRegionsStore.getState().clearOciRegions).toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
+    });
+
+    it("logs out from the account menu before the auth observer's first callback", async () => {
+        const { logout } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+
+        // auth.currentUser is already restored from persistence but the
+        // observer has not fired, so no session can be resolved yet.
+        render(<Home />);
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Logout" }));
+
+        await waitFor(() => expect(logout).toHaveBeenCalled());
+    });
 
     it("does not apply a stale VPN response after switching users", async () => {
         const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");

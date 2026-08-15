@@ -23,7 +23,6 @@ export type Region = {
     // Nullable/missing-aware value used for mesh snapshot freshness. The
     // application has no frontend consumer that needs to invent a default.
     wireguardPort?: number | null;
-    wireguardPortPresent?: boolean;
     wireguardDnsIpv4?: string | null;
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
@@ -49,7 +48,6 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardEndpointIpv6: stringOrNull(data.wireguardEndpointIpv6),
         wireguardEndpointHostname: stringOrNull(data.wireguardEndpointHostname),
         wireguardPort: numberOrNull(data.wireguardPort),
-        wireguardPortPresent: Object.prototype.hasOwnProperty.call(data, "wireguardPort"),
         wireguardDnsIpv4: stringOrNull(data.wireguardDnsIpv4),
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),

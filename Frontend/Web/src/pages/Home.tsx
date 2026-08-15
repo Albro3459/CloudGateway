@@ -976,6 +976,9 @@ const Home: React.FC = () => {
                     setRole(userRole);
                     void fetchOciRegions(token, true);
                 } else if (!user && mountedRef.current && !auth.currentUser) {
+                    // Same teardown as the explicit logout path: the previous
+                    // account's region list must not survive the sign-out.
+                    useOciRegionsStore.getState().clearOciRegions();
                     navigate("/", { replace: true });
                 }
             };
@@ -1093,7 +1096,10 @@ const Home: React.FC = () => {
                                 onClick={async () => {
                                     const session = getCurrentSession({ operation: "logout" });
                                     setAccountMenuOpen(false);
-                                    if (session && isCurrentSession(session)) {
+                                    // Before the auth observer's first callback there is no
+                                    // resolvable session yet, but a restored user is already
+                                    // signed in - logout must not be a dead button there.
+                                    if ((session && isCurrentSession(session)) || auth.currentUser) {
                                         await logout(navigate);
                                     }
                                 }}
@@ -1392,7 +1398,6 @@ const Home: React.FC = () => {
             <SyncRegionsConfirmModal
                 open={syncRegionsModalOpen}
                 regions={enabledRegions.map(region => ({ regionId: region.regionId, displayName: region.displayName }))}
-                syncing={false}
                 onConfirm={confirmSyncRegions}
                 onClose={closeSyncRegionsModal}
             />

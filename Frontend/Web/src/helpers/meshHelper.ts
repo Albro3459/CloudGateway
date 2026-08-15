@@ -110,8 +110,11 @@ export const parseMeshDocument = (regionId: string, data: Record<string, unknown
 
 // A region is pending when its desired flag (Regions.meshEnabled) disagrees
 // with what its host last applied (Mesh.meshEnabled), or it wants in but has
-// never synced (no Mesh doc yet).
+// never synced (no Mesh doc yet). A disabled region has no operational server
+// and is not a Sync All target, so its own Mesh doc can never be reconciled -
+// reporting it as pending would be a warning nothing can clear.
 export const isRegionMeshPending = (region: Region, meshDoc: MeshDoc | null | undefined): boolean => {
+    if (region.enabled !== true) return false;
     const desired = region.meshEnabled === true;
     if (!meshDoc) return desired;
     return desired !== meshDoc.meshEnabled;
@@ -149,7 +152,7 @@ type MeshSnapshot = {
 const getRegionMeshSnapshot = (region: Region): MeshSnapshot => ({
     publicKey: region.wireguardPublicKey ?? null,
     endpointHostname: region.wireguardEndpointHostname ?? null,
-    endpointPort: region.wireguardPortPresent === false ? null : (region.wireguardPort ?? null),
+    endpointPort: region.wireguardPort ?? null,
     allowedNetworkV4: region.tunnelNetworkV4 ?? null,
     allowedNetworkV6: region.tunnelNetworkV6 ?? null,
 });
@@ -194,10 +197,14 @@ const hasValidSnapshotField = (region: Region, field: keyof MeshSnapshot): boole
     return false;
 };
 
+// The backend scopes duplicate-key detection and cross-candidate overlap to
+// enabled regions, so scope them here too even when the caller passes the
+// unfiltered region list (Server Health renders disabled regions as well).
 const hasDuplicatePublicKey = (region: Region, regions: Region[]): boolean => {
     const key = region.wireguardPublicKey;
     return isValidWireGuardPublicKey(key)
-        && regions.filter(candidate => isValidWireGuardPublicKey(candidate.wireguardPublicKey)
+        && regions.filter(candidate => candidate.enabled === true
+            && isValidWireGuardPublicKey(candidate.wireguardPublicKey)
             && candidate.wireguardPublicKey === key).length > 1;
 };
 
@@ -243,6 +250,7 @@ const isReasonStillPresent = (
             return regions.some(candidate => (
                 candidate.regionId !== sourceRegion.regionId
                 && candidate.regionId !== targetRegion.regionId
+                && candidate.enabled === true
                 && candidate.meshEnabled === true
                 && (networksOverlap(targetRegion.tunnelNetworkV4 ?? "", candidate.tunnelNetworkV4 ?? "")
                     || networksOverlap(targetRegion.tunnelNetworkV6 ?? "", candidate.tunnelNetworkV6 ?? ""))
@@ -299,12 +307,19 @@ export const buildMeshLinkRows = (regions: Region[], meshDocs: MeshDocsById): Me
                 status = "not-synced";
             }
 
-            const bothEnabled = a.meshEnabled === true && b.meshEnabled === true;
+            // A link is only desired when both sides are live mesh members;
+            // a disabled region is dead, so its peers must come down even
+            // though its meshEnabled flag may still read true.
+            const bothMeshDesired = a.enabled === true && b.enabled === true
+                && a.meshEnabled === true && b.meshEnabled === true;
             const membershipPending = isRegionMeshPending(a, meshDocA) || isRegionMeshPending(b, meshDocB);
-            const removalPending = !bothEnabled && (
-                entryA?.status === "applied" || entryB?.status === "applied"
+            // Only a live host runs a sync pass, so only a live host's own
+            // stale entry is something Sync All can still reconcile.
+            const removalPending = !bothMeshDesired && (
+                (a.enabled === true && entryA?.status === "applied")
+                || (b.enabled === true && entryB?.status === "applied")
             );
-            const desiredDirectionPending = bothEnabled && (
+            const desiredDirectionPending = bothMeshDesired && (
                 isDirectionPending(entryA, b, a, regions) || isDirectionPending(entryB, a, b, regions)
             );
 

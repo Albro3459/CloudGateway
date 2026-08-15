@@ -124,10 +124,16 @@ const ServerHealth: React.FC = () => {
     const [syncing, setSyncing] = useState(false);
     const [syncResults, setSyncResults] = useState<RegionSyncResult[] | null>(null);
     const [syncError, setSyncError] = useState<string | null>(null);
+    // A Sync All confirmed on Home must not be dropped when this page's own
+    // Firestore load fails, so the run-now signal is held here until the data
+    // it needs is available instead of being consumed by a one-shot effect.
+    const [pendingRunSync, setPendingRunSync] = useState(false);
 
     const autoRunHandled = useRef(false);
     const mountedRef = useRef(false);
     const authGenerationRef = useRef(0);
+    // undefined until the observer's first callback; null once signed out.
+    const authSubjectRef = useRef<string | null | undefined>(undefined);
     const loadGenerationRef = useRef(0);
     const nextToggleRevisionRef = useRef(0);
     const toggleRevisionsRef = useRef(new Map<string, number>());
@@ -139,13 +145,24 @@ const ServerHealth: React.FC = () => {
         && (loadGeneration === undefined || loadGenerationRef.current === loadGeneration)
     ), []);
 
+    // Every region doc is rendered, including disabled ones: a disabled region
+    // can still have a live peer installed on another host, and dropping it
+    // from the page would make that stale peer unobservable. Only the sync
+    // fan-out itself stays scoped to enabled regions.
+    const allRegions = useMemo(() => regions ?? [], [regions]);
     const enabledRegions = useMemo(() => getEnabledRegions(regions), [regions]);
     const regionDisplayNames = useMemo(() => (
-        new Map(enabledRegions.map(region => [region.regionId, region.displayName]))
-    ), [enabledRegions]);
-    const linkRows = useMemo(() => buildMeshLinkRows(enabledRegions, meshDocs), [enabledRegions, meshDocs]);
+        new Map(allRegions.map(region => [region.regionId, region.displayName]))
+    ), [allRegions]);
+    const meshRegionLabels = useMemo(() => (
+        new Map(allRegions.map(region => [
+            region.regionId,
+            region.enabled === true ? region.displayName : `${region.displayName} (disabled)`,
+        ]))
+    ), [allRegions]);
+    const linkRows = useMemo(() => buildMeshLinkRows(allRegions, meshDocs), [allRegions, meshDocs]);
     const warnings = useMemo(() => collectMeshWarnings(meshDocs), [meshDocs]);
-    const anyPending = useMemo(() => hasAnyMeshPending(enabledRegions, meshDocs), [enabledRegions, meshDocs]);
+    const anyPending = useMemo(() => hasAnyMeshPending(allRegions, meshDocs), [allRegions, meshDocs]);
 
     const loadServerHealthData = useCallback(async (clearOverride?: ClearOverride): Promise<boolean> => {
         const loadGeneration = ++loadGenerationRef.current;
@@ -159,13 +176,12 @@ const ServerHealth: React.FC = () => {
 
             if (clearOverride) {
                 const activeOverride = overridesRef.current.get(clearOverride.regionId);
-                const authoritativeRegion = regionDocs.find(region => region.regionId === clearOverride.regionId);
-                if (
-                    activeOverride?.revision === clearOverride.revision
-                    && authoritativeRegion?.meshEnabled === activeOverride.enabled
-                ) {
-                    // The authoritative read has completed and confirms this
-                    // revision. Only now may the optimistic overlay be removed.
+                if (activeOverride?.revision === clearOverride.revision) {
+                    // This read started after the write landed, so its value is
+                    // authoritative even when it disagrees — another admin may
+                    // have flipped the same flag from another tab. Retiring the
+                    // overlay regardless is what stops a stale one pinning the
+                    // page for the rest of the session.
                     overridesRef.current.delete(clearOverride.regionId);
                 }
             }
@@ -179,6 +195,16 @@ const ServerHealth: React.FC = () => {
             return true;
         } catch (error) {
             console.error("Error loading server health data:", error);
+            if (clearOverride) {
+                // The confirming read is the only thing that ever retires an
+                // override. If it fails the override must expire anyway, or the
+                // tab pins a stale meshEnabled for the whole auth generation
+                // and can report "nothing pending" for a link that is not.
+                const activeOverride = overridesRef.current.get(clearOverride.regionId);
+                if (activeOverride?.revision === clearOverride.revision) {
+                    overridesRef.current.delete(clearOverride.regionId);
+                }
+            }
             if (isCurrent(authGeneration, loadGeneration)) {
                 setBanner({ type: "error", message: "Unable to load server health data." });
             }
@@ -213,6 +239,9 @@ const ServerHealth: React.FC = () => {
 
     const handleToggleMesh = async (region: Region) => {
         if (!mountedRef.current) return;
+        // The control is disabled for these, but the attribute alone does not
+        // stop a synthetic change event, and Sync All could never apply it.
+        if (region.enabled !== true) return;
         const next = region.meshEnabled !== true;
         const revision = ++nextToggleRevisionRef.current;
         const authGeneration = authGenerationRef.current;
@@ -258,7 +287,9 @@ const ServerHealth: React.FC = () => {
     const confirmSync = () => {
         setSyncModalOpen(false);
         if (!jwtToken) {
-            setSyncError("Your session is not ready. Try again in a moment.");
+            // The modal is already closed by the time this runs, so this has to
+            // land on the page banner rather than inside the dialog.
+            setBanner({ type: "error", message: "Your session is not ready. Try again in a moment." });
             return;
         }
         void runSync(enabledRegions.map(region => region.regionId), jwtToken);
@@ -274,7 +305,16 @@ const ServerHealth: React.FC = () => {
             ++loadGenerationRef.current;
             toggleRevisionsRef.current.clear();
             overridesRef.current.clear();
-            autoRunHandled.current = false;
+
+            // Firebase delivers the first callback asynchronously, after the
+            // effects that armed a Home-confirmed run. Only a real change of
+            // subject retires that intent, so the first callback for the same
+            // user cannot swallow it.
+            const previousSubject = authSubjectRef.current;
+            const subject = user?.uid ?? null;
+            const subjectChanged = previousSubject !== undefined && previousSubject !== subject;
+            authSubjectRef.current = subject;
+            if (subjectChanged) autoRunHandled.current = false;
 
             // Reset all session-scoped controls and ephemeral results before
             // loading the new auth generation. Stale async work is rejected by
@@ -290,6 +330,7 @@ const ServerHealth: React.FC = () => {
             setSyncing(false);
             setSyncResults(null);
             setSyncError(null);
+            if (subjectChanged) setPendingRunSync(false);
 
             const fetchUserData = async () => {
                 if (!user) {
@@ -322,18 +363,26 @@ const ServerHealth: React.FC = () => {
 
     // Home passes a "run now" signal via navigation state instead of starting
     // the fan-out itself, so the request survives the route change instead of
-    // racing it. Runs once data is ready, then clears the signal so a refresh
-    // or back-navigation doesn't re-trigger it.
+    // racing it. The signal is moved into state immediately and the navigation
+    // state is cleared so a refresh or back-navigation doesn't re-trigger it.
     useEffect(() => {
         if (autoRunHandled.current) return;
         const state = location.state as NavigationState | null;
         if (!state?.runSync) return;
-        if (!jwtToken || regions === null) return;
 
         autoRunHandled.current = true;
         navigate(location.pathname, { replace: true, state: {} });
+        setPendingRunSync(true);
+    }, [location, navigate]);
+
+    // Held separately from the signal above so a failed Firestore load only
+    // delays the confirmed run instead of discarding it. The unavailable card
+    // says so explicitly, and a successful retry starts it.
+    useEffect(() => {
+        if (!pendingRunSync || !jwtToken || regions === null) return;
+        setPendingRunSync(false);
         void runSync(enabledRegions.map(region => region.regionId), jwtToken);
-    }, [location, jwtToken, regions, enabledRegions, navigate, runSync]);
+    }, [pendingRunSync, jwtToken, regions, enabledRegions, runSync]);
 
     if (role !== "admin") {
         return (
@@ -374,7 +423,26 @@ const ServerHealth: React.FC = () => {
 
             {regions === null ? (
                 <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-6 text-sm text-content-muted shadow-lg">
-                    {dataLoading ? "Loading server health data..." : "Server health data is unavailable. Use Refresh to try again."}
+                    {dataLoading ? "Loading server health data..." : (
+                        <>
+                            <p>Server health data is unavailable.</p>
+                            {pendingRunSync && (
+                                <p className="mt-2 text-warning-strong">
+                                    The Sync All Regions you confirmed has not run yet. It starts as soon as region data loads.
+                                </p>
+                            )}
+                            {/* The nav Refresh button is hidden below sm and this
+                                page has no pull-to-refresh, so retry has to live
+                                in the card itself. */}
+                            <button
+                                type="button"
+                                onClick={() => void loadServerHealthData()}
+                                className="mt-3 cursor-pointer rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover"
+                            >
+                                Try again
+                            </button>
+                        </>
+                    )}
                 </div>
             ) : (
                 <>
@@ -388,7 +456,11 @@ const ServerHealth: React.FC = () => {
                     <button
                         type="button"
                         onClick={() => setSyncModalOpen(true)}
-                        disabled={syncing || dataLoading || !enabledRegions.length}
+                        // Deliberately not gated on dataLoading: the fan-out does
+                        // not depend on the read, and greying the page's primary
+                        // action out on every background refresh is unexplainable.
+                        disabled={syncing || !enabledRegions.length}
+                        title={enabledRegions.length ? undefined : "No enabled regions to sync."}
                         className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled ${
                             anyPending ? "bg-primary ring-2 ring-warning-strong" : "bg-primary"
                         }`}
@@ -405,10 +477,23 @@ const ServerHealth: React.FC = () => {
             <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
                 <h3 className="text-sm font-semibold uppercase tracking-wide text-content-secondary">Mesh membership</h3>
                 <div className="mt-3 flex flex-wrap gap-3">
-                    {enabledRegions.map((region) => {
+                    {allRegions.map((region) => {
                         const meshDoc = meshDocs.get(region.regionId) ?? null;
                         const pending = isRegionMeshPending(region, meshDoc);
                         const staleness = getMeshStaleness(meshDoc?.updatedAt ?? null);
+                        const disabled = region.enabled !== true;
+                        const toggling = togglingRegionIds.has(region.regionId);
+                        const stateId = `mesh-state-${region.regionId}`;
+                        const pendingId = `mesh-pending-${region.regionId}`;
+                        const freshnessId = `mesh-freshness-${region.regionId}`;
+                        // aria-label wins the accessible name, so the pending and
+                        // freshness text has to be attached as a description or a
+                        // screen reader never hears the part that matters.
+                        const describedBy = [
+                            disabled ? stateId : null,
+                            pending ? pendingId : null,
+                            freshnessId,
+                        ].filter(Boolean).join(" ");
 
                         return (
                             <label
@@ -419,16 +504,25 @@ const ServerHealth: React.FC = () => {
                                     type="checkbox"
                                     checked={region.meshEnabled === true}
                                     onChange={() => void handleToggleMesh(region)}
-                                    disabled={togglingRegionIds.has(region.regionId)}
+                                    // Sync All only targets enabled regions, so a
+                                    // toggle here could never be applied.
+                                    disabled={toggling || disabled}
                                     className="h-4 w-4 accent-primary"
                                     aria-label={`Mesh enabled for ${region.displayName}`}
+                                    aria-describedby={describedBy}
+                                    aria-busy={toggling}
                                 />
                                 <span>
                                     <span className="block font-medium">{region.displayName}</span>
-                                    {pending && (
-                                        <span className="block text-xs text-warning-strong">Pending</span>
+                                    {disabled && (
+                                        <span id={stateId} className="mt-1 inline-block rounded bg-inset-strong px-1.5 py-0.5 text-xs font-semibold text-content-secondary">
+                                            Disabled
+                                        </span>
                                     )}
-                                    <span className="block text-xs text-content-muted">
+                                    {pending && (
+                                        <span id={pendingId} className="block text-xs text-warning-strong">Pending</span>
+                                    )}
+                                    <span id={freshnessId} className="block text-xs text-content-muted">
                                         {meshDoc?.updatedAt
                                             ? `Last applied ${meshDoc.updatedAt.toLocaleString()}${staleness === "stale" ? " (stale)" : ""}`
                                             : "Never synced"}
@@ -437,8 +531,8 @@ const ServerHealth: React.FC = () => {
                             </label>
                         );
                     })}
-                    {!enabledRegions.length && (
-                        <p className="text-sm text-content-muted">No enabled regions.</p>
+                    {!allRegions.length && (
+                        <p className="text-sm text-content-muted">No regions.</p>
                     )}
                 </div>
             </div>
@@ -446,16 +540,15 @@ const ServerHealth: React.FC = () => {
             <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
                 <h3 className="text-xl font-semibold text-content">Mesh</h3>
                 {linkRows.length === 0 ? (
-                    <p className="mt-2 text-sm text-content-muted">Add another enabled region to form mesh links.</p>
+                    <p className="mt-2 text-sm text-content-muted">Add another region to form mesh links.</p>
                 ) : (
                     <ul className="mt-3 space-y-2">
                         {linkRows.map((row) => (
                             <li
                                 key={`${row.regionAId}-${row.regionBId}`}
                                 className={`rounded-lg border px-3 py-2 text-sm ${linkRowClasses(row.status)}`}
-                                aria-label={formatLinkRowLabel(row, regionDisplayNames)}
                             >
-                                {formatLinkRowLabel(row, regionDisplayNames)}
+                                {formatLinkRowLabel(row, meshRegionLabels)}
                                 {row.pending && <span className="ml-2 text-xs italic">(pending)</span>}
                             </li>
                         ))}
@@ -468,7 +561,7 @@ const ServerHealth: React.FC = () => {
                         <ul className="mt-2 space-y-1 text-sm text-warning-strong">
                             {warnings.map((warning, index) => (
                                 <li key={`${warning.regionId}-${warning.peerRegionId}-${index}`}>
-                                    {regionLabel(warning.regionId, regionDisplayNames)} skipped {regionLabel(warning.peerRegionId, regionDisplayNames)}: {formatWarningReason(warning.status, warning.reasonCode)}{warning.reasonCode ? ` [${warning.reasonCode}]` : ""}
+                                    {regionLabel(warning.regionId, meshRegionLabels)} skipped {regionLabel(warning.peerRegionId, meshRegionLabels)}: {formatWarningReason(warning.status, warning.reasonCode)}{warning.reasonCode ? ` [${warning.reasonCode}]` : ""}
                                 </li>
                             ))}
                         </ul>
@@ -502,8 +595,6 @@ const ServerHealth: React.FC = () => {
             <SyncRegionsConfirmModal
                 open={syncModalOpen}
                 regions={enabledRegions.map(region => ({ regionId: region.regionId, displayName: region.displayName }))}
-                syncing={syncing}
-                error={syncError}
                 onConfirm={confirmSync}
                 onClose={() => setSyncModalOpen(false)}
             />
