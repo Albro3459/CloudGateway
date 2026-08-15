@@ -127,6 +127,7 @@ describe("reads stay allowed for the clients that use them", () => {
     await assertFails(getDoc(doc(authed("user1"), "Mesh/us-1")));
     await assertFails(getDocs(collection(authed("user1"), "Mesh")));
     await assertFails(getDoc(doc(unauthed(), "Mesh/us-1")));
+    await assertFails(getDocs(collection(unauthed(), "Mesh")));
   });
 });
 
