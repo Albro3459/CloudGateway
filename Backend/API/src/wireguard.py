@@ -10,13 +10,15 @@ import socket
 import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
 from .enums import Event, OperationResult
-from .errors import WireGuardApplyFailedError
+from .errors import SyncInProgressError, WireGuardApplyFailedError
 from .logs import log_event
 
 logger = logging.getLogger("src.wireguard")
@@ -25,6 +27,12 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 DEFAULT_LOCK_PATH = "/run/cloudgateway-wireguard.lock"
 PERSISTENT_KEEPALIVE_SECONDS = 25
+# Every wg/ip call is local and fast except `wg set peer ... endpoint <host>:<port>`,
+# which resolves the hostname itself. Both bounds keep a degraded resolver or a
+# wedged netlink call from pinning a thread (and the lock) for the resolver's own
+# retry budget.
+COMMAND_TIMEOUT_SECONDS = 20.0
+ENDPOINT_RESOLVE_TIMEOUT_SECONDS = 5.0
 _INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_=+.-]{1,15}$")
 _HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -160,8 +168,12 @@ class WireGuardManager(ABC):
     """
 
     @abstractmethod
-    def lock(self) -> AbstractContextManager[None]:
-        """Exclusive cross-process lock context manager for peer mutations."""
+    def lock(self, *, blocking: bool = True) -> AbstractContextManager[None]:
+        """Exclusive cross-process lock context manager for peer mutations.
+
+        blocking=False raises SyncInProgressError instead of queueing when another
+        process already holds the lock, so an HTTP caller can shed the request.
+        """
 
     @abstractmethod
     def generate_keypair(self) -> WireGuardKeypair:
@@ -204,6 +216,12 @@ class WireGuardManager(ABC):
         re-resolves each endpoint hostname). A live peer is classified as mesh iff its
         public key is in `mesh` or `known_region_keys`; everything else is judged
         against `desired` (client peers) and removed if unknown.
+
+        Unknown-peer removal runs before the mesh apply phase, and each mesh candidate
+        is applied in isolation, so one unreachable mesh endpoint cannot leave a revoked
+        client's peer or a stale route in place. A candidate that fails to apply is never
+        reported as applied; it keeps its route only if it is still live with exactly the
+        desired ranges. The failure is re-raised once route reconciliation is done.
         """
 
 
@@ -243,13 +261,21 @@ class LocalWireGuardManager(WireGuardManager):
         self.endpoint_resolver = endpoint_resolver or _resolve_endpoint_addresses
 
     @contextmanager
-    def lock(self) -> Iterator[None]:
+    def lock(self, *, blocking: bool = True) -> Iterator[None]:
         self.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         os.fchmod(fd, 0o600)
         file = os.fdopen(fd, "w")
+        operation = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
-            fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(file.fileno(), operation)
+        except BlockingIOError as exc:
+            file.close()
+            raise SyncInProgressError() from exc
+        except BaseException:
+            file.close()
+            raise
+        try:
             yield
         finally:
             fcntl.flock(file.fileno(), fcntl.LOCK_UN)
@@ -340,7 +366,14 @@ class LocalWireGuardManager(WireGuardManager):
                 _validate_ip_interface(tunnel_ipv4, 4, 32, "client tunnel IPv4"),
                 _validate_ip_interface(tunnel_ipv6, 6, 128, "client tunnel IPv6"),
             )
-        validated_mesh = [self._validate_mesh_peer(peer) for peer in mesh]
+        # A rejected candidate is dropped, not fatal here: the removal phase below
+        # must still run so a bad mesh candidate cannot keep a revoked client's peer
+        # on the interface. The rejection is raised once the pass is reconciled.
+        validated_mesh, mesh_error = validate_mesh_peers(
+            mesh,
+            tunnel_network_v4=self.tunnel_network_v4,
+            tunnel_network_v6=self.tunnel_network_v6,
+        )
         mesh_by_key = {peer.public_key: peer for peer in validated_mesh}
         # Known region keys are used only for classification (never applied), so a
         # malformed value never aborts the pass - it just fails to match.
@@ -359,10 +392,53 @@ class LocalWireGuardManager(WireGuardManager):
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
                 changes.append(PeerChange(public_key, PEER_UPDATED, tunnel_ipv4, tunnel_ipv6))
 
+        # Removal runs before the mesh apply phase: a mesh endpoint that fails to
+        # resolve must not keep a revoked client's peer on the interface, and sync is
+        # the only removal path for peers orphaned by a hard-deleted account.
         mesh_changes: list[MeshPeerChange] = []
+        for public_key in current:
+            if public_key in validated_clients or public_key in mesh_by_key:
+                continue
+            self._remove_peer_command(_validate_key(public_key, "peer public key"))
+            if public_key in known_keys:
+                mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
+            else:
+                changes.append(PeerChange(public_key, PEER_REMOVED))
+
+        # Each candidate is isolated: `wg set peer ... endpoint <host>:<port>` resolves
+        # the hostname itself, so one broken DNS record must not stop the other peers
+        # from being applied. The first failure is re-raised after routes are
+        # reconciled, so the pass still reports failure and publishes no success status.
+        applied_mesh: list[MeshPeer] = []
+        # Routes follow what the interface can actually carry, which is not the same
+        # as what applied this pass: a candidate that failed to re-apply but is still
+        # live with exactly the desired ranges keeps its route, because tearing it
+        # down would break a working peer until the next successful pass. A candidate
+        # that never applied still gets no route.
+        routed_mesh: list[MeshPeer] = []
+        apply_error: WireGuardApplyFailedError | None = mesh_error
         for public_key, peer in mesh_by_key.items():
             live = current.get(public_key)
-            self._apply_mesh_peer_command(peer)
+            try:
+                self._apply_mesh_peer_command(peer)
+            except WireGuardApplyFailedError as exc:
+                log_event(
+                    logger,
+                    Event.MESH_PEER_APPLY_FAILED,
+                    level=logging.ERROR,
+                    interface=self.interface,
+                    endpoint_host=peer.endpoint_host,
+                    endpoint_port=peer.endpoint_port,
+                )
+                if live is not None and live.allowed_ips == frozenset(
+                    {peer.allowed_network_v4, peer.allowed_network_v6}
+                ):
+                    routed_mesh.append(peer)
+                if apply_error is None:
+                    apply_error = exc
+                continue
+            applied_mesh.append(peer)
+            routed_mesh.append(peer)
             if live is None:
                 mesh_changes.append(
                     MeshPeerChange(
@@ -386,47 +462,36 @@ class LocalWireGuardManager(WireGuardManager):
                     )
                 )
 
-        for public_key in current:
-            if public_key in validated_clients or public_key in mesh_by_key:
-                continue
-            self._remove_peer_command(_validate_key(public_key, "peer public key"))
-            if public_key in known_keys:
-                mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
-            else:
-                changes.append(PeerChange(public_key, PEER_REMOVED))
-
-        route_changes = self._reconcile_mesh_routes(validated_mesh, known_mesh_networks)
-
-        return PeerSyncResult(
+        route_changes = self._reconcile_mesh_routes(routed_mesh, known_mesh_networks)
+        result = PeerSyncResult(
             changes=tuple(changes),
             mesh_changes=tuple(mesh_changes),
-            mesh_applied_peers=tuple(validated_mesh),
+            mesh_applied_peers=tuple(applied_mesh),
             route_changes=tuple(route_changes),
         )
+        if apply_error is not None:
+            # The caller only sees the exception, so the changes that did land -
+            # notably client peers removed before the mesh phase - would otherwise
+            # go unrecorded. Counters only; peer keys are never logged.
+            log_event(
+                logger,
+                Event.PEER_SYNC_PARTIAL,
+                level=logging.WARNING,
+                interface=self.interface,
+                added=result.added,
+                updated=result.updated,
+                removed=result.removed,
+                mesh_applied=result.mesh_applied,
+                mesh_removed=result.mesh_removed,
+                routes_added=result.routes_added,
+                routes_removed=result.routes_removed,
+            )
+            raise apply_error
 
-    def _validate_mesh_peer(self, peer: MeshPeer) -> MeshPeer:
-        return MeshPeer(
-            public_key=_validate_key(peer.public_key, "mesh peer public key"),
-            endpoint_host=_validate_endpoint_host(peer.endpoint_host),
-            endpoint_port=_validate_port(peer.endpoint_port),
-            allowed_network_v4=_validate_mesh_network(peer.allowed_network_v4, 4, "mesh allowed network v4"),
-            allowed_network_v6=_validate_mesh_network(peer.allowed_network_v6, 6, "mesh allowed network v6"),
-        )
+        return result
 
     def _mesh_peer_drifted(self, live: LivePeerSnapshot, peer: MeshPeer) -> bool:
-        try:
-            desired_addresses = frozenset(self.endpoint_resolver(peer.endpoint_host))
-        except OSError:
-            desired_addresses = frozenset()
-        endpoint_current = (
-            bool(live.endpoint_addresses & desired_addresses)
-            and live.endpoint_port == peer.endpoint_port
-        )
-        return (
-            not endpoint_current
-            or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
-            or live.persistent_keepalive != PERSISTENT_KEEPALIVE_SECONDS
-        )
+        return mesh_peer_drifted(live, peer, self.endpoint_resolver)
 
     def _apply_mesh_peer_command(self, peer: MeshPeer) -> None:
         self._run(
@@ -460,7 +525,7 @@ class LocalWireGuardManager(WireGuardManager):
         known = {
             normalized
             for value in known_mesh_networks
-            for normalized in (_soft_normalize_network(value),)
+            for normalized in (soft_normalize_network(value),)
             if normalized is not None
         }
         changes: list[RouteChange] = []
@@ -567,11 +632,18 @@ class LocalWireGuardManager(WireGuardManager):
                 text=True,
                 check=True,
                 shell=False,
+                timeout=COMMAND_TIMEOUT_SECONDS,
             )
         except subprocess.CalledProcessError as exc:
             raise WireGuardApplyFailedError(
                 failure_message or f"{args[0]} command failed.",
                 transient=transient,
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            # The caller holds the sync lock; a wedged wg/ip call must not pin it.
+            raise WireGuardApplyFailedError(
+                failure_message or f"{args[0]} command timed out.",
+                transient=True,
             ) from exc
 
 
@@ -640,10 +712,19 @@ def _parse_optional_int(value: str) -> int | None:
 
 
 def _resolve_endpoint_addresses(host: str) -> Sequence[str]:
+    # getaddrinfo takes no timeout, so it runs in a worker thread that is
+    # abandoned (never joined) once the bound expires: this call happens under the
+    # sync lock and must not wait out the resolver's own retry budget. A timed-out
+    # lookup reads as unresolved, which only forces a re-apply of that mesh peer.
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wg-resolve")
     try:
-        addresses = socket.getaddrinfo(host, None, type=socket.SOCK_DGRAM)
-    except OSError:
-        return ()
+        future = executor.submit(socket.getaddrinfo, host, None, type=socket.SOCK_DGRAM)
+        try:
+            addresses = future.result(timeout=ENDPOINT_RESOLVE_TIMEOUT_SECONDS)
+        except (OSError, FutureTimeoutError):
+            return ()
+    finally:
+        executor.shutdown(wait=False)
     normalized: set[str] = set()
     for entry in addresses:
         address = entry[4][0]
@@ -679,7 +760,7 @@ def _normalize_route_dst(dst: str, version: int) -> str | None:
         return None
 
 
-def _soft_normalize_network(value: str) -> str | None:
+def soft_normalize_network(value: str) -> str | None:
     try:
         network = ipaddress.ip_network(value, strict=False)
     except ValueError:
@@ -780,6 +861,116 @@ def _validate_mesh_network(value: str, version: int, label: str) -> str:
     if not is_subnet_of(network, aggregate):
         raise WireGuardApplyFailedError(f"Invalid WireGuard {label}: outside the mesh aggregate.")
     return str(network)
+
+
+def _networks_overlap(network: IPNetwork, other: IPNetwork) -> bool:
+    """Same-family overlap check; `overlaps()` rejects mixed families itself."""
+    if isinstance(network, ipaddress.IPv4Network) and isinstance(other, ipaddress.IPv4Network):
+        return network.overlaps(other)
+    if isinstance(network, ipaddress.IPv6Network) and isinstance(other, ipaddress.IPv6Network):
+        return network.overlaps(other)
+    return False
+
+
+def validate_mesh_peers(
+    peers: Sequence[MeshPeer],
+    *,
+    tunnel_network_v4: str,
+    tunnel_network_v6: str,
+) -> tuple[list[MeshPeer], WireGuardApplyFailedError | None]:
+    """Validate a whole mesh candidate set, returning (accepted, first rejection).
+
+    Shared by LocalWireGuardManager and the test fake so the fake cannot pass a
+    peer set the real host would reject. Cryptokey routing is exclusive, so a
+    range colliding with the local tunnel network or with another candidate -
+    and a duplicate public key, which TODO/shared-subnet-mesh.md requires be
+    rejected - silently steals the ranges of whoever applied first.
+
+    A rejection drops the candidate instead of aborting the caller's pass, the
+    same isolation a failed apply gets: unknown-peer removal still runs and the
+    caller raises the returned error at the end, so bad candidate metadata can
+    never keep a revoked client's peer on the interface. A conflict between two
+    candidates drops both, and a duplicated key drops every peer holding it,
+    matching how sync.desired_mesh_peers skips them upstream.
+    """
+    validated: list[MeshPeer] = []
+    error: WireGuardApplyFailedError | None = None
+    for peer in peers:
+        try:
+            validated.append(_validate_mesh_peer(peer, tunnel_network_v4, tunnel_network_v6))
+        except WireGuardApplyFailedError as exc:
+            error = error or exc
+
+    rejected: set[int] = set()
+    key_counts: dict[str, int] = {}
+    for peer in validated:
+        key_counts[peer.public_key] = key_counts.get(peer.public_key, 0) + 1
+    for index, peer in enumerate(validated):
+        if key_counts[peer.public_key] > 1:
+            rejected.add(index)
+            error = error or WireGuardApplyFailedError("Duplicate WireGuard mesh peer public key.")
+    for index, peer in enumerate(validated):
+        for other_index in range(index + 1, len(validated)):
+            if _mesh_networks_overlap(peer, validated[other_index]):
+                rejected.update({index, other_index})
+                error = error or WireGuardApplyFailedError(
+                    "Overlapping WireGuard mesh allowed networks."
+                )
+    return [peer for index, peer in enumerate(validated) if index not in rejected], error
+
+
+def _mesh_networks_overlap(peer: MeshPeer, other: MeshPeer) -> bool:
+    return _networks_overlap(
+        ipaddress.ip_network(peer.allowed_network_v4),
+        ipaddress.ip_network(other.allowed_network_v4),
+    ) or _networks_overlap(
+        ipaddress.ip_network(peer.allowed_network_v6),
+        ipaddress.ip_network(other.allowed_network_v6),
+    )
+
+
+def _validate_mesh_peer(peer: MeshPeer, tunnel_network_v4: str, tunnel_network_v6: str) -> MeshPeer:
+    validated = MeshPeer(
+        public_key=_validate_key(peer.public_key, "mesh peer public key"),
+        endpoint_host=_validate_endpoint_host(peer.endpoint_host),
+        endpoint_port=_validate_port(peer.endpoint_port),
+        allowed_network_v4=_validate_mesh_network(peer.allowed_network_v4, 4, "mesh allowed network v4"),
+        allowed_network_v6=_validate_mesh_network(peer.allowed_network_v6, 6, "mesh allowed network v6"),
+    )
+    # A mesh range covering this host's own tunnel network would take every local
+    # client /32 away from its peer.
+    for value, local, label in (
+        (validated.allowed_network_v4, tunnel_network_v4, "mesh allowed network v4"),
+        (validated.allowed_network_v6, tunnel_network_v6, "mesh allowed network v6"),
+    ):
+        if _networks_overlap(ipaddress.ip_network(value), ipaddress.ip_network(local)):
+            raise WireGuardApplyFailedError(
+                f"Invalid WireGuard {label}: overlaps this host's tunnel network."
+            )
+    return validated
+
+
+def mesh_peer_drifted(
+    live: LivePeerSnapshot,
+    peer: MeshPeer,
+    endpoint_resolver: Callable[[str], Sequence[str]],
+) -> bool:
+    """A live mesh peer is current when one of its dump-reported endpoint addresses
+    is still a DNS answer for the desired hostname and port, allowed-IPs match, and
+    keepalive matches. Shared with the fake so both model drift identically."""
+    try:
+        desired_addresses = frozenset(endpoint_resolver(peer.endpoint_host))
+    except OSError:
+        desired_addresses = frozenset()
+    endpoint_current = (
+        bool(live.endpoint_addresses & desired_addresses)
+        and live.endpoint_port == peer.endpoint_port
+    )
+    return (
+        not endpoint_current
+        or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
+        or live.persistent_keepalive != PERSISTENT_KEEPALIVE_SECONDS
+    )
 
 
 def _validate_port(port: int | None) -> int:

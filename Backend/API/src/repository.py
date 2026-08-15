@@ -214,8 +214,21 @@ class FirebaseRepository(ABC):
         """Return enabled regions sorted by display order."""
 
     @abstractmethod
-    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
-        """Create or update a region metadata doc from host-reported infra fields."""
+    def list_regions(self) -> list[RegionDoc]:
+        """Return every region document sorted by display order, enabled or not.
+
+        Sync classifies a live peer as a mesh peer from this set, so a disabled or
+        rekeyed region's peer is still recognised as a server peer instead of being
+        reported (and audit-logged) as a client peer.
+        """
+
+    @abstractmethod
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool | None) -> RegionDoc:
+        """Create or update a region metadata doc from host-reported infra fields.
+
+        set_enabled=None preserves the stored enabled value (new docs are seeded false),
+        so a readiness failure never disables a region that is already serving.
+        """
 
     @abstractmethod
     def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:

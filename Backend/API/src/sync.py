@@ -336,16 +336,27 @@ class SyncOutcome:
     mesh_region_by_key: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-def run_sync(*, repository: FirebaseRepository, wireguard: WireGuardManager, settings: Settings) -> SyncOutcome:
+def run_sync(
+    *,
+    repository: FirebaseRepository,
+    wireguard: WireGuardManager,
+    settings: Settings,
+    blocking: bool = True,
+) -> SyncOutcome:
     # Firebase reads, live mutations, and the status snapshot are serialized by
     # the same lock. This prevents an older pass from writing status after a
-    # newer reconciliation has completed.
-    with wireguard.lock():
+    # newer reconciliation has completed. blocking=False makes a contended pass
+    # fail fast instead of queueing behind the running one.
+    with wireguard.lock(blocking=blocking):
         local_region = repository.get_region(settings.region_id)
         desired = desired_peers(repository, settings.region_id, local_region=local_region)
-        enabled_regions = repository.list_enabled_regions()
+        # Peering only considers enabled regions, but classification considers every
+        # region doc: a disabled or rekeyed region's live peer is still a server peer,
+        # not a client peer, and its route is not an unclaimed one to reclaim.
+        all_regions = repository.list_regions()
+        enabled_regions = [region for region in all_regions if region.enabled is True]
         mesh = desired_mesh_peers(repository, settings, enabled_regions, local_region=local_region)
-        other_regions = [region for region in enabled_regions if region.region_id != settings.region_id]
+        other_regions = [region for region in all_regions if region.region_id != settings.region_id]
         key_owners: dict[str, list[str]] = {}
         for region in other_regions:
             if is_valid_wireguard_key(region.wireguard_public_key):

@@ -14,6 +14,13 @@ from .wireguard import _validate_port, validate_local_tunnel_settings
 
 logger = logging.getLogger("src.register")
 
+# Exit codes. bootstrap.sh branches on these: it only runs the post-registration peer
+# sync pass on EXIT_OK, because a not-ready region may have kept enabled=false and that
+# sync would then tear down every client peer.
+EXIT_OK = 0
+EXIT_REGISTER_FAILED = 1
+EXIT_EDGE_NOT_READY = 2
+
 # IPv4-only echo services so we record the server's public IPv4, never a v6 address.
 _IP_ECHO_URLS = ("https://ipv4.icanhazip.com", "https://api.ipify.org")
 _HTTP_USER_AGENT = "CloudGateway-Register/1.0"
@@ -117,7 +124,11 @@ def run_register(
     *, repository: FirebaseRepository, settings: Settings, public_ipv4: str, ready: bool
 ) -> RegionDoc:
     registration = build_registration(settings, public_ipv4)
-    return repository.upsert_region(registration, set_enabled=ready)
+    # A readiness failure must never disable a region that is already serving clients:
+    # desired_peers() drops every client peer of a disabled region, so flipping enabled
+    # off for a transient edge problem disconnects everyone. None preserves the stored
+    # value; a region that does not exist yet is still seeded disabled.
+    return repository.upsert_region(registration, set_enabled=True if ready else None)
 
 
 def notify_region_deployment(
@@ -126,10 +137,14 @@ def notify_region_deployment(
     settings: Settings,
     region: RegionDoc,
     public_ipv4: str,
+    ready: bool,
     create_client: SesClientFactory = create_ses_client,
     send_email: DeploymentEmailSender = send_deployment_email,
 ) -> int:
-    if not region.enabled:
+    # enabled alone no longer means the region is reachable: a readiness failure now
+    # preserves a serving region's enabled=true, so announcing "VPN is live" needs the
+    # edge check result too.
+    if not region.enabled or not ready:
         return 0
 
     try:
@@ -220,12 +235,14 @@ def main() -> int:
             if local_ok:
                 logger.error(
                     "Region %s: API answers locally but the Cloudflare path failed; check "
-                    "DNS / Origin cert / Authenticated Origin Pulls / firewall. Leaving disabled.",
+                    "DNS / Origin cert / Authenticated Origin Pulls / firewall. Leaving the "
+                    "stored enabled state untouched (a new region stays disabled).",
                     settings.region_id,
                 )
             else:
                 logger.error(
-                    "Region %s: local API is not healthy; the API failed to start. Leaving disabled.",
+                    "Region %s: local API is not healthy; the API failed to start. Leaving the "
+                    "stored enabled state untouched (a new region stays disabled).",
                     settings.region_id,
                 )
 
@@ -243,13 +260,14 @@ def main() -> int:
             region_id=settings.region_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-        return 1
+        return EXIT_REGISTER_FAILED
 
     log_event(
         logger,
         Event.REGION_REGISTER_COMPLETED,
         region_id=settings.region_id,
         enabled=region.enabled,
+        edge_ready=ready,
         public_ipv4=public_ipv4,
     )
 
@@ -262,6 +280,7 @@ def main() -> int:
             settings=settings,
             region=region,
             public_ipv4=public_ipv4,
+            ready=ready,
         )
     except Exception as exc:
         log_event(
@@ -272,7 +291,7 @@ def main() -> int:
             exc_info=(type(exc), exc, exc.__traceback__),
         )
 
-    return 0
+    return EXIT_OK if ready else EXIT_EDGE_NOT_READY
 
 
 if __name__ == "__main__":

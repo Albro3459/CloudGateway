@@ -1,3 +1,4 @@
+from dataclasses import replace
 from email.message import Message
 from urllib.error import HTTPError, URLError
 
@@ -466,3 +467,30 @@ def test_remove_account_peers_aborts_on_remote_http_error(monkeypatch, wireguard
         )
 
     assert excinfo.value.transient is False
+
+
+def test_remove_account_peers_rejects_a_malformed_region_id_before_calling_out(monkeypatch, wireguard):
+    # region_id is the leftmost label of the regional API hostname. A bad
+    # Admin-SDK-side write must not be able to redirect the call at another host.
+    calls = {"count": 0}
+
+    def _record(*args, **kwargs):
+        calls["count"] += 1
+        raise AssertionError("no request may be made for a malformed region id")
+
+    monkeypatch.setattr(routes, "urlopen", _record)
+    client = replace(_remote_client_doc(), region_id="evil.example.com/../")
+
+    with pytest.raises(WireGuardApplyFailedError) as excinfo:
+        routes._remove_account_peers(
+            clients=[client],
+            user=AuthenticatedUser(uid="user-1", email="user@example.com"),
+            token="user-token",
+            local_region_id=REGION_ID,
+            api_hostname="api.gocloudlaunch.com",
+            wireguard=wireguard,
+            request_id="req-1",
+        )
+
+    assert excinfo.value.transient is False
+    assert calls["count"] == 0

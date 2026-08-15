@@ -15,6 +15,7 @@ from .fakes import (
     FAKE_MESH_PUBLIC_KEY,
     FAKE_MESH_PUBLIC_KEY_2,
     FAKE_MESH_PUBLIC_KEY_3,
+    FAKE_PUBLIC_KEY,
     FakeRepository,
     FakeWireGuardManager,
 )
@@ -457,7 +458,7 @@ def test_run_sync_reads_region_state_once_per_pass_and_status_reflects_locked_re
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.get_region_calls = 0
-            self.list_enabled_regions_calls = 0
+            self.list_regions_calls = 0
 
         def get_region(self, region_id: str):
             self.get_region_calls += 1
@@ -466,9 +467,9 @@ def test_run_sync_reads_region_state_once_per_pass_and_status_reflects_locked_re
                 return replace(region, mesh_enabled=False)
             return region
 
-        def list_enabled_regions(self):
-            self.list_enabled_regions_calls += 1
-            return super().list_enabled_regions()
+        def list_regions(self):
+            self.list_regions_calls += 1
+            return super().list_regions()
 
     repository = CountingRepository(local_region_id=REGION_ID)
     repository.regions[REGION_ID] = mesh_ready_local_region()
@@ -478,7 +479,7 @@ def test_run_sync_reads_region_state_once_per_pass_and_status_reflects_locked_re
     outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
 
     assert repository.get_region_calls == 1
-    assert repository.list_enabled_regions_calls == 1
+    assert repository.list_regions_calls == 1
     assert outcome.mesh_enabled is True
     assert repository.mesh_status[REGION_ID][0] is True
 
@@ -507,6 +508,88 @@ def test_run_sync_rollback_removes_existing_mesh_peer_and_routes_when_local_flag
     assert wireguard.routes[6] == {}
 
 
+def test_run_sync_removes_disabled_remote_region_peer_as_a_mesh_peer():
+    # Disabling a region is a documented operator action. Its live peer is still a
+    # server peer, so it must not be counted (or audit-logged) as a client removal,
+    # and its route removal is not an unclaimed route the sweep reclaimed.
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region(
+        "us-other-1", public_key=FAKE_MESH_PUBLIC_KEY, enabled=False
+    )
+    wireguard = FakeWireGuardManager()
+    wireguard.mesh_peers[FAKE_MESH_PUBLIC_KEY] = MeshPeer(
+        FAKE_MESH_PUBLIC_KEY, "wg.us-other-1.example.com", 51820, "10.0.1.0/24", "fd42:42:42:1::/64"
+    )
+    wireguard.routes[4]["10.0.1.0/24"] = "static"
+    wireguard.routes[6]["fd42:42:42:1::/64"] = "static"
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.result.removed == 0
+    assert outcome.result.mesh_removed == 1
+    assert wireguard.mesh_peers == {}
+    assert outcome.result.routes_removed == 2
+    assert all(not change.reclaimed for change in outcome.result.route_changes)
+
+    log = build_sync_audit_log(
+        region_id=REGION_ID,
+        synced_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        result=outcome.result,
+        clients_by_key={},
+        mesh_enabled=outcome.mesh_enabled,
+        mesh_candidates=outcome.mesh_candidates,
+        mesh_region_by_key=outcome.mesh_region_by_key,
+    )
+    assert FAKE_MESH_PUBLIC_KEY not in log
+    assert "us-other-1" in log
+
+
+def test_mesh_peer_reporting_follows_the_dns_answer_not_the_hostname():
+    # `wg show dump` reports addresses, never hostnames. A changed DNS answer, and a
+    # lookup that fails outright, both read as drift and are re-applied.
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
+    wireguard = FakeWireGuardManager()
+
+    first = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+    assert (first.result.mesh_added, first.result.mesh_updated) == (1, 0)
+
+    stable = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+    assert (stable.result.mesh_added, stable.result.mesh_updated) == (0, 0)
+
+    wireguard.resolved_endpoints["wg.us-other-1.example.com"] = frozenset({"203.0.113.99"})
+    rotated = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+    assert rotated.result.mesh_updated == 1
+
+    wireguard.resolve_failure_hosts.add("wg.us-other-1.example.com")
+    unresolved = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+    assert unresolved.result.mesh_updated == 1
+    assert unresolved.result.mesh_applied == 1
+
+
+@pytest.mark.parametrize(
+    "second_peer",
+    [
+        MeshPeer(FAKE_MESH_PUBLIC_KEY, "wg.us-other-2.example.com", 51820, "10.0.2.0/24", "fd42:42:42:2::/64"),
+        MeshPeer(FAKE_MESH_PUBLIC_KEY_2, "wg.us-other-2.example.com", 51820, "10.0.1.0/24", "fd42:42:42:2::/64"),
+    ],
+    ids=["duplicate-public-key", "overlapping-networks"],
+)
+def test_fake_manager_rejects_peer_sets_the_real_host_would_reject(second_peer):
+    # sync.py filters both upstream, so this guards the fake itself: it must not be
+    # able to pass a candidate set LocalWireGuardManager refuses.
+    wireguard = FakeWireGuardManager()
+    first = MeshPeer(FAKE_MESH_PUBLIC_KEY, "wg.us-other-1.example.com", 51820, "10.0.1.0/24", "fd42:42:42:1::/64")
+
+    with wireguard.lock():
+        with pytest.raises(WireGuardApplyFailedError):
+            wireguard.sync_peers({}, mesh=[first, second_peer])
+
+    assert wireguard.mesh_peers == {}
+
+
 def test_run_sync_mesh_apply_failure_does_not_publish_success_and_next_sync_converges():
     repository = make_repository()
     repository.regions[REGION_ID] = mesh_ready_local_region()
@@ -522,6 +605,32 @@ def test_run_sync_mesh_apply_failure_does_not_publish_success_and_next_sync_conv
 
     assert outcome.result.mesh_applied == 1
     assert repository.mesh_status[REGION_ID][1][0].status == MeshPeerStatus.APPLIED
+
+
+def test_run_sync_mesh_apply_failure_still_removes_stale_client_peer():
+    # A revoked client's orphaned peer is removed by this sweep only (routes.py defers
+    # to it), so one unreachable mesh endpoint must not stall the removal.
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
+    repository.regions["us-other-2"] = remote_region(
+        "us-other-2",
+        public_key=FAKE_MESH_PUBLIC_KEY_2,
+        tunnel_network_v4="10.0.2.0/24",
+        tunnel_network_v6="fd42:42:42:2::/64",
+    )
+    wireguard = FakeWireGuardManager()
+    wireguard.peers[FAKE_PUBLIC_KEY] = ("10.0.0.9/32", "fd42:42:42::9/128")
+    wireguard.fail_mesh_apply_count = 1
+
+    with pytest.raises(WireGuardApplyFailedError):
+        run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert FAKE_PUBLIC_KEY not in wireguard.peers
+    assert len(wireguard.mesh_peers) == 1  # the healthy candidate still applied
+    assert len(wireguard.routes[4]) == 1  # no route for the failed candidate
+    assert len(wireguard.routes[6]) == 1
+    assert REGION_ID not in repository.mesh_status  # failure is not published as success
 
 
 def test_run_sync_mesh_rollback_failure_does_not_publish_success_and_next_sync_converges():

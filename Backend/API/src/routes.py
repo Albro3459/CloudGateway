@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Annotated, TypeVar
@@ -51,6 +52,9 @@ RECENT_AUTH_WINDOW = timedelta(minutes=5)
 # Cloudflare's Browser Integrity Check blocks the default urllib UA, so
 # cross-region server-to-server calls must present a non-bot UA to reach origin.
 REGIONAL_API_USER_AGENT = "CloudGateway-API/1.0"
+# A region ID becomes the leftmost label of a regional API hostname, so it is
+# constrained to the OCI region-id charset before any URL interpolation.
+_REGION_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -515,7 +519,10 @@ def admin_sync(
         region_id=settings.region_id,
     )
     try:
-        outcome = run_sync(repository=repository, wireguard=wireguard, settings=settings)
+        # blocking=False: an admin retry (or a concurrent Sync All) must not queue on
+        # the flock and hold a thread-pool slot behind the running pass. The boot and
+        # post-register passes still block, since they have no request to shed.
+        outcome = run_sync(repository=repository, wireguard=wireguard, settings=settings, blocking=False)
     except ApiError:
         log_event(
             logger,
@@ -745,6 +752,11 @@ def _delete_remote_client(
 
 
 def _regional_api_url(region_id: str, path: str, api_hostname: str) -> str:
+    if not isinstance(region_id, str) or not _REGION_ID_PATTERN.fullmatch(region_id):
+        # Never build a cross-region URL from an unconstrained value: a bad
+        # Admin-SDK-side write could otherwise redirect this call at any host.
+        # Non-transient, so the caller aborts instead of assuming the peer is gone.
+        raise WireGuardApplyFailedError("Failed to remove regional VPN configuration.")
     origin_host = _origin_host(api_hostname)
     api_path = path.strip("/")
     return f"https://{region_id}.{origin_host}/api/{api_path}"

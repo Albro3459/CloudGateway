@@ -14,6 +14,7 @@ from src.errors import (
     AuthRequiredError,
     ClientNotFoundError,
     DuplicateEmailError,
+    SyncInProgressError,
     WireGuardApplyFailedError,
 )
 from src.repository import (
@@ -52,6 +53,9 @@ from src.wireguard import (
     WireGuardKeypair,
     WireGuardManager,
     is_subnet_of,
+    mesh_peer_drifted,
+    soft_normalize_network,
+    validate_mesh_peers,
 )
 
 FAKE_PRIVATE_KEY="OUJITKcYj6d2yNq4H2N8nmFzEVKW6Q7sVpnsZWgz8GA="
@@ -82,9 +86,11 @@ class FakeWireGuardCommandRunner:
         self,
         *,
         fail_set_count: int = 0,
+        fail_set_endpoint_hosts: set[str] | None = None,
         fail_show_count: int = 0,
         fail_route_replace_versions: set[int] | None = None,
         fail_route_delete_versions: set[int] | None = None,
+        timeout_command_prefixes: set[tuple[str, ...]] | None = None,
         failure_stderr: str = "simulated command failure",
     ):
         self.calls: list[FakeCommandCall] = []
@@ -93,9 +99,14 @@ class FakeWireGuardCommandRunner:
         self.peer_keepalives: dict[str, int | None] = {}
         self.routes: dict[int, dict[str, str]] = {4: {}, 6: {}}
         self.fail_set_count = fail_set_count
+        # Endpoint hostnames whose `wg set ... endpoint` always fails, as wg does when
+        # it cannot resolve the hostname itself.
+        self.fail_set_endpoint_hosts = fail_set_endpoint_hosts or set()
         self.fail_show_count = fail_show_count
         self.fail_route_replace_versions = fail_route_replace_versions or set()
         self.fail_route_delete_versions = fail_route_delete_versions or set()
+        # argv prefixes whose command hangs past the caller's timeout.
+        self.timeout_command_prefixes = timeout_command_prefixes or set()
         self.failure_stderr = failure_stderr
 
     def __call__(
@@ -107,12 +118,15 @@ class FakeWireGuardCommandRunner:
         text: bool = False,
         check: bool = False,
         shell: bool = False,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         # Signature-compat params for subprocess.run callers; consumed here so
         # vulture doesn't need repo-wide ignore_names entries for them.
         del capture_output, text, check
         if shell is not False:
             raise AssertionError("WireGuard commands must run with shell=False.")
+        if timeout is None:
+            raise AssertionError("WireGuard commands must run with an explicit timeout.")
 
         # Converted once to a distinct, explicitly-typed local (not reassigned
         # onto the `args` parameter name). Matching below uses `len(argv) >= N`
@@ -123,6 +137,10 @@ class FakeWireGuardCommandRunner:
         # limitation, not a real type error).
         argv: tuple[str, ...] = tuple(args)
         self.calls.append(FakeCommandCall(args=argv, input=input, shell=shell))
+
+        for prefix in self.timeout_command_prefixes:
+            if argv[: len(prefix)] == prefix:
+                raise subprocess.TimeoutExpired(list(argv), timeout)
 
         if argv == ("wg", "genkey"):
             return subprocess.CompletedProcess(argv, 0, stdout=f"{FAKE_PRIVATE_KEY}\n", stderr="")
@@ -143,6 +161,10 @@ class FakeWireGuardCommandRunner:
             if self.fail_set_count:
                 self.fail_set_count -= 1
                 raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
+            if "endpoint" in argv:
+                endpoint = argv[argv.index("endpoint") + 1]
+                if endpoint.rsplit(":", 1)[0].strip("[]") in self.fail_set_endpoint_hosts:
+                    raise subprocess.CalledProcessError(1, argv, stderr="Name or service not known")
             public_key = argv[4]
             if len(argv) == 6 and argv[5] == "remove":
                 self.peers.pop(public_key, None)
@@ -247,16 +269,24 @@ class FakeRepository(FirebaseRepository):
             key=region_display_order,
         )
 
-    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+    def list_regions(self) -> list[RegionDoc]:
+        return sorted(self.regions.values(), key=region_display_order)
+
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool | None) -> RegionDoc:
         # meshEnabled mirrors the real Firestore create-only semantics: seeded false
         # only when the region doc does not yet exist, otherwise carried forward
-        # untouched (operator-owned via the dashboard afterward).
+        # untouched (operator-owned via the dashboard afterward). set_enabled=None
+        # preserves the stored enabled value, seeding false on create.
         existing = self.regions.get(registration.region_id)
         mesh_enabled = existing.mesh_enabled if existing is not None else False
+        if set_enabled is None:
+            enabled = existing.enabled if existing is not None else False
+        else:
+            enabled = set_enabled
         region = RegionDoc(
             region_id=registration.region_id,
             display_name=registration.display_name,
-            enabled=set_enabled,
+            enabled=enabled,
             wireguard_endpoint_ipv4=registration.wireguard_endpoint_ipv4,
             wireguard_endpoint_ipv6=registration.wireguard_endpoint_ipv6,
             wireguard_port=registration.wireguard_port,
@@ -629,9 +659,19 @@ class FakeWireGuardManager(WireGuardManager):
         self.fail_add_transient = False
         self.fail_remove_transient = False
         self.locked = False
+        # A real `wg show dump` reports endpoint addresses, never hostnames, so the
+        # fake resolves each hostname to a stable synthetic address and stores that
+        # as the live endpoint. Tests can pre-seed an answer or force a lookup
+        # failure to exercise the same drift path as the real manager.
+        self.resolved_endpoints: dict[str, frozenset[str]] = {}
+        self.resolve_failure_hosts: set[str] = set()
 
     @contextmanager
-    def lock(self) -> Iterator[None]:
+    def lock(self, *, blocking: bool = True) -> Iterator[None]:
+        if self.locked and not blocking:
+            # Mirrors LOCK_NB on the real manager: a contended non-blocking
+            # acquisition sheds instead of queueing.
+            raise SyncInProgressError()
         if self.locked:
             raise AssertionError("WireGuard lock() is not reentrant.")
         self.locked = True
@@ -643,6 +683,15 @@ class FakeWireGuardManager(WireGuardManager):
     def _require_lock(self) -> None:
         if not self.locked:
             raise AssertionError("WireGuard mutation must run inside lock().")
+
+    def resolve_endpoint(self, host: str) -> Sequence[str]:
+        if host in self.resolve_failure_hosts:
+            return ()
+        addresses = self.resolved_endpoints.get(host)
+        if addresses is None:
+            addresses = frozenset({f"203.0.113.{len(self.resolved_endpoints) + 1}"})
+            self.resolved_endpoints[host] = addresses
+        return tuple(sorted(addresses))
 
     def generate_keypair(self) -> WireGuardKeypair:
         if self.fail_generate_count:
@@ -711,7 +760,9 @@ class FakeWireGuardManager(WireGuardManager):
         for public_key, peer in self.mesh_peers.items():
             current[public_key] = LivePeerSnapshot(
                 public_key=public_key,
-                endpoint_addresses=self.mesh_endpoint_addresses.get(public_key, frozenset({peer.endpoint_host})),
+                endpoint_addresses=self.mesh_endpoint_addresses.get(
+                    public_key, frozenset(self.resolve_endpoint(peer.endpoint_host))
+                ),
                 endpoint_port=peer.endpoint_port,
                 allowed_ips=frozenset({peer.allowed_network_v4, peer.allowed_network_v6}),
                 persistent_keepalive=self.mesh_keepalives.get(public_key, 25),
@@ -728,7 +779,17 @@ class FakeWireGuardManager(WireGuardManager):
     ) -> PeerSyncResult:
         self._require_lock()
         self.sync_calls += 1
-        mesh_by_key = {peer.public_key: peer for peer in mesh}
+        # Same validator the real manager runs, so a candidate set the host would
+        # reject (bad field, local/cross-peer overlap, duplicate key) cannot pass
+        # here either. Client keys stay symbolic on purpose - readable test keys -
+        # and client validation is covered against the real manager. A rejection
+        # drops the candidate and is raised after removal, as the manager does.
+        validated_mesh, mesh_error = validate_mesh_peers(
+            mesh,
+            tunnel_network_v4=self.tunnel_network_v4,
+            tunnel_network_v6=self.tunnel_network_v6,
+        )
+        mesh_by_key = {peer.public_key: peer for peer in validated_mesh}
         known_keys = set(known_region_keys) | set(mesh_by_key)
 
         changes: list[PeerChange] = []
@@ -742,23 +803,49 @@ class FakeWireGuardManager(WireGuardManager):
                 self.peers[public_key] = ips
                 changes.append(PeerChange(public_key, PEER_UPDATED, ips[0], ips[1]))
 
+        # Mirrors LocalWireGuardManager: unknown-peer removal runs before the mesh
+        # apply phase so an unreachable mesh endpoint cannot block it.
         mesh_changes: list[MeshPeerChange] = []
+        for public_key in set(self.peers) | set(self.mesh_peers):
+            if public_key in desired or public_key in mesh_by_key:
+                continue
+            if public_key in self.mesh_peers and self.fail_mesh_remove_count:
+                self.fail_mesh_remove_count -= 1
+                raise WireGuardApplyFailedError("Simulated mesh peer removal failure.")
+            self.peers.pop(public_key, None)
+            self.mesh_peers.pop(public_key, None)
+            self.mesh_endpoint_addresses.pop(public_key, None)
+            self.mesh_keepalives.pop(public_key, None)
+            if public_key in known_keys:
+                mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
+            else:
+                changes.append(PeerChange(public_key, PEER_REMOVED))
+
+        applied_mesh: list[MeshPeer] = []
+        routed_mesh: list[MeshPeer] = []
+        apply_error: WireGuardApplyFailedError | None = mesh_error
         for public_key, peer in mesh_by_key.items():
             self.mesh_apply_calls += 1
-            if self.fail_mesh_apply_count:
-                self.fail_mesh_apply_count -= 1
-                raise WireGuardApplyFailedError("Simulated mesh peer apply failure.")
             was_live = public_key in self.mesh_peers or public_key in self.peers
             live = self.peer_snapshots().get(public_key)
+            if self.fail_mesh_apply_count:
+                self.fail_mesh_apply_count -= 1
+                # Mirrors LocalWireGuardManager: a still-live peer with the desired
+                # ranges keeps its route even when the re-apply failed.
+                if live is not None and live.allowed_ips == frozenset(
+                    {peer.allowed_network_v4, peer.allowed_network_v6}
+                ):
+                    routed_mesh.append(peer)
+                if apply_error is None:
+                    apply_error = WireGuardApplyFailedError("Simulated mesh peer apply failure.")
+                continue
+            applied_mesh.append(peer)
+            routed_mesh.append(peer)
             drifted = was_live and (
-                live is None
-                or live.endpoint_addresses != frozenset({peer.endpoint_host})
-                or live.endpoint_port != peer.endpoint_port
-                or live.allowed_ips != frozenset({peer.allowed_network_v4, peer.allowed_network_v6})
-                or live.persistent_keepalive != 25
+                live is None or mesh_peer_drifted(live, peer, self.resolve_endpoint)
             )
             self.mesh_peers[public_key] = peer
-            self.mesh_endpoint_addresses[public_key] = frozenset({peer.endpoint_host})
+            self.mesh_endpoint_addresses[public_key] = frozenset(self.resolve_endpoint(peer.endpoint_host))
             self.mesh_keepalives[public_key] = 25
             if not was_live:
                 mesh_changes.append(
@@ -783,27 +870,14 @@ class FakeWireGuardManager(WireGuardManager):
                     )
                 )
 
-        for public_key in set(self.peers) | set(self.mesh_peers):
-            if public_key in desired or public_key in mesh_by_key:
-                continue
-            if public_key in self.mesh_peers and self.fail_mesh_remove_count:
-                self.fail_mesh_remove_count -= 1
-                raise WireGuardApplyFailedError("Simulated mesh peer removal failure.")
-            self.peers.pop(public_key, None)
-            self.mesh_peers.pop(public_key, None)
-            self.mesh_endpoint_addresses.pop(public_key, None)
-            self.mesh_keepalives.pop(public_key, None)
-            if public_key in known_keys:
-                mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
-            else:
-                changes.append(PeerChange(public_key, PEER_REMOVED))
-
-        route_changes = self._reconcile_routes(mesh_by_key.values(), known_mesh_networks)
+        route_changes = self._reconcile_routes(routed_mesh, known_mesh_networks)
+        if apply_error is not None:
+            raise apply_error
 
         return PeerSyncResult(
             changes=tuple(changes),
             mesh_changes=tuple(mesh_changes),
-            mesh_applied_peers=tuple(mesh_by_key.values()),
+            mesh_applied_peers=tuple(applied_mesh),
             route_changes=tuple(route_changes),
         )
 
@@ -812,7 +886,14 @@ class FakeWireGuardManager(WireGuardManager):
         mesh_peers: Iterable[MeshPeer],
         known_mesh_networks: Sequence[str],
     ) -> list[RouteChange]:
-        known = set(known_mesh_networks)
+        # Normalized exactly as the real sweep does, so `reclaimed` matches for
+        # non-canonical or wrong-width known values.
+        known = {
+            normalized
+            for value in known_mesh_networks
+            for normalized in (soft_normalize_network(value),)
+            if normalized is not None
+        }
         changes: list[RouteChange] = []
         changes += self._reconcile_routes_for_family(
             4,

@@ -56,6 +56,19 @@ def test_admin_sync_rejects_region_mismatch(client, repository):
     assert_error_shape(response.json(), "REGION_MISMATCH")
 
 
+def test_admin_sync_sheds_instead_of_queueing_when_a_sync_is_running(client, repository, wireguard):
+    # A retry or a concurrent Sync All must fail fast rather than block a thread-pool
+    # slot on the flock behind the running pass.
+    seed_region(repository)
+    wireguard.locked = True
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 409
+    assert_error_shape(response.json(), "SYNC_IN_PROGRESS")
+    assert wireguard.sync_calls == 0
+
+
 def test_admin_sync_reports_no_changes_when_state_matches(client, repository, wireguard):
     seed_region(repository)
     create_active_client(repository, wireguard)

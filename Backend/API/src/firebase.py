@@ -129,7 +129,12 @@ class FirestoreRepository(FirebaseRepository):
         regions = [_region_from_snapshot(snapshot, snapshot.id) for snapshot in snapshots]
         return sorted((region for region in regions if region is not None and region.enabled is True), key=region_display_order)
 
-    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+    def list_regions(self) -> list[RegionDoc]:
+        snapshots = self._db().collection("Regions").get()
+        regions = [_region_from_snapshot(snapshot, snapshot.id) for snapshot in snapshots]
+        return sorted((region for region in regions if region is not None), key=region_display_order)
+
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool | None) -> RegionDoc:
         db = self._db()
         transactional = _transactional()
         ref = db.collection("Regions").document(registration.region_id)
@@ -138,12 +143,11 @@ class FirestoreRepository(FirebaseRepository):
         def _apply(transaction) -> None:
             # Firestore transactions require all reads before any write; this read
             # decides whether meshEnabled needs seeding (create-only, operator-owned
-            # afterward).
+            # afterward) and whether enabled has to be seeded false.
             exists = _sync_snapshot(ref.get(transaction=transaction)).exists
             data: dict[str, Any] = {
                 "regionId": registration.region_id,
                 "displayName": registration.display_name,
-                "enabled": set_enabled,
                 "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
                 "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
                 "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
@@ -157,6 +161,10 @@ class FirestoreRepository(FirebaseRepository):
                 "tunnelNetworkV6": registration.tunnel_network_v6,
                 "updatedAt": _server_timestamp(),
             }
+            if set_enabled is not None:
+                data["enabled"] = set_enabled
+            elif not exists:
+                data["enabled"] = False
             if not exists:
                 data["meshEnabled"] = False
             transaction.set(ref, data, merge=True)

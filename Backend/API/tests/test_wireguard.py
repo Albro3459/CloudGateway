@@ -3,7 +3,7 @@ import logging
 import pytest
 
 from src.enums import OperationResult
-from src.errors import WireGuardApplyFailedError
+from src.errors import SyncInProgressError, WireGuardApplyFailedError
 from src.wireguard import LocalWireGuardManager, MeshPeer, _parse_dump_snapshots
 
 from .fakes import (
@@ -60,6 +60,10 @@ def make_mesh_peer(
         allowed_network_v4=allowed_network_v4,
         allowed_network_v6=allowed_network_v6,
     )
+
+
+def mesh_set_calls(runner):
+    return [call for call in runner.calls if call.args[:2] == ("wg", "set") and "endpoint" in call.args]
 
 
 def test_generate_keypair_runs_wg_without_shell(tmp_path):
@@ -294,6 +298,32 @@ def test_lock_is_exclusive_and_reusable(tmp_path):
     assert (tmp_path / "cloudgateway-wireguard.lock").exists()
 
 
+def test_non_blocking_lock_sheds_while_held_and_recovers_after_release(tmp_path):
+    # flock is per open file description, so a second manager on the same path
+    # contends exactly as a second process would.
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner)
+    other = make_manager(tmp_path, runner)
+
+    with manager.lock():
+        with pytest.raises(SyncInProgressError):
+            with other.lock(blocking=False):
+                pass
+
+    with other.lock(blocking=False):
+        pass
+
+
+def test_command_timeout_is_reported_as_a_transient_failure(tmp_path):
+    runner = FakeWireGuardCommandRunner(timeout_command_prefixes={("wg", "show")})
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError) as exc_info:
+        manager.current_peers()
+
+    assert exc_info.value.transient is True
+
+
 # --- Mesh peer validation -------------------------------------------------
 
 
@@ -350,7 +380,60 @@ def test_sync_peers_rejects_invalid_mesh_peer_fields(tmp_path, field, value):
 
     with pytest.raises(WireGuardApplyFailedError):
         manager.sync_peers({}, mesh=[peer])
-    assert runner.calls == []
+    assert mesh_set_calls(runner) == []
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("allowed_network_v4", "10.0.0.0/24"),  # identical to the local tunnel network
+        ("allowed_network_v6", "fd42:42:42::/64"),
+    ],
+)
+def test_sync_peers_rejects_mesh_network_overlapping_the_local_tunnel_network(tmp_path, field, value):
+    # Cryptokey routing is exclusive, so this range would be taken away from every
+    # local client peer. sync.py catches it first; the kernel-facing layer must too.
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[make_mesh_peer(**{field: value})])
+    assert mesh_set_calls(runner) == []
+
+
+@pytest.mark.parametrize(
+    "network_v4, network_v6",
+    [
+        ("10.0.1.0/24", "fd42:42:42:2::/64"),  # v4 collides with the first peer
+        ("10.0.2.0/24", "fd42:42:42:1::/64"),  # v6-only collision
+    ],
+)
+def test_sync_peers_rejects_mesh_networks_overlapping_each_other(tmp_path, network_v4, network_v6):
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner)
+    other = make_mesh_peer(
+        public_key=FAKE_MESH_PUBLIC_KEY_2,
+        allowed_network_v4=network_v4,
+        allowed_network_v6=network_v6,
+    )
+
+    # Both sides of a collision are dropped, the way sync.desired_mesh_peers skips
+    # them upstream: neither range is safe to claim.
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[make_mesh_peer(), other])
+    assert mesh_set_calls(runner) == []
+
+
+def test_sync_peers_rejects_duplicate_mesh_public_keys(tmp_path):
+    # The plan requires duplicate server public keys to be rejected: the second
+    # `wg set` would steal the first peer's ranges while both count as applied.
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner)
+    duplicate = make_mesh_peer(allowed_network_v4="10.0.2.0/24", allowed_network_v6="fd42:42:42:2::/64")
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[make_mesh_peer(), duplicate])
+    assert mesh_set_calls(runner) == []
 
 
 def test_sync_peers_accepts_valid_mesh_peer_cidrs(tmp_path):
@@ -385,9 +468,9 @@ def test_mesh_peer_apply_issues_exact_wg_set_argv(tmp_path):
 
     manager.sync_peers({}, mesh=[peer])
 
-    mesh_set_calls = [call for call in runner.calls if call.args[:2] == ("wg", "set") and "endpoint" in call.args]
-    assert len(mesh_set_calls) == 1
-    assert mesh_set_calls[0].args == (
+    applied = mesh_set_calls(runner)
+    assert len(applied) == 1
+    assert applied[0].args == (
         "wg",
         "set",
         "wg0",
@@ -410,10 +493,7 @@ def test_mesh_peer_is_reapplied_every_pass(tmp_path):
     first = manager.sync_peers({}, mesh=[peer])
     second = manager.sync_peers({}, mesh=[peer])
 
-    def mesh_set_call_count():
-        return sum(1 for call in runner.calls if call.args[:2] == ("wg", "set") and "endpoint" in call.args)
-
-    assert mesh_set_call_count() == 2
+    assert len(mesh_set_calls(runner)) == 2
     assert first.mesh_added == 1
     assert second.mesh_added == 0  # already live: re-applied, but not counted as newly added
     assert second.mesh_applied == 1
@@ -480,6 +560,38 @@ def test_mesh_peer_dropped_from_desired_set_is_removed_as_mesh_not_client(tmp_pa
     assert result.removed == 0  # never treated as an unknown client peer
     assert result.mesh_removed == 1
     assert FAKE_MESH_PUBLIC_KEY not in runner.peers
+
+
+def test_rejected_mesh_candidate_set_still_removes_revoked_client_peers(tmp_path):
+    # Whole-set rejection must not abort the pass before removal: a revoked client's
+    # peer stays on the interface until the operator fixes unrelated mesh metadata
+    # otherwise. The rejection still surfaces once the pass is reconciled.
+    runner = FakeWireGuardCommandRunner()
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = f"{TUNNEL_V4},{TUNNEL_V6}"
+    manager = make_manager(tmp_path, runner)
+    duplicate = make_mesh_peer(allowed_network_v4="10.0.2.0/24", allowed_network_v6="fd42:42:42:2::/64")
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[make_mesh_peer(), duplicate])
+
+    assert FAKE_UNKNOWN_PUBLIC_KEY not in runner.peers
+    assert mesh_set_calls(runner) == []
+
+
+def test_rejected_mesh_candidate_does_not_block_the_valid_ones(tmp_path):
+    # Per-candidate isolation: one malformed candidate must not cost the mesh its
+    # other links for the whole pass.
+    runner = FakeWireGuardCommandRunner()
+    manager = make_manager(tmp_path, runner)
+    valid = make_mesh_peer()
+    invalid = make_mesh_peer(public_key=FAKE_MESH_PUBLIC_KEY_2, endpoint_host="bad host name")
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[valid, invalid])
+
+    applied = mesh_set_calls(runner)
+    assert len(applied) == 1
+    assert applied[0].args[4] == FAKE_MESH_PUBLIC_KEY
 
 
 def test_known_region_key_without_desired_mesh_peer_is_classified_as_mesh_removal(tmp_path):
@@ -602,6 +714,87 @@ def test_mesh_peer_apply_failure_leaves_no_false_change_and_next_sync_converges(
     assert runner.peers == {FAKE_MESH_PUBLIC_KEY: "10.0.1.0/24,fd42:42:42:1::/64"}
     assert runner.routes[4] == {"10.0.1.0/24": "static"}
     assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+
+
+def test_mesh_apply_failure_still_removes_stale_peer_and_applies_other_candidates(tmp_path, caplog):
+    # `wg set peer ... endpoint <host>:<port>` resolves the hostname itself, so a broken
+    # DNS record in one region must not keep a revoked client's peer on the interface.
+    runner = FakeWireGuardCommandRunner(fail_set_endpoint_hosts={"wg.us-broken-1.example.com"})
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = f"{TUNNEL_V4},{TUNNEL_V6}"
+    manager = make_manager(tmp_path, runner)
+    broken = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+    healthy = make_mesh_peer(
+        public_key=FAKE_MESH_PUBLIC_KEY_2,
+        endpoint_host="wg.us-other-2.example.com",
+        allowed_network_v4="10.0.2.0/24",
+        allowed_network_v6="fd42:42:42:2::/64",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+            manager.sync_peers({}, mesh=[broken, healthy])
+
+    assert "mesh_peer_apply_failed" in caplog.text
+    # The failed pass raises instead of returning its result, so the changes that did
+    # land are only visible in this log line.
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["removed"] == 1
+    assert partial[0].event_fields["meshApplied"] == 1
+    assert FAKE_UNKNOWN_PUBLIC_KEY not in runner.peers  # stale client peer still reconciled
+    assert FAKE_MESH_PUBLIC_KEY_2 in runner.peers  # healthy candidate still applied
+    assert FAKE_MESH_PUBLIC_KEY not in runner.peers
+    # No route for the candidate that failed to apply.
+    assert runner.routes[4] == {"10.0.2.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:2::/64": "static"}
+
+
+def test_mesh_apply_failure_keeps_the_route_of_a_still_correct_live_peer(tmp_path):
+    # A working peer whose re-apply failed for a non-DNS reason must not lose its
+    # route until the next successful pass; it is still carrying traffic.
+    runner = FakeWireGuardCommandRunner(fail_set_count=1)
+    peer = make_mesh_peer()
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = f"{peer.allowed_network_v4},{peer.allowed_network_v6}"
+    runner.routes[4][peer.allowed_network_v4] = "static"
+    runner.routes[6][peer.allowed_network_v6] = "static"
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+        manager.sync_peers({}, mesh=[peer])
+
+    assert runner.routes[4] == {peer.allowed_network_v4: "static"}
+    assert runner.routes[6] == {peer.allowed_network_v6: "static"}
+
+
+def test_mesh_apply_failure_drops_the_route_when_the_live_peer_ranges_differ(tmp_path):
+    # The live peer carries a different range, so the desired route would blackhole.
+    runner = FakeWireGuardCommandRunner(fail_set_count=1)
+    peer = make_mesh_peer()
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.9.0/24,fd42:42:42:9::/64"
+    runner.routes[4][peer.allowed_network_v4] = "static"
+    runner.routes[6][peer.allowed_network_v6] = "static"
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+        manager.sync_peers({}, mesh=[peer])
+
+    assert runner.routes == {4: {}, 6: {}}
+
+
+def test_mesh_apply_failure_next_sync_converges_once_the_endpoint_resolves(tmp_path):
+    runner = FakeWireGuardCommandRunner(fail_set_endpoint_hosts={"wg.us-broken-1.example.com"})
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+
+    with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+        manager.sync_peers({}, mesh=[peer])
+
+    runner.fail_set_endpoint_hosts.clear()
+    result = manager.sync_peers({}, mesh=[peer])
+
+    assert result.mesh_applied == 1
+    assert result.mesh_added == 1
+    assert result.routes_added == 2
 
 
 def test_mesh_peer_removal_failure_during_rollback_converges_next_sync(tmp_path):
