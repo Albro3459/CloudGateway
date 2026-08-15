@@ -241,6 +241,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "meshSkipped": 0,
   "meshRoutesAdded": 0,
   "meshRoutesRemoved": 0,
+  "meshStatusWritten": true,
   "meshPeers": [
     {
       "regionId": "us-sanjose-1",
@@ -268,6 +269,15 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   route add/remove. It deliberately excludes `meshApplied` and `meshSkipped`, so a stable pass
   can report `meshApplied > 0`, `meshUpdated == 0`, and `noChanges == true`; skipped-only passes
   are also `noChanges == true`.
+- `meshStatusWritten` is false when the pass reconciled the interface but failed to persist its
+  `Mesh/{regionId}` snapshot. The live peer set is still correct; only the durable snapshot the
+  dashboard renders mesh link status from is stale, until the next successful pass overwrites it.
+  A status-write failure never fails the sync, so this is the only machine-readable signal of it.
+  The field is **optional for consumers**: regions are installed independently
+  (`sudo cloudgateway-install-api <ref>`), so a dashboard build that ships before every region is
+  reinstalled will see responses without it. Treat absent as unknown and render nothing - do not
+  treat it as a missing required field, or every not-yet-upgraded region reports
+  `INCOMPATIBLE_RESPONSE` during a rollout.
 - `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
   `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. `skipped-overlap` and
   `skipped-incomplete` are persistent configuration failures, not pending work; runtime overlap

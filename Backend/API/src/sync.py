@@ -334,6 +334,10 @@ class SyncOutcome:
     mesh_enabled: bool
     mesh_candidates: tuple[MeshPeerState, ...] = ()
     mesh_region_by_key: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # False when the live reconcile succeeded but the Mesh/* snapshot never
+    # persisted. The dashboard reads mesh link state from that snapshot, so it
+    # would otherwise render the previous pass's state as if it were current.
+    mesh_status_written: bool = True
 
 
 def run_sync(
@@ -375,6 +379,7 @@ def run_sync(
             known_mesh_networks=known_mesh_networks,
             known_region_keys=known_region_keys,
         )
+        mesh_status_written = True
         try:
             repository.write_mesh_status(
                 region_id=settings.region_id,
@@ -382,6 +387,9 @@ def run_sync(
                 peers=mesh.candidates,
             )
         except Exception as exc:
+            # Reported, not raised: the interface is already reconciled, so failing
+            # the pass here would discard correct work over a status write.
+            mesh_status_written = False
             log_event(
                 logger,
                 Event.MESH_STATUS_WRITE_FAILED,
@@ -395,6 +403,7 @@ def run_sync(
         mesh_enabled=mesh.mesh_enabled,
         mesh_candidates=mesh.candidates,
         mesh_region_by_key={key: tuple(owners) for key, owners in key_owners.items()},
+        mesh_status_written=mesh_status_written,
     )
 
 
@@ -536,6 +545,7 @@ def main() -> int:
         mesh_removed=outcome.result.mesh_removed,
         mesh_routes_added=outcome.result.routes_added,
         mesh_routes_removed=outcome.result.routes_removed,
+        mesh_status_written=outcome.mesh_status_written,
     )
     return 0
 

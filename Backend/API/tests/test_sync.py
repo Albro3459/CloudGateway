@@ -665,6 +665,17 @@ def test_run_sync_write_mesh_status_failure_does_not_fail_sync():
 
     assert outcome.result.added == 0
     assert REGION_ID not in repository.mesh_status
+    assert outcome.mesh_status_written is False
+
+
+def test_run_sync_reports_mesh_status_written_on_success():
+    repository = make_repository()
+    wireguard = FakeWireGuardManager()
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.mesh_status_written is True
+    assert REGION_ID in repository.mesh_status
 
 
 def test_malformed_mesh_candidate_does_not_block_valid_client_or_mesh():

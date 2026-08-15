@@ -614,6 +614,7 @@ def admin_sync(
         mesh_skipped=mesh_skipped,
         mesh_routes_added=result.routes_added,
         mesh_routes_removed=result.routes_removed,
+        mesh_status_written=outcome.mesh_status_written,
         mesh_peers=[
             AdminSyncMeshPeer(
                 region_id=candidate.region_id,

@@ -28,6 +28,14 @@ describe("APIHelper", () => {
         ...overrides,
     });
 
+    // syncResponse() is the pre-meshStatusWritten wire shape an older region still
+    // sends; the parser normalizes the absent field to null, so parsed results never
+    // deep-equal the raw body.
+    const parsedSyncResponse = (overrides: Record<string, unknown> = {}) => ({
+        ...syncResponse(overrides),
+        meshStatusWritten: null,
+    });
+
     const skippedIncompletePeer = (overrides: Record<string, unknown> = {}) => ({
         regionId: "us-chicago-1",
         status: "skipped-incomplete",
@@ -176,6 +184,41 @@ describe("APIHelper", () => {
         });
     });
 
+    it("accepts an admin sync response from a region that predates meshStatusWritten", async () => {
+        // Regions are installed one at a time, so a newer dashboard must not reject
+        // a host that has not been reinstalled yet.
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse()));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.meshStatusWritten).toBeNull();
+    });
+
+    it("carries a false meshStatusWritten through as a successful sync", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({ meshStatusWritten: false })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.meshStatusWritten).toBe(false);
+    });
+
+    it("rejects an admin sync response whose meshStatusWritten is not a boolean", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({ meshStatusWritten: "false" })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: false,
+            failureType: "incompatible-response",
+            errorCode: "INCOMPATIBLE_RESPONSE",
+        });
+    });
+
     it("rejects an admin sync response for a different region", async () => {
         mockFetch.mockResolvedValue(mockJsonResponse({
             regionId: "us-chicago-1",
@@ -228,7 +271,7 @@ describe("APIHelper", () => {
             });
             expect(results[1]).toEqual({
                 regionId: "us-chicago-1",
-                result: { success: true, data: syncResponse({ regionId: "us-chicago-1" }) },
+                result: { success: true, data: parsedSyncResponse({ regionId: "us-chicago-1" }) },
             });
         } finally {
             jest.useRealTimers();
@@ -266,7 +309,10 @@ describe("APIHelper", () => {
 
         const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
 
-        expect(result).toEqual([{ regionId: "us-sanjose-1", result: { success: true, data: responseBody } }]);
+        expect(result).toEqual([{
+            regionId: "us-sanjose-1",
+            result: { success: true, data: { ...responseBody, meshStatusWritten: null } },
+        }]);
     });
 
     it.each([
@@ -332,7 +378,7 @@ describe("APIHelper", () => {
 
         const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
 
-        expect(result).toEqual([{ regionId: "us-sanjose-1", result: { success: true, data: syncResponse({
+        expect(result).toEqual([{ regionId: "us-sanjose-1", result: { success: true, data: parsedSyncResponse({
             meshSkipped: 3,
             meshPeers: [
                 { regionId: "us-chicago-1", status: "skipped-incomplete", reasonCode: "missing-endpoint-hostname" },
@@ -356,7 +402,7 @@ describe("APIHelper", () => {
 
         const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
 
-        expect(result).toEqual([{ regionId: "us-sanjose-1", result: { success: true, data: syncResponse({
+        expect(result).toEqual([{ regionId: "us-sanjose-1", result: { success: true, data: parsedSyncResponse({
             meshSkipped: 1,
             meshPeers: [skippedIncompletePeer({
                 endpointHostname: "2001:db8::1",

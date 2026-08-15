@@ -108,6 +108,7 @@ const syncResponse = (regionId: string, overrides: Partial<RegionSyncResponse> =
     meshSkipped: 0,
     meshRoutesAdded: 1,
     meshRoutesRemoved: 0,
+    meshStatusWritten: true,
     meshPeers: [],
     ...overrides,
 });
@@ -353,6 +354,47 @@ describe("ServerHealth", () => {
         expect(mockNavigate).toHaveBeenCalledWith("/server-health", { replace: true, state: {} });
         expect(await screen.findByText("San Jose (us-sanjose-1)")).toBeTruthy();
         expect(screen.getByText("Chicago (us-chicago-1)")).toBeTruthy();
+    });
+
+    it("warns when a region reconciled but could not save its mesh status snapshot", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: { success: true, data: syncResponse("us-sanjose-1", { meshStatusWritten: false }) },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText(/could not save its mesh status snapshot/)).toBeTruthy();
+    });
+
+    it("stays quiet about mesh status for a region that predates the field", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: { success: true, data: syncResponse("us-sanjose-1", { meshStatusWritten: null }) },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("San Jose (us-sanjose-1)")).toBeTruthy();
+        expect(screen.queryByText(/could not save its mesh status snapshot/)).toBeNull();
     });
 
     it("writes a meshEnabled toggle to Firestore and marks the affected link pending", async () => {

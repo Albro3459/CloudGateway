@@ -151,6 +151,10 @@ export type RegionSyncResponse = {
     meshSkipped: number;
     meshRoutesAdded: number;
     meshRoutesRemoved: number;
+    // null when the region predates the field: unknown, not a failure. Regions
+    // are deployed independently, so a newer dashboard routinely talks to a
+    // host that has not been reinstalled yet.
+    meshStatusWritten: boolean | null;
     meshPeers: RegionSyncMeshPeer[];
 };
 
@@ -534,6 +538,9 @@ const parseRegionSyncResponse = (value: unknown): RegionSyncResponse | null => {
     ];
     if (counterFields.some(field => !isNonNegativeInteger(value[field]))) return null;
     if (!Array.isArray(value.meshPeers)) return null;
+    // Deliberately not in requiredFields: absent means an older regional API, which
+    // must stay compatible. A present non-boolean is still a malformed response.
+    if (hasOwn(value, "meshStatusWritten") && typeof value.meshStatusWritten !== "boolean") return null;
 
     const meshPeers: RegionSyncMeshPeer[] = [];
     for (const rawPeer of value.meshPeers) {
@@ -565,6 +572,7 @@ const parseRegionSyncResponse = (value: unknown): RegionSyncResponse | null => {
         meshSkipped: value.meshSkipped as number,
         meshRoutesAdded: value.meshRoutesAdded as number,
         meshRoutesRemoved: value.meshRoutesRemoved as number,
+        meshStatusWritten: typeof value.meshStatusWritten === "boolean" ? value.meshStatusWritten : null,
         meshPeers,
     };
 };

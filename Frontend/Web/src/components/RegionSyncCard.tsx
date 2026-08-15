@@ -43,7 +43,8 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
 
     const {
         added, updated, removed, noChanges, log, syncedAt,
-        meshEnabled, meshApplied, meshAdded, meshUpdated, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved, meshPeers,
+        meshEnabled, meshApplied, meshAdded, meshUpdated, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved,
+        meshStatusWritten, meshPeers,
     } = result.data;
 
     return (
@@ -78,6 +79,14 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
 
             {noChanges && (
                 <p className="mt-2 text-sm text-content-muted">No changes were required.</p>
+            )}
+
+            {meshStatusWritten === false && (
+                <p className="mt-2 text-sm text-warning-strong">
+                    This region reconciled successfully, but could not save its mesh status snapshot.
+                    The mesh link status shown above and on this page may be out of date until the next
+                    successful sync.
+                </p>
             )}
 
             {meshPeers.length > 0 && (

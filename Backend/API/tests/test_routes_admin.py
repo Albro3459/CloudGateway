@@ -29,6 +29,21 @@ def seed_mesh_candidate(repository, *, region_id: str = "us-other-1") -> None:
     )
 
 
+def test_admin_sync_reports_unwritten_mesh_status_without_failing(client, repository, wireguard):
+    # The interface is reconciled either way; only the durable snapshot the dashboard
+    # renders from is stale, so the pass must succeed and say so in the response.
+    seed_mesh_enabled_region(repository)
+    seed_mesh_candidate(repository)
+    repository.write_mesh_status_error = RuntimeError("simulated Firestore write failure")
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meshStatusWritten"] is False
+    assert payload["meshApplied"] == 1
+
+
 def test_admin_sync_requires_auth(client, repository):
     seed_region(repository)
 
@@ -139,6 +154,7 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
     assert payload["meshSkipped"] == 0
     assert payload["meshRoutesAdded"] == 2
     assert payload["meshRoutesRemoved"] == 0
+    assert payload["meshStatusWritten"] is True
     assert payload["noChanges"] is False
     assert payload["meshPeers"] == [
         {

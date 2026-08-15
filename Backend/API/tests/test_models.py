@@ -101,6 +101,7 @@ def test_admin_sync_response_exposes_mesh_route_counts():
         mesh_skipped=0,
         mesh_routes_added=2,
         mesh_routes_removed=1,
+        mesh_status_written=True,
         mesh_peers=[],
     )
 
@@ -108,6 +109,9 @@ def test_admin_sync_response_exposes_mesh_route_counts():
     assert response.mesh_routes_removed == 1
     assert response.model_dump(by_alias=True)["meshRoutesAdded"] == 2
     assert response.model_dump(by_alias=True)["meshRoutesRemoved"] == 1
+    # The dashboard's warning depends on false surviving serialization, and the
+    # route sets response_model_exclude_none.
+    assert response.model_dump(by_alias=True, exclude_none=True)["meshStatusWritten"] is True
 
 
 def test_user_models_serialize_camel_case():
