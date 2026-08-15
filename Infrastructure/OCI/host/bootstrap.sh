@@ -779,11 +779,19 @@ log "==> Registering region in Firestore"
 # long-running services use), not the shell. This keeps a single env-file format
 # and avoids shell metacharacter pitfalls in quoted values. --wait propagates
 # the register exit code; --collect cleans up the transient unit.
-if systemd-run --quiet --pipe --wait --collect \
+# Exit status is captured (not consumed by `if`) because registration distinguishes
+# 0 = registered and edge ready, 2 = registered but the Cloudflare path failed, anything
+# else = registration failed.
+REGISTER_STATUS=0
+systemd-run --quiet --pipe --wait --collect \
   --property=WorkingDirectory=/opt/cloudgateway/api \
   --property=EnvironmentFile=/etc/cloudgateway/api.env \
-  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region; then
+  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region || REGISTER_STATUS=$?
+
+if [[ "$REGISTER_STATUS" -eq 0 ]]; then
   log "Region registered"
+elif [[ "$REGISTER_STATUS" -eq 2 ]]; then
+  log "WARN: region registered but the Cloudflare edge check failed; check DNS / Origin cert / Authenticated Origin Pulls / firewall, then re-run 'cloudgateway-register-region'" >&2
 else
   log "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
 fi
@@ -793,7 +801,23 @@ fi
 # peers for already-known mesh-enabled regions, so the last-deployed region bridges immediately
 # instead of waiting for the next boot or an operator-triggered sync. Non-fatal, same as the
 # early pass: a brand-new region with nothing to sync yet is a successful empty sync.
-systemctl start cloudgateway-sync-peers || true
+#
+# Skipped unless registration reported a ready edge: a region doc that is still disabled has
+# an empty desired peer set, so this pass would remove every client peer on the interface.
+#
+# Result is logged here (after the earlier status dump at Step 13) so the bootstrap log's last
+# word on peer sync reflects this pass, not the first one. The unit is Type=oneshot with
+# Restart=on-failure/RestartSec=30; if the first pass above is still auto-restarting, this
+# `systemctl start` waits for that pending job before returning, adding up to ~30s here. That
+# wait is accepted: it is what makes the status print below trustworthy instead of racing a
+# restart that is still in flight.
+if [[ "$REGISTER_STATUS" -eq 0 ]]; then
+  systemctl start cloudgateway-sync-peers || true
+  log "==> Post-registration peer sync result:"
+  systemctl --no-pager --full status cloudgateway-sync-peers || true
+else
+  log "Skipping the post-registration peer sync because registration did not report a ready region" >&2
+fi
 
 log "WireGuard public key:"
 cat "/etc/wireguard/$WG_INTERFACE.publickey"

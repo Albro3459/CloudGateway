@@ -210,6 +210,10 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   dashboard fans out one call per region so each regional API only syncs itself. Mesh changes are
   inherently all-region operations, so the dashboard always syncs every enabled region ("Sync All
   Regions"), not a subset.
+- Only one pass runs per host at a time. This endpoint takes the host's WireGuard lock
+  non-blocking, so a request that arrives while a pass (or a client create/delete) holds it is
+  rejected immediately with `409 SYNC_IN_PROGRESS` rather than queueing; retry after the running
+  pass finishes. The boot and post-registration passes still wait for the lock.
 - Request:
 
 ```json
@@ -256,7 +260,10 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   allowed-IPs/keepalive drift repaired, or disappeared on the interface this pass; `meshSkipped`
   counts candidate regions skipped for overlap or incomplete mesh fields;
   `meshRoutesAdded`/`meshRoutesRemoved` count the `wg0` mesh route changes from the route sweep.
-  `meshEnabled` is this region's own `Regions/{regionId}.meshEnabled` flag as observed this pass.
+  `meshEnabled` is true only when this region's doc exists, is `enabled: true`, **and** carries
+  `meshEnabled: true` as observed this pass - it is not the raw `Regions/{regionId}.meshEnabled`
+  flag. `Mesh/{regionId}.meshEnabled` persists this same combined value, so a disabled region
+  publishes `false` there even while its Region doc says `true`.
   `noChanges` means no live mutation: no client add/update/remove, mesh add/update/remove, or
   route add/remove. It deliberately excludes `meshApplied` and `meshSkipped`, so a stable pass
   can report `meshApplied > 0`, `meshUpdated == 0`, and `noChanges == true`; skipped-only passes
@@ -295,16 +302,17 @@ All controlled failures return this shape:
 - Error codes are uppercase snake case.
 - Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
   `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
-  `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
-  `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`.
+  `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `SYNC_IN_PROGRESS`, `WIREGUARD_APPLY_FAILED`,
+  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`.
 - HTTP status mapping:
   - `401`: auth failures (`AUTH_REQUIRED`).
   - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`).
   - `400`: invalid request and region errors (`INVALID_REQUEST`, `REGION_DISABLED`,
     `REGION_MISMATCH`).
   - `404`: missing clients (`CLIENT_NOT_FOUND`).
-  - `409`: duplicate email, disabled account, and capacity/limit failures (`DUPLICATE_EMAIL`,
-    `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`).
+  - `409`: duplicate email, disabled account, capacity/limit failures, and a sync already running
+    on the region (`DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`,
+    `SYNC_IN_PROGRESS`).
   - `500`: host mutation failures, missing/malformed role defaults, and unexpected failures
     (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`).
 

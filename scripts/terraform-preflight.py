@@ -123,12 +123,12 @@ def read_tfvars(path: Path) -> dict[str, str]:
                 heredoc_end = None
             continue
         if list_end:
-            if line in {"]","] # end","] # end of list",
-            }:
+            # HCL allows comments and blank lines inside a list, and `terraform fmt`
+            # preserves them. The parser only needs region_id and the six wg_* scalars
+            # (never list-typed), so list bodies are skipped unvalidated until the
+            # closing bracket instead of fullmatching each item.
+            if line.startswith("]"):
                 list_end = False
-                continue
-            if not re.fullmatch(r'"(?:\\.|[^"\\])*",?', line):
-                raise TfvarsParseError(path, line_number, "unsupported or malformed list item")
             continue
         if not line or line.startswith("#"):
             continue
@@ -183,21 +183,40 @@ def required(values: dict[str, str], key: str, varfile: Path) -> str:
     return value
 
 
-def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, RegionValues], list[str]]:
+def discover_sibling_tfvars(
+    varfile: Path, registry: SubnetRegistry | None = None
+) -> tuple[dict[str, RegionValues], list[str]]:
     """Read present sibling tfvars as optional consistency checks.
 
     The registry, not this directory scan, is the region inventory. Missing registry
-    regions are therefore valid. Duplicate local IDs are retained once for checking,
-    but produce an error note instead of being silently overwritten.
+    regions are therefore valid.
+
+    Only a canonical `<registry-region-id>.terraform.tfvars` may block a run, the same
+    rule split_blocking_siblings applies to the consistency check itself. An operator's
+    scratch file - a half-written draft for an unregistered region, or a backup copy
+    that still carries the original's region_id - is reported as a plain note, so it
+    cannot fail an unrelated region's deploy or destroy. When two files claim one
+    region_id the canonical one wins the slot, so the retained entry is always the file
+    the consistency check is actually about.
     """
+    canonical_ids = registry_region_ids(registry)
     regions: dict[str, RegionValues] = {}
     notes: list[str] = []
 
     for sibling in sorted(varfile.parent.glob("*.terraform.tfvars")):
+        # A file that fails to parse has no region_id to check, so the filename is all
+        # there is to go on.
+        sibling_is_canonical = is_canonical_sibling(sibling.name, canonical_ids)
         try:
             values = read_tfvars(sibling)
         except TfvarsParseError as exc:
-            notes.append(f"error: {exc}")
+            if sibling_is_canonical:
+                notes.append(f"error: {exc}")
+            else:
+                notes.append(
+                    f"skipping {sibling.name}: {exc}; it is not the canonical tfvars of a "
+                    "registered region, so its parse failure does not block this run."
+                )
             continue
 
         region_id = values.get("region_id")
@@ -212,14 +231,67 @@ def discover_sibling_tfvars(varfile: Path) -> tuple[dict[str, RegionValues], lis
         previous = regions.get(region_id)
         if previous is not None:
             previous_name = previous.source_filename.name if previous.source_filename else "unknown"
+            # The canonical file wins the slot, so the retained entry is always the one
+            # the consistency check is about; the copy only earns a note.
+            if is_canonical_sibling(sibling.name, canonical_ids, region_id):
+                kept, skipped = sibling.name, previous_name
+            else:
+                kept, skipped = previous_name, sibling.name
             notes.append(
-                f"error: duplicate region_id {region_id!r} in {previous_name} and {sibling.name}; "
-                "each local tfvars region_id must be unique."
+                f"duplicate region_id {region_id!r} in {previous_name} and {sibling.name}; "
+                f"keeping {kept} and skipping {skipped}'s subnet consistency check."
             )
-            continue
+            if kept != sibling.name:
+                continue
         regions[region_id] = region_values
 
     return regions, notes
+
+
+def canonical_sibling_filename(region_id: str) -> str:
+    return f"{region_id}.terraform.tfvars"
+
+
+def registry_region_ids(registry: SubnetRegistry | None) -> set[str]:
+    return {region.region_id for region in registry.regions} if registry is not None else set()
+
+
+def is_canonical_sibling(filename: str, canonical_ids: set[str], region_id: str | None = None) -> bool:
+    """A sibling is canonical when it is named `<region-id>.terraform.tfvars` for a
+    region the registry actually has. region_id defaults to the one the filename claims;
+    pass the file's own region_id to also require that the two agree."""
+    if region_id is None:
+        region_id = filename.removesuffix(".terraform.tfvars")
+    return region_id in canonical_ids and filename == canonical_sibling_filename(region_id)
+
+
+def split_blocking_siblings(
+    sibling_regions: Mapping[str, RegionValues],
+    registry: SubnetRegistry | None,
+) -> tuple[dict[str, RegionValues], list[str]]:
+    """Separate siblings whose consistency mismatch is worth blocking a deploy.
+
+    Only a sibling whose filename is exactly `<region-id>.terraform.tfvars` for a
+    region_id that is actually in the registry is the canonical file for that region;
+    a mismatch there is a real signal. Anything else (a draft for a region that is not
+    registered yet, or a file renamed/copied so its name no longer matches its own
+    region_id) is unrelated operator scratch space and is downgraded to a note instead
+    of hard-failing every other region's deploy and destroy.
+    """
+    canonical_ids = registry_region_ids(registry)
+    blocking: dict[str, RegionValues] = {}
+    notes: list[str] = []
+    for region_id, values in sibling_regions.items():
+        filename = values.source_filename.name if values.source_filename else ""
+        if is_canonical_sibling(filename, canonical_ids, region_id):
+            blocking[region_id] = values
+        else:
+            notes.append(
+                f"{filename or region_id} does not match a canonical registry filename "
+                f"({canonical_sibling_filename(region_id)!r} for a registered region); "
+                "skipping its subnet consistency check."
+            )
+    return blocking, notes
 
 
 def _parse_registry_network(
@@ -476,8 +548,15 @@ def evaluate_subnet_plan(
     regions: Mapping[str, Mapping[str, str]],
     registry: SubnetRegistry | None = None,
     selected_region_id: str | None = None,
+    require_active: bool = True,
 ) -> list[str]:
-    """Validate present tfvars and compare them with the authoritative registry."""
+    """Validate present tfvars and compare them with the authoritative registry.
+
+    require_active gates the registry status check on the selected region: plan/apply
+    must select an `active` allocation, but destroy must accept `reserved` too, since
+    README.md tells operators to leave a decommissioned region's allocation reserved
+    rather than deleting it, and that region still needs to be torn down.
+    """
     errors: list[str] = []
     aggregate_v4 = registry.aggregate_v4 if registry else SUBNET_AGGREGATE_V4
     aggregate_v6 = registry.aggregate_v6 if registry else SUBNET_AGGREGATE_V6
@@ -505,7 +584,7 @@ def evaluate_subnet_plan(
         selected = [region for region in registry.regions if region.region_id == selected_region_id]
         if not selected:
             errors.append(f"{selected_region_id}: no registry entry exists; the selected region must have one active allocation.")
-        elif selected[0].status != "active":
+        elif require_active and selected[0].status != "active":
             errors.append(f"{selected_region_id}: registry allocation is {selected[0].status}, not active; reserved regions cannot be selected.")
         elif selected_region_id not in regions:
             errors.append(f"{selected_region_id}: selected tfvars has no matching local registry consistency entry.")
@@ -713,6 +792,7 @@ def check_region(
     varfile: Path,
     plan_json_path: Path | None,
     registry_path: Path = REGISTRY_PATH,
+    require_active: bool = True,
 ) -> int:
     values = read_tfvars(varfile)
     zone_id = required(values, "cloudflare_zone_id", varfile)
@@ -733,11 +813,13 @@ def check_region(
         return 1
 
     registry_errors, registry = load_subnet_registry(registry_path)
-    sibling_regions, skip_notes = discover_sibling_tfvars(varfile)
+    sibling_regions, skip_notes = discover_sibling_tfvars(varfile, registry)
+    blocking_regions, filter_notes = split_blocking_siblings(sibling_regions, registry)
+    skip_notes = skip_notes + filter_notes
     for note in skip_notes:
         stream = sys.stderr if note.startswith("error:") else sys.stdout
         print(f"==> preflight note: {note}", file=stream)
-    subnet_errors = registry_errors + evaluate_subnet_plan(sibling_regions, registry, region_id)
+    subnet_errors = registry_errors + evaluate_subnet_plan(blocking_regions, registry, region_id, require_active)
     if any(note.startswith("error:") for note in skip_notes):
         subnet_errors.extend(note.removeprefix("error: ").strip() for note in skip_notes if note.startswith("error:"))
     if subnet_errors:
@@ -782,9 +864,20 @@ def main() -> int:
     parser.add_argument("--var-file", required=True, type=Path)
     parser.add_argument("--plan-json", type=Path)
     parser.add_argument("--registry", type=Path, default=REGISTRY_PATH)
+    parser.add_argument(
+        "--require-active",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Require the selected region's registry allocation to be status=active "
+            "(default). terraform.sh passes --no-require-active for destroy, which "
+            "must accept a reserved allocation so a decommissioned region can still "
+            "be torn down."
+        ),
+    )
     args = parser.parse_args()
     try:
-        return check_region(args.region_id, args.var_file, args.plan_json, args.registry)
+        return check_region(args.region_id, args.var_file, args.plan_json, args.registry, args.require_active)
     except RuntimeError as exc:
         print(f"Terraform preflight failed for {args.region_id}.", file=sys.stderr)
         print("Refusing to continue because manual reconciliation is required.", file=sys.stderr)

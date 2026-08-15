@@ -8,7 +8,7 @@ Because of that, drift repair is one command on the regional host:
 sudo cloudgateway-sync-peers
 ```
 
-It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot and on demand from the admin dashboard's **Sync All Regions** action.
+It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. A pass that fails partway still reports what it changed, in a `peer_sync_partial` line carrying the same counters. There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot and on demand from the admin dashboard's **Sync All Regions** action.
 
 ## What the Sync Does
 
@@ -22,11 +22,13 @@ One-directional, Firebase to server. After a pass, the live peer set equals exac
 | Server has a client-classified peer Firebase does not know | Peer is removed - unknown peers are never adopted into Firebase |
 | A sibling region is mesh-enabled and complete/non-overlapping | Mesh peer is applied (re-applied every pass; idempotent, re-resolves the endpoint hostname); endpoint/port/AllowedIPs/keepalive drift is reported as an update |
 | A sibling region is missing mesh config, or its subnet overlaps another mesh candidate | Mesh peer is skipped (`skipped-incomplete` / `skipped-overlap`); this is a configuration failure, not pending work; no peer or route is applied for it |
+| A mesh candidate's endpoint hostname fails to resolve (`wg set peer ... endpoint` resolves it and exits nonzero) | Only that candidate fails: it is not counted as applied, the other candidates are still applied, and the pass exits nonzero after logging `mesh_peer_apply_failed`. Client peer removal runs first, so a revoked user's peer is still removed. A candidate that failed but is still live with exactly its desired ranges keeps its route (it is still carrying traffic); one that never applied, or whose live ranges differ, gets none |
+| A mesh candidate collides with this host's own tunnel network or another candidate, or two candidates share a public key | The whole candidate set is rejected before anything is applied - cryptokey routing is exclusive, so applying either would silently steal ranges from a peer that already owns them. `desired_mesh_peers` filters all three upstream, so a live host reaches this only if that guard is bypassed |
 | This region's own `meshEnabled` is off | Any previously-applied mesh peers and routes are torn down (rollback) |
 
 The sync never creates client docs from server state, and there is no per-peer route deletion path for mesh peers. An unknown server peer is either leftover drift or tampering; both deserve removal.
 
-A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete.
+A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete. `cloudgateway-sync-peers` (boot and post-registration) waits for that lock; `POST /api/admin/sync` takes it non-blocking and answers `409 SYNC_IN_PROGRESS` instead of queueing, so admin retries cannot pile up on the host. Every `wg`/`ip` call and the endpoint DNS lookup are individually time-bounded so a wedged call cannot pin the lock.
 
 ## Mesh Route Reconciliation
 

@@ -110,6 +110,14 @@ variable "boot_volume_vpus_per_gb" {
 variable "wg_interface" {
   type        = string
   description = "WireGuard interface name"
+
+  # wg_interface and wg_rate_limit interpolate unquoted into PostUp/PostDown lines that
+  # wg-quick executes through a shell as root (Infrastructure/OCI/host/bootstrap.sh); this closes
+  # the same shell-injection surface the address/network variables above already validate.
+  validation {
+    condition     = can(regex("^[a-z0-9]{1,15}$", var.wg_interface))
+    error_message = "wg_interface must be 1-15 lowercase alphanumeric characters, for example wg0."
+  }
 }
 
 variable "wg_listen_port" {
@@ -207,6 +215,11 @@ variable "wg_dns_address_v6" {
 variable "wg_rate_limit" {
   type        = string
   description = "Rate limit for new inbound UDP packets on WireGuard port"
+
+  validation {
+    condition     = can(regex("^[0-9]+/(second|minute|hour|day)$", var.wg_rate_limit))
+    error_message = "wg_rate_limit must look like <n>/second|minute|hour|day, for example 25/second."
+  }
 }
 
 variable "wg_rate_limit_burst" {

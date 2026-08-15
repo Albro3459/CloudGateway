@@ -53,6 +53,49 @@ class TerraformWrapperTests(unittest.TestCase):
         self.assertNotIn("region-lifecycle", block)
         self.assertNotIn("verify-drain", block)
 
+    def test_destroy_does_not_require_an_active_registry_allocation(self):
+        # README.md tells operators to leave a decommissioned region's allocation
+        # reserved; destroy must still accept it, unlike plan/apply.
+        block = self._action_block("destroy", "*")
+        self.assertIn("preflight_region \"${REGION_IDS[$i]}\" \"${VARFILES[$i]}\" false", block)
+        self.assertIn("--no-require-active", self.text[self.text.index("save_destroy_plan()"):])
+
+    def test_plan_and_apply_do_not_pass_no_require_active(self):
+        plan_block = self._action_block("plan", "apply")
+        apply_block = self._action_block("apply", "destroy")
+        self.assertNotIn("--no-require-active", plan_block)
+        self.assertNotIn("--no-require-active", apply_block)
+
+    def _run_preflight_region(self, require_active: str) -> subprocess.CompletedProcess[str]:
+        start = self.text.index("preflight_region() {")
+        function = self.text[start : self.text.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "preflight-region.sh"
+            script.write_text(
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                "PREFLIGHT=preflight.py\n"
+                "REGISTRY=registry.json\n"
+                "select_region_workspace() { :; }\n"
+                'python3() { printf "%s\\n" "$*"; }\n'
+                f"{function}\n"
+                f"preflight_region us-test-1 us-test-1.terraform.tfvars {require_active}\n"
+            )
+            # Stock /bin/bash on macOS is 3.2, where expanding an empty array under
+            # `set -u` is an unbound-variable error.
+            return subprocess.run(
+                ["/bin/bash", str(script)], capture_output=True, text=True, check=False
+            )
+
+    def test_preflight_region_runs_under_stock_bash_with_and_without_the_flag(self):
+        without = self._run_preflight_region("true")
+        self.assertEqual(without.returncode, 0, without.stderr)
+        self.assertNotIn("--no-require-active", without.stdout)
+
+        with_flag = self._run_preflight_region("false")
+        self.assertEqual(with_flag.returncode, 0, with_flag.stderr)
+        self.assertIn("--no-require-active", with_flag.stdout)
+
     def test_test_wrapper_reports_direct_target_failure(self):
         test_text = TEST_SCRIPT.read_text()
         start = test_text.index("run_step() {")

@@ -80,12 +80,16 @@ See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
 Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
 
-This deploys new or rebuilt VPN servers from your local branch. It validates the
-listed tfvars files, creates a deploy ref, and applies each region in sequence.
-The host downloads the pinned Caddy binary release and verifies it during
-bootstrap. A normal rebuild keeps the existing WireGuard key, tunnel subnets, and
-endpoint hostname; boot sync restores peers and clients only need to re-resolve
-the endpoint after the public IP changes.
+**This destroys and replaces the existing VPN server in each listed region.** Every
+wrapper apply writes a fresh `source_ref` into user_data, and OCI does not allow
+changing `user_data` on a launched instance, so apply always destroys and recreates
+the OCI instance and changes its public IPv4. It validates the listed tfvars files,
+creates a deploy ref, and applies each region in sequence. The host downloads the
+pinned Caddy binary release and verifies it during bootstrap. A normal rebuild keeps
+the existing WireGuard key, tunnel subnets, and endpoint hostname; boot sync restores
+peers and clients only need to re-resolve the endpoint after the public IP changes.
+If a multi-region apply fails partway through, the script stops; regions already
+applied stay deployed.
 
 Useful forms:
 

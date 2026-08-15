@@ -214,11 +214,21 @@ select_region_workspace() {
   echo "==> workspace: $(terraform workspace show)  var-file: $(basename "$varfile")"
 }
 
+# require_active is required (not optional) so the call site states its intent: destroy - the
+# only caller - passes "false" because README.md tells operators to leave a decommissioned
+# region's allocation reserved and it must still be destroyable. plan and apply run the
+# preflight script directly, with the allocation required to be active.
+# The branch runs the full command twice instead of appending to an array: expanding an empty
+# array under `set -u` is an unbound-variable error on macOS's stock bash 3.2.
 preflight_region() {
-  local region_id="$1" varfile="$2"
+  local region_id="$1" varfile="$2" require_active="$3"
 
   select_region_workspace "$region_id" "$varfile"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY"
+  if [[ "$require_active" == "false" ]]; then
+    python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --no-require-active
+  else
+    python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY"
+  fi
 }
 
 plan_region() {
@@ -249,7 +259,9 @@ save_destroy_plan() {
   select_region_workspace "$region_id" "$varfile"
   terraform plan -destroy -input=false -var-file="$varfile" -out="$planfile"
   terraform show -json "$planfile" > "$planjson"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
+  # --no-require-active: a reserved allocation (the state README.md tells operators to leave a
+  # decommissioned region in) must still be destroyable.
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson" --no-require-active
 }
 
 cd "$TFDIR"
@@ -302,7 +314,7 @@ case "$ACTION" in
   destroy)
     trap cleanup_apply_planfiles EXIT
     for i in "${!REGION_IDS[@]}"; do
-      preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}"
+      preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}" false
       planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan.XXXXXX")"
       planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan-json.XXXXXX")"
       TEMPFILES+=("$planfile" "$planjson")
