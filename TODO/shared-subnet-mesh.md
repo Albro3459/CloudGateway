@@ -77,7 +77,7 @@ The Server Health page shows region enabled state, mesh state, status freshness,
 
 ## Cutover and rollback
 
-The implementation cleanup, bounded three-loop review, and final full validation gate are complete on this branch. The live cutover remains an operator action and must use this exact order:
+The implementation cleanup, bounded three-loop review, and final full validation gate are complete on this branch. The cutover was carried out on 2026-08-13/14 in this order, which any future subnet change must repeat:
 
 1. Verify and backfill `wireguardPort` on every existing Region document; keep mesh disabled until all Region documents have current tunnel CIDRs and verified ports. The repository cannot prove this live state.
 2. Before the Chicago subnet change, disable Chicago mesh membership and run Sync All Regions.
@@ -100,7 +100,7 @@ Rollback of mesh membership is explicit: disable the affected `meshEnabled` flag
 
 ## Checklist and status
 
-Implementation, documentation cleanup, the bounded three-loop review, and the final API, web, infrastructure, and Firebase validation gate are complete on the branch. Live operator actions and the live `wireguardPort` verification/backfill remain unchecked. Do not claim live Firestore or OCI verification from this repository.
+Implementation, documentation cleanup, the bounded three-loop review, and the final API, web, infrastructure, and Firebase validation gate are complete on the branch. The cutover ran on 2026-08-13/14; the evidence is in the repository rather than in a live query, and is cited per item below.
 
 * [x] Region registration and repository models publish tunnel CIDRs and create `meshEnabled: false`.
 * [x] WireGuard mesh peers, subnet-width validation, routes, union reconciliation, and endpoint reapplication.
@@ -113,9 +113,11 @@ Implementation, documentation cleanup, the bounded three-loop review, and the fi
 * [x] Implement strict boolean handling and strict current sync-response failure cards.
 * [x] Fix Terraform address-component DNS/interface comparison.
 * [x] Implement pending versus persistent configuration-failure semantics, auth-generation state reset, and multi-address endpoint drift comparison.
-* [ ] Verify and backfill `wireguardPort` on every existing Region document before removing or depending on no fallback.
-* [ ] Edit live `us-chicago-1.terraform.tfvars` and update the authoritative registry for the cutover.
-* [ ] Delete Chicago client documents, deploy the cutover, enable mesh, Sync All, and perform live verification.
+* [x] Verify and backfill `wireguardPort` on every existing Region document before removing or depending on no fallback. Both Region documents carry `wireguardPort: 51820` with tunnel CIDRs populated in `backups/backup-20260814T143552Z.json`.
+* [x] Edit live `us-chicago-1.terraform.tfvars` and update the authoritative registry for the cutover. The live tfvars is on `10.0.1.0/24` and `fd42:42:42:1::/64`, matching `subnet-registry.json` exactly, and pins `source_ref = "deploy-v1.0.23"`.
+* [x] Delete Chicago client documents, deploy the cutover, enable mesh, Sync All, and perform live verification. The same backup shows all Chicago clients readdressed onto `10.0.1.0/24`, `meshEnabled: true` on both regions, and each `Mesh/*` document holding the other region as an `applied` peer as of 2026-08-14T02:38:57Z.
 * [x] Complete the bounded three-loop review and final full validation gate after the direction change.
 
-The validation gate recorded when this checklist was written covered API, web, infrastructure, and Firebase only - the iOS Server Health work landed after it, so Apple was not represented. `./scripts/test.sh` has since been run across every target, Apple included, on 2026-08-16 after the `shared-subnet-mesh-review-fixes.md` waves landed, and passed. Live operator prerequisites and cutover actions remain pending.
+The validation gate recorded when this checklist was written covered API, web, infrastructure, and Firebase only - the iOS Server Health work landed after it, so Apple was not represented. `./scripts/test.sh` has since been run across every target, Apple included, on 2026-08-16 after the `shared-subnet-mesh-review-fixes.md` waves landed, and passed.
+
+The cutover items above were carried out on 2026-08-13/14 but left unchecked here until 2026-08-16. Check them against the backups and the live tfvars before trusting this list again.
