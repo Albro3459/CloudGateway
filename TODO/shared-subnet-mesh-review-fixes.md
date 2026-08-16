@@ -65,9 +65,9 @@ Both uid-mismatch guards `return` before the `reloadPendingAfterToggle` bookkeep
 
 ### 8. API: `appliedAt` uses the host clock, `updatedAt` uses the server timestamp
 
-`Backend/API/src/firebase.py:write_mesh_status`. Cosmetic.
+`Backend/API/src/firebase.py:write_mesh_status`. Cosmetic, decided.
 
-Per-peer `appliedAt` comes from `utc_now()` on the host; the doc's `updatedAt` uses `_server_timestamp()`. Staleness derives from `updatedAt`, so the 24h logic is drift-immune — only the per-peer "last applied" label a clock-skewed host renders is affected.
+Per-peer `appliedAt` comes from `utc_now()` on the host; the doc's `updatedAt` uses `_server_timestamp()`. Staleness derives from `updatedAt`, so the 24h logic is drift-immune — only the per-peer "last applied" label a clock-skewed host renders is affected. Resolved in favour of a server timestamp; see Decisions.
 
 ### 9. Web: `isReasonStillPresent` default branch reads inverted
 
@@ -85,6 +85,10 @@ For an unrecognized `reasonCode`, "reason still present" is defined as "the targ
 * **Degraded client records are isolated, and their existing peer is preserved.** One malformed Firestore document must not block mesh and route convergence, and must not disconnect a user. Skip the record, keep only its already-live peer, report the degraded record without sensitive data, and continue reconciling. Never build a new peer from invalid data. Where revocation or disabled state can still be validated safely, honor it — a client that is both malformed and revoked still gets its peer removed.
 * **iOS gets a load generation counter.** This is the direct fix for stale results overwriting newer state. `isLoading` gating changes the UX and still does not solve load-versus-load ordering. The "no revision-stamped overrides or load generations" decision in `TODO/ios-server-health.md:28` and `:101` is amended: the discovered race invalidates the assumption it rested on.
 * **The `Login.tsx` correctness fix and the ref consolidation are separate waves.** The inverted comparison is fixed with regression coverage first; collapsing the eight refs into one attempt-state object follows as a lower-priority wave, isolated for easier review and rollback.
+* **`appliedAt` becomes a Firestore server timestamp.** `write_mesh_status` performs one full-document write after reconciliation, and `updatedAt` in that same write already uses server time. `appliedAt` only drives the operator-facing "recorded" label — it does not feed staleness or reconciliation — so server time costs nothing and removes host-clock skew, giving every timestamp in the snapshot one consistent source. Implementation is `applied_at = _server_timestamp()`, still assigned to every peer entry, with `updatedAt` unchanged.
+
+  Verified against the installed SDK rather than assumed, because two things had to hold. `_helpers.extract_fields` walks nested dicts depth-first, so sentinels inside `peers.{regionId}` are extracted as transforms instead of being written as literals. And `render_field_path` backtick-escapes non-identifier segments, so a hyphenated region ID yields ``peers.`us-chicago-1`.appliedAt`` rather than a malformed three-segment path. A test extraction produced both the nested and top-level transforms in one write, with the sentinel correctly stripped from the document body. Firestore applies all request-time transforms in a single write at one timestamp, so every peer in a snapshot shares an instant with `updatedAt`. Peer entries always carry at least `status`, so stripping the sentinel never leaves an empty map.
+
 * **Validation runs per surface after each wave, then the full suite at the end.** Fast attribution when a wave breaks something, plus a real integration gate. This also closes the recorded-coverage gap for the Apple target.
 
 ## Waves
@@ -132,7 +136,8 @@ Sequential after waves 1-3; wave 1 and this wave both touch `wireguard.py`, and 
 Subagent: one, cross-surface but small.
 
 * Promote `_validate_port` to a public name in `wireguard.py` and update `register.py`, or expose a thin public wrapper.
-* Decide `appliedAt`: either move it to a server timestamp for consistency with `updatedAt`, or leave it and note in `docs/api-contract.md` that it is host-clock sourced and only labels display. Either is acceptable; pick one and make the code and doc agree.
+* Replace the host-clock `applied_at = utc_now()` in `write_mesh_status` with `applied_at = _server_timestamp()`, keeping it assigned to every peer entry and leaving `updatedAt` as is. No call-site or schema change: `FirebaseMeshPeerEntry.appliedAt` is already `FirestoreTimestamp`, and both clients already decode it as a timestamp.
+* Confirm the round trip once against the emulator or a real write — the extraction behaviour is verified, but the resolved value should be seen landing on a nested peer entry at least once, since a silently-literal sentinel would surface as an unreadable `appliedAt` on both clients rather than as an error.
 * Correct the `isReasonStillPresent` default branch in `meshHelper.ts` so an unknown reason code means "assume the reason persists", and mirror the same change in the Swift port so the two implementations stay in step.
 
 Validation: `./scripts/test.sh api web apple`
@@ -153,7 +158,7 @@ Sequential, last, so it can record what actually happened.
 
 * `TODO/ios-server-health.md`: amend the "no load generations" decision at `:28` and `:101` to record the race and the counter that replaced it. Remove the stale "web-only" references at `:5` and `:142`.
 * `TODO/shared-subnet-mesh.md`: correct the validation-gate claim at `:121` to state which targets actually ran and when, including Apple.
-* `docs/api-contract.md`: document the degraded-client counter added in wave 1, and the `appliedAt` decision from wave 4 if that is the branch taken.
+* `docs/api-contract.md`: document the degraded-client counter added in wave 1, and state the `appliedAt` semantics precisely — it is when Firestore recorded the host's applied-state snapshot, not the instant WireGuard changed. That is slightly later than the actual application, and deliberately so: a trustworthy source beats a precise one read off an untrusted host clock. Note that it shares its instant with `updatedAt` in the same write.
 * Update this document's checklist.
 
 Validation: manual review; docs-only per `AGENTS.md`.
@@ -167,7 +172,7 @@ Validation: manual review; docs-only per `AGENTS.md`.
 * [ ] Wave 1 — API client isolation, protected-peer sweep, degraded-record reporting, tests
 * [ ] Wave 2 — `ServerHealth.tsx` override retirement, `Login.tsx` uid comparison, tests
 * [ ] Wave 3 — iOS load generation, pending-reload leak, dead branch, tests
-* [ ] Wave 4 — `_validate_port` visibility, `appliedAt` decision, `isReasonStillPresent` in both implementations
+* [ ] Wave 4 — `_validate_port` visibility, `appliedAt` server timestamp, `isReasonStillPresent` in both implementations
 * [ ] Wave 5 — `Login.tsx` ref consolidation
 * [ ] Wave 6 — doc corrections and amended decisions
 * [ ] Final `./scripts/test.sh` gate
