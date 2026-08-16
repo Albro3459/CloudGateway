@@ -233,6 +233,21 @@ final class CloudGatewayMeshStatusTests: XCTestCase {
         XCTAssertFalse(CloudGatewayMeshStatus.buildMeshLinkRows(regions: regions, meshDocs: docs)[0].pending)
     }
 
+    func testTreatsAnUnrecognizedReasonCodeAsAPersistentFailureNotPending() {
+        // The reason-code enum is closed, but a future/unrecognized code must default
+        // to "still present" rather than flip-flopping off snapshot equality.
+        let regions = [makeRegion("us-sanjose-1", meshEnabled: true), makeRegion("us-chicago-1", meshEnabled: true)]
+        var futureReason = peerData()
+        futureReason["status"] = "skipped-incomplete"
+        futureReason["reasonCode"] = "future-reason"
+        let docs: [String: CloudGatewayMeshDoc] = [
+            "us-sanjose-1": meshDoc("us-sanjose-1", meshEnabled: true, peers: ["us-chicago-1": futureReason]),
+            "us-chicago-1": meshDoc("us-chicago-1", meshEnabled: true, peers: ["us-sanjose-1": peerData()]),
+        ]
+
+        XCTAssertFalse(CloudGatewayMeshStatus.buildMeshLinkRows(regions: regions, meshDocs: docs)[0].pending)
+    }
+
     func testDoesNotMarkUnchangedBackendShapedReasonCodesAsPending() {
         // (regionOverrides, peerOverrides, reasonCode)
         let cases: [(nilPublicKey: Bool, nilHostname: Bool, nilPort: Bool, nilV4: Bool, nilV6: Bool, reasonCode: String)] = [

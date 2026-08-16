@@ -121,6 +121,36 @@ final class CloudGatewayServerHealthViewModelTests: XCTestCase {
         XCTAssertTrue(viewModel.dataAvailable)
     }
 
+    // A slow load (A) can resolve after a toggle's own post-success reload
+    // (B) has already applied newer state. Once the toggle clears,
+    // togglingRegionIds.isEmpty passes for A too, so only the generation
+    // counter - not the toggling guard - stops A from clobbering B.
+    func testStaleLoadDoesNotClobberNewerToggleReload() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1", meshEnabled: false), region("us-chicago-1", meshEnabled: false)]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let target = viewModel.regions[0]
+
+        let regionsGateA = AsyncTestGate()
+        service.fetchMeshRegionsGate = regionsGateA
+        let loadA = Task { await viewModel.load() }
+        await waitUntil { service.fetchMeshRegionsCallCount == 2 }
+
+        // Load A is now blocked mid-fetch, having already captured
+        // pre-toggle state. Unblock future fetchMeshRegions calls so the
+        // toggle's own reload (load B) can run to completion ahead of A.
+        service.fetchMeshRegionsGate = nil
+        await viewModel.toggleMesh(region: target)
+        XCTAssertEqual(viewModel.regions.first?.meshEnabled, true)
+
+        await regionsGateA.open()
+        await loadA.value
+
+        // A resolved last but is stale; it must not overwrite B's newer state.
+        XCTAssertEqual(viewModel.regions.first?.meshEnabled, true)
+    }
+
     // MARK: - Toggle
 
     func testToggleRollsBackLocalValueOnWriteFailureAndBannersTheRegion() async {
@@ -248,6 +278,43 @@ final class CloudGatewayServerHealthViewModelTests: XCTestCase {
         await toggle.value
 
         XCTAssertTrue(viewModel.togglingRegionIds.isEmpty)
+        XCTAssertNil(viewModel.bannerText)
+    }
+
+    // Both uid-mismatch early returns used to bail out of toggleMesh before
+    // reaching the reloadPendingAfterToggle bookkeeping, so a load dropped
+    // while this toggle was in flight would leak the flag and its catch-up
+    // reload was silently lost forever. The bookkeeping - and the reload it
+    // triggers - must still run when the toggle itself resolves for a user
+    // who is no longer current.
+    func testDroppedLoadCatchesUpAfterToggleResolvesWithUidMismatch() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1", meshEnabled: false), region("us-chicago-1", meshEnabled: false)]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let target = viewModel.regions[0]
+
+        let writeGate = AsyncTestGate()
+        service.setRegionMeshEnabledGate = writeGate
+        let toggle = Task { await viewModel.toggleMesh(region: target) }
+        await waitUntil { service.setRegionMeshEnabledCallCount == 1 }
+
+        // Dropped because the toggle is still in flight - this is what sets
+        // reloadPendingAfterToggle.
+        await viewModel.load()
+
+        // The toggle resolves for a different signed-in user, and chicago
+        // flips server-side in the meantime.
+        service.currentUser = AuthenticatedUser(uid: "admin-2", email: "other@example.com")
+        service.meshRegions[1] = region("us-chicago-1", meshEnabled: true)
+        await writeGate.open()
+        await toggle.value
+
+        // The pending flag was consumed rather than leaked, and its catch-up
+        // reload actually ran: chicago's new state surfaces instead of
+        // staying silently stale.
+        XCTAssertTrue(viewModel.togglingRegionIds.isEmpty)
+        XCTAssertEqual(viewModel.regions.first { $0.regionId == "us-chicago-1" }?.meshEnabled, true)
         XCTAssertNil(viewModel.bannerText)
     }
 

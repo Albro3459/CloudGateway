@@ -25,6 +25,18 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
     // the page still catches up once every in-flight toggle has cleared,
     // instead of staying stale until the next manual refresh.
     private var reloadPendingAfterToggle = false
+    // Monotonic counter for every fetch-and-apply (load, the post-toggle
+    // reload, syncAll's re-read). Two fetches can resolve out of order - a
+    // slow pull-to-refresh finishing after a toggle's own reload - so a
+    // resolving fetch only applies its results if it is still the newest one
+    // issued, alongside (not instead of) the existing togglingRegionIds/uid
+    // guards.
+    private var loadGeneration = 0
+
+    private func beginLoadGeneration() -> Int {
+        loadGeneration += 1
+        return loadGeneration
+    }
 
     public init(service: any CloudGatewayServicing) {
         self.service = service
@@ -63,18 +75,19 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
 
     public func load() async {
         let uid = service.currentUser?.uid
+        let generation = beginLoadGeneration()
         isLoading = true
         defer { isLoading = false }
         do {
             let (fetchedRegions, fetchedMeshDocs) = try await fetchMeshState()
-            guard service.currentUser?.uid == uid else { return }
+            guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
             guard togglingRegionIds.isEmpty else {
                 reloadPendingAfterToggle = true
                 return
             }
             apply(regions: fetchedRegions, meshDocs: fetchedMeshDocs)
         } catch {
-            guard service.currentUser?.uid == uid else { return }
+            guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
             bannerText = "Unable to load server health data."
         }
     }
@@ -99,20 +112,19 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
         var succeeded = false
         do {
             try await service.setRegionMeshEnabled(regionId: regionId, enabled: newValue)
-            guard service.currentUser?.uid == uid else {
-                togglingRegionIds.remove(regionId)
-                return
+            if service.currentUser?.uid == uid {
+                succeeded = true
             }
-            succeeded = true
         } catch {
-            guard service.currentUser?.uid == uid else {
-                togglingRegionIds.remove(regionId)
-                return
+            if service.currentUser?.uid == uid {
+                setLocalMeshEnabled(regionId: regionId, enabled: originalValue)
+                bannerText = "Unable to update \(region.displayName)."
             }
-            setLocalMeshEnabled(regionId: regionId, enabled: originalValue)
-            bannerText = "Unable to update \(region.displayName)."
         }
 
+        // Both the success and failure paths above fall through to this
+        // bookkeeping even on a uid mismatch, so a pending catch-up reload
+        // is always consumed instead of leaking the flag forever.
         togglingRegionIds.remove(regionId)
         let shouldCatchUpStaleLoad = togglingRegionIds.isEmpty && reloadPendingAfterToggle
         if shouldCatchUpStaleLoad {
@@ -148,15 +160,15 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
         syncResults = outcomes
 
         // The fan-out response is ephemeral; Mesh/* is the durable state the
-        // link rows render, so re-read it once the fan-out settles.
+        // link rows render, so re-read it once the fan-out settles. No
+        // togglingRegionIds guard here: toggleMesh refuses to start while
+        // isSyncing (held for this whole function via defer), so a toggle
+        // can never be in flight at this point.
+        let generation = beginLoadGeneration()
         guard let (fetchedRegions, fetchedMeshDocs) = try? await fetchMeshState() else {
             return
         }
-        guard service.currentUser?.uid == uid else { return }
-        guard togglingRegionIds.isEmpty else {
-            reloadPendingAfterToggle = true
-            return
-        }
+        guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
         apply(regions: fetchedRegions, meshDocs: fetchedMeshDocs)
     }
 
