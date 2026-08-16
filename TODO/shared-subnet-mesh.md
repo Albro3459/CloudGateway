@@ -118,4 +118,4 @@ Implementation, documentation cleanup, the bounded three-loop review, and the fi
 * [ ] Delete Chicago client documents, deploy the cutover, enable mesh, Sync All, and perform live verification.
 * [x] Complete the bounded three-loop review and final full validation gate after the direction change.
 
-The final post-review validation gate passed for API, web, infrastructure, and Firebase. Live operator prerequisites and cutover actions remain pending.
+The validation gate recorded when this checklist was written covered API, web, infrastructure, and Firebase only - the iOS Server Health work landed after it, so Apple was not represented. `./scripts/test.sh` has since been run across every target, Apple included, on 2026-08-16 after the `shared-subnet-mesh-review-fixes.md` waves landed, and passed. Live operator prerequisites and cutover actions remain pending.

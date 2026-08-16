@@ -2,7 +2,7 @@
 
 Goal: bring the iOS admin surface to parity with the web `ServerHealth` page shipped on this branch. Replace the per-region "Sync Region" button with an admin-only Server Health page that owns mesh membership, mesh link status, mesh warnings, and an all-region sync fan-out. No API change: the page uses the existing `POST /api/admin/sync` per region plus direct Firestore reads of `Regions/*` and `Mesh/*`, exactly like the web.
 
-This supersedes the note in `shared-subnet-mesh.md` that Server Health is web-only.
+This supersedes the earlier web-only scoping of Server Health; `shared-subnet-mesh.md` no longer carries that line.
 
 ## Parity target
 
@@ -25,7 +25,7 @@ This supersedes the note in `shared-subnet-mesh.md` that Server Health is web-on
 * **Sync All replaces per-region sync.** `syncSelectedRegion`, `canSyncSelectedRegion`, `syncResult`, `dismissSyncResult`, `CloudGatewaySyncResult`, and `SyncResultView` are deleted. Periphery fails the build on the leftovers, so removal is not optional. The public `syncRegion` goes too — the fan-out is the only caller, so a single-region entry point on the protocols would be dead API.
 * **Strict response parsing, per-region isolation.** A malformed or old-shape response fails that region's card only, mirroring the web's `incompatible-response` failure type. One region failing never aborts the others.
 * **Separate view model.** `CloudGatewayViewModel` is already 1.5k lines and owns tunnel/auth state. Server Health gets its own `@MainActor ObservableObject` with its own `isSyncing`/`isLoading`, so a 45s fan-out never sits behind the dashboard's working overlay.
-* **Simple, gated state.** No revision-stamped overrides or load generations (see stage 5). A toggle is disabled while its own write is in flight, which is what makes the simpler model correct.
+* **Simple, gated state.** No revision-stamped overrides. A toggle is disabled while its own write is in flight, which is what makes the simpler model correct. *Amended after post-merge review:* the original "no load generations" call was wrong. Toggle gating covers toggle-during-load, not load-versus-load, so two loads could still resolve out of order (slow pull-to-refresh, toggle, toggle's own reload, then the stale load landing last and clobbering it). A monotonic load generation was added; see `shared-subnet-mesh-review-fixes.md` finding 1. Overrides stayed out.
 * **New iOS Swift files join the app target automatically, but not Screenshots.** The `CloudGateway` folder is a file-system synchronized group for the app target only; the `CloudGatewayScreenshots` target opts into exactly three files via a `membershipExceptions` list in the pbxproj (`ContentView.swift`, `CloudGatewayTheme.swift`, `Assets.xcassets`). `ContentView` will reference `ServerHealthView`, so every new view file it pulls in must be added to that exception set or the Screenshots target stops building. This is a small, deliberate pbxproj edit.
 
 ## Resolved blockers
@@ -97,8 +97,9 @@ New `CloudGatewayAppCore/CloudGatewayServerHealthViewModel.swift`:
 
 * Published: `regions`, `meshDocs`, `linkRows`, `warnings`, `anyPending`, `isLoading`, `isSyncing`, `syncResults`, `bannerText`, `togglingRegionIds`. Derived values are recomputed once per state change, not on every view read.
 * `load()` reads regions and mesh docs concurrently, then rebuilds derived state.
-* `toggleMesh(region:)` stays deliberately simple: mark the region as toggling (which disables its control), write the single field, then reload on success; on failure revert the local value and show a banner. No revision stamps, no override map, no load generations.
-  * What makes that sound is the gating: the control cannot issue a second write for a region while one is in flight, and `load()` results are dropped while any toggle is in flight, with a reload issued when it completes. The web needed override bookkeeping because a background refresh could land mid-toggle; a single gated refresh path removes the race instead of reconciling it.
+* `toggleMesh(region:)` stays deliberately simple: mark the region as toggling (which disables its control), write the single field, then reload on success; on failure revert the local value and show a banner. No revision stamps, no override map.
+  * The gating does part of the work: the control cannot issue a second write for a region while one is in flight, and `load()` results are dropped while any toggle is in flight, with a reload issued when it completes. The web needed override bookkeeping because a background refresh could land mid-toggle.
+  * It does not do all of it. The claim that "a single gated refresh path removes the race instead of reconciling it" was wrong: the gate is sampled when a fetch resolves, so once every toggle has cleared, a stale in-flight load passes the gate too and overwrites newer state. Each fetch-and-apply path now stamps a monotonic `loadGeneration` and applies its results only if it is still the newest, alongside the existing toggling and uid guards.
 * `syncAll()` targets enabled regions only, then re-reads `Mesh/*` after the fan-out settles (the response is ephemeral; `Mesh/*` is the durable state the link rows render). Mesh toggles and Sync All are mutually exclusive while either runs.
 * Identity guard: capture `service.currentUser?.uid` before each async step and drop results if it changed, matching `performForCurrentUser` in the existing view model. This is the one guard worth keeping — sign-out mid-fan-out must not repopulate the page.
 
@@ -139,7 +140,7 @@ Web, API, Firebase, and infra are untouched by this work — no `./scripts/test.
 
 * `Frontend/Apple/iOS/README.md`: replace the per-region `POST /admin/sync` paragraph with the Server Health surface, the all-region fan-out, the Firestore `Regions`/`Mesh` reads, and the `meshEnabled`-only write. Keep the admin-only log-sensitivity warning.
 * `Frontend/Apple/macOS/README.md`: add the mesh repository methods to the "not yet conformed on macOS" table.
-* `TODO/shared-subnet-mesh.md`: drop the "Server Health page is web-only for this PR" line once this lands.
+* `TODO/shared-subnet-mesh.md`: the "Server Health page is web-only for this PR" line has been dropped.
 
 ## Flagged during audit (web/API, not iOS work)
 

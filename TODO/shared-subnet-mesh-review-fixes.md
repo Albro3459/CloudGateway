@@ -169,13 +169,22 @@ Validation: manual review; docs-only per `AGENTS.md`.
 
 ## Checklist
 
-* [ ] Wave 1 — API client isolation, protected-peer sweep, degraded-record reporting, tests
-* [ ] Wave 2 — `ServerHealth.tsx` override retirement, `Login.tsx` uid comparison, tests
-* [ ] Wave 3 — iOS load generation, pending-reload leak, dead branch, tests
-* [ ] Wave 4 — `_validate_port` visibility, `appliedAt` server timestamp, `isReasonStillPresent` in both implementations
-* [ ] Wave 5 — `Login.tsx` ref consolidation
-* [ ] Wave 6 — doc corrections and amended decisions
-* [ ] Final `./scripts/test.sh` gate
+* [x] Wave 1 — API client isolation, protected-peer sweep, degraded-record reporting, tests
+* [x] Wave 2 — `ServerHealth.tsx` override retirement, `Login.tsx` uid comparison, tests
+* [x] Wave 3 — iOS load generation, pending-reload leak, dead branch, tests
+* [x] Wave 4 — `validate_port` visibility, `appliedAt` server timestamp, `isReasonStillPresent` in both implementations
+* [x] Wave 5 — `Login.tsx` ref consolidation
+* [x] Wave 6 — doc corrections and amended decisions
+* [x] Final `./scripts/test.sh` gate
+
+## Outcomes
+
+Recorded where implementation diverged from the plan, so a later pass does not re-derive it.
+
+* **Finding 3 resolved by deletion, not correction.** Pointing `Login.tsx:289` at `authUidRef.current` makes the condition provably always false: the observer assigns `authUidRef.current = uid` in the same synchronous callback immediately above. That trades a wrong branch for a dead one, which finding 6 rejects elsewhere in this document. The window it guarded — an observer fire before the manual attempt's promise resolves, when `manualUserUid` is still unset — has no meaningful uid comparison available, because a competing switch and this attempt's own completion are indistinguishable at that point. `handleLogin` already catches it once the promise resolves, comparing `authUid` against `result.user.uid`. The branch and the then-write-only `manualStartUidRef` were removed, leaving the reachable branch. Wave 5 therefore consolidated seven refs, not eight.
+* **Wave 1's key validation was stricter than the existing tests.** `desired_peers` now runs `is_valid_wireguard_key` on every active client, and much of the suite used human-readable placeholder keys (`"active-public-key"`, `"fake-public-existing"`) that are not valid base64. Those clients were silently reclassified as degraded, breaking 7 passing tests; the fixtures were moved to the repo's valid-format fakes. Worth confirming no live `Instances/*` document carries a key that fails this predicate — such a client is now dropped from the desired set, but not disconnected. The protection sweep is not what saves it: `sync.py:69-70` gates `protected_keys` on `valid_key`, so an invalid-key record is left unprotected. It survives because a key that fails the predicate cannot match anything on the interface in the first place — every key in `wg show` passed `_validate_key` at `add_peer` time — so the removal sweep has nothing to tear down. Protection covers the other degraded case, a valid key with a malformed tunnel IP. The failure mode is therefore display-level either way.
+* **`appliedAt` round trip was exercised, not just reasoned about.** Ran against the offline `demo-cloudgateway` Firestore emulator with a throwaway harness: `peers.us-chicago-1.appliedAt` and `updatedAt` both resolved to identical real timestamps in one write, confirming the sentinel is extracted as a transform at the nested hyphenated path rather than stored as a literal.
+* **`_validate_port` became `validate_port`,** a plain rename rather than a wrapper, matching the module's existing split between raising `validate_*` helpers and boolean `is_valid_*` predicates.
 
 ## Not changing
 

@@ -242,6 +242,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "meshRoutesAdded": 0,
   "meshRoutesRemoved": 0,
   "meshStatusWritten": true,
+  "clientPeersDegraded": 0,
   "meshPeers": [
     {
       "regionId": "us-sanjose-1",
@@ -280,6 +281,17 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   reinstalled will see responses without it. Treat absent as unknown and render nothing - do not
   treat it as a missing required field, or every not-yet-upgraded region reports
   `INCOMPATIBLE_RESPONSE` during a rollout.
+- `clientPeersDegraded` counts active client documents this pass refused to build a peer from
+  because their public key or tunnel IP was missing or malformed. Such a record is skipped rather
+  than fatal: it is excluded from the desired set, mesh reconciliation and the route sweep still
+  run to completion, and - when its public key is at least syntactically valid - its already-live
+  peer is protected from the unknown-peer removal sweep so a malformed document never disconnects
+  a connected user. Protection follows status, not shape: a degraded record that is also revoked
+  or no longer active is not protected, and its peer is removed normally. A non-zero count means
+  an `Instances/*` document needs repair; the response, the audit log, and the
+  `client_peer_degraded` log event all report the count and the region only - never the public
+  key, owner email, client name, or tunnel IP. Like `meshStatusWritten`, the field is required on
+  the server and **optional for consumers**, for the same staggered-rollout reason.
 - `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
   `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. `skipped-overlap` and
   `skipped-incomplete` are persistent configuration failures, not pending work; runtime overlap
@@ -288,6 +300,13 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   invalid fields. It deliberately omits the peer's WireGuard public key - the durable
   `Mesh/{regionId}` Firestore doc carries it. The current response shape is strict: missing
   `meshUpdated` or other required fields is incompatible.
+- `appliedAt` on each `Mesh/{regionId}.peers.*` entry is a Firestore server timestamp: the instant
+  Firestore **recorded** the host's applied-state snapshot, not the instant WireGuard actually
+  changed. It is slightly later than the real application, and deliberately so - a trustworthy
+  source beats a precise one read off an untrusted host clock. Because `write_mesh_status` persists
+  the snapshot in a single write, every peer's `appliedAt` shares its instant with the document's
+  `updatedAt`. Staleness is derived from `updatedAt`, so nothing in the 24h logic depends on
+  `appliedAt`; it is an operator-facing "last recorded" label only.
 - `log` is an admin audit artifact. It can include user emails, client names,
   client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
 
