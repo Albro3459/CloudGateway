@@ -53,6 +53,7 @@ from src.wireguard import (
     WireGuardKeypair,
     WireGuardManager,
     is_subnet_of,
+    is_valid_wireguard_key,
     mesh_peer_drifted,
     soft_normalize_network,
     validate_mesh_peers,
@@ -776,6 +777,7 @@ class FakeWireGuardManager(WireGuardManager):
         mesh: Sequence[MeshPeer] = (),
         known_mesh_networks: Sequence[str] = (),
         known_region_keys: Sequence[str] = (),
+        protected_client_keys: Sequence[str] = (),
     ) -> PeerSyncResult:
         self._require_lock()
         self.sync_calls += 1
@@ -791,6 +793,7 @@ class FakeWireGuardManager(WireGuardManager):
         )
         mesh_by_key = {peer.public_key: peer for peer in validated_mesh}
         known_keys = set(known_region_keys) | set(mesh_by_key)
+        protected_keys = {key for key in protected_client_keys if is_valid_wireguard_key(key)}
 
         changes: list[PeerChange] = []
         for public_key, ips in desired.items():
@@ -807,7 +810,7 @@ class FakeWireGuardManager(WireGuardManager):
         # apply phase so an unreachable mesh endpoint cannot block it.
         mesh_changes: list[MeshPeerChange] = []
         for public_key in set(self.peers) | set(self.mesh_peers):
-            if public_key in desired or public_key in mesh_by_key:
+            if public_key in desired or public_key in mesh_by_key or public_key in protected_keys:
                 continue
             if public_key in self.mesh_peers and self.fail_mesh_remove_count:
                 self.fail_mesh_remove_count -= 1

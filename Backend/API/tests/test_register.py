@@ -169,7 +169,7 @@ def test_serving_region_keeps_client_peers_when_registration_is_not_ready():
 
     run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
 
-    assert desired_peers(repo, REGION_ID) == {
+    assert desired_peers(repo, REGION_ID).peers == {
         FAKE_PUBLIC_KEY: (client.assigned_tunnel_ipv4, client.assigned_tunnel_ipv6)
     }
 

@@ -10,7 +10,7 @@ from .logs import log_event, setup_logging
 from .notifications import create_ses_client, send_deployment_email
 from .repository import FirebaseRepository, RegionDoc, RegionRegistration
 from .settings import Settings
-from .wireguard import _validate_port, validate_local_tunnel_settings
+from .wireguard import validate_local_tunnel_settings, validate_port
 
 logger = logging.getLogger("src.register")
 
@@ -92,7 +92,7 @@ def edge_ready(api_hostname: str, *, region_id: str, attempts: int = 6, delay: f
 
 
 def build_registration(settings: Settings, public_ipv4: str) -> RegionRegistration:
-    wireguard_port = _validate_port(settings.wg_port)
+    wireguard_port = validate_port(settings.wg_port)
     tunnel_network_v4, tunnel_network_v6, dns_ipv4, dns_ipv6 = validate_local_tunnel_settings(
         tunnel_network_v4=settings.wg_tunnel_ipv4_cidr,
         tunnel_network_v6=settings.wg_tunnel_ipv6_cidr,

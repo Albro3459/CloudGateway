@@ -209,13 +209,18 @@ class WireGuardManager(ABC):
         mesh: Sequence[MeshPeer] = (),
         known_mesh_networks: Sequence[str] = (),
         known_region_keys: Sequence[str] = (),
+        protected_client_keys: Sequence[str] = (),
     ) -> PeerSyncResult:
         """Make the live peer set (clients + mesh) and mesh routes equal the desired union.
 
         Caller holds lock(). Mesh peers are always re-applied (idempotent, and this
         re-resolves each endpoint hostname). A live peer is classified as mesh iff its
         public key is in `mesh` or `known_region_keys`; everything else is judged
-        against `desired` (client peers) and removed if unknown.
+        against `desired` (client peers) and removed if unknown, unless its key is in
+        `protected_client_keys` - a degraded Firebase client record (invalid tunnel IP)
+        whose status still belongs in the desired set, so its already-live peer must
+        survive the sweep instead of being torn down as unknown. A key that is not a
+        syntactically valid WireGuard key protects nothing.
 
         Unknown-peer removal runs before the mesh apply phase, and each mesh candidate
         is applied in isolation, so one unreachable mesh endpoint cannot leave a revoked
@@ -245,7 +250,7 @@ class LocalWireGuardManager(WireGuardManager):
         self.lock_path = Path(lock_path)
         self.server_public_key = _validate_key(server_public_key, "server public key")
         self.endpoint_host = _validate_endpoint_host(endpoint_host)
-        self.listen_port = _validate_port(listen_port)
+        self.listen_port = validate_port(listen_port)
         (
             self.tunnel_network_v4,
             self.tunnel_network_v6,
@@ -359,6 +364,7 @@ class LocalWireGuardManager(WireGuardManager):
         mesh: Sequence[MeshPeer] = (),
         known_mesh_networks: Sequence[str] = (),
         known_region_keys: Sequence[str] = (),
+        protected_client_keys: Sequence[str] = (),
     ) -> PeerSyncResult:
         validated_clients: dict[str, tuple[str, str]] = {}
         for public_key, (tunnel_ipv4, tunnel_ipv6) in desired.items():
@@ -378,6 +384,9 @@ class LocalWireGuardManager(WireGuardManager):
         # Known region keys are used only for classification (never applied), so a
         # malformed value never aborts the pass - it just fails to match.
         known_keys = set(known_region_keys) | set(mesh_by_key)
+        # A malformed key protects nothing - it cannot match a live peer, which is
+        # always keyed by a syntactically valid WireGuard public key.
+        protected_keys = {key for key in protected_client_keys if is_valid_wireguard_key(key)}
 
         current = self.peer_snapshots()
 
@@ -397,7 +406,7 @@ class LocalWireGuardManager(WireGuardManager):
         # the only removal path for peers orphaned by a hard-deleted account.
         mesh_changes: list[MeshPeerChange] = []
         for public_key in current:
-            if public_key in validated_clients or public_key in mesh_by_key:
+            if public_key in validated_clients or public_key in mesh_by_key or public_key in protected_keys:
                 continue
             self._remove_peer_command(_validate_key(public_key, "peer public key"))
             if public_key in known_keys:
@@ -812,12 +821,23 @@ def _validate_ip_address(value: str, version: int, label: str) -> str:
     return str(address)
 
 
-def _validate_ip_interface(value: str, version: int, prefix_length: int, label: str) -> str:
+def _parse_tunnel_ip_interface(
+    value: object, version: int, prefix_length: int
+) -> ipaddress.IPv4Interface | ipaddress.IPv6Interface | None:
+    if not isinstance(value, str):
+        return None
     try:
         address = ipaddress.ip_interface(value)
-    except ValueError as exc:
-        raise WireGuardApplyFailedError(f"Invalid WireGuard {label}.") from exc
+    except ValueError:
+        return None
     if address.version != version or address.network.prefixlen != prefix_length:
+        return None
+    return address
+
+
+def _validate_ip_interface(value: str, version: int, prefix_length: int, label: str) -> str:
+    address = _parse_tunnel_ip_interface(value, version, prefix_length)
+    if address is None:
         raise WireGuardApplyFailedError(f"Invalid WireGuard {label}.")
     return str(address)
 
@@ -933,7 +953,7 @@ def _validate_mesh_peer(peer: MeshPeer, tunnel_network_v4: str, tunnel_network_v
     validated = MeshPeer(
         public_key=_validate_key(peer.public_key, "mesh peer public key"),
         endpoint_host=_validate_endpoint_host(peer.endpoint_host),
-        endpoint_port=_validate_port(peer.endpoint_port),
+        endpoint_port=validate_port(peer.endpoint_port),
         allowed_network_v4=_validate_mesh_network(peer.allowed_network_v4, 4, "mesh allowed network v4"),
         allowed_network_v6=_validate_mesh_network(peer.allowed_network_v6, 6, "mesh allowed network v6"),
     )
@@ -973,7 +993,7 @@ def mesh_peer_drifted(
     )
 
 
-def _validate_port(port: int | None) -> int:
+def validate_port(port: int | None) -> int:
     if not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535:
         raise WireGuardApplyFailedError("Invalid WireGuard listen port.")
     return port
@@ -1001,3 +1021,10 @@ def is_valid_endpoint_host(value: object) -> bool:
 
 def is_valid_port(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+
+
+def is_valid_tunnel_ip(value: object, version: int) -> bool:
+    """Same host-address check `sync_peers` applies to a client tunnel IP: a
+    single-host interface (/32 for v4, /128 for v6) of the given family."""
+    prefix_length = 32 if version == 4 else 128
+    return _parse_tunnel_ip_interface(value, version, prefix_length) is not None

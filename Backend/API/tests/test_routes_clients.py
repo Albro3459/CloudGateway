@@ -7,6 +7,7 @@ from src.errors import FirebaseWriteFailedError
 from src.repository import RegionDoc
 
 from .conftest import REGION_ID
+from .fakes import FAKE_PUBLIC_KEY_2
 from .test_errors import assert_error_shape
 
 
@@ -45,7 +46,7 @@ def create_active_client(repository, wireguard, *, uid: str = "user-1"):
         owner_uid=uid,
         region_id=REGION_ID,
         client_id=client.client_id,
-        client_public_key="fake-public-existing",
+        client_public_key=FAKE_PUBLIC_KEY_2,
         wireguard_config="[Interface]\nPrivateKey = hidden",
     )
     wireguard.peers[active.client_public_key] = (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6)
@@ -336,7 +337,7 @@ def test_delete_client_wireguard_failure_keeps_firebase_active(client, repositor
     assert_error_shape(response.json(), "WIREGUARD_APPLY_FAILED")
     stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
     assert stored.status == ClientStatus.ACTIVE
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
     assert wireguard.remove_peer_calls == 1
 
 
@@ -353,7 +354,7 @@ def test_delete_client_normal_user_cannot_remove_another_users_client(client, re
 
     assert response.status_code == 403
     assert_error_shape(response.json(), "ADMIN_REQUIRED")
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
 
 
 def test_delete_client_admin_can_remove_any_users_client(client, repository, wireguard):
@@ -404,7 +405,7 @@ def test_delete_client_mismatched_document_fields_returns_not_found_before_peer_
 
     assert response.status_code == 404
     assert_error_shape(response.json(), "CLIENT_NOT_FOUND")
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
 
 
 def test_delete_client_uses_removed_status_even_if_document_was_already_removed(client, repository, wireguard):

@@ -182,7 +182,7 @@ class FirestoreRepository(FirebaseRepository):
     def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:
         # Full replacement (not merge): peers that fell out of the desired set must
         # disappear from the doc rather than lingering as stale entries.
-        applied_at = utc_now()
+        applied_at = _server_timestamp()
         peers_data = {}
         for peer in peers:
             peer_data: dict[str, Any] = {

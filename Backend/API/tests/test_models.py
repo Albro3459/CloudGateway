@@ -102,6 +102,7 @@ def test_admin_sync_response_exposes_mesh_route_counts():
         mesh_routes_added=2,
         mesh_routes_removed=1,
         mesh_status_written=True,
+        client_peers_degraded=0,
         mesh_peers=[],
     )
 

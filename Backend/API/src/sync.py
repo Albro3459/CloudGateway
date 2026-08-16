@@ -20,10 +20,21 @@ from .wireguard import (
     is_subnet_of,
     is_valid_endpoint_host,
     is_valid_port,
+    is_valid_tunnel_ip,
     is_valid_wireguard_key,
 )
 
 logger = logging.getLogger("src.sync")
+
+
+@dataclass(frozen=True)
+class DesiredClientPeers:
+    peers: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Public keys of degraded-but-still-active records: a syntactically valid key
+    # whose tunnel IP is missing/corrupt. Threaded into sync_peers so the removal
+    # sweep does not tear down that client's already-live peer as unknown.
+    protected_keys: frozenset[str] = frozenset()
+    degraded_count: int = 0
 
 
 def desired_peers(
@@ -31,15 +42,33 @@ def desired_peers(
     region_id: str,
     *,
     local_region: RegionDoc | None = None,
-) -> dict[str, tuple[str, str]]:
+) -> DesiredClientPeers:
     if local_region is None:
         local_region = repository.get_region(region_id)
     if local_region is None or local_region.enabled is not True:
-        return {}
-    return {
-        client.client_public_key: (client.assigned_tunnel_ipv4, client.assigned_tunnel_ipv6)
-        for client in repository.list_active_clients(region_id)
-    }
+        return DesiredClientPeers()
+
+    peers: dict[str, tuple[str, str]] = {}
+    protected_keys: set[str] = set()
+    degraded_count = 0
+    for client in repository.list_active_clients(region_id):
+        valid_key = is_valid_wireguard_key(client.client_public_key)
+        complete = (
+            valid_key
+            and is_valid_tunnel_ip(client.assigned_tunnel_ipv4, 4)
+            and is_valid_tunnel_ip(client.assigned_tunnel_ipv6, 6)
+        )
+        if complete:
+            peers[client.client_public_key] = (client.assigned_tunnel_ipv4, client.assigned_tunnel_ipv6)
+            continue
+        # Excluded from the desired set, not fatal: an invalid public key or tunnel
+        # IP must not abort the pass. A record with a valid key is still active
+        # (list_active_clients already filters by status), so its live peer is
+        # protected from the removal sweep instead of being torn down as unknown.
+        degraded_count += 1
+        if valid_key:
+            protected_keys.add(client.client_public_key)
+    return DesiredClientPeers(peers=peers, protected_keys=frozenset(protected_keys), degraded_count=degraded_count)
 
 
 @dataclass(frozen=True)
@@ -338,6 +367,10 @@ class SyncOutcome:
     # persisted. The dashboard reads mesh link state from that snapshot, so it
     # would otherwise render the previous pass's state as if it were current.
     mesh_status_written: bool = True
+    # Client records excluded from the desired set this pass (invalid public key
+    # or tunnel IP). Their already-live peer is protected, not removed - see
+    # DesiredClientPeers.
+    degraded_client_peers: int = 0
 
 
 def run_sync(
@@ -354,6 +387,14 @@ def run_sync(
     with wireguard.lock(blocking=blocking):
         local_region = repository.get_region(settings.region_id)
         desired = desired_peers(repository, settings.region_id, local_region=local_region)
+        if desired.degraded_count:
+            log_event(
+                logger,
+                Event.CLIENT_PEER_DEGRADED,
+                level=logging.WARNING,
+                region_id=settings.region_id,
+                degraded_count=desired.degraded_count,
+            )
         # Peering only considers enabled regions, but classification considers every
         # region doc: a disabled or rekeyed region's live peer is still a server peer,
         # not a client peer, and its route is not an unclaimed one to reclaim.
@@ -374,10 +415,11 @@ def run_sync(
         )
 
         result = wireguard.sync_peers(
-            desired,
+            desired.peers,
             mesh=mesh.peers,
             known_mesh_networks=known_mesh_networks,
             known_region_keys=known_region_keys,
+            protected_client_keys=tuple(desired.protected_keys),
         )
         mesh_status_written = True
         try:
@@ -404,6 +446,7 @@ def run_sync(
         mesh_candidates=mesh.candidates,
         mesh_region_by_key={key: tuple(owners) for key, owners in key_owners.items()},
         mesh_status_written=mesh_status_written,
+        degraded_client_peers=desired.degraded_count,
     )
 
 
@@ -416,10 +459,14 @@ def build_sync_audit_log(
     mesh_enabled: bool,
     mesh_candidates: Sequence[MeshPeerState] = (),
     mesh_region_by_key: Mapping[str, tuple[str, ...] | str] | None = None,
+    degraded_client_peers: int = 0,
 ) -> str:
     # Plain text only (no ANSI/color) so the file reads back cleanly. Lists the
     # client peers each pass added/updated/removed; removed peers include Firebase
     # client details when a non-active doc with the same public key still exists.
+    # The summary also reports how many client records were degraded (invalid
+    # public key or tunnel IP) and excluded from the desired set this pass - a
+    # count only, never which record or any of its fields.
     # The mesh section is server metadata only (region IDs, CIDRs, endpoint
     # hostnames) - never a public key, never per-user data.
     mesh_region_by_key = mesh_region_by_key or {}
@@ -429,6 +476,7 @@ def build_sync_audit_log(
         f"syncedAt: {synced_at.isoformat()}",
         (
             f"summary: added={result.added} updated={result.updated} removed={result.removed} "
+            f"clientPeersDegraded={degraded_client_peers} "
             f"meshApplied={result.mesh_applied} meshAdded={result.mesh_added} meshUpdated={result.mesh_updated} "
             f"meshRemoved={result.mesh_removed} meshRoutesAdded={result.routes_added} meshRoutesRemoved={result.routes_removed}"
         ),
@@ -546,6 +594,7 @@ def main() -> int:
         mesh_routes_added=outcome.result.routes_added,
         mesh_routes_removed=outcome.result.routes_removed,
         mesh_status_written=outcome.mesh_status_written,
+        degraded_client_peers=outcome.degraded_client_peers,
     )
     return 0
 

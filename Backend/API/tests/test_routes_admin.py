@@ -155,6 +155,7 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
     assert payload["meshRoutesAdded"] == 2
     assert payload["meshRoutesRemoved"] == 0
     assert payload["meshStatusWritten"] is True
+    assert payload["clientPeersDegraded"] == 0
     assert payload["noChanges"] is False
     assert payload["meshPeers"] == [
         {
@@ -169,6 +170,23 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
     # The pinned contract deliberately omits the mesh peer public key.
     assert "publicKey" not in response.text
     assert "mesh: enabled=True" in payload["log"]
+
+
+def test_admin_sync_response_reports_degraded_client_peer_count(client, repository, wireguard):
+    seed_region(repository)
+    active = create_active_client(repository, wireguard)
+    repository.clients[("user-1", REGION_ID, active.client_id)] = replace(
+        active, assigned_tunnel_ipv4="not-an-ip"
+    )
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["clientPeersDegraded"] == 1
+    assert "clientPeersDegraded=1" in payload["log"]
+    assert active.client_public_key not in payload["log"]
+    assert active.owner_email not in payload["log"]
 
 
 @pytest.mark.parametrize(

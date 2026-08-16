@@ -142,6 +142,7 @@ class AdminSyncResponse(ApiModel):
     mesh_routes_added: int
     mesh_routes_removed: int
     mesh_status_written: bool
+    client_peers_degraded: int
     mesh_peers: list[AdminSyncMeshPeer]
 
 

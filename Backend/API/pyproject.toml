@@ -47,5 +47,6 @@ ignore_names = [
     "health_status",
     "updated_at",
     "created_at",
+    "client_peers_degraded",
 ]
 min_confidence = 60

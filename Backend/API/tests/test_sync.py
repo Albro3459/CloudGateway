@@ -1,3 +1,4 @@
+import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import cast
@@ -16,6 +17,7 @@ from .fakes import (
     FAKE_MESH_PUBLIC_KEY_2,
     FAKE_MESH_PUBLIC_KEY_3,
     FAKE_PUBLIC_KEY,
+    FAKE_PUBLIC_KEY_2,
     FakeRepository,
     FakeWireGuardManager,
 )
@@ -72,7 +74,7 @@ def activate(repository: FakeRepository, client, public_key: str):
 
 def test_desired_peers_only_includes_active_clients_with_keys():
     repository = make_repository()
-    active = activate(repository, reserve(repository), "active-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     reserve(repository, client_name="still creating")
     removed = activate(repository, reserve(repository, client_name="gone"), "removed-public-key")
     repository.clients[(removed.owner_uid, REGION_ID, removed.client_id)] = replace(
@@ -81,14 +83,16 @@ def test_desired_peers_only_includes_active_clients_with_keys():
 
     desired = desired_peers(repository, REGION_ID)
 
-    assert desired == {
-        "active-public-key": (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6),
+    assert desired.peers == {
+        FAKE_PUBLIC_KEY: (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6),
     }
+    assert desired.protected_keys == frozenset()
+    assert desired.degraded_count == 0
 
 
 def test_run_sync_restores_missing_peer_and_removes_unknown_peer():
     repository = make_repository()
-    active = activate(repository, reserve(repository), "active-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     wireguard = FakeWireGuardManager()
     wireguard.peers["unknown-public-key"] = ("10.0.0.9/32", "fd42:42:42::9/128")
 
@@ -96,21 +100,21 @@ def test_run_sync_restores_missing_peer_and_removes_unknown_peer():
 
     assert (outcome.result.added, outcome.result.updated, outcome.result.removed) == (1, 0, 1)
     assert wireguard.peers == {
-        "active-public-key": (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6),
+        FAKE_PUBLIC_KEY: (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6),
     }
     assert wireguard.locked is False
 
 
 def test_run_sync_fixes_drifted_allowed_ips():
     repository = make_repository()
-    active = activate(repository, reserve(repository), "active-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     wireguard = FakeWireGuardManager()
-    wireguard.peers["active-public-key"] = ("10.0.0.9/32", "fd42:42:42::9/128")
+    wireguard.peers[FAKE_PUBLIC_KEY] = ("10.0.0.9/32", "fd42:42:42::9/128")
 
     outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
 
     assert (outcome.result.added, outcome.result.updated, outcome.result.removed) == (0, 1, 0)
-    assert wireguard.peers["active-public-key"] == (
+    assert wireguard.peers[FAKE_PUBLIC_KEY] == (
         active.assigned_tunnel_ipv4,
         active.assigned_tunnel_ipv6,
     )
@@ -129,7 +133,7 @@ def test_run_sync_with_no_clients_clears_all_peers():
 
 def test_run_sync_with_disabled_local_region_clears_client_peers():
     repository = make_repository()
-    active = activate(repository, reserve(repository), "active-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     repository.regions[REGION_ID] = replace(repository.regions[REGION_ID], enabled=False)
     wireguard = FakeWireGuardManager()
     wireguard.peers[active.client_public_key] = (
@@ -156,7 +160,7 @@ def test_run_sync_with_missing_region_doc_is_an_empty_success():
 
 def test_run_sync_with_active_client_and_missing_region_doc_does_not_readd_peer():
     repository = make_repository()
-    active = activate(repository, reserve(repository), "active-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     repository.regions.pop(REGION_ID)
     wireguard = FakeWireGuardManager()
     wireguard.peers[active.client_public_key] = (
@@ -172,6 +176,106 @@ def test_run_sync_with_active_client_and_missing_region_doc_does_not_readd_peer(
 
     assert outcome.result.removed == 1
     assert wireguard.peers == {}
+
+
+# --- degraded client peers ---------------------------------------------------
+
+
+def test_malformed_client_tunnel_ip_does_not_block_mesh_convergence():
+    repository = make_repository()
+    repository.regions[REGION_ID] = mesh_ready_local_region()
+    healthy = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
+    degraded = activate(repository, reserve(repository, client_name="degraded"), FAKE_PUBLIC_KEY_2)
+    repository.clients[(degraded.owner_uid, REGION_ID, degraded.client_id)] = replace(
+        degraded, assigned_tunnel_ipv4="not-an-ip"
+    )
+    repository.regions["us-other-1"] = remote_region("us-other-1", public_key=FAKE_MESH_PUBLIC_KEY)
+    wireguard = FakeWireGuardManager()
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert healthy.client_public_key in wireguard.peers
+    assert outcome.result.added == 1
+    assert outcome.result.mesh_applied == 1
+    assert outcome.mesh_candidates[0].status == MeshPeerStatus.APPLIED
+    assert outcome.degraded_client_peers == 1
+
+
+def test_degraded_clients_live_peer_survives_removal_sweep():
+    repository = make_repository()
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
+    repository.clients[(active.owner_uid, REGION_ID, active.client_id)] = replace(
+        active, assigned_tunnel_ipv4="not-an-ip"
+    )
+    wireguard = FakeWireGuardManager()
+    wireguard.peers[FAKE_PUBLIC_KEY] = ("10.0.0.9/32", "fd42:42:42::9/128")
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert wireguard.peers[FAKE_PUBLIC_KEY] == ("10.0.0.9/32", "fd42:42:42::9/128")
+    assert (outcome.result.added, outcome.result.updated, outcome.result.removed) == (0, 0, 0)
+    assert outcome.degraded_client_peers == 1
+
+
+def test_degraded_and_removed_clients_peer_is_still_removed():
+    repository = make_repository()
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
+    repository.clients[(active.owner_uid, REGION_ID, active.client_id)] = replace(
+        active, assigned_tunnel_ipv4="not-an-ip", status=ClientStatus.REMOVED
+    )
+    wireguard = FakeWireGuardManager()
+    wireguard.peers[FAKE_PUBLIC_KEY] = ("10.0.0.9/32", "fd42:42:42::9/128")
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert FAKE_PUBLIC_KEY not in wireguard.peers
+    assert outcome.result.removed == 1
+    # list_active_clients already excludes non-active status, so a revoked
+    # record is never counted as degraded - it simply never reaches the loop.
+    assert outcome.degraded_client_peers == 0
+
+
+def test_degraded_client_peer_logs_no_sensitive_fields(caplog):
+    repository = make_repository()
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
+    repository.clients[(active.owner_uid, REGION_ID, active.client_id)] = replace(
+        active, assigned_tunnel_ipv4="not-an-ip"
+    )
+    wireguard = FakeWireGuardManager()
+
+    with caplog.at_level(logging.WARNING, logger="src.sync"):
+        outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    assert outcome.degraded_client_peers == 1
+    assert "client_peer_degraded" in caplog.text
+    for leaked in (FAKE_PUBLIC_KEY, active.owner_email, active.client_name, active.assigned_tunnel_ipv6):
+        assert leaked not in caplog.text
+
+
+def test_degraded_client_peer_omitted_from_audit_log():
+    repository = make_repository()
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
+    repository.clients[(active.owner_uid, REGION_ID, active.client_id)] = replace(
+        active, assigned_tunnel_ipv4="not-an-ip"
+    )
+    wireguard = FakeWireGuardManager()
+
+    outcome = run_sync(repository=repository, wireguard=wireguard, settings=make_settings())
+
+    log = build_sync_audit_log(
+        region_id=REGION_ID,
+        synced_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        result=outcome.result,
+        clients_by_key={active.client_public_key: active},
+        mesh_enabled=outcome.mesh_enabled,
+        mesh_candidates=outcome.mesh_candidates,
+        mesh_region_by_key=outcome.mesh_region_by_key,
+        degraded_client_peers=outcome.degraded_client_peers,
+    )
+
+    assert "clientPeersDegraded=1" in log
+    for leaked in (FAKE_PUBLIC_KEY, active.owner_email, active.client_name, active.assigned_tunnel_ipv6):
+        assert leaked not in log
 
 
 # --- desired_mesh_peers -----------------------------------------------------
@@ -681,7 +785,7 @@ def test_run_sync_reports_mesh_status_written_on_success():
 def test_malformed_mesh_candidate_does_not_block_valid_client_or_mesh():
     repository = make_repository()
     repository.regions[REGION_ID] = mesh_ready_local_region()
-    active = activate(repository, reserve(repository), "client-public-key")
+    active = activate(repository, reserve(repository), FAKE_PUBLIC_KEY)
     repository.regions["bad"] = remote_region("bad", public_key=FAKE_MESH_PUBLIC_KEY, wireguard_port=None)
     repository.regions["good"] = remote_region("good", public_key=FAKE_MESH_PUBLIC_KEY_2)
     wireguard = FakeWireGuardManager()

@@ -550,6 +550,33 @@ def test_mesh_peers_survive_client_sync_and_unknown_peer_is_removed(tmp_path):
     assert FAKE_PUBLIC_KEY in runner.peers
 
 
+def test_protected_client_key_survives_removal_sweep(tmp_path):
+    # A degraded Firebase client record (invalid tunnel IP) is dropped from the
+    # desired set upstream, but its already-live peer must not be torn down as
+    # unknown - sync.py threads its key through as protected instead.
+    runner = FakeWireGuardCommandRunner()
+    runner.peers[FAKE_PUBLIC_KEY_2] = f"{TUNNEL_V4},{TUNNEL_V6}"
+    manager = make_manager(tmp_path, runner)
+
+    result = manager.sync_peers({}, protected_client_keys=[FAKE_PUBLIC_KEY_2])
+
+    assert result.removed == 0
+    assert FAKE_PUBLIC_KEY_2 in runner.peers
+
+
+def test_malformed_protected_client_key_protects_nothing(tmp_path):
+    # A key that is not a syntactically valid WireGuard key cannot correspond to
+    # a real live peer, so it must not accidentally shield an unrelated one.
+    runner = FakeWireGuardCommandRunner()
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = f"{TUNNEL_V4},{TUNNEL_V6}"
+    manager = make_manager(tmp_path, runner)
+
+    result = manager.sync_peers({}, protected_client_keys=["not-a-valid-key"])
+
+    assert result.removed == 1
+    assert FAKE_UNKNOWN_PUBLIC_KEY not in runner.peers
+
+
 def test_mesh_peer_dropped_from_desired_set_is_removed_as_mesh_not_client(tmp_path):
     runner = FakeWireGuardCommandRunner()
     runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.1.0/24,fd42:42:42:1::/64"

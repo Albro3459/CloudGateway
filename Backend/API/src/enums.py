@@ -97,3 +97,4 @@ class Event(str, Enum):
     MESH_ROUTE_RECLAIMED = "mesh_route_reclaimed"
     MESH_STATUS_WRITE_FAILED = "mesh_status_write_failed"
     MESH_LOCAL_NETWORK_INVALID = "mesh_local_network_invalid"
+    CLIENT_PEER_DEGRADED = "client_peer_degraded"
