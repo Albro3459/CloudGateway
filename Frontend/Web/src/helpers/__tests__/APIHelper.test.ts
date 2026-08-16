@@ -249,6 +249,34 @@ describe("APIHelper", () => {
         });
     });
 
+    it("classifies a 409 SYNC_IN_PROGRESS as its own failure type", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse({
+            error: { code: "SYNC_IN_PROGRESS", message: "sync already running", requestId: "req-1" },
+        }, false, 409));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: false,
+            failureType: "sync-in-progress",
+            errorCode: "SYNC_IN_PROGRESS",
+            requestId: "req-1",
+        });
+    });
+
+    it("leaves other regional sync failures unclassified", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse({
+            error: { code: "REGION_MISMATCH", message: "wrong region", requestId: "req-2" },
+        }, false, 400));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result.success).toBe(false);
+        expect(result[0].result.failureType).toBeUndefined();
+    });
+
     it("times out one regional sync without blocking another region", async () => {
         jest.useFakeTimers();
         try {

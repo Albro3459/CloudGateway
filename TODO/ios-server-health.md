@@ -39,7 +39,7 @@ A sync pass has no server-side duration bound (only 20s-per-subprocess and 5s-pe
 * A private `sendAdminSync(regionId:idToken:) async -> CloudGatewayRegionSyncOutcome` owns the request and classifies the result. It never throws, so the task group has nothing to catch.
 * The transport call itself is shared with the rest of the client via a small private helper returning `(Data, HTTPURLResponse)`; only the classification is sync-specific. No duplicated URLSession handling, and no changes to how any other endpoint reports errors.
 * `ErrorResponse.Detail` gains `requestId` so an API failure can render it the way the web's failure card does.
-* **`409 SYNC_IN_PROGRESS` is a first-class outcome, not a generic failure.** The API takes a non-blocking flock around the whole reconcile pass; a concurrent sync (another admin, the web dashboard, or a boot pass) makes the second request fail fast with 409. Classify it as `.alreadyRunning` and render "A sync is already running on this region — try again shortly," not a red failure card. This also covers the orphaned-pass case where our own 45s timeout fired but the host is still reconciling. (The web renders this as a generic failure; iOS does better.)
+* **`409 SYNC_IN_PROGRESS` is a first-class outcome, not a generic failure.** The API takes a non-blocking flock around the whole reconcile pass; a concurrent sync (another admin, the web dashboard, or a boot pass) makes the second request fail fast with 409. Classify it as `.alreadyRunning` and render "A sync is already running on this region — try again shortly," not a red failure card. This also covers the orphaned-pass case where our own 45s timeout fired but the host is still reconciling. (The web now renders the same card - see "Flagged during audit" below.)
 * **Never assume the error body is JSON.** The FastAPI app always emits the JSON envelope, but the API sits behind Caddy and orange-cloud Cloudflare, which can answer 502/524 with HTML on origin timeout. If the envelope doesn't decode, fall back to a generic message with the HTTP status; never surface raw body text.
 
 This is also why the public `syncRegion` is removed instead of kept alongside: the fan-out is its only consumer, and one seam keeps `MockGatewayService` honest.
@@ -145,8 +145,8 @@ Web, API, Firebase, and infra are untouched by this work — no `./scripts/test.
 
 Found while auditing this plan; none block the iOS work, but they belong to the owning surfaces:
 
-* **`docs/api-contract.md` `syncedAt` example is wrong.** The example shows `2026-06-17T18:30:00+00:00`; pydantic v2 actually emits fractional seconds with a `Z` suffix. Any parser built strictly against the example fails on real responses. Fix the doc when convenient.
-* **Web renders `409 SYNC_IN_PROGRESS` as a generic red failure card.** It's an expected concurrency outcome (flock contention), not an error. Small web follow-up: give it the same "already running" treatment iOS gets.
+* ~~**`docs/api-contract.md` `syncedAt` example is wrong.**~~ Fixed: the example now shows the real `Z`-suffixed fractional-second form, with a note to parse it as ISO 8601.
+* ~~**Web renders `409 SYNC_IN_PROGRESS` as a generic red failure card.**~~ Fixed: `runRegionSync` tags it `failureType: "sync-in-progress"` and `RegionSyncCard` renders the same "already running" card iOS does.
 * **Firestore rules let an admin set `meshEnabled=true` on a disabled region.** The web only disables the toggle client-side; the rule checks `hasOnly(['meshEnabled'])` but not `resource.data.enabled`. Verified inert — every sync path re-filters on `enabled is True` — so this is defense-in-depth, not a vulnerability. Optionally tighten the rule to require `resource.data.enabled == true` when setting `true`.
 
 ## Risks

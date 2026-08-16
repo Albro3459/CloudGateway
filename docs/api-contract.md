@@ -227,7 +227,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 ```json
 {
   "regionId": "us-ashburn-1",
-  "syncedAt": "2026-06-17T18:30:00+00:00",
+  "syncedAt": "2026-06-17T18:30:00.123456Z",
   "added": 1,
   "updated": 0,
   "removed": 1,
@@ -255,6 +255,8 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 }
 ```
 
+- `syncedAt` is UTC, serialized with a `Z` suffix and (when non-zero) fractional seconds - parse it
+  as ISO 8601 rather than matching the example literally.
 - `added`/`updated`/`removed` count **client** peer changes only. `meshApplied` counts every
   desired mesh peer applied this pass (re-applies included, so it is not just newly-added peers);
   `meshAdded`/`meshUpdated`/`meshRemoved` count mesh peers that newly appeared, had endpoint/port/

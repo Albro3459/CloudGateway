@@ -31,7 +31,7 @@ export type ApiHelperFailure = {
     requestId?: string;
     status?: number;
     data?: unknown;
-    failureType?: "incompatible-response";
+    failureType?: "incompatible-response" | "sync-in-progress";
 };
 
 type IncompatibleResponseFailure = ApiHelperFailure & {
@@ -585,6 +585,13 @@ const incompatibleResponse = (regionId: string, data: unknown): IncompatibleResp
     data,
 });
 
+// Expected concurrency outcome, not a failure: the host takes its WireGuard lock
+// non-blocking, so a pass already running (another admin, the boot pass, a
+// client create/delete) answers 409 instead of queueing.
+const isSyncInProgress = (failure: ApiHelperFailure): boolean => (
+    failure.status === 409 && failure.errorCode === "SYNC_IN_PROGRESS"
+);
+
 export const REGION_SYNC_TIMEOUT_MS = 45_000;
 
 const runRegionSync = async (
@@ -599,7 +606,9 @@ const runRegionSync = async (
             { regionId },
             { timeoutMs: REGION_SYNC_TIMEOUT_MS },
         );
-        if (!result.success) return result;
+        if (!result.success) {
+            return isSyncInProgress(result) ? { ...result, failureType: "sync-in-progress" } : result;
+        }
         const response = parseRegionSyncResponse(result.data);
         if (!response || response.regionId !== regionId) return incompatibleResponse(regionId, result.data);
         return { success: true, data: response };

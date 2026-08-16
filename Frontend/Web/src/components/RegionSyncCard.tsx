@@ -19,6 +19,17 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
     const title = displayName ? `${displayName} (${regionId})` : regionId;
 
     if (!result.success) {
+        if (result.failureType === "sync-in-progress") {
+            return (
+                <div className="rounded-lg border border-warning-soft-edge bg-card p-4 shadow-sm">
+                    <h3 className="font-semibold text-content">{title}</h3>
+                    <p className="mt-2 text-sm text-warning-strong">
+                        A sync is already running on this region - try again shortly.
+                    </p>
+                </div>
+            );
+        }
+
         const incompatibleResponse = result.failureType === "incompatible-response";
         return (
             <div className="rounded-lg border border-danger bg-card p-4 shadow-sm">

@@ -650,6 +650,32 @@ describe("ServerHealth", () => {
         expect(screen.getByText("The sync result was discarded because the regional API returned an unsupported shape.")).toBeTruthy();
     });
 
+    it("renders a sync already running on the host as an expected outcome, not a failure", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([{
+            regionId: "us-sanjose-1",
+            result: {
+                success: false,
+                failureType: "sync-in-progress",
+                errorCode: "SYNC_IN_PROGRESS",
+                status: 409,
+                error: "sync already running",
+            },
+        }]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("A sync is already running on this region - try again shortly.")).toBeTruthy();
+        expect(screen.queryByText("Failed")).toBeNull();
+        expect(screen.queryByText("sync already running")).toBeNull();
+    });
+
     it("drops a stale optimistic override when the confirming read fails", async () => {
         const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
         const { default: ServerHealth } = require("../ServerHealth");
