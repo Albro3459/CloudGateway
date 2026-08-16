@@ -239,6 +239,23 @@ describe("meshHelper", () => {
             expect(rows[0].pending).toBe(false);
         });
 
+        it("treats an unrecognized reason code as a persistent failure, not pending", () => {
+            // The reason-code enum is closed, but a future/unrecognized code must default
+            // to "still present" rather than flip-flopping off snapshot equality.
+            const regions = [region("us-sanjose-1", true), region("us-chicago-1", true)];
+            const futureReason = {
+                ...appliedPeer(),
+                status: "skipped-incomplete" as const,
+                reasonCode: "future-reason",
+            };
+            const rows = buildMeshLinkRows(regions, new Map([
+                ["us-sanjose-1", parseMeshDocument("us-sanjose-1", { meshEnabled: true, peers: { "us-chicago-1": futureReason } })],
+                ["us-chicago-1", parseMeshDocument("us-chicago-1", { meshEnabled: true, peers: { "us-sanjose-1": appliedPeer() } })],
+            ]));
+
+            expect(rows[0].pending).toBe(false);
+        });
+
         it.each([
             ["missing public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "missing-public-key" }],
             ["invalid public key", { wireguardPublicKey: null }, { publicKey: null, reasonCode: "invalid-public-key" }],

@@ -101,6 +101,55 @@ describe("Login", () => {
         expect(screen.queryByText("stale provisioning failure")).toBeNull();
     });
 
+    it("navigates after an account switch when the observer fires before the sign-in promise resolves", async () => {
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        const { default: Login } = require("../Login");
+        const newUser = { uid: "user-new", getIdToken: jest.fn().mockResolvedValue("new-token") };
+        let resolveSignIn!: (value: { user: typeof newUser }) => void;
+        const pendingSignIn = new Promise<{ user: typeof newUser }>(resolve => {
+            resolveSignIn = resolve;
+        });
+        signInWithEmailAndPassword.mockReturnValue(pendingSignIn);
+        // The stale session's own auto-navigate fetch (triggered by the
+        // observer callback below) must resolve and clear signingIn without
+        // navigating, so it doesn't leave the Login button disabled or race
+        // the manual attempt's own access check.
+        checkAccountAccess.mockImplementation((token: string) => (
+            token === "new-token"
+                ? Promise.resolve({ success: true, data: { userId: newUser.uid, email: "new@example.com", role: "user" } })
+                : Promise.resolve({ success: false, error: "stale session check", errorCode: "OTHER" })
+        ));
+
+        render(<Login />);
+        // An existing session is signed in before the manual attempt begins.
+        await act(async () => authCallback?.(user));
+
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
+            target: { value: "new@example.com" },
+        });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), {
+            target: { value: "Password1!" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+
+        // The observer delivers the new account before the sign-in promise
+        // resolves, which is the exact ordering finding 3 covers: the
+        // observer's uid always differs from the uid signed in before the
+        // attempt began, for any legitimate account switch.
+        await act(async () => authCallback?.(newUser));
+        await act(async () => {
+            resolveSignIn({ user: newUser });
+            await pendingSignIn;
+        });
+
+        await waitFor(() => {
+            expect(fetchOciRegions).toHaveBeenCalledWith("new-token", true);
+            expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
+        });
+    });
+
     it("keeps a manual sign-in alive when the auth observer repeats the same UID", async () => {
         const { signInWithEmailAndPassword } = require("../../firebase");
         const { checkAccountAccess } = require("../../helpers/APIHelper");

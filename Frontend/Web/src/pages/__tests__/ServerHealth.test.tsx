@@ -676,6 +676,197 @@ describe("ServerHealth", () => {
         expect(screen.queryByText("sync already running")).toBeNull();
     });
 
+    it("retires a toggle's override when Sync All Regions supersedes its confirming read", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+
+        // The toggle's own confirming read is slow.
+        const confirmingRead = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => confirmingRead.promise);
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // Sync All Regions re-reads Region/Mesh state before the confirming
+        // read resolves, superseding it as the load that gets to render.
+        getAllRegionDocs.mockResolvedValueOnce([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        runRegionsSync.mockResolvedValueOnce([]);
+        fireEvent.click(screen.getByRole("button", { name: "Sync All Regions" }));
+        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalled());
+
+        // The superseded confirming read resolves last. If its override never
+        // retires, a later refresh would keep showing the pinned optimistic
+        // value regardless of what Firestore actually says.
+        await act(async () => {
+            confirmingRead.resolve([
+                region("us-sanjose-1", "San Jose", true, 1),
+                region("us-chicago-1", "Chicago", false, 2),
+            ]);
+            await confirmingRead.promise;
+        });
+        await waitFor(() => expect(
+            (screen.getByLabelText("Refresh") as HTMLButtonElement).disabled
+        ).toBe(false));
+
+        getAllRegionDocs.mockResolvedValueOnce([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        fireEvent.click(screen.getByLabelText("Refresh"));
+
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+    });
+
+    // Guards the revision check specifically. Retirement runs before the
+    // isCurrent gate, so that check is now the only thing standing between a
+    // stale confirming read and a newer toggle's override; drop it and this
+    // fails. It does not exercise the reordering itself - under the old
+    // ordering the isCurrent gate blocked this read first and the override
+    // survived anyway.
+    it("does not let an older superseded read retire a newer toggle's override on the same region", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+
+        // Toggle 1's confirming read is slow.
+        const firstConfirmingRead = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => firstConfirmingRead.promise);
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // An auth-generation reset (e.g. a repeated observer callback for the
+        // same admin) clears togglingRegionIds and re-enables the checkbox
+        // while toggle 1's confirming read is still pending in the background.
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).disabled
+        ).toBe(false));
+
+        // Toggle 2 starts on the same region with a newer revision. Its own
+        // confirming read is also slow.
+        const secondConfirmingRead = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => secondConfirmingRead.promise);
+        fireEvent.click(screen.getByLabelText("Mesh enabled for San Jose"));
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledTimes(2));
+
+        // Toggle 1's stale confirming read finally resolves. It carries the
+        // old revision, which no longer matches the override toggle 2
+        // installed, so it must not retire toggle 2's override.
+        await act(async () => {
+            firstConfirmingRead.resolve([
+                region("us-sanjose-1", "San Jose", true, 1),
+                region("us-chicago-1", "Chicago", false, 2),
+            ]);
+            await firstConfirmingRead.promise;
+        });
+
+        // Sync All Regions re-reads Firestore in between, still authoritatively
+        // false for this region. If toggle 1's stale read had wrongly cleared
+        // toggle 2's override, this read would show the un-overridden false
+        // value instead of staying pinned to the pending toggle's intent.
+        getAllRegionDocs.mockResolvedValueOnce([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        runRegionsSync.mockResolvedValueOnce([]);
+        fireEvent.click(screen.getByRole("button", { name: "Sync All Regions" }));
+        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(true));
+
+        await act(async () => {
+            secondConfirmingRead.resolve([
+                region("us-sanjose-1", "San Jose", true, 1),
+                region("us-chicago-1", "Chicago", false, 2),
+            ]);
+            await secondConfirmingRead.promise;
+        });
+    });
+
+    it("retires a superseded confirming read's override when another region's toggle supersedes it", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const sanJose = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+
+        // San Jose's confirming read is slow.
+        const sanJoseRead = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => sanJoseRead.promise);
+        fireEvent.click(sanJose);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // A second region is toggled while the first is still confirming. Only
+        // the toggled region's checkbox is disabled, so this is an ordinary
+        // path, not a contrived one: the toggle bumps the shared load
+        // generation, superseding San Jose's read before it resolves.
+        const chicagoRead = deferred<Region[]>();
+        getAllRegionDocs.mockImplementationOnce(() => chicagoRead.promise);
+        fireEvent.click(screen.getByLabelText("Mesh enabled for Chicago"));
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-chicago-1", true));
+
+        // San Jose's read resolves superseded, so it never renders. Its
+        // override still has to retire here, or the shared override map keeps
+        // pinning San Jose for the rest of the session.
+        await act(async () => {
+            sanJoseRead.resolve([
+                region("us-sanjose-1", "San Jose", true, 1),
+                region("us-chicago-1", "Chicago", false, 2),
+            ]);
+            await sanJoseRead.promise;
+        });
+
+        // Chicago's read is the newest load, so it is the one that renders.
+        // San Jose must come back authoritatively false rather than carrying an
+        // orphaned optimistic true.
+        await act(async () => {
+            chicagoRead.resolve([
+                region("us-sanjose-1", "San Jose", false, 1),
+                region("us-chicago-1", "Chicago", true, 2),
+            ]);
+            await chicagoRead.promise;
+        });
+
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+        expect((screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement).checked).toBe(true);
+    });
+
     it("drops a stale optimistic override when the confirming read fails", async () => {
         const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
         const { default: ServerHealth } = require("../ServerHealth");

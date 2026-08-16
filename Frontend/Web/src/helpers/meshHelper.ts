@@ -256,7 +256,9 @@ const isReasonStillPresent = (
                     || networksOverlap(targetRegion.tunnelNetworkV6 ?? "", candidate.tunnelNetworkV6 ?? ""))
             ));
         default:
-            return hasCompleteMeshSnapshot(targetRegion) && !snapshotsEqual(entry, getRegionMeshSnapshot(targetRegion));
+            // Unrecognized reason code: assume the reason still persists rather than
+            // clearing a warning we don't know how to re-check.
+            return true;
     }
 };
 

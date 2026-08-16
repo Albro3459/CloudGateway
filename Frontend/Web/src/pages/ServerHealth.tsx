@@ -172,9 +172,15 @@ const ServerHealth: React.FC = () => {
         setDataLoading(true);
         try {
             const [regionDocs, mesh] = await Promise.all([getAllRegionDocs(), getMeshDocs()]);
-            if (!isCurrent(authGeneration, loadGeneration)) return false;
 
             if (clearOverride) {
+                // Retire this confirming read's own override as soon as it
+                // resolves, whether or not it is still the load that gets to
+                // render below. A later load (e.g. Sync All calling this same
+                // function) can supersede this one before it resolves; if
+                // retirement only ran on the rendering path, a superseded
+                // confirming read would orphan its override and pin
+                // meshEnabled client-side for the rest of the session.
                 const activeOverride = overridesRef.current.get(clearOverride.regionId);
                 if (activeOverride?.revision === clearOverride.revision) {
                     // This read started after the write landed, so its value is
@@ -185,6 +191,8 @@ const ServerHealth: React.FC = () => {
                     overridesRef.current.delete(clearOverride.regionId);
                 }
             }
+
+            if (!isCurrent(authGeneration, loadGeneration)) return false;
 
             const overlaidRegions = sortRegions(regionDocs).map(region => {
                 const override = overridesRef.current.get(region.regionId);
