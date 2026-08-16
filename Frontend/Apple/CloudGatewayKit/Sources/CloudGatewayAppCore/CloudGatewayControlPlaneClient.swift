@@ -155,15 +155,6 @@ public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServi
         )
     }
 
-    public func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
-        try await sendJSONRequest(
-            url: try regionalAPIURL(regionId: regionId, path: "admin/sync"),
-            method: "POST",
-            idToken: idToken,
-            body: SyncRegionRequest(regionId: regionId)
-        )
-    }
-
     public func grantAccess(
         email: String,
         regionId: String,
@@ -175,6 +166,29 @@ public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServi
             idToken: idToken,
             body: GrantAccessRequest(email: email)
         )
+    }
+
+    /// Fans out `admin/sync` to every region in parallel and never throws: each region's outcome
+    /// is classified independently (see `sendAdminSync`) so one unreachable host cannot hide the
+    /// others' results. Regions number in the low single digits, so full parallelism is fine.
+    public func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome] {
+        await withTaskGroup(of: IndexedSyncOutcome.self) { group in
+            for (index, regionId) in regionIds.enumerated() {
+                group.addTask {
+                    IndexedSyncOutcome(
+                        index: index,
+                        outcome: await self.sendAdminSync(regionId: regionId, idToken: idToken)
+                    )
+                }
+            }
+            var outcomesByIndex: [Int: CloudGatewayRegionSyncOutcome] = [:]
+            for await indexed in group {
+                outcomesByIndex[indexed.index] = indexed.outcome
+            }
+            // A task group yields in completion order, not submission order; reorder to match
+            // the caller's requested region order.
+            return regionIds.indices.compactMap { outcomesByIndex[$0] }
+        }
     }
 
     private func apexAPIURL(path: String) throws -> URL {
@@ -224,11 +238,19 @@ public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServi
         return try await send(request)
     }
 
-    private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+    /// Shared transport step: performs the request and validates it produced an HTTP response.
+    /// Reused by `send` (throwing, for every non-sync endpoint) and `sendAdminSync` (non-throwing)
+    /// so URLSession handling lives in exactly one place.
+    private func sendTransport(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw CloudGatewayAppError.invalidAPIResponse
         }
+        return (data, httpResponse)
+    }
+
+    private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+        let (data, httpResponse) = try await sendTransport(request)
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw CloudGatewayAppError.accessDenied(
                 apiErrorMessage(from: data) ?? "CloudGateway API request failed."
@@ -241,11 +263,80 @@ public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServi
         }
     }
 
-    private func apiErrorMessage(from data: Data) -> String? {
-        guard let response = try? JSONDecoder().decode(ErrorResponse.self, from: data) else {
-            return nil
+    /// Never throws: transport failure, HTTP status, and body shape are all folded into
+    /// `CloudGatewayRegionSyncOutcome.Result` so a task-group child has nothing to catch and one
+    /// region's failure can never mask the others'.
+    private func sendAdminSync(regionId: String, idToken: String) async -> CloudGatewayRegionSyncOutcome {
+        guard let url = try? regionalAPIURL(regionId: regionId, path: "admin/sync") else {
+            return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .genericFailure())
         }
-        return response.error?.message ?? response.error?.code
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(idToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Overrides the session's fast-fail default for this request only: a sync pass routinely
+        // outlives it and has no server-side duration bound.
+        request.timeoutInterval = CloudGatewayAPISession.adminSyncRequestTimeout
+        guard let body = try? JSONEncoder().encode(SyncRegionRequest(regionId: regionId)) else {
+            return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .genericFailure())
+        }
+        request.httpBody = body
+
+        let data: Data
+        let httpResponse: HTTPURLResponse
+        do {
+            (data, httpResponse) = try await sendTransport(request)
+        } catch {
+            return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .genericFailure())
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let detail = decodedErrorDetail(from: data)
+            if httpResponse.statusCode == 409, detail?.code == "SYNC_IN_PROGRESS" {
+                return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .alreadyRunning)
+            }
+            let message = detail?.message
+                ?? detail?.code
+                ?? "CloudGateway sync failed for \(regionId) (HTTP \(httpResponse.statusCode))."
+            return CloudGatewayRegionSyncOutcome(
+                regionId: regionId,
+                result: .failure(message: message, requestId: detail?.requestId, isIncompatibleResponse: false)
+            )
+        }
+
+        guard let response = CloudGatewayRegionSyncParsing.parse(data: data, requestedRegionId: regionId) else {
+            return CloudGatewayRegionSyncOutcome(
+                regionId: regionId,
+                result: .failure(
+                    message: "Incompatible admin sync response from \(regionId).",
+                    requestId: nil,
+                    isIncompatibleResponse: true
+                )
+            )
+        }
+        return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .success(response))
+    }
+
+    private func decodedErrorDetail(from data: Data) -> ErrorResponse.Detail? {
+        (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error
+    }
+
+    private func apiErrorMessage(from data: Data) -> String? {
+        let detail = decodedErrorDetail(from: data)
+        return detail?.message ?? detail?.code
+    }
+}
+
+private struct IndexedSyncOutcome: Sendable {
+    let index: Int
+    let outcome: CloudGatewayRegionSyncOutcome
+}
+
+private extension CloudGatewayRegionSyncOutcome.Result {
+    /// Short, generic message with no request ID or body text: used for transport failures and
+    /// pre-transport errors (URL building, request encoding) where there is no API envelope.
+    static func genericFailure() -> Self {
+        .failure(message: "Could not reach the region.", requestId: nil, isIncompatibleResponse: false)
     }
 }
 
@@ -283,6 +374,7 @@ private struct ErrorResponse: Decodable {
     struct Detail: Decodable {
         let code: String?
         let message: String?
+        let requestId: String?
     }
 
     let error: Detail?

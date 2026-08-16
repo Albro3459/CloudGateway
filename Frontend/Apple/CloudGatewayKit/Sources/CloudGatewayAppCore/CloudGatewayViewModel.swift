@@ -42,25 +42,6 @@ public enum CloudGatewayAccountLinkReauthMethod: Equatable {
     case apple
 }
 
-public struct CloudGatewaySyncResult: Identifiable, Equatable {
-    public let regionId: String
-    public let syncedAt: String
-    public let added: Int
-    public let updated: Int
-    public let removed: Int
-    // Full peer-sync audit log from the API (AdminSyncResponse.log), same text
-    // the web surfaces: title, region, syncedAt, summary, and per-removed-peer detail.
-    public let log: String
-
-    public var id: String {
-        "\(regionId)-\(syncedAt)"
-    }
-
-    public var logText: String {
-        log
-    }
-}
-
 @MainActor
 public final class CloudGatewayViewModel: ObservableObject {
     @Published public var email = ""
@@ -82,7 +63,6 @@ public final class CloudGatewayViewModel: ObservableObject {
     @Published public private(set) var successText: String?
     @Published public private(set) var staleText: String?
     @Published public private(set) var lastRefreshText: String?
-    @Published public private(set) var syncResult: CloudGatewaySyncResult?
     @Published public private(set) var tunnelHealthSnapshot: CloudGatewayTunnelHealthSnapshot?
     @Published public private(set) var remoteInvalidInstalledConfig = false
     // True when the last remote refresh failed (offline / API error). Gates the
@@ -213,10 +193,6 @@ public final class CloudGatewayViewModel: ObservableObject {
     // decide whether a notification prompt is worth showing.
     var hasInstalledConfig: Bool {
         !installedSnapshots.isEmpty
-    }
-
-    public var canSyncSelectedRegion: Bool {
-        role == "admin" && selectedRegion != nil && !isWorking
     }
 
     public var canGrantAccess: Bool {
@@ -648,35 +624,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         await refresh()
     }
 
-    public func syncSelectedRegion() async {
-        await run {
-            guard let user = service.currentUser else {
-                throw CloudGatewayAppError.missingCurrentUser
-            }
-            let generation = authStateGeneration
-            guard let regionId = selectedRegionId else {
-                throw CloudGatewayAppError.missingSelectedRegion
-            }
-            guard role == "admin" else {
-                throw CloudGatewayAppError.accessDenied("Admin access is required to sync a region.")
-            }
-            let token = try await performForCurrentUser(user, generation: generation) { try await service.idToken() }
-            let response = try await performForCurrentUser(user, generation: generation) {
-                try await service.syncRegion(regionId: regionId, idToken: token)
-            }
-            let result = CloudGatewaySyncResult(
-                regionId: response.regionId,
-                syncedAt: response.syncedAt,
-                added: response.added,
-                updated: response.updated,
-                removed: response.removed,
-                log: response.log
-            )
-            syncResult = result
-            try await loadRemoteStateMarkingUnavailable(for: user)
-        }
-    }
-
     public func grantAccess() async {
         await run {
             guard let user = service.currentUser else {
@@ -1043,10 +990,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         successText = nil
     }
 
-    public func dismissSyncResult() {
-        syncResult = nil
-    }
-
     public func installStateLabel(for option: CloudGatewayClientOption) -> String? {
         switch configState.installState(for: option) {
         case .installed:
@@ -1352,7 +1295,6 @@ public final class CloudGatewayViewModel: ObservableObject {
         configOptions = []
         staleText = nil
         lastRefreshText = nil
-        syncResult = nil
         remoteInvalidInstalledConfig = false
         remoteRefreshUnavailable = false
         successText = nil

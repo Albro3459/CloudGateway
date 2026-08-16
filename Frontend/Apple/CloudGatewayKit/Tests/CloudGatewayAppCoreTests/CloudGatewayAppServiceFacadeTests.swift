@@ -186,6 +186,63 @@ import Testing
     #expect(created.ownerEmail == "owner@example.com")
 }
 
+@MainActor
+@Test func appServiceFacadeForwardsMeshRepositoryCallsUnchanged() async throws {
+    let repository = FacadeRepositoryFake()
+    let region = CloudGatewayMeshRegion(
+        regionId: "us-a",
+        displayName: "US A",
+        enabled: true,
+        displayOrder: 1,
+        meshEnabled: true,
+        wireguardPublicKey: nil,
+        wireguardEndpointHostname: nil,
+        wireguardPort: nil,
+        tunnelNetworkV4: nil,
+        tunnelNetworkV6: nil
+    )
+    let doc = CloudGatewayMeshDoc(regionId: "us-a", meshEnabled: true, updatedAt: nil, peers: [:])
+    repository.meshRegions = [region]
+    repository.meshDocs = ["us-a": doc]
+    let facade = CloudGatewayAppServiceFacade(
+        auth: FacadeAuthFake(events: EventLog()),
+        repository: repository,
+        controlPlane: FacadeControlPlaneFake(),
+        googlePresenter: GooglePresenterFake(events: EventLog())
+    )
+
+    let regions = try await facade.fetchMeshRegions()
+    let docs = try await facade.fetchMeshDocs()
+    try await facade.setRegionMeshEnabled(regionId: "us-b", enabled: false)
+
+    #expect(regions == [region])
+    #expect(docs == ["us-a": doc])
+    #expect(repository.lastSetMeshEnabledRegionId == "us-b")
+    #expect(repository.lastSetMeshEnabledFlag == false)
+}
+
+@MainActor
+@Test func appServiceFacadeForwardsSyncRegionsToControlPlaneUnchanged() async throws {
+    let controlPlane = FacadeControlPlaneFake()
+    let firstOutcome = CloudGatewayRegionSyncOutcome(regionId: "us-a", result: .alreadyRunning)
+    let secondOutcome = CloudGatewayRegionSyncOutcome(
+        regionId: "us-b",
+        result: .failure(message: "boom", requestId: "req-1", isIncompatibleResponse: false)
+    )
+    controlPlane.syncRegionsOutcomes = [firstOutcome, secondOutcome]
+    let facade = CloudGatewayAppServiceFacade(
+        auth: FacadeAuthFake(events: EventLog()),
+        repository: FacadeRepositoryFake(),
+        controlPlane: controlPlane,
+        googlePresenter: GooglePresenterFake(events: EventLog())
+    )
+
+    let outcomes = await facade.syncRegions(regionIds: ["us-a", "us-b"], idToken: "token")
+
+    #expect(outcomes == [firstOutcome, secondOutcome])
+    #expect(controlPlane.syncRegionsArguments == .init(regionIds: ["us-a", "us-b"], idToken: "token"))
+}
+
 @Test func firestoreClientMapperPreservesDocumentFallbackAndSanitization() {
     let updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
     let mapped = CloudGatewayFirestoreClientMapper.client(
@@ -399,8 +456,12 @@ private final class FacadeRepositoryFake: CloudGatewayClientRepository {
     var role: String?
     var ownedClients: [CloudGatewayClient] = []
     var allClients: [CloudGatewayClient] = []
+    var meshRegions: [CloudGatewayMeshRegion] = []
+    var meshDocs: [String: CloudGatewayMeshDoc] = [:]
     var lastRoleUID: String?
     var lastOwnedUID: String?
+    var lastSetMeshEnabledRegionId: String?
+    var lastSetMeshEnabledFlag: Bool?
 
     func fetchUserRole(uid: String) async throws -> String? {
         lastRoleUID = uid
@@ -413,6 +474,15 @@ private final class FacadeRepositoryFake: CloudGatewayClientRepository {
     }
 
     func fetchAllClients() async throws -> [CloudGatewayClient] { allClients }
+
+    func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion] { meshRegions }
+
+    func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] { meshDocs }
+
+    func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
+        lastSetMeshEnabledRegionId = regionId
+        lastSetMeshEnabledFlag = enabled
+    }
 }
 
 private final class FacadeControlPlaneFake: CloudGatewayControlPlaneServicing, @unchecked Sendable {
@@ -425,12 +495,26 @@ private final class FacadeControlPlaneFake: CloudGatewayControlPlaneServicing, @
         let idToken: String
     }
 
+    struct SyncRegionsArguments: Equatable {
+        // periphery:ignore - compared via synthesized Equatable
+        let regionIds: [String]
+        // periphery:ignore - compared via synthesized Equatable
+        let idToken: String
+    }
+
     private let lock = NSLock()
     private var storedCreateArguments: CreateArguments?
+    private var storedSyncRegionsArguments: SyncRegionsArguments?
 
     var createArguments: CreateArguments? {
         lock.withLock { storedCreateArguments }
     }
+
+    var syncRegionsArguments: SyncRegionsArguments? {
+        lock.withLock { storedSyncRegionsArguments }
+    }
+
+    var syncRegionsOutcomes: [CloudGatewayRegionSyncOutcome] = []
 
     func fetchRegions() async throws -> [CloudGatewayRegion] { [] }
     func addCapacity(to regions: [CloudGatewayRegion], idToken: String) async -> [CloudGatewayRegion] { regions }
@@ -471,16 +555,11 @@ private final class FacadeControlPlaneFake: CloudGatewayControlPlaneServicing, @
         CloudGatewayDeleteAccountResponse(userId: "user", deletedClientCount: 0)
     }
 
-    func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
-        CloudGatewayRegionSyncResponse(
-            regionId: regionId,
-            syncedAt: "now",
-            added: 0,
-            updated: 0,
-            removed: 0,
-            noChanges: true,
-            log: ""
-        )
+    func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome] {
+        lock.withLock {
+            storedSyncRegionsArguments = SyncRegionsArguments(regionIds: regionIds, idToken: idToken)
+        }
+        return syncRegionsOutcomes
     }
 
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse {

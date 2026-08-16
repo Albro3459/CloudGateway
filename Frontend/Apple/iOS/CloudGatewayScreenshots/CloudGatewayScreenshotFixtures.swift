@@ -3,10 +3,23 @@ import CloudGatewayKit
 import Foundation
 
 @MainActor
+struct CloudGatewayScreenshotComposition {
+    let viewModel: CloudGatewayViewModel
+    let serverHealthViewModel: CloudGatewayServerHealthViewModel
+}
+
+@MainActor
 enum CloudGatewayScreenshotFixtureFactory {
-    static func makeViewModel() -> CloudGatewayViewModel {
+    static func make() -> CloudGatewayScreenshotComposition {
         let service = CloudGatewayScreenshotService()
-        return CloudGatewayViewModel(
+        return CloudGatewayScreenshotComposition(
+            viewModel: makeViewModel(service: service),
+            serverHealthViewModel: CloudGatewayServerHealthViewModel(service: service)
+        )
+    }
+
+    private static func makeViewModel(service: CloudGatewayScreenshotService) -> CloudGatewayViewModel {
+        CloudGatewayViewModel(
             service: service,
             configManager: CloudGatewayConfigManager(
                 tunnelManager: CloudGatewayScreenshotTunnelManager(
@@ -25,6 +38,8 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
     let screenshotUser = AuthenticatedUser(uid: "screenshot-john", email: "john@test.com")
     let regions: [CloudGatewayRegion]
     private(set) var clients: [CloudGatewayClient]
+    private(set) var meshRegions: [CloudGatewayMeshRegion]
+    private let meshDocs: [String: CloudGatewayMeshDoc]
 
     var currentUser: AuthenticatedUser? {
         screenshotUser
@@ -69,6 +84,64 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
                 ownerEmail: "john@test.com"
             )
         ]
+        let meshRegions: [CloudGatewayMeshRegion] = [
+            CloudGatewayMeshRegion(
+                regionId: "us-sanjose-1",
+                displayName: "California",
+                enabled: true,
+                displayOrder: 10,
+                meshEnabled: true,
+                wireguardPublicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                wireguardEndpointHostname: "wg.us-sanjose-1.gocloudlaunch.com",
+                wireguardPort: 51820,
+                tunnelNetworkV4: "10.0.5.0/24",
+                tunnelNetworkV6: "fd42:42:42:5::/64"
+            ),
+            CloudGatewayMeshRegion(
+                regionId: "us-ashburn-1",
+                displayName: "Chicago",
+                enabled: true,
+                displayOrder: 20,
+                meshEnabled: true,
+                wireguardPublicKey: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+                wireguardEndpointHostname: "wg.us-ashburn-1.gocloudlaunch.com",
+                wireguardPort: 51820,
+                tunnelNetworkV4: "10.0.9.0/24",
+                tunnelNetworkV6: "fd42:42:42:9::/64"
+            )
+        ]
+        self.meshRegions = meshRegions
+        self.meshDocs = Self.makeMeshDocs(regions: meshRegions)
+    }
+
+    // Every region's Mesh/* doc carries an "applied" peer entry for every other
+    // region, built directly from that peer's own current snapshot fields, so
+    // link rows render bothApplied rather than stale.
+    private static func makeMeshDocs(regions: [CloudGatewayMeshRegion]) -> [String: CloudGatewayMeshDoc] {
+        let appliedAt = Date().addingTimeInterval(-15 * 60)
+        var docs: [String: CloudGatewayMeshDoc] = [:]
+        for region in regions {
+            var peers: [String: CloudGatewayMeshPeerEntry] = [:]
+            for peer in regions where peer.regionId != region.regionId {
+                peers[peer.regionId] = CloudGatewayMeshPeerEntry(
+                    endpointHostname: peer.wireguardEndpointHostname,
+                    endpointPort: peer.wireguardPort,
+                    publicKey: peer.wireguardPublicKey,
+                    allowedNetworkV4: peer.tunnelNetworkV4,
+                    allowedNetworkV6: peer.tunnelNetworkV6,
+                    status: .applied,
+                    reasonCode: nil,
+                    appliedAt: appliedAt
+                )
+            }
+            docs[region.regionId] = CloudGatewayMeshDoc(
+                regionId: region.regionId,
+                meshEnabled: region.meshEnabled,
+                updatedAt: appliedAt,
+                peers: peers
+            )
+        }
+        return docs
     }
 
     var installedSnapshots: [CloudGatewayConfigSnapshot] {
@@ -188,15 +261,54 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         CloudGatewayDeleteAccountResponse(userId: screenshotUser.uid, deletedClientCount: clients.count)
     }
 
-    func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
-        CloudGatewayRegionSyncResponse(
-            regionId: regionId,
-            syncedAt: "2026-07-06T12:00:00Z",
-            added: 0,
-            updated: 0,
-            removed: 0,
-            noChanges: true,
-            log: "Screenshot fixture account is a normal user; sync is unavailable."
+    func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome] {
+        regionIds.map { regionId in
+            let region = meshRegions.first { $0.regionId == regionId }
+            let response = CloudGatewayRegionSyncResponse(
+                regionId: regionId,
+                syncedAt: "2026-07-06T12:00:00Z",
+                added: 0,
+                updated: 0,
+                removed: 0,
+                noChanges: true,
+                log: "Screenshot fixture account is a normal user; sync is unavailable.",
+                meshUpdated: 0,
+                meshEnabled: (region?.enabled ?? false) && (region?.meshEnabled ?? false),
+                meshApplied: 0,
+                meshAdded: 0,
+                meshRemoved: 0,
+                meshSkipped: 0,
+                meshRoutesAdded: 0,
+                meshRoutesRemoved: 0,
+                meshStatusWritten: true,
+                meshPeers: []
+            )
+            return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .success(response))
+        }
+    }
+
+    func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion] {
+        meshRegions
+    }
+
+    func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] {
+        meshDocs
+    }
+
+    func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
+        guard let index = meshRegions.firstIndex(where: { $0.regionId == regionId }) else { return }
+        let region = meshRegions[index]
+        meshRegions[index] = CloudGatewayMeshRegion(
+            regionId: region.regionId,
+            displayName: region.displayName,
+            enabled: region.enabled,
+            displayOrder: region.displayOrder,
+            meshEnabled: enabled,
+            wireguardPublicKey: region.wireguardPublicKey,
+            wireguardEndpointHostname: region.wireguardEndpointHostname,
+            wireguardPort: region.wireguardPort,
+            tunnelNetworkV4: region.tunnelNetworkV4,
+            tunnelNetworkV6: region.tunnelNetworkV6
         )
     }
 

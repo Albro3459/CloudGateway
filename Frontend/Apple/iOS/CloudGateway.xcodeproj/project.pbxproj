@@ -75,6 +75,7 @@
 				Assets.xcassets,
 				CloudGatewayTheme.swift,
 				ContentView.swift,
+				ServerHealthView.swift,
 			);
 			target = 60C0DE172FF700000089F40B /* CloudGatewayScreenshots */;
 		};

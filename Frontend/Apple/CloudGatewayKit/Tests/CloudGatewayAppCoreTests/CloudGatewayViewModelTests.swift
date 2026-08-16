@@ -1251,42 +1251,6 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.errorText)
     }
 
-    func testSyncSelectedRegionCapturesResult() async {
-        let service = signedInAdminService()
-        let viewModel = makeViewModel(service)
-        await viewModel.refresh()
-
-        await viewModel.syncSelectedRegion()
-
-        XCTAssertEqual(service.syncRegionCallCount, 1)
-        XCTAssertEqual(viewModel.syncResult?.regionId, "us-sanjose-1")
-        // logText now surfaces the API's peer-sync audit log verbatim.
-        XCTAssertTrue(viewModel.syncResult?.logText.contains("CloudGateway peer sync audit log") == true)
-
-        viewModel.dismissSyncResult()
-
-        XCTAssertNil(viewModel.syncResult)
-    }
-
-    func testSyncCompletionCannotPublishPreviousUsersAuditLog() async {
-        let service = signedInAdminService()
-        let viewModel = makeViewModel(service)
-        await viewModel.refresh()
-        let syncGate = AsyncTestGate()
-        service.syncRegionGate = syncGate
-
-        let staleSync = Task { await viewModel.syncSelectedRegion() }
-        await waitUntil { service.syncRegionCallCount == 1 }
-        service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
-        await waitUntil { viewModel.signedInUid == "u2" }
-        await syncGate.open()
-        await staleSync.value
-        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
-
-        XCTAssertNil(viewModel.syncResult)
-        XCTAssertEqual(viewModel.signedInEmail, "b@example.com")
-    }
-
     // MARK: - Dedup (the fetchRegions-once fix)
 
     func testRefreshFetchesRegionsExactlyOnce() async {
@@ -2372,14 +2336,15 @@ final class CloudGatewayViewModelTests: XCTestCase {
 
         // A swap while work is in-flight defers exactly one reload for the new
         // user, fired once the in-flight operation completes (no busy-polling).
-        let syncGate = AsyncTestGate()
-        service.syncRegionGate = syncGate
-        let staleSync = Task { await viewModel.syncSelectedRegion() }
-        await waitUntil { service.syncRegionCallCount == 1 }
+        let grantGate = AsyncTestGate()
+        service.grantAccessGate = grantGate
+        viewModel.newAccessEmail = "new@example.com"
+        let staleGrant = Task { await viewModel.grantAccess() }
+        await waitUntil { service.grantAccessCallCount == 1 }
         service.emitAuthState(AuthenticatedUser(uid: "u2", email: "b@example.com"))
         await waitUntil { viewModel.signedInUid == "u2" }
-        await syncGate.open()
-        await staleSync.value
+        await grantGate.open()
+        await staleGrant.value
         await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
 
         XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches + 1)
@@ -2397,7 +2362,6 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertEqual(viewModel.role, "admin")
-        XCTAssertTrue(viewModel.canSyncSelectedRegion)
     }
 
     func testFirestoreRoleOverridesAccessRole() async {
@@ -2410,7 +2374,6 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertEqual(viewModel.role, "user")
-        XCTAssertFalse(viewModel.canSyncSelectedRegion)
     }
 
     // MARK: - Runtime configuration

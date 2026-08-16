@@ -23,7 +23,7 @@ forking the iOS detector or adding another health timer.
 | Workflow | Reusable product | Native macOS composition |
 |---|---|---|
 | Auth and account actions | `CloudGatewayAppCore` contracts/facade plus the macOS-compatible `CloudGatewayFirebaseAuthAdapter` package | Firebase startup, Sign in with Apple request UI, Google credential presentation, and provider callback routing |
-| Roles and clients | AppCore repository contract and pure Firestore document mapper | A macOS repository; Firebase 11.15 advertises macOS support, but this refactor did not compile or integration-test a macOS Firestore conformer |
+| Roles and clients | AppCore repository contract (now also `fetchMeshRegions`, `fetchMeshDocs`, `setRegionMeshEnabled`) and pure Firestore document mapper | A macOS repository; Firebase 11.15 advertises macOS support, but this refactor did not compile or integration-test a macOS Firestore conformer |
 | Apex and regional APIs | `CloudGatewayControlPlaneClient`, DTOs, URL validation, error mapping, and bounded session from `CloudGatewayAppCore` | Inject the origin host; no platform HTTP client rewrite |
 | App state and commands | `CloudGatewayViewModel`, `CloudGatewayAppServiceFacade`, and passive contracts from `CloudGatewayAppCore` | Construct them in a native composition root with macOS adapters |
 | VPN/config and offline install state | Config manager, VPN manager, selection/models, app-group cache, Keychain secret store, and parser from `CloudGatewayKit` | Inject macOS app/provider/group/Keychain identifiers and entitlements |

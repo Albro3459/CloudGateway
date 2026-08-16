@@ -10,7 +10,7 @@ Goal: give every regional server its own tunnel subnet and bridge mesh-enabled s
 * **Mesh membership lives only in Firestore.** `meshEnabled` is operator-owned, defaults to false on creation, and is not duplicated in tfvars or environment variables. Only literal `true` enables a region or mesh membership; missing and every other value are false.
 * **No new keys.** Server links use each server's existing WireGuard interface keypair. No pairwise preshared keys are required.
 * **Hostname endpoints.** Mesh peers use `wg.<regionId>.gocloudlaunch.com:51820`, the existing grey-cloud client endpoint hostname.
-* `Mesh/{regionId}` is status and observability only. The admin-only Server Health page is web-only for this PR; iOS support can follow later.
+* `Mesh/{regionId}` is status and observability only.
 
 ## Lifecycle and operational assumptions
 

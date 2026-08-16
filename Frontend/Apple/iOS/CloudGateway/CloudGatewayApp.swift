@@ -32,12 +32,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 struct CloudGatewayApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel: CloudGatewayViewModel
+    @StateObject private var serverHealthViewModel: CloudGatewayServerHealthViewModel
     private let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
 
     @MainActor
     init() {
         let composition = CloudGatewayIOSCompositionRoot.make()
         _viewModel = StateObject(wrappedValue: composition.viewModel)
+        _serverHealthViewModel = StateObject(wrappedValue: composition.serverHealthViewModel)
         notificationAuthorizer = composition.notificationAuthorizer
     }
 
@@ -45,7 +47,8 @@ struct CloudGatewayApp: App {
         WindowGroup {
             ContentView(
                 viewModel: viewModel,
-                notificationAuthorizer: notificationAuthorizer
+                notificationAuthorizer: notificationAuthorizer,
+                serverHealthViewModel: serverHealthViewModel
             )
                 .environment(\.cloudGatewayTheme, CloudGatewayTheme())
                 .preferredColorScheme(.dark)

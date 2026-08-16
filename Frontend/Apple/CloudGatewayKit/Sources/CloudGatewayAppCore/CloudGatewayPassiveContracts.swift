@@ -235,7 +235,7 @@ public struct CloudGatewayDeleteAccountResponse: Decodable, Equatable {
     }
 }
 
-public struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
+public struct CloudGatewayRegionSyncResponse: Decodable, Equatable, Sendable {
     public let regionId: String
     public let syncedAt: String
     public let added: Int
@@ -243,6 +243,17 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
     public let removed: Int
     public let noChanges: Bool
     public let log: String
+    public let meshUpdated: Int
+    public let meshEnabled: Bool
+    public let meshApplied: Int
+    public let meshAdded: Int
+    public let meshRemoved: Int
+    public let meshSkipped: Int
+    public let meshRoutesAdded: Int
+    public let meshRoutesRemoved: Int
+    // absent = unknown (older regional host, not a failure); see CloudGatewayRegionSyncParsing.
+    public let meshStatusWritten: Bool?
+    public let meshPeers: [CloudGatewayRegionSyncMeshPeer]
 
     public init(
         regionId: String,
@@ -251,7 +262,17 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
         updated: Int,
         removed: Int,
         noChanges: Bool,
-        log: String
+        log: String,
+        meshUpdated: Int,
+        meshEnabled: Bool,
+        meshApplied: Int,
+        meshAdded: Int,
+        meshRemoved: Int,
+        meshSkipped: Int,
+        meshRoutesAdded: Int,
+        meshRoutesRemoved: Int,
+        meshStatusWritten: Bool?,
+        meshPeers: [CloudGatewayRegionSyncMeshPeer]
     ) {
         self.regionId = regionId
         self.syncedAt = syncedAt
@@ -260,6 +281,16 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable {
         self.removed = removed
         self.noChanges = noChanges
         self.log = log
+        self.meshUpdated = meshUpdated
+        self.meshEnabled = meshEnabled
+        self.meshApplied = meshApplied
+        self.meshAdded = meshAdded
+        self.meshRemoved = meshRemoved
+        self.meshSkipped = meshSkipped
+        self.meshRoutesAdded = meshRoutesAdded
+        self.meshRoutesRemoved = meshRoutesRemoved
+        self.meshStatusWritten = meshStatusWritten
+        self.meshPeers = meshPeers
     }
 }
 
@@ -301,8 +332,11 @@ public protocol CloudGatewayServicing: AnyObject {
     func createClient(regionId: String, clientName: String, idToken: String) async throws -> CloudGatewayClient
     func deleteClient(clientId: String, userId: String, regionId: String, idToken: String) async throws -> CloudGatewayDeleteClientResponse
     func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse
-    func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse
+    func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome]
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse
+    func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion]
+    func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc]
+    func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws
 }
 
 public extension CloudGatewayServicing {

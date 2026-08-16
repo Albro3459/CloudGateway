@@ -28,6 +28,7 @@ struct SystemCloudGatewayNotificationAuthorizer: CloudGatewayNotificationAuthori
 struct ContentView: View {
     @ObservedObject private var viewModel: CloudGatewayViewModel
     private let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
+    private let serverHealthViewModel: CloudGatewayServerHealthViewModel
     @State private var clientPendingDelete: CloudGatewayClientOption?
     @State private var clientShowingDetails: CloudGatewayClientOption?
     @State private var activeTunnelDeleteMessage: String?
@@ -37,6 +38,7 @@ struct ContentView: View {
     @State private var isShowingAccount = false
     @State private var isShowingAccountLinking = false
     @State private var isShowingDeleteAccount = false
+    @State private var isShowingServerHealth = false
     @State private var pendingAccountAction: PendingAccountAction?
     @State private var isConfirmingReset = false
     @State private var isShowingCreateRestriction = false
@@ -49,10 +51,12 @@ struct ContentView: View {
     @MainActor
     init(
         viewModel: CloudGatewayViewModel,
-        notificationAuthorizer: any CloudGatewayNotificationAuthorizing
+        notificationAuthorizer: any CloudGatewayNotificationAuthorizing,
+        serverHealthViewModel: CloudGatewayServerHealthViewModel
     ) {
         _viewModel = ObservedObject(wrappedValue: viewModel)
         self.notificationAuthorizer = notificationAuthorizer
+        self.serverHealthViewModel = serverHealthViewModel
     }
 
     var body: some View {
@@ -86,6 +90,9 @@ struct ContentView: View {
             await viewModel.monitorPresentationHealthAndStatus()
         }
         .onChange(of: viewModel.appMode) { previousMode, mode in
+            if mode != .signedIn {
+                isShowingServerHealth = false
+            }
             if mode == .signedIn {
                 isShowingLogin = false
                 hasEnteredGuestDashboard = false
@@ -97,6 +104,11 @@ struct ContentView: View {
                 isShowingAccount = false
                 isShowingAccountLinking = false
                 isShowingDeleteAccount = false
+            }
+        }
+        .onChange(of: viewModel.role) { _, _ in
+            if !viewModel.isAdmin {
+                isShowingServerHealth = false
             }
         }
         .sheet(isPresented: $isShowingAbout) {
@@ -152,9 +164,9 @@ struct ContentView: View {
         .sheet(item: $clientShowingDetails) { option in
             ClientDetailsView(option: option)
         }
-        .sheet(isPresented: syncResultPresented) {
-            if let result = viewModel.syncResult {
-                SyncResultView(result: result)
+        .fullScreenCover(isPresented: $isShowingServerHealth) {
+            ServerHealthView(viewModel: serverHealthViewModel) {
+                isShowingServerHealth = false
             }
         }
         .sheet(isPresented: $isShowingCreateRestriction) {
@@ -272,6 +284,17 @@ struct ContentView: View {
             }
 
             Spacer()
+
+            if viewModel.isAdmin {
+                Button {
+                    isShowingServerHealth = true
+                } label: {
+                    Image(systemName: "heart.text.square")
+                }
+                .buttonStyle(IconNavButtonStyle())
+                .disabled(viewModel.isWorking)
+                .accessibilityLabel("Server Health")
+            }
 
             Button {
                 isShowingAbout = true
@@ -516,14 +539,11 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Button {
-                        Task {
-                            await viewModel.syncSelectedRegion()
-                        }
+                        isShowingServerHealth = true
                     } label: {
-                        Label("Sync \(viewModel.selectedRegion?.displayName ?? "Region")", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Server Health", systemImage: "heart.text.square")
                     }
                     .buttonStyle(PrimaryButtonStyle())
-                    .disabled(!viewModel.canSyncSelectedRegion)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -791,17 +811,6 @@ struct ContentView: View {
             || viewModel.newClientName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var syncResultPresented: Binding<Bool> {
-        Binding(
-            get: { viewModel.syncResult != nil },
-            set: { isPresented in
-                if !isPresented {
-                    viewModel.dismissSyncResult()
-                }
-            }
-        )
-    }
-
     private func handleAppleCompletion(_ result: Result<ASAuthorization, Error>) {
         switch result {
         case .success(let authorization):
@@ -964,7 +973,7 @@ struct ContentView: View {
     }
 }
 
-private struct ThemedPanel<Content: View>: View {
+struct ThemedPanel<Content: View>: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let content: Content
 
@@ -985,7 +994,7 @@ private struct ThemedPanel<Content: View>: View {
     }
 }
 
-private struct SectionHeader: View {
+struct SectionHeader: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let title: String
     let subtitle: String
@@ -1562,50 +1571,6 @@ private struct ClientDetailsView: View {
     }
 }
 
-private struct SyncResultView: View {
-    @Environment(\.cloudGatewayTheme) private var theme
-    let result: CloudGatewaySyncResult
-
-    var body: some View {
-        ZStack {
-            theme.page.ignoresSafeArea()
-
-            ThemedPanel {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Sync Results")
-                        .font(.title2.bold())
-                        .foregroundStyle(theme.content)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        DetailLine(label: "Region", value: result.regionId)
-                        DetailLine(label: "Synced at", value: result.syncedAt)
-                        DetailLine(label: "Summary", value: "added=\(result.added) updated=\(result.updated) removed=\(result.removed)")
-                    }
-
-                    ScrollView {
-                        Text(result.log)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(theme.contentSecondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .padding(10)
-                    .background(theme.inset)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                    ShareLink(item: result.logText) {
-                        Label("Download Logs", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                }
-            }
-            .padding(16)
-        }
-        .presentationDetents([.medium, .large])
-    }
-}
-
 private struct ThemedTextField: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let title: String
@@ -2004,13 +1969,13 @@ private struct EmptyState: View {
     }
 }
 
-private enum MessageBannerStyle {
+enum MessageBannerStyle {
     case error
     case success
     case warning
 }
 
-private struct MessageBanner: View {
+struct MessageBanner: View {
     @Environment(\.cloudGatewayTheme) private var theme
     let text: String
     let style: MessageBannerStyle
@@ -2096,7 +2061,7 @@ private struct MessageBanner: View {
     }
 }
 
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -2163,7 +2128,7 @@ private struct FlowLayout: Layout {
     }
 }
 
-private struct PrimaryButtonStyle: ButtonStyle {
+struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.cloudGatewayTheme) private var theme
     @Environment(\.isEnabled) private var isEnabled
 
@@ -2179,7 +2144,7 @@ private struct PrimaryButtonStyle: ButtonStyle {
     }
 }
 
-private struct SecondaryButtonStyle: ButtonStyle {
+struct SecondaryButtonStyle: ButtonStyle {
     @Environment(\.cloudGatewayTheme) private var theme
     @Environment(\.isEnabled) private var isEnabled
 
@@ -2211,7 +2176,7 @@ private struct DangerButtonStyle: ButtonStyle {
     }
 }
 
-private struct NavTextButtonStyle: ButtonStyle {
+struct NavTextButtonStyle: ButtonStyle {
     @Environment(\.cloudGatewayTheme) private var theme
     @Environment(\.isEnabled) private var isEnabled
 
@@ -2226,7 +2191,7 @@ private struct NavTextButtonStyle: ButtonStyle {
     }
 }
 
-private struct IconNavButtonStyle: ButtonStyle {
+struct IconNavButtonStyle: ButtonStyle {
     @Environment(\.cloudGatewayTheme) private var theme
     @Environment(\.isEnabled) private var isEnabled
 
@@ -2273,7 +2238,8 @@ private struct IconDangerButtonStyle: ButtonStyle {
     let composition = CloudGatewayIOSCompositionRoot.make()
     ContentView(
         viewModel: composition.viewModel,
-        notificationAuthorizer: composition.notificationAuthorizer
+        notificationAuthorizer: composition.notificationAuthorizer,
+        serverHealthViewModel: composition.serverHealthViewModel
     )
         .environment(\.cloudGatewayTheme, CloudGatewayTheme())
         .preferredColorScheme(.dark)
