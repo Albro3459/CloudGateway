@@ -111,6 +111,11 @@ done
 cleanup_apply_planfiles() {
   local tempfile
 
+  # The trap is armed before the first mktemp, so an early failure fires this with
+  # TEMPFILES still empty; expanding an empty array under `set -u` is an
+  # unbound-variable error on macOS's stock bash 3.2.
+  [[ ${#TEMPFILES[@]} -eq 0 ]] && return 0
+
   for tempfile in "${TEMPFILES[@]}"; do
     [[ -n "$tempfile" ]] && rm -f "$tempfile"
   done
