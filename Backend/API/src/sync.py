@@ -152,6 +152,18 @@ def desired_mesh_peers(
         v4 = ipaddress.ip_network(peer.allowed_network_v4)
         v6 = ipaddress.ip_network(peer.allowed_network_v6)
         if not isinstance(v4, ipaddress.IPv4Network) or not isinstance(v6, ipaddress.IPv6Network):
+            # Defensive: normalize_mesh_candidate already pinned both families. Recorded
+            # as a skip rather than dropped, because ordered_states below indexes states
+            # by every candidate's region id and would otherwise raise KeyError.
+            states[region.region_id] = _incomplete_state(
+                region,
+                peer.endpoint_host,
+                peer.public_key,
+                peer.endpoint_port,
+                MeshPeerReasonCode.INVALID_NETWORK_V4.value,
+                peer.allowed_network_v4,
+                peer.allowed_network_v6,
+            )
             continue
         parsed[region.region_id] = (region, v4, v6, peer)
 
