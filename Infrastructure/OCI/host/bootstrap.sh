@@ -571,7 +571,11 @@ log "Verifying prebuilt Caddy binary"
 printf '%s  %s\n' "$CADDY_BINARY_SHA256" "$CADDY_BINARY_TMP" | sha256sum -c -
 install -m 755 "$CADDY_BINARY_TMP" /usr/local/bin/caddy
 
-if ! /usr/local/bin/caddy list-modules | grep -Fq 'http.handlers.rate_limit'; then
+# Read the module list into a variable first: piping straight into `grep -q`
+# closes the pipe on the first match, and Caddy dies of SIGPIPE (141) before it
+# finishes writing. Under `pipefail` that races into a false "module missing".
+CADDY_MODULES="$(/usr/local/bin/caddy list-modules)"
+if ! grep -Fq 'http.handlers.rate_limit' <<<"$CADDY_MODULES"; then
   echo "Prebuilt Caddy binary does not include http.handlers.rate_limit" >&2
   exit 1
 fi
