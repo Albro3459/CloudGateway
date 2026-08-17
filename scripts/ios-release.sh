@@ -375,15 +375,28 @@ if [[ "$UPLOAD_STATUS" -ne 0 ]]; then
 fi
 # iTMSTransporter can exit 0 while still reporting a server-side validation or
 # delivery failure, so scan the captured output before trusting the upload.
-if grep -qE 'ERROR:|VALIDATION_ERROR|Validation failed|The upload failed' "$UPLOAD_LOG"; then
-  echo "Upload reported errors despite a zero exit status. Nothing committed. See $UPLOAD_LOG" >&2
+# Real rejections carry an ITMS code or an explicit failure summary.
+if grep -qE 'ITMS-[0-9]+|VALIDATION_ERROR|Validation failed|The upload failed|packages? (was|were) not uploaded' "$UPLOAD_LOG"; then
+  echo "Upload reported a delivery or validation failure. Nothing committed. See $UPLOAD_LOG" >&2
   exit 1
 fi
-# Require Transporter's explicit success sentinel so a truncated/hung run cannot
-# pass as delivered.
+# Require Transporter's package summary and its explicit success sentinel so a
+# truncated/hung run cannot pass as delivered.
+if ! grep -qE '[0-9]+ packages? (was|were) uploaded successfully' "$UPLOAD_LOG"; then
+  echo "Upload did not report a delivered package. Nothing committed. See $UPLOAD_LOG" >&2
+  exit 1
+fi
 if ! grep -qE 'Returning 0' "$UPLOAD_LOG"; then
   echo "Upload did not report a success sentinel. Nothing committed. See $UPLOAD_LOG" >&2
   exit 1
+fi
+# Transporter prints that summary only after the reservation is committed, and
+# its upload workers can throw afterwards on a delivered package (the known
+# "eTags cannot be empty" race). Those lines are worth seeing but no longer
+# condemn a delivery the server already accepted.
+if grep -qE 'ERROR:' "$UPLOAD_LOG"; then
+  echo "Note: Transporter logged errors after committing the delivery; see $UPLOAD_LOG" >&2
+  grep -E 'ERROR:' "$UPLOAD_LOG" >&2
 fi
 
 git -C "$ROOT" add "$PBXPROJ"
