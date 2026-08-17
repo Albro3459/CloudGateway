@@ -5,7 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { auth, onAuthStateChanged } from "../firebase";
 import { runRegionsSync } from "../helpers/APIHelper";
 import type { RegionSyncResult } from "../helpers/APIHelper";
-import { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } from "../helpers/firebaseDbHelper";
+import { getAllRegionDocs, getMeshDocs, getPolicyDocs, setRegionMeshEnabled } from "../helpers/firebaseDbHelper";
 import { getEnabledRegions, Region, sortRegions } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 import {
@@ -18,8 +18,10 @@ import {
     MeshLinkRow,
     MeshLinkStatus,
 } from "../helpers/meshHelper";
+import { buildPolicyStatusRows, PolicyDocsById, PolicyRegionState } from "../helpers/policyHelper";
 
 import { AppNav } from "../components/AppNav";
+import { CopyableValue } from "../components/CopyableValue";
 import { RegionSyncCard } from "../components/RegionSyncCard";
 import { SyncRegionsConfirmModal } from "../components/SyncRegionsConfirmModal";
 
@@ -51,6 +53,26 @@ const linkRowClasses = (status: MeshLinkStatus): string => {
     if (status === "stale") return "border-danger-soft-edge bg-danger-soft text-danger-content";
     if (status === "one-sided") return "border-warning-soft-edge bg-warning-soft text-warning-strong";
     return "border-edge-subtle bg-inset text-content-secondary";
+};
+
+// Drift and "unreadable" both get the more alarming danger treatment: drift
+// is an integrity signal (the fleet's maps disagree) and an unreadable doc
+// means client isolation status cannot be confirmed at all, unlike
+// "never-synced" which just means the region hasn't completed a first pass.
+const policyRowClasses = (state: PolicyRegionState): string => {
+    if (state === "ok") return "border-success-soft-edge bg-success-soft text-success-strong";
+    if (state === "drifted") return "border-danger-soft-edge bg-danger-soft text-danger-content";
+    if (state === "unreadable") return "border-danger-soft-edge bg-danger-soft text-danger-content";
+    if (state === "stale") return "border-warning-soft-edge bg-warning-soft text-warning-strong";
+    return "border-edge-subtle bg-inset text-content-secondary";
+};
+
+const policyStateLabel = (state: PolicyRegionState): string => {
+    if (state === "ok") return "OK";
+    if (state === "drifted") return "Drifted";
+    if (state === "stale") return "Stale";
+    if (state === "unreadable") return "Unreadable";
+    return "Never synced";
 };
 
 const sideLabel = (name: string, row: MeshLinkRow, side: "a" | "b"): string => {
@@ -102,10 +124,12 @@ const formatWarningReason = (status: "skipped-overlap" | "skipped-incomplete", r
 };
 
 // Admin-only Server Health page: mesh membership toggles, link status derived
-// from Mesh/* (durable, last-applied), and per-region client-peer sync
-// results (ephemeral, from the sync response). Reads/writes Regions and
-// Mesh directly from Firestore rather than through the API, since the API's
-// /regions summary never carried mesh fields.
+// from Mesh/* (durable, last-applied), account-scoped ACL status derived from
+// Policy/* (observability-only, written after each region's policy reconcile
+// pass), and per-region client-peer sync results (ephemeral, from the sync
+// response). Reads/writes Regions, Mesh, and Policy directly from Firestore
+// rather than through the API, since the API's /regions summary never
+// carried mesh or policy fields.
 const ServerHealth: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
@@ -116,6 +140,12 @@ const ServerHealth: React.FC = () => {
 
     const [regions, setRegions] = useState<Region[] | null>(null);
     const [meshDocs, setMeshDocs] = useState<MeshDocsById>(new Map());
+    const [policyDocs, setPolicyDocs] = useState<PolicyDocsById>(new Map());
+    // Distinguishes "the Policy collection read itself failed" from "every
+    // region legitimately has no Policy doc yet". Collapsing the two into one
+    // empty map would render every region as never-synced during an outage,
+    // which is a stronger and wrong claim than "status unknown right now".
+    const [policyLoadFailed, setPolicyLoadFailed] = useState(false);
     const [dataLoading, setDataLoading] = useState(false);
 
     const [togglingRegionIds, setTogglingRegionIds] = useState<Set<string>>(new Set());
@@ -163,6 +193,7 @@ const ServerHealth: React.FC = () => {
     const linkRows = useMemo(() => buildMeshLinkRows(allRegions, meshDocs), [allRegions, meshDocs]);
     const warnings = useMemo(() => collectMeshWarnings(meshDocs), [meshDocs]);
     const anyPending = useMemo(() => hasAnyMeshPending(allRegions, meshDocs), [allRegions, meshDocs]);
+    const policyRows = useMemo(() => buildPolicyStatusRows(allRegions, policyDocs), [allRegions, policyDocs]);
 
     const loadServerHealthData = useCallback(async (clearOverride?: ClearOverride): Promise<boolean> => {
         const loadGeneration = ++loadGenerationRef.current;
@@ -171,7 +202,27 @@ const ServerHealth: React.FC = () => {
 
         setDataLoading(true);
         try {
-            const [regionDocs, mesh] = await Promise.all([getAllRegionDocs(), getMeshDocs()]);
+            // Policy/* is a separate, purely observational feed (account-scoped
+            // ACL client isolation). A failure to read it must not blank the
+            // Mesh cards or the rest of the page, so it is caught locally rather
+            // than left to fail the Promise.all and take Regions/Mesh down with
+            // it. The catch also has to carry a failed flag rather than just an
+            // empty map: an empty PolicyDocsById is indistinguishable from every
+            // region legitimately having no Policy doc yet, and collapsing a
+            // fetch failure into that would render every region as "never
+            // synced" during an outage instead of "status unknown".
+            const policyPromise = getPolicyDocs().then(
+                (docs) => ({ docs, failed: false }),
+                (error): { docs: PolicyDocsById; failed: boolean } => {
+                    console.error("Error loading policy data:", error);
+                    return { docs: new Map(), failed: true };
+                },
+            );
+            const [regionDocs, mesh, policyResult] = await Promise.all([
+                getAllRegionDocs(),
+                getMeshDocs(),
+                policyPromise,
+            ]);
 
             if (clearOverride) {
                 // Retire this confirming read's own override as soon as it
@@ -200,6 +251,8 @@ const ServerHealth: React.FC = () => {
             });
             setRegions(overlaidRegions);
             setMeshDocs(mesh);
+            setPolicyDocs(policyResult.docs);
+            setPolicyLoadFailed(policyResult.failed);
             return true;
         } catch (error) {
             console.error("Error loading server health data:", error);
@@ -332,6 +385,8 @@ const ServerHealth: React.FC = () => {
             setBanner(null);
             setRegions(null);
             setMeshDocs(new Map());
+            setPolicyDocs(new Map());
+            setPolicyLoadFailed(false);
             setDataLoading(false);
             setTogglingRegionIds(new Set());
             setSyncModalOpen(false);
@@ -573,6 +628,83 @@ const ServerHealth: React.FC = () => {
                                 </li>
                             ))}
                         </ul>
+                    </div>
+                )}
+            </div>
+
+            <div className="mb-4 w-full max-w-7xl rounded-lg bg-card p-4 shadow-lg md:p-6">
+                <h3 className="text-xl font-semibold text-content">Client isolation</h3>
+                <p className="mt-1 text-xs text-content-muted">
+                    Account-scoped ACL status, read back from each region&apos;s live nftables map. Row counts and
+                    hashes only - never uids, emails, client names, or addresses. Drift and staleness are visible
+                    without running a sync.
+                </p>
+                {policyLoadFailed ? (
+                    // A collection-level read failure gets its own card rather than
+                    // falling through to the per-region grid: with no docs to work
+                    // from, every row would render "Never synced", which asserts a
+                    // fleet state we don't actually know and looks nothing like an
+                    // outage.
+                    <div className="mt-3 rounded-lg border border-danger-soft-edge bg-danger-soft px-4 py-3 text-sm text-danger-content">
+                        Unable to load client isolation status. This is a read failure, not a report that no
+                        region has completed a policy reconcile.
+                    </div>
+                ) : (
+                    <div className="mt-3 flex flex-wrap gap-3">
+                        {policyRows.map((row) => (
+                            <div
+                                key={row.regionId}
+                                className={`min-w-64 rounded-lg border px-3 py-2 text-sm ${policyRowClasses(row.state)}`}
+                            >
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="font-medium">{regionLabel(row.regionId, regionDisplayNames)}</span>
+                                    <span className="text-xs font-semibold uppercase tracking-wide">{policyStateLabel(row.state)}</span>
+                                </div>
+                                {row.state === "never-synced" && (
+                                    <p className="mt-1 text-xs">No policy reconcile has completed for this region yet.</p>
+                                )}
+                                {row.state === "unreadable" && (
+                                    <p className="mt-1 text-xs">Policy status could not be read for this region.</p>
+                                )}
+                                {row.state === "drifted" && (
+                                    <p className="mt-1 text-xs">
+                                        {row.driftedV4 && row.driftedV6
+                                            ? "IPv4 and IPv6 maps differ from the fleet."
+                                            : row.driftedV4
+                                                ? "IPv4 map differs from the fleet."
+                                                : "IPv6 map differs from the fleet."}
+                                    </p>
+                                )}
+                                {row.state === "stale" && (
+                                    <p className="mt-1 text-xs">Data vintage lags the rest of the fleet.</p>
+                                )}
+                                {row.doc && (
+                                    <>
+                                        <p className="mt-1 text-xs">{row.doc.rowCount ?? "-"} rows</p>
+                                        <p className="text-xs">
+                                            {row.doc.dataVintage
+                                                ? `Data as of ${row.doc.dataVintage.toLocaleString()}`
+                                                : "No applied snapshot yet"}
+                                        </p>
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                            <CopyableValue
+                                                value={row.doc.mapHashV4}
+                                                label={`${regionLabel(row.regionId, regionDisplayNames)} IPv4 map hash`}
+                                                className="max-w-[9rem]"
+                                            />
+                                            <CopyableValue
+                                                value={row.doc.mapHashV6}
+                                                label={`${regionLabel(row.regionId, regionDisplayNames)} IPv6 map hash`}
+                                                className="max-w-[9rem]"
+                                            />
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        ))}
+                        {!policyRows.length && (
+                            <p className="text-sm text-content-muted">No regions.</p>
+                        )}
                     </div>
                 )}
             </div>

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from .enums import Event, MeshPeerReasonCode, MeshPeerStatus
 from .logs import log_event, setup_logging
+from .policy_sync import reconcile_policy
 from .repository import ClientDoc, FirebaseRepository, MeshPeerState, RegionDoc
 from .settings import Settings
 from .wireguard import (
@@ -564,9 +565,11 @@ def main() -> int:
     settings = Settings()
 
     from .firebase import FirestoreRepository
+    from .policy import LocalPolicyManager
     from .wireguard import LocalWireGuardManager
 
     repository = FirestoreRepository(settings)
+    policy = LocalPolicyManager()
     wireguard = LocalWireGuardManager(
         interface=settings.wg_interface,
         server_public_key=settings.wg_server_public_key,
@@ -608,6 +611,32 @@ def main() -> int:
         mesh_status_written=outcome.mesh_status_written,
         degraded_client_peers=outcome.degraded_client_peers,
     )
+
+    # Logged separately from the peer pass above and never affects this
+    # process's exit code: a rebuilt or rebooted host repopulates its whole
+    # account-scoped ACL map from Firestore without needing any peer to poke
+    # it, but a policy failure here is not a peer-sync failure.
+    log_event(logger, Event.POLICY_REFRESH_STARTED, region_id=settings.region_id)
+    try:
+        policy_outcome = reconcile_policy(repository=repository, policy=policy, settings=settings, sequence=1)
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.POLICY_REFRESH_FAILED,
+            level=logging.ERROR,
+            region_id=settings.region_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+    else:
+        log_event(
+            logger,
+            Event.POLICY_REFRESH_COMPLETED,
+            region_id=settings.region_id,
+            row_count=policy_outcome.row_count,
+            skipped_rows=policy_outcome.skipped_rows,
+            status_written=policy_outcome.status_written,
+        )
+
     return 0
 
 

@@ -315,6 +315,35 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   matching active client) are listed by public key only. It never contains private keys, full
   configs, or tokens. Its mesh section is server metadata only (region IDs, CIDRs, endpoint
   hostnames, route changes) and never includes a mesh peer's public key or any per-user data.
+- This pass also reconciles the account-scoped ACL policy map (`reconcile_policy()`), the same
+  full pull-apply-read back-status pass `POST /api/sync/refresh` enqueues - see
+  [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md). So Sync All is also the
+  repair path for a dropped or lost policy poke, not just for peer/mesh drift.
+
+### `POST /sync/refresh`
+
+- Requires Firebase bearer auth for any provisioned user (`require_provisioned_user`). Not
+  admin-only - any client's own token is enough.
+- Regional: reconciles this API server's local region's account-scoped ACL policy map only. It
+  never touches WireGuard peers.
+- Request body: none.
+- Response `202`: deliberately carries no detail - no region health, no row counts, and no error
+  information. A caller learns nothing from the response beyond "the request was accepted."
+- The reconcile is enqueued and the request returns immediately, so the caller's timeout never
+  matters and each request costs approximately nothing.
+- No dedicated secret and no rate limit. The caller's own Firebase token is replayed, matching the
+  existing cross-region pattern in `_delete_remote_client` (`Backend/API/src/routes.py:722`);
+  depth-1 coalescing in `reconcile_policy()` structurally bounds the work any caller can cause (see
+  [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)).
+- Failure behaviour: because the pass is detached from the response, a failed apply surfaces only
+  in host logs and the `Policy/{regionId}` status doc, never in this endpoint's response. Use
+  `POST /api/admin/sync` (Sync All) as the repair path for a dropped or failed poke.
+- Poke sites: `POST /clients` and `DELETE /clients/{clientId}` call this on every other region,
+  fire-and-forget after the response, so a dropped poke never blocks or fails the caller's request.
+  A dropped poke leaves the un-poked region's policy map stale until the next fleet-wide client
+  event or an admin Sync All - this is an accepted risk, not a bug (see
+  [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)). `DELETE /account` deliberately does
+  not poke; see the comment at the delete site in `Backend/API/src/routes.py`.
 
 ## Error Responses
 

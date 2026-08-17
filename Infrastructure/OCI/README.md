@@ -27,6 +27,13 @@ The fetched bootstrap installs and configures:
 
 * WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` rebuilds the live peer set from Firebase at boot and after region registration.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
+* `nftables`, with an `inet cloudgateway` table enforcing account-scoped client-to-client
+  isolation: the table, sets, maps, and `cg_forward` chain are created empty by `wg-quick`'s
+  `PostUp` (loaded from `/etc/cloudgateway/cloudgateway.nft`, written by bootstrap) and deleted by
+  `PostDown`; contents are populated only by the API's policy reconcile pull from Firestore, never
+  by bootstrap or Terraform. This is additive to, not a replacement for, the existing `iptables`/
+  `ip6tables` rules above - see
+  [docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to local Unbound.
 * Unbound on `127.0.0.1:5335` as the AdGuard Home upstream: a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. DoT keeps the cloud provider from seeing the domains clients resolve; local validation means answer integrity does not depend on trusting the upstreams. Unbound never recurses, so it never queries authoritative servers over plaintext port 53.
 * Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../../docs/deployment-handoff.md):

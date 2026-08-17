@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from ipaddress import ip_network
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from uuid import uuid4
 
 from .enums import ClientStatus, MeshPeerStatus, Role
@@ -37,6 +37,9 @@ class RegionDoc:
     tunnel_network_v4: str = ""
     tunnel_network_v6: str = ""
     mesh_enabled: bool = False
+    # Per-region monotonic client-address allocator index; see next_tunnel_index.
+    tunnel_index_v4: int | None = None
+    tunnel_index_v6: int | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,9 @@ class UserDoc:
     email: str
     created_at: datetime | None = None
     disabled: bool = False
+    # Opaque account-scoped ACL identifier, allocated once from
+    # Counters/accountSlots and never reused. See next_account_slot.
+    account_slot: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,30 @@ class MeshPeerState:
     reason_code: str | None = None
 
 
+@dataclass(frozen=True)
+class PolicyClientEntry:
+    """One fleet-wide row input to the account-scoped ACL map (see policy.py)."""
+
+    owner_uid: str
+    region_id: str
+    assigned_tunnel_ipv4: str
+    assigned_tunnel_ipv6: str
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PolicyStatus:
+    """Observability snapshot for Policy/{regionId}; describes what a region's
+    live nftables map actually contains, not what it intended to apply."""
+
+    region_id: str
+    map_hash_v4: str
+    map_hash_v6: str
+    row_count: int
+    applied_sequence: int
+    data_vintage: datetime | None = None
+
+
 def clean_client_name(value: str) -> str:
     return value.strip()
 
@@ -171,25 +201,105 @@ def region_display_order(region: RegionDoc) -> tuple[int, str]:
     return (region.display_order if region.display_order is not None else 1000, region.region_id)
 
 
-def _first_unused_tunnel_ip(*, cidr: str, used: set[str], prefix_length: int) -> str:
-    hosts = ip_network(cidr, strict=False).hosts()
-    try:
-        next(hosts)
-    except StopIteration as exc:
-        raise CapacityReachedError() from exc
+# Index 1 is the server interface/DNS address (assigned outside this
+# allocator, see Region.wireguardDnsIpv4/6); client indices start at 2.
+MIN_TUNNEL_INDEX = 2
 
-    for host in hosts:
-        assigned_ip = f"{host}/{prefix_length}"
-        if assigned_ip not in used:
-            return assigned_ip
+# Slot 0 is reserved on the wire (see policy.py MIN_SLOT: an unmarked packet's
+# mark defaults to 0, meaning "unknown source"), so account slots start at 1.
+MIN_ACCOUNT_SLOT = 1
+
+
+def region_tunnel_index_bounds(ipv4_cidr: str) -> tuple[int, int]:
+    """Client host index range for a region's v4 network: 2..top of host range.
+
+    Only the v4 network bounds the range. v6 is a /64 that never wraps; the
+    two indices are kept paired by always deriving both addresses from the
+    same index (see tunnel_addresses_for_index), so pairing to the smaller v4
+    range is what makes the wrap possible at all.
+    """
+    network = ip_network(ipv4_cidr, strict=False)
+    max_index = network.num_addresses - 2  # exclude network and broadcast addresses
+    return MIN_TUNNEL_INDEX, max_index
+
+
+def _index_from_address(address: str, network: IPv4Network | IPv6Network) -> int | None:
+    """Best-effort address -> index; None for anything unparseable or outside network."""
+    host = address.partition("/")[0]
+    try:
+        ip = ip_address(host)
+    except ValueError:
+        return None
+    if ip not in network:
+        return None
+    return int(ip) - int(network.network_address)
+
+
+def used_tunnel_indices(clients: Sequence[ClientDoc], *, ipv4_cidr: str, ipv6_cidr: str) -> set[int]:
+    """Indices currently held by allocated clients, from whichever of v4/v6 parses.
+
+    A client's v4 and v6 addresses share one index by construction, so either
+    field alone reserves the index. Malformed or out-of-network values (stale
+    data, a resized network) are skipped rather than raised, since one bad row
+    must not block every future allocation.
+    """
+    ipv4_network = ip_network(ipv4_cidr, strict=False)
+    ipv6_network = ip_network(ipv6_cidr, strict=False)
+    used: set[int] = set()
+    for client in clients:
+        v4_index = _index_from_address(client.assigned_tunnel_ipv4, ipv4_network)
+        if v4_index is not None:
+            used.add(v4_index)
+        v6_index = _index_from_address(client.assigned_tunnel_ipv6, ipv6_network)
+        if v6_index is not None:
+            used.add(v6_index)
+    return used
+
+
+def next_tunnel_index(*, stored_index: int | None, used_indices: set[int], ipv4_cidr: str) -> int:
+    """Advance the per-region monotonic index by one, wrapping and skipping in-use.
+
+    NOT dead code: the wrap (index above the top of the host range resets to
+    MIN_TUNNEL_INDEX) is a real event, not a theoretical edge case - a /24
+    region wraps after roughly 253 lifetime allocations. The in-use skip after
+    a wrap is what stops a still-live client's address from being handed out
+    twice. Both are exercised by test_next_tunnel_index_wraps_and_skips_in_use.
+    """
+    min_index, max_index = region_tunnel_index_bounds(ipv4_cidr)
+    if stored_index is None or stored_index < min_index or stored_index > max_index:
+        candidate = min_index
+    else:
+        candidate = stored_index + 1
+        if candidate > max_index:
+            candidate = min_index
+
+    for _ in range(max_index - min_index + 1):
+        if candidate not in used_indices:
+            return candidate
+        candidate += 1
+        if candidate > max_index:
+            candidate = min_index
     raise CapacityReachedError()
 
 
-def assign_tunnel_ips(*, ipv4_cidr: str, ipv6_cidr: str, used_ipv4: set[str], used_ipv6: set[str]) -> tuple[str, str]:
+def tunnel_addresses_for_index(*, index: int, ipv4_cidr: str, ipv6_cidr: str) -> tuple[str, str]:
+    ipv4_network = ip_network(ipv4_cidr, strict=False)
+    ipv6_network = ip_network(ipv6_cidr, strict=False)
     return (
-        _first_unused_tunnel_ip(cidr=ipv4_cidr, used=used_ipv4, prefix_length=32),
-        _first_unused_tunnel_ip(cidr=ipv6_cidr, used=used_ipv6, prefix_length=128),
+        f"{ipv4_network.network_address + index}/32",
+        f"{ipv6_network.network_address + index}/128",
     )
+
+
+def next_account_slot(stored_next_slot: int | None) -> int:
+    """Next value to allocate from Counters/accountSlots.nextSlot.
+
+    Defaults to MIN_ACCOUNT_SLOT when the counter doc doesn't exist yet or
+    holds something malformed.
+    """
+    if isinstance(stored_next_slot, int) and not isinstance(stored_next_slot, bool) and stored_next_slot >= MIN_ACCOUNT_SLOT:
+        return stored_next_slot
+    return MIN_ACCOUNT_SLOT
 
 
 def new_client_id() -> str:
@@ -339,3 +449,29 @@ class FirebaseRepository(ABC):
         client_id: str,
     ) -> ClientDoc:
         """Reserve client deletion by marking the client removed and repairing counters."""
+
+    @abstractmethod
+    def list_policy_clients(self) -> list[PolicyClientEntry]:
+        """Return every ACTIVE, keyed client fleet-wide (account-scoped ACL map input).
+
+        Unfiltered across regions on purpose (see TODO/account-scoped-acl.md,
+        "Firestore model"): status filtering happens in the caller so this
+        needs no new composite index. A client with no live public key cannot
+        source traffic and is excluded.
+        """
+
+    @abstractmethod
+    def list_account_slots(self) -> dict[str, int]:
+        """Return uid -> accountSlot for every user holding a valid, positive slot."""
+
+    @abstractmethod
+    def list_admin_uids(self) -> set[str]:
+        """Return uids with the admin role (mirrors list_admin_emails, keyed by uid)."""
+
+    @abstractmethod
+    def get_account_slot(self, uid: str) -> int | None:
+        """Return one user's account slot, or None when absent."""
+
+    @abstractmethod
+    def write_policy_status(self, status: PolicyStatus) -> None:
+        """Write this region's account-scoped ACL status doc (observability only; best-effort caller)."""

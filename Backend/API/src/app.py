@@ -11,6 +11,8 @@ from .enums import ErrorCode, Event
 from .errors import ApiError
 from .logs import log_event, setup_logging
 from .models import ErrorDetail, ErrorResponse
+from .policy import LocalPolicyManager, PolicyManager
+from .policy_sync import PolicyCoordinator
 from .repository import FirebaseRepository
 from .routes import router
 from .settings import Settings
@@ -34,6 +36,7 @@ def create_app(
     token_verifier: TokenVerifier | None = None,
     repository: FirebaseRepository | None = None,
     wireguard: WireGuardManager | None = None,
+    policy: PolicyManager | None = None,
 ) -> FastAPI:
     setup_logging()
     settings = settings or Settings()
@@ -57,6 +60,13 @@ def create_app(
         dns_ipv6=settings.wg_dns_ipv6,
         tunnel_network_v4=settings.wg_tunnel_ipv4_cidr,
         tunnel_network_v6=settings.wg_tunnel_ipv6_cidr,
+    )
+    app.state.policy = policy or LocalPolicyManager()
+    # A separate lock from wireguard.lock() (see policy.py): a policy refresh
+    # must never contend with add_peer on the client create path or make an
+    # admin's non-blocking Sync All shed with SyncInProgressError.
+    app.state.policy_coordinator = PolicyCoordinator(
+        repository=repository, policy=app.state.policy, settings=settings
     )
 
     @app.middleware("http")

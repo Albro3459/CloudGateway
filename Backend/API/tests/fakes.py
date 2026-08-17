@@ -2,7 +2,7 @@ import json
 import subprocess
 from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from typing import Iterator
 from dataclasses import dataclass, replace
 from threading import Lock
@@ -14,28 +14,35 @@ from src.errors import (
     AuthRequiredError,
     ClientNotFoundError,
     DuplicateEmailError,
+    PolicyApplyFailedError,
     SyncInProgressError,
     WireGuardApplyFailedError,
 )
+from src.policy import LivePolicyMap, PolicyManager, PolicyRow
 from src.repository import (
     ALLOCATED_CLIENT_STATUSES,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
     MeshPeerState,
+    PolicyClientEntry,
+    PolicyStatus,
     RegionDoc,
     RegionRegistration,
     UserDoc,
     assert_capacity_available,
     assert_user_limit_available,
-    assign_tunnel_ips,
     clean_client_name,
     ensure_delete_allowed,
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    next_account_slot,
+    next_tunnel_index,
     region_display_order,
     require_region,
+    tunnel_addresses_for_index,
+    used_tunnel_indices,
     utc_now,
 )
 from src.wireguard import (
@@ -254,6 +261,14 @@ class FakeRepository(FirebaseRepository):
         self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
         self.write_mesh_status_error: Exception | None = None
         self.list_clients_by_public_key_error: Exception | None = None
+        # Mirrors Counters/accountSlots: uid -> allocated slot, plus the next
+        # value the counter would hand out. Slot 0 is reserved, so allocation
+        # starts at 1 (see repository.MIN_ACCOUNT_SLOT).
+        self.account_slots: dict[str, int] = {}
+        self._next_account_slot = 1
+        # Last policy status written per region, keyed by region_id.
+        self.policy_status: dict[str, PolicyStatus] = {}
+        self.write_policy_status_error: Exception | None = None
 
     def get_role(self, uid: str) -> Role | None:
         return self.roles.get(uid)
@@ -280,6 +295,10 @@ class FakeRepository(FirebaseRepository):
         # preserves the stored enabled value, seeding false on create.
         existing = self.regions.get(registration.region_id)
         mesh_enabled = existing.mesh_enabled if existing is not None else False
+        # Real Firestore merge preserves tunnelIndexV4/V6 across a re-register
+        # the same way it preserves meshEnabled: this write never sets them.
+        tunnel_index_v4 = existing.tunnel_index_v4 if existing is not None else None
+        tunnel_index_v6 = existing.tunnel_index_v6 if existing is not None else None
         if set_enabled is None:
             enabled = existing.enabled if existing is not None else False
         else:
@@ -301,6 +320,8 @@ class FakeRepository(FirebaseRepository):
             tunnel_network_v4=registration.tunnel_network_v4,
             tunnel_network_v6=registration.tunnel_network_v6,
             mesh_enabled=mesh_enabled,
+            tunnel_index_v4=tunnel_index_v4,
+            tunnel_index_v6=tunnel_index_v6,
         )
         self.regions[registration.region_id] = region
         return region
@@ -376,6 +397,7 @@ class FakeRepository(FirebaseRepository):
                 if existing.uid in self.disabled_auth_uids:
                     self.enable_auth_user(existing.uid)
                 self.roles[existing.uid] = Role.USER
+                existing = self._with_account_slot(existing)
                 return CreateUserResult(user=existing, already_existed=True)
             self.created_user_count += 1
             uid = f"created-user-{self.created_user_count}"
@@ -384,6 +406,7 @@ class FakeRepository(FirebaseRepository):
                 uid = f"created-user-{self.created_user_count}"
             user = UserDoc(uid=uid, email=email, created_at=utc_now())
             self.users[uid] = user
+            user = self._with_account_slot(user)
             self.roles[uid] = Role.USER
             return CreateUserResult(user=user)
 
@@ -428,18 +451,28 @@ class FakeRepository(FirebaseRepository):
                 owner_allocated_count=owner_allocated_count,
                 per_region_client_limit=self._effective_per_region_client_limit(owner_uid),
             )
-            assigned_ipv4, assigned_ipv6 = assign_tunnel_ips(
+            next_index = next_tunnel_index(
+                stored_index=region.tunnel_index_v4,
+                used_indices=used_tunnel_indices(
+                    allocated_clients,
+                    ipv4_cidr=self.ipv4_cidr,
+                    ipv6_cidr=self.ipv6_cidr,
+                ),
+                ipv4_cidr=self.ipv4_cidr,
+            )
+            assigned_ipv4, assigned_ipv6 = tunnel_addresses_for_index(
+                index=next_index,
                 ipv4_cidr=self.ipv4_cidr,
                 ipv6_cidr=self.ipv6_cidr,
-                used_ipv4={client.assigned_tunnel_ipv4 for client in allocated_clients},
-                used_ipv6={client.assigned_tunnel_ipv6 for client in allocated_clients},
             )
+            self.regions[region_id] = replace(region, tunnel_index_v4=next_index, tunnel_index_v6=next_index)
             client_id = new_client_id()
             while (owner_uid, region_id, client_id) in self.clients:
                 client_id = new_client_id()
 
             now = utc_now()
-            self.users.setdefault(
+            # Lazy allocation covers accounts provisioned before this feature.
+            owner = self.users.setdefault(
                 owner_uid,
                 UserDoc(
                     uid=owner_uid,
@@ -447,6 +480,7 @@ class FakeRepository(FirebaseRepository):
                     created_at=now,
                 ),
             )
+            self._with_account_slot(owner)
             client = ClientDoc(
                 client_id=client_id,
                 owner_uid=owner_uid,
@@ -562,6 +596,33 @@ class FakeRepository(FirebaseRepository):
                 error_message=None,
             )
 
+    def list_policy_clients(self) -> list[PolicyClientEntry]:
+        return [
+            PolicyClientEntry(
+                owner_uid=client.owner_uid,
+                region_id=client.region_id,
+                assigned_tunnel_ipv4=client.assigned_tunnel_ipv4,
+                assigned_tunnel_ipv6=client.assigned_tunnel_ipv6,
+                updated_at=client.updated_at,
+            )
+            for client in self.clients.values()
+            if client.status == ClientStatus.ACTIVE and client.client_public_key
+        ]
+
+    def list_account_slots(self) -> dict[str, int]:
+        return {uid: slot for uid, slot in self.account_slots.items() if slot > 0}
+
+    def list_admin_uids(self) -> set[str]:
+        return {uid for uid, role in self.roles.items() if role == Role.ADMIN}
+
+    def get_account_slot(self, uid: str) -> int | None:
+        return self.account_slots.get(uid)
+
+    def write_policy_status(self, status: PolicyStatus) -> None:
+        if self.write_policy_status_error is not None:
+            raise self.write_policy_status_error
+        self.policy_status[status.region_id] = status
+
     def _mark_client_terminal(
         self,
         *,
@@ -629,6 +690,25 @@ class FakeRepository(FirebaseRepository):
         if client.client_id != client_id or client.owner_uid != owner_uid or client.region_id != region_id:
             raise ClientNotFoundError()
         return client
+
+    def _allocate_account_slot(self) -> int:
+        # Mirrors firebase.py's counter allocation: read-then-increment, never
+        # reused, matching next_account_slot's default-on-missing behaviour.
+        slot = next_account_slot(self._next_account_slot)
+        self._next_account_slot = slot + 1
+        return slot
+
+    def _with_account_slot(self, user: UserDoc) -> UserDoc:
+        # Allocation is once per account, never reused: reuse a slot already
+        # on the user doc or already recorded for this uid before minting one.
+        slot = user.account_slot or self.account_slots.get(user.uid)
+        if slot is None:
+            slot = self._allocate_account_slot()
+        self.account_slots[user.uid] = slot
+        if user.account_slot != slot:
+            user = replace(user, account_slot=slot)
+        self.users[user.uid] = user
+        return user
 
 
 class FakeWireGuardManager(WireGuardManager):
@@ -947,3 +1027,79 @@ class FakeWireGuardManager(WireGuardManager):
             changes.append(RouteChange(cidr, PEER_REMOVED, reclaimed=cidr not in known))
 
         return changes
+
+
+class FakePolicyManager(PolicyManager):
+    """Mirrors FakeWireGuardManager: rows live in-memory, mutations must run
+    under lock(), and failures are injectable via the fail_* counters."""
+
+    def __init__(self):
+        self.rows: dict[tuple[str, str], PolicyRow] = {}
+        self.infra_v4: tuple[str, ...] = ()
+        self.infra_v6: tuple[str, ...] = ()
+        self.apply_calls = 0
+        self.add_row_calls = 0
+        self.read_calls = 0
+        self.fail_apply_count = 0
+        self.fail_add_row_count = 0
+        self.fail_read_count = 0
+        self.locked = False
+
+    @contextmanager
+    def lock(self, *, blocking: bool = True) -> Iterator[None]:
+        if self.locked and not blocking:
+            raise SyncInProgressError()
+        if self.locked:
+            raise AssertionError("Policy lock() is not reentrant.")
+        self.locked = True
+        try:
+            yield
+        finally:
+            self.locked = False
+
+    def _require_lock(self) -> None:
+        if not self.locked:
+            raise AssertionError("Policy mutation must run inside lock().")
+
+    def apply_map(
+        self,
+        rows: Sequence[PolicyRow],
+        *,
+        infra_v4: Sequence[str] = (),
+        infra_v6: Sequence[str] = (),
+    ) -> None:
+        self._require_lock()
+        self.apply_calls += 1
+        if self.fail_apply_count:
+            self.fail_apply_count -= 1
+            raise PolicyApplyFailedError("Simulated policy map apply failure.")
+        self.rows = {(row.address_v4, row.address_v6): row for row in rows}
+        self.infra_v4 = tuple(infra_v4)
+        self.infra_v6 = tuple(infra_v6)
+
+    def add_client_row(self, row: PolicyRow) -> None:
+        self._require_lock()
+        self.add_row_calls += 1
+        if self.fail_add_row_count:
+            self.fail_add_row_count -= 1
+            raise PolicyApplyFailedError("Simulated policy row apply failure.")
+        self.rows[(row.address_v4, row.address_v6)] = row
+
+    def read_map(self) -> LivePolicyMap:
+        self.read_calls += 1
+        if self.fail_read_count:
+            self.fail_read_count -= 1
+            raise PolicyApplyFailedError("Simulated policy map read failure.")
+        rows_v4 = tuple(
+            sorted(
+                ((row.address_v4, row.slot) for row in self.rows.values()),
+                key=lambda item: ip_address(item[0]).packed,
+            )
+        )
+        rows_v6 = tuple(
+            sorted(
+                ((row.address_v6, row.slot) for row in self.rows.values()),
+                key=lambda item: ip_address(item[0]).packed,
+            )
+        )
+        return LivePolicyMap(rows_v4=rows_v4, rows_v6=rows_v6)

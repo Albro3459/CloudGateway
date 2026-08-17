@@ -43,6 +43,45 @@ Mesh peers need routes, not just `wg set` allowed-ips: `wg-quick` only auto-inst
 
 The sync's contract is otherwise one-directional and read-only against Firebase. The single carve-out: while still holding the WireGuard lock, after live peer/route reconciliation the host writes a best-effort full-replacement `Mesh/{regionId}` status doc - server metadata only (region IDs, CIDRs, public keys, endpoint hostnames, and endpoint ports), never per-user data and never handshake timestamps. Skipped-incomplete entries may omit malformed fields and carry a `reasonCode`. A Firestore write failure there is logged (`mesh_status_write_failed`) and does not fail, retry, or roll back an already-successful sync. A status document proves the reconciliation snapshot only; it does not prove a WireGuard handshake. Use `wg show wg0` for live link state.
 
+## Account-Scoped ACL Policy Reconcile
+
+The client-to-client isolation filter (`Backend/API/src/policy.py`, base ruleset in
+`/etc/cloudgateway/cloudgateway.nft`, installed by `bootstrap.sh` `PostUp` - see
+[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)) has its own one-directional
+Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above. It is
+not a systemd service or CLI command; it runs as part of the API process, triggered by:
+
+* Boot, so a rebuilt or rebooted host repopulates its entire policy map from Firestore without
+  needing any peer to poke it.
+* `POST /api/admin/sync` (Sync All), which also reconciles peers and mesh - see
+  [docs/api-contract.md](api-contract.md).
+* `POST /api/sync/refresh`, the poke any provisioned user's client create/delete triggers on every
+  other region - see [docs/api-contract.md](api-contract.md).
+
+A pass pulls the fleet-wide client/account snapshot from Firestore, applies it to
+`cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, and `cg_pairs4/6` atomically as a single `nft -f -`
+load (never incrementally), reads back the live `cg_slot4/6` maps, and writes a best-effort
+`Policy/{regionId}` status doc. Status is read back from the live map, not the pulled snapshot, so
+it describes what is actually on the wire, not what the region intended to apply - the same rule
+`write_mesh_status` follows for `Mesh/{regionId}`. A status write failure never fails a pass. The
+status doc is intentionally opaque: row count, data vintage, and map hashes only - never a uid,
+email, address, or key.
+
+Concurrency is independent of the peer sync: `reconcile_policy()` takes its own flock at
+`/run/cloudgateway-policy.lock`, deliberately not `wireguard.lock()`, so a policy refresh never
+contends with `add_peer` on the client create path and never makes an admin's non-blocking Sync
+All shed with `409 SYNC_IN_PROGRESS`. Traffic-driven policy pokes in one region never slow client
+creation in another. Any number of pokes arriving during a running pull coalesce to one follow-up
+pull (depth-1; not a queue), and a sequence guard discards a slow in-flight pull that would
+otherwise overwrite newer state with older state.
+
+**Open verification item:** nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
+across the pre-existing `iptables`/`ip6tables` `FORWARD` chains), the `cg_forward` chain's
+`priority -10` actually running ahead of those chains, and the `ip daddr @cg_tunnel4 ip daddr .
+meta mark != @cg_pairs4` concatenated-set comparison syntax have **not been verified on a real
+host**. This is a required check before rollout - see the checklist in
+[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md).
+
 ## Diagnosing Before/After
 
 ```sh

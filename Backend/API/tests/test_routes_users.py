@@ -494,3 +494,23 @@ def test_remove_account_peers_rejects_a_malformed_region_id_before_calling_out(m
 
     assert excinfo.value.transient is False
     assert calls["count"] == 0
+
+
+def test_delete_account_sends_no_policy_poke(client, repository, wireguard, monkeypatch):
+    # DELETE /account deliberately never pokes (see the comment at its delete
+    # site in routes.py): no ordering of a poke around the hard delete works.
+    seed_region(repository)
+    repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
+    create_active_client(repository, wireguard)
+    calls = {"count": 0}
+
+    def _record(*args, **kwargs):
+        calls["count"] += 1
+        raise AssertionError("DELETE /account must never call out to another region")
+
+    monkeypatch.setattr(routes, "urlopen", _record)
+
+    response = client.delete("/account", headers=auth_header("user-token"))
+
+    assert response.status_code == 200
+    assert calls["count"] == 0

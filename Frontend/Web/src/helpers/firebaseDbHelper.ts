@@ -8,6 +8,7 @@ import { normalizeVPNStatus, VPNStatus } from "./vpnStatus";
 import { dateOrNull, stringOrNull } from "./coerce";
 import { useOciRegionsStore } from "../stores/ociRegionsStore";
 import { MeshDoc, MeshDocsById, parseMeshDocument } from "./meshHelper";
+import { PolicyDoc, PolicyDocsById, parsePolicyDocument } from "./policyHelper";
 import { parseRegionDocument, Region } from "./regionsHelper";
 
 export const logout = async (navigate: NavigateFunction) => {
@@ -194,6 +195,21 @@ export const getMeshDocs = async (): Promise<MeshDocsById> => {
     });
 
     return meshDocs;
+};
+
+// Policy/* is observability-only account-scoped ACL status, written by each
+// region's host via the Admin SDK after a policy reconcile pass; admin
+// readable, client-unwritable per firestore.rules, mirroring Mesh/{regionId}.
+export const getPolicyDocs = async (): Promise<PolicyDocsById> => {
+    const db = getFirestore();
+    const snapshot = await getDocs(collection(db, "Policy"));
+    const policyDocs: PolicyDocsById = new Map<string, PolicyDoc | null>();
+
+    snapshot.forEach((policyDoc) => {
+        policyDocs.set(policyDoc.id, parsePolicyDocument(policyDoc.id, policyDoc.data()));
+    });
+
+    return policyDocs;
 };
 
 // The only client write to a region doc: firestore.rules restricts admins to

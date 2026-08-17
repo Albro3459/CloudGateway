@@ -131,6 +131,52 @@ for every region to tear the mesh down entirely - then "Sync All Regions" again.
 converges to peers-and-routes-removed for the disabled region(s) on that one sync pass; no SSH,
 redeploy, or timer is required.
 
+## Account-Scoped ACL (Client-to-Client Isolation)
+
+A stateless nftables filter (`inet cloudgateway` table, `cg_forward` chain, installed empty by
+`PostUp` and populated by a policy reconcile pass) restricts client-to-client traffic on the
+tunnel to clients owned by the same CloudGateway account. See
+[docs/wireguard-drift-repair.md](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile) for
+how the reconcile pass works and [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md) for
+the design.
+
+**What it guarantees:** a client can reach another client over the tunnel only when both belong to
+the same account. An admin-owned client can additionally reach, and be reached by, any regional
+server (SSH proxy jump support), but not other accounts' clients.
+
+**What it deliberately does not cover** - all unchanged by this feature:
+
+* Client to internet egress.
+* A client reaching its own region's server (DNS, API) - that traffic is `INPUT`, not `FORWARD`.
+* Mesh server-to-server links between regions.
+
+**Reading the Server Health policy display:** per region, row count, data vintage, and map hashes
+(v4/v6). Maps are identical fleet-wide by design, which is what makes the hashes comparable across
+regions - a differing hash between regions is drift, even if both regions report recently. A
+lagging vintage is staleness even if the hash still happens to match. Neither is a failure of the
+last sync pass; status writes are best effort and a status write failure never fails a pass.
+
+**Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard. A
+region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches
+only one region and returns no detail, so use Sync All when you need to confirm or force a repair
+across the fleet.
+
+**Failure mode:** the policy table is installed empty at boot, before any pull, and stays empty
+until the first successful reconcile. So an unreachable Firestore means "peer-to-peer is down,"
+never "VPN is down" - client-to-server tunnel connectivity is unaffected.
+
+**Inspecting live state on a host:**
+
+```sh
+sudo nft list table inet cloudgateway
+```
+
+Shows the installed sets/maps/chain and their current elements: `cg_slot4`/`cg_slot6` (address to
+account slot), `cg_pairs4`/`cg_pairs6` (allowed source-slot/destination pairs), `cg_admin4`/
+`cg_admin6`, and `cg_infra4`/`cg_infra6`. Never print or paste this output outside the operator's
+own investigation - it maps tunnel addresses to opaque account slots, not to uids or emails, but
+still treat it like the rest of the logging boundary above.
+
 ## Quick Triage Order
 
 1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudgateway-api.service`, then Cloudflare DNS/proxy.

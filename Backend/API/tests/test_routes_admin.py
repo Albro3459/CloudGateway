@@ -273,3 +273,68 @@ def test_admin_sync_reports_skipped_overlap_candidates_pairwise_and_never_leaks_
     assert peers["us-other-1"]["endpointPort"] == 51820
     assert FAKE_MESH_PUBLIC_KEY not in response.text
     assert FAKE_MESH_PUBLIC_KEY_2 not in response.text
+
+
+def test_admin_sync_also_reconciles_the_policy_map(client, repository, wireguard, policy):
+    # Sync All is the repair path for a dropped poke (see
+    # TODO/account-scoped-acl.md, "Refresh model"), so it must reconcile the
+    # account-scoped ACL map too, without changing AdminSyncResponse's shape.
+    seed_region(repository)
+    create_active_client(repository, wireguard)
+
+    response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    assert policy.apply_calls == 1
+    assert REGION_ID in repository.policy_status
+
+
+def test_admin_sync_policy_failure_does_not_fail_the_endpoint(client, repository, wireguard, policy, caplog):
+    seed_region(repository)
+    create_active_client(repository, wireguard)
+    policy.fail_apply_count = 1
+
+    with caplog.at_level("ERROR", logger="src.policy_sync"):
+        response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    assert "policy_refresh_failed" in caplog.text
+
+
+def test_sync_refresh_accepts_a_provisioned_non_admin(client, repository, policy):
+    seed_region(repository)
+
+    response = client.post("/sync/refresh", headers=auth_header("user-token"))
+
+    assert response.status_code == 202
+
+
+def test_sync_refresh_rejects_unauthenticated(client, repository, policy):
+    seed_region(repository)
+
+    response = client.post("/sync/refresh")
+
+    assert response.status_code == 401
+    assert_error_shape(response.json(), "AUTH_REQUIRED")
+
+
+def test_sync_refresh_returns_no_detail(client, repository, policy):
+    # No body, no region health, no counts, no error information - only a
+    # bare 202 (see TODO/account-scoped-acl.md, "API surface").
+    seed_region(repository)
+
+    response = client.post("/sync/refresh", headers=auth_header("user-token"))
+
+    assert response.status_code == 202
+    assert response.content == b""
+
+
+def test_sync_refresh_reconciles_the_local_policy_map(client, repository, wireguard, policy):
+    seed_region(repository)
+    create_active_client(repository, wireguard)
+
+    response = client.post("/sync/refresh", headers=auth_header("user-token"))
+
+    assert response.status_code == 202
+    assert policy.apply_calls == 1
+    assert REGION_ID in repository.policy_status

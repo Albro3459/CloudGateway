@@ -54,6 +54,23 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Account-scoped ACL status is observability-only, written by each
+    // region's host via the Admin SDK (which bypasses these rules). Status
+    // describes what is actually on the wire, not what the region intended
+    // to apply.
+    match /Policy/{regionId} {
+      allow get, list: if isAdmin();
+      allow write: if false;
+    }
+
+    // Holds the never-reused account-slot allocator. Admin-SDK-only: no
+    // client, including admins, may read or write it. Explicit rather than
+    // relying on default-deny, since a leaked counter value is an allocation
+    // bug waiting to happen.
+    match /Counters/{counterId} {
+      allow read, write: if false;
+    }
+
     match /Users/{userId} {
       allow get: if isOwnerOrAdmin(userId);
       allow list: if isAdmin();

@@ -15,6 +15,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.CAPACITY_REACHED: 409,
     ErrorCode.SYNC_IN_PROGRESS: 409,
     ErrorCode.WIREGUARD_APPLY_FAILED: 500,
+    ErrorCode.POLICY_APPLY_FAILED: 500,
     ErrorCode.FIREBASE_WRITE_FAILED: 500,
     ErrorCode.ROLE_DEFAULT_MISSING: 500,
     ErrorCode.INTERNAL_ERROR: 500,
@@ -97,6 +98,15 @@ class SyncInProgressError(ApiError):
 class WireGuardApplyFailedError(ApiError):
     code = ErrorCode.WIREGUARD_APPLY_FAILED
     default_message = "Failed to apply WireGuard change."
+
+    def __init__(self, message: str | None = None, *, transient: bool = False):
+        self.transient = transient
+        super().__init__(message)
+
+
+class PolicyApplyFailedError(ApiError):
+    code = ErrorCode.POLICY_APPLY_FAILED
+    default_message = "Failed to apply account-scoped ACL policy."
 
     def __init__(self, message: str | None = None, *, transient: bool = False):
         self.transient = transient

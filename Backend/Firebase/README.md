@@ -18,6 +18,8 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 * User documents: `Users/{uid}`
 * Role default documents: `Roles/{roleId}` (`Roles/user`, `Roles/admin`)
 * User role assignment documents: `UserRoles/{uid}`
+* Account-scoped ACL policy status documents: `Policy/{regionId}`
+* Account slot counter document: `Counters/accountSlots`
 
 Region documents are **self-seeded by each host** at the end of bootstrap
 (`cloudgateway-register-region`): it upserts `Regions/{regionId}` with the live IP, server
@@ -32,7 +34,18 @@ links back to the owning user. They never contain the server private key. The st
 `wireguardConfig` contains the client private key, which is why client docs are readable
 only by their owner and admins.
 
-User documents own each user's profile data, such as email and disabled status.
+User documents own each user's profile data, such as email and disabled status. `accountSlot` is
+the opaque account-scoped ACL identifier: a monotonically allocated integer, never reused, that
+hosts key the client-to-client isolation filter on instead of the uid - see
+[docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
+It is allocated once, in a transaction, from `Counters/accountSlots`, the sole allocator document
+(document id always `accountSlots`); no client, including admins, may read or write it directly.
+
+Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
+only, written by each region's host via the Admin SDK after a policy reconcile pass, describing
+what the live account-scoped ACL map on that host actually contains (row count, data vintage, map
+hashes), not what the region intended to apply. They deliberately never contain a uid, email,
+address, or key.
 
 Role documents are defaults keyed by role name:
 
@@ -62,6 +75,8 @@ Enforced by [firestore.rules](firestore.rules):
 * Normal users can read their own user document and their own client documents.
 * Users can read their own role assignment. Role defaults are admin-only.
 * Admins can read all user, role default, role assignment, and client documents.
+* Admins can read `Policy/{regionId}` status documents. Write is Admin-SDK only.
+* No client, including admins, may read or write `Counters/{counterId}` documents.
 * Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
 * Frontend clients cannot write `Regions`, `Users`, `UserRoles`, `Roles`, or client documents directly. Admin and operational mutation goes through trusted backend/Admin SDK paths.
 
@@ -75,6 +90,7 @@ Enforced server-side by the regional FastAPI inside Firestore transactions (not 
 * `0` is a valid per-user override and does not fall back to the role default.
 * Admins may use a `null` role default to mean no per-user limit, while still being capped by regional `capacityLimit`.
 * Reservations and client status transitions are done in Firestore transactions by the API.
+* Tunnel addresses are allocated from a per-region monotonic index, `Regions/{regionId}.tunnelIndexV4`/`.tunnelIndexV6`, advanced in the same transaction as the client reservation and paired so a client's v4/v6 addresses share an index. This replaces lowest-free-address reuse; v4 wraps at the top of the host range with an in-use check, v6 never wraps. No `releasedAt` field and no time-based TTL.
 
 ## Backup Script
 

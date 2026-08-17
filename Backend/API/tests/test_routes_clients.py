@@ -1,7 +1,9 @@
 from dataclasses import replace
+from urllib.error import URLError
 
 import pytest
 
+import src.routes as routes
 from src.enums import ClientStatus
 from src.errors import FirebaseWriteFailedError
 from src.repository import RegionDoc
@@ -422,3 +424,112 @@ def test_delete_client_uses_removed_status_even_if_document_was_already_removed(
 
     assert response.status_code == 200
     assert response.json()["status"] == "removed"
+
+
+def test_create_client_writes_inline_policy_row(client, repository, wireguard, policy):
+    seed_region(repository)
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert policy.add_row_calls == 1
+    row = next(iter(policy.rows.values()))
+    assert row.address_v4 == payload["assignedTunnelIpv4"].split("/")[0]
+    assert row.address_v6 == payload["assignedTunnelIpv6"].split("/")[0]
+    assert row.slot == repository.get_account_slot("user-1")
+    assert row.admin is False
+
+
+def test_create_client_admin_owner_writes_an_admin_policy_row(client, repository, wireguard, policy):
+    seed_region(repository)
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header("admin-token"),
+    )
+
+    assert response.status_code == 200
+    row = next(iter(policy.rows.values()))
+    assert row.admin is True
+
+
+def test_create_client_missing_account_slot_does_not_fail_create(client, repository, wireguard, policy):
+    seed_region(repository)
+    # Accounts provisioned before this feature could reach here with no slot
+    # yet; the inline row is skipped and the next reconcile fixes it.
+    repository.get_account_slot = lambda uid: None  # type: ignore[method-assign]
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.add_row_calls == 0
+
+
+def test_create_client_inline_row_failure_does_not_fail_create(client, repository, wireguard, policy, caplog):
+    seed_region(repository)
+    policy.fail_add_row_count = 1
+
+    with caplog.at_level("WARNING", logger="src.routes"):
+        response = client.post(
+            "/clients",
+            json={"regionId": REGION_ID, "clientName": "Phone"},
+            headers=auth_header(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "active"
+    assert "policy_row_apply_failed" in caplog.text
+
+
+def test_create_client_poke_failure_never_affects_the_response(client, repository, wireguard, policy, monkeypatch, caplog):
+    seed_region(repository)
+    repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
+
+    def _raise(*args, **kwargs):
+        raise URLError("simulated unreachable region")
+
+    monkeypatch.setattr(routes, "urlopen", _raise)
+
+    with caplog.at_level("WARNING", logger="src.routes"):
+        response = client.post(
+            "/clients",
+            json={"regionId": REGION_ID, "clientName": "Phone"},
+            headers=auth_header(),
+        )
+
+    assert response.status_code == 200
+    assert "policy_poke_failed" in caplog.text
+
+
+def test_delete_client_reconciles_local_map_and_pokes_other_regions(client, repository, wireguard, policy, monkeypatch):
+    seed_region(repository)
+    repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
+    active = create_active_client(repository, wireguard)
+    poked = {"count": 0}
+
+    def _record(*args, **kwargs):
+        poked["count"] += 1
+        raise URLError("simulated unreachable region")
+
+    monkeypatch.setattr(routes, "urlopen", _record)
+
+    response = client.request(
+        "DELETE",
+        f"/clients/{active.client_id}",
+        json={"userId": "user-1", "regionId": REGION_ID},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.apply_calls == 1  # local reconcile ran even though the poke failed
+    assert poked["count"] == 1

@@ -44,6 +44,12 @@ export type FirebaseRegionDoc = {
     meshEnabled?: boolean;
     displayOrder?: number;
     healthStatus?: string;
+    // Per-region monotonic index into the tunnel network, advanced on every
+    // allocation. Replaces lowest-free-address reuse; paired so a client's v4
+    // and v6 addresses share an index. v4 wraps at the top of the host range,
+    // v6 never does.
+    tunnelIndexV4?: number;
+    tunnelIndexV6?: number;
     updatedAt: FirestoreTimestamp;
 };
 
@@ -83,6 +89,23 @@ export type FirebaseMeshDoc = {
     peers: Record<string, FirebaseMeshPeerEntry>;
 };
 
+// Account-scoped ACL status, one per region. Observability only: written by
+// each region's host via the Admin SDK after a policy reconcile pass, and
+// describes what the live nftables map on that host actually contains, not
+// what the region intended to apply.
+export type FirebasePolicyDoc = {
+    regionId: string;
+    mapHashV4: string;
+    mapHashV6: string;
+    rowCount: number;
+    appliedSequence: number;
+    // Max updatedAt across the applied snapshot; the freshness signal, unlike
+    // the hashes it stays meaningful even if maps are ever allowed to differ
+    // between regions.
+    dataVintage: FirestoreTimestamp | null;
+    updatedAt: FirestoreTimestamp;
+};
+
 export type FirebaseRoleDoc = {
     roleId: FirebaseRole;
     defaultPerRegionClientLimit: number | null;
@@ -101,6 +124,9 @@ export type FirebaseUserDoc = {
     email: string;
     createdAt: FirestoreTimestamp;
     disabled?: boolean;
+    // Opaque account-scoped ACL identifier, allocated once from Counters/accountSlots
+    // and never reused. Hosts key their client-to-client filter on this, not on uid.
+    accountSlot?: number;
 };
 
 export type FirebaseClientDoc = {
@@ -124,6 +150,13 @@ export type FirebaseClientDoc = {
     lastErrorMessage: string | null;
 };
 
+// Document id is always "accountSlots". Admin-SDK-only allocator for
+// accountSlot; nextSlot only ever increments, never reused.
+export type FirebaseCounterDoc = {
+    nextSlot: number;
+    updatedAt: FirestoreTimestamp;
+};
+
 export type FirebaseDocumentTree = {
     Regions: {
         "{regionId}": FirebaseRegionDoc & {
@@ -143,5 +176,11 @@ export type FirebaseDocumentTree = {
     };
     Mesh: {
         "{regionId}": FirebaseMeshDoc;
+    };
+    Policy: {
+        "{regionId}": FirebasePolicyDoc;
+    };
+    Counters: {
+        accountSlots: FirebaseCounterDoc;
     };
 };

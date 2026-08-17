@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Region } from "../../helpers/regionsHelper";
 import type { MeshDoc } from "../../helpers/meshHelper";
+import type { PolicyDoc } from "../../helpers/policyHelper";
 import type { RegionSyncResponse } from "../../helpers/APIHelper";
 
 const mockNavigate = jest.fn();
@@ -41,6 +42,7 @@ jest.mock("../../helpers/APIHelper", () => ({
 jest.mock("../../helpers/firebaseDbHelper", () => ({
     getAllRegionDocs: jest.fn(),
     getMeshDocs: jest.fn(),
+    getPolicyDocs: jest.fn(),
     logout: jest.fn(),
     setRegionMeshEnabled: jest.fn(),
 }));
@@ -92,6 +94,17 @@ const meshDoc = (regionId: string, overrides: Partial<MeshDoc> = {}): MeshDoc =>
     ...overrides,
 });
 
+const policyDoc = (regionId: string, overrides: Partial<PolicyDoc> = {}): PolicyDoc => ({
+    regionId,
+    mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    rowCount: 3,
+    appliedSequence: 1,
+    dataVintage: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+});
+
 const syncResponse = (regionId: string, overrides: Partial<RegionSyncResponse> = {}): RegionSyncResponse => ({
     regionId,
     syncedAt: "2026-08-10T00:00:00Z",
@@ -131,7 +144,7 @@ describe("ServerHealth", () => {
 
         const { auth, onAuthStateChanged } = require("../../firebase");
         const { getUserRole } = require("../../helpers/usersHelper");
-        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
         const { runRegionsSync } = require("../../helpers/APIHelper");
 
         auth.currentUser = mockUser;
@@ -144,6 +157,7 @@ describe("ServerHealth", () => {
         getUserRole.mockResolvedValue("admin");
         getAllRegionDocs.mockResolvedValue([]);
         getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map());
         setRegionMeshEnabled.mockResolvedValue(undefined);
         runRegionsSync.mockResolvedValue([]);
     });
@@ -196,7 +210,10 @@ describe("ServerHealth", () => {
         getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true)]);
         fireEvent.click(retry);
 
-        expect(await screen.findByText("San Jose")).toBeTruthy();
+        // "San Jose" now also appears in the Client isolation card's own
+        // region row, so this has to target the mesh membership control
+        // specifically rather than matching on the region name alone.
+        expect(await screen.findByLabelText("Mesh enabled for San Jose")).toBeTruthy();
         expect(screen.queryByText("Server health data is unavailable.")).toBeNull();
     });
 
@@ -270,7 +287,9 @@ describe("ServerHealth", () => {
         });
 
         // One admin's confirmed fan-out must not fire under another's session.
-        expect(await screen.findByText("San Jose")).toBeTruthy();
+        // "San Jose" also appears in the Client isolation card's region row,
+        // so this targets the mesh membership control specifically.
+        expect(await screen.findByLabelText("Mesh enabled for San Jose")).toBeTruthy();
         expect(runRegionsSync).not.toHaveBeenCalled();
         await act(async () => {
             firstLoad.resolve([]);
@@ -1020,5 +1039,131 @@ describe("ServerHealth", () => {
         await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true }));
         expect(screen.queryByText("Mesh membership")).toBeNull();
         expect(getAllRegionDocs).not.toHaveBeenCalled();
+    });
+
+    it("renders per-region policy row count, data vintage, and both map hashes without running a sync", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", policyDoc("us-sanjose-1", { rowCount: 7 })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Client isolation")).toBeTruthy();
+        expect(screen.getByText("OK")).toBeTruthy();
+        expect(screen.getByText("7 rows")).toBeTruthy();
+        expect(screen.getByText(/^Data as of /)).toBeTruthy();
+        expect(screen.getByLabelText("Copy San Jose IPv4 map hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBeTruthy();
+        expect(screen.getByLabelText("Copy San Jose IPv6 map hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")).toBeTruthy();
+        expect(runRegionsSync).not.toHaveBeenCalled();
+    });
+
+    it("flags a region as drifted against the fleet majority without requiring a sync first", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+            region("us-dallas-1", "Dallas", true, 3),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", policyDoc("us-sanjose-1")],
+            ["us-chicago-1", policyDoc("us-chicago-1")],
+            ["us-dallas-1", policyDoc("us-dallas-1", { mapHashV4: "cccccccccccccccccccccccccccccccc" })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Drifted")).toBeTruthy();
+        expect(screen.getByText("IPv4 map differs from the fleet.")).toBeTruthy();
+        expect(runRegionsSync).not.toHaveBeenCalled();
+    });
+
+    it("flags a region as stale when its data vintage lags its peers without requiring a sync first", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        const fresh = new Date("2026-01-02T00:00:00Z");
+        const lagging = new Date(fresh.getTime() - 25 * 60 * 60 * 1000);
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", policyDoc("us-sanjose-1", { dataVintage: fresh, updatedAt: fresh })],
+            ["us-chicago-1", policyDoc("us-chicago-1", { dataVintage: lagging, updatedAt: lagging })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Stale")).toBeTruthy();
+        expect(screen.getByText("Data vintage lags the rest of the fleet.")).toBeTruthy();
+    });
+
+    it("renders an explicit failure card for a missing or unreadable Policy doc without crashing the page", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", true, 1),
+            region("us-chicago-1", "Chicago", true, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", null],
+            // Missing mapHashV4 makes the doc unusable for comparison, distinct
+            // from a region that has simply never synced.
+            ["us-chicago-1", policyDoc("us-chicago-1", { mapHashV4: null })],
+        ]));
+
+        render(<ServerHealth />);
+
+        // Mesh membership's own "Never synced" freshness label uses the same
+        // text, so this has to scope to the Client isolation card itself.
+        await screen.findByText("Client isolation");
+        const policyCard = screen.getByText("Client isolation").closest("div") as HTMLElement;
+        expect(within(policyCard).getByText("Never synced")).toBeTruthy();
+        expect(within(policyCard).getByText("No policy reconcile has completed for this region yet.")).toBeTruthy();
+        expect(within(policyCard).getByText("Unreadable")).toBeTruthy();
+        expect(within(policyCard).getByText("Policy status could not be read for this region.")).toBeTruthy();
+        // The rest of the page rendered fine - a bad Policy doc never crashes it.
+        expect(screen.getByText("Mesh membership")).toBeTruthy();
+    });
+
+    it("leaves the rest of the page intact and reads differently from never-synced when the Policy collection fails to load", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockRejectedValue(new Error("Policy collection unavailable"));
+
+        render(<ServerHealth />);
+
+        // Mesh membership still renders: a Policy read failure must not blank
+        // the rest of the page. This region's own Mesh doc is also absent, so
+        // its freshness label reads "Never synced" too - that's a separate,
+        // legitimate mesh state and not what this test is checking.
+        expect(await screen.findByLabelText("Mesh enabled for San Jose")).toBeTruthy();
+        expect(screen.getByText("Mesh membership")).toBeTruthy();
+        expect(screen.queryByText("Unable to load server health data.")).toBeNull();
+
+        // The Client isolation card gets its own distinct failure message
+        // instead of collapsing into "Never synced" for every region, which
+        // would misreport a read failure as a fleet-wide never-synced state.
+        const policyCard = screen.getByText("Client isolation").closest("div") as HTMLElement;
+        expect(within(policyCard).getByText(
+            "Unable to load client isolation status. This is a read failure, not a report that no region has completed a policy reconcile."
+        )).toBeTruthy();
+        expect(within(policyCard).queryByText("Never synced")).toBeNull();
     });
 });

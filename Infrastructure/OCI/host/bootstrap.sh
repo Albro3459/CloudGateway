@@ -77,7 +77,7 @@ log "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
+apt-get install -y wireguard iptables nftables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
 systemctl stop unbound || true
 systemctl stop adguardhome || true
 
@@ -143,6 +143,53 @@ SYSCTL
 sysctl --system
 
 log "==> Step 6/13: Writing WireGuard configuration"
+# Account-scoped ACL base ruleset. The boundary enforced here is the account
+# slot carried in the packet mark, not the address itself: cg_slot4/6 map a
+# client's tunnel address to its account slot, and forward traffic is dropped
+# unless the destination is paired with the source's slot in cg_pairs4/6. All
+# sets/maps below start empty, and an empty cg_slot/cg_pairs means no
+# client-to-client traffic at all — that is the correct boot state, since the
+# rules are installed by PostUp and only populated by the first policy pull
+# from Firestore. So the failure mode of an unreachable Firestore is
+# "peer-to-peer is down", never "VPN is down". cg_tunnel4/6 are the mesh
+# aggregates (mirrors MESH_AGGREGATE_V4/MESH_AGGREGATE_V6 in
+# Backend/API/src/wireguard.py) and are what make that empty-map state fail
+# closed: any destination inside the tunnel aggregate that isn't in
+# cg_pairs4/6 is dropped, so an empty map denies rather than falling through
+# to accept. The chain runs at priority -10, ahead of the existing iptables
+# FORWARD accepts installed below, and a drop verdict is terminal across
+# tables, so those rules did not need renumbering. This assumes no other
+# subsystem uses the packet mark and that no `ip rule fwmark` exists; the API
+# only ever replaces element contents of these objects, never the table or
+# chain itself, and never touches cg_tunnel4/cg_tunnel6.
+cat > /etc/cloudgateway/cloudgateway.nft <<NFTCONF
+table inet cloudgateway {
+	set cg_tunnel4 { type ipv4_addr; flags interval; elements = { 10.0.0.0/16 } }
+	set cg_tunnel6 { type ipv6_addr; flags interval; elements = { fd42:42:42::/48 } }
+	set cg_infra4 { type ipv4_addr; }
+	set cg_infra6 { type ipv6_addr; }
+	set cg_admin4 { type ipv4_addr; }
+	set cg_admin6 { type ipv6_addr; }
+	map cg_slot4 { type ipv4_addr : mark; }
+	map cg_slot6 { type ipv6_addr : mark; }
+	set cg_pairs4 { typeof ip daddr . meta mark; }
+	set cg_pairs6 { typeof ip6 daddr . meta mark; }
+	chain cg_forward {
+		type filter hook forward priority -10; policy accept;
+		ct state established,related accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip saddr @cg_infra4 ip daddr @cg_admin4 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip saddr @cg_admin4 ip daddr @cg_infra4 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 saddr @cg_infra6 ip6 daddr @cg_admin6 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 saddr @cg_admin6 ip6 daddr @cg_infra6 accept
+		meta mark set ip saddr map @cg_slot4
+		meta mark set ip6 saddr map @cg_slot6
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip daddr @cg_tunnel4 ip daddr . meta mark != @cg_pairs4 drop
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 daddr @cg_tunnel6 ip6 daddr . meta mark != @cg_pairs6 drop
+	}
+}
+NFTCONF
+chmod 644 /etc/cloudgateway/cloudgateway.nft
+
 # Interface-only config. Peers are never written to this or any other file:
 # Firebase is the single source of truth and cloudgateway-sync-peers rebuilds
 # the live peer set from it on every boot.
@@ -155,6 +202,10 @@ ListenPort = $WG_LISTEN_PORT
 PrivateKey = $(cat /etc/cloudgateway/wireguard-server.key)
 
 # PostUp
+# Account-scoped ACL table, loaded first: rules start empty (see
+# /etc/cloudgateway/cloudgateway.nft) so client-to-client traffic is denied
+# until the first policy pull populates cg_slot/cg_pairs.
+PostUp = nft -f /etc/cloudgateway/cloudgateway.nft
 # IPv4
 # Do not let VPN clients reach OCI instance metadata. user_data should not be accessible secrets
 PostUp = iptables -I FORWARD 1 -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
@@ -177,6 +228,9 @@ PostUp = ip6tables -I INPUT 4 -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p udp --dp
 PostUp = ip6tables -I INPUT 5 -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p tcp --dport 53 -j ACCEPT
 
 # PostDown
+# `|| true`: the table may already be absent (e.g. PostUp never ran), and
+# teardown of the rest of the interface must not fail on that.
+PostDown = nft delete table inet cloudgateway || true
 # IPv4
 PostDown = iptables -D FORWARD -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
 PostDown = iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT

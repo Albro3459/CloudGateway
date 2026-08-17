@@ -9,7 +9,7 @@ from urllib.parse import quote
 from urllib.request import Request as URLRequest
 from urllib.request import urlopen
 
-from fastapi import APIRouter, Depends, Path, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Path, Request, Response
 
 from .auth import AuthenticatedUser, bearer_token, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
 from .enums import ClientStatus, ErrorCode, Event, MeshPeerStatus, OperationResult, Role
@@ -41,6 +41,8 @@ from .models import (
     RegionsResponse,
 )
 from .notifications import create_ses_client, send_access_grant_email
+from .policy import PolicyManager, PolicyRow
+from .policy_sync import bare_tunnel_address
 from .repository import ClientDoc, FirebaseRepository, ensure_delete_allowed, ensure_local_region, require_region, utc_now
 from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
@@ -52,6 +54,11 @@ RECENT_AUTH_WINDOW = timedelta(minutes=5)
 # Cloudflare's Browser Integrity Check blocks the default urllib UA, so
 # cross-region server-to-server calls must present a non-bot UA to reach origin.
 REGIONAL_API_USER_AGENT = "CloudGateway-API/1.0"
+# Fire-and-forget: the poke must never hold up the client's own request, and a
+# dropped poke is explicitly accepted (see TODO/account-scoped-acl.md,
+# "Accepted risks"), so the timeout stays short rather than matching the
+# 10s used for a delete that the caller is actually waiting on.
+POLICY_POKE_TIMEOUT_SECONDS = 5
 # A region ID becomes the leftmost label of a regional API hostname, so it is
 # constrained to the OCI region-id charset before any URL interpolation.
 _REGION_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
@@ -110,10 +117,12 @@ def get_capacity(
 def create_client(
     request: Request,
     body: CreateClientRequest,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(require_provisioned_user),
 ) -> CreateClientResponse:
     repository = request.app.state.repository
     wireguard: WireGuardManager = request.app.state.wireguard
+    policy: PolicyManager = request.app.state.policy
     request_id = request.state.request_id
     reserved_client: ClientDoc | None = None
 
@@ -244,6 +253,20 @@ def create_client(
                 raise
             raise FirebaseWriteFailedError() from exc
 
+        # Inline local row: LOCK ORDERING - the WireGuard lock (held by this
+        # block) may be held while taking the policy lock, never the reverse,
+        # or the create path and a policy reconcile could deadlock against
+        # each other. Written here so a client whose sibling is in the same
+        # region works immediately with no cross-region dependency; a missing
+        # slot or an apply failure must never fail the client create, since
+        # the next reconcile (poke or boot) repairs it either way.
+        _write_inline_policy_row(
+            repository=repository,
+            policy=policy,
+            client=active_client,
+            request_id=request_id,
+        )
+
     log_event(
         logger,
         Event.CLIENT_CREATE_COMPLETED,
@@ -253,6 +276,18 @@ def create_client(
         client_id=active_client.client_id,
         status=active_client.status.value,
     )
+    # The inline row above is the fast path, not the repair path: it is
+    # additive, so an apply failure (or a reconcile whose snapshot predates
+    # this client's commit and flushes the row) would otherwise leave the
+    # local map short until an unrelated fleet event. This pull starts after
+    # the commit, so it always sees this client. Coalescing bounds the cost.
+    background_tasks.add_task(request.app.state.policy_coordinator.request)
+    background_tasks.add_task(
+        _poke_other_regions,
+        request,
+        token=bearer_token(request),
+        request_id=request_id,
+    )
     return _create_client_response(active_client)
 
 
@@ -261,6 +296,7 @@ def delete_client(
     client_id: Annotated[str, Path(alias="clientId")],
     request: Request,
     body: DeleteClientRequest,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(require_provisioned_user),
 ) -> DeleteClientResponse:
     repository = request.app.state.repository
@@ -356,6 +392,15 @@ def delete_client(
         client_id=removed_client.client_id,
         status=removed_client.status.value,
     )
+    # No inline removal exists (add_client_row is additive-only), so the local
+    # map is corrected by a real reconcile rather than a single-row edit.
+    background_tasks.add_task(request.app.state.policy_coordinator.request)
+    background_tasks.add_task(
+        _poke_other_regions,
+        request,
+        token=bearer_token(request),
+        request_id=request_id,
+    )
     return DeleteClientResponse(
         user_id=body.user_id,
         client_id=removed_client.client_id,
@@ -406,6 +451,16 @@ def delete_account(
             wireguard=wireguard,
             request_id=request_id,
         )
+        # Deliberately no policy poke here, unlike the client create/delete
+        # paths. No ordering works: poking before this line refreshes peers to
+        # the pre-delete state, and poking after it means UserRoles/{uid} is
+        # already gone, so the remote rejects the call and
+        # require_role_or_disable_unprovisioned tries to disable a user that
+        # is being deleted. This is accepted (see TODO/account-scoped-acl.md,
+        # "Account deletion"): _remove_account_peers above already removed
+        # this account's WireGuard peers, so it cannot put a packet on the
+        # tunnel regardless of a stale policy row, and any address it freed is
+        # reclaimed by the next allocation, which itself pokes.
         repository.hard_delete_account_documents(user.uid)
         repository.delete_auth_user(user.uid)
     except ApiError:
@@ -496,6 +551,23 @@ def create_user(
     )
 
 
+@router.post("/sync/refresh", status_code=202)
+def refresh_policy(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    user: AuthenticatedUser = Depends(require_provisioned_user),
+) -> Response:
+    # Any provisioned user, not admin-only: no dedicated secret and no rate
+    # limit, the caller's own Firebase token is replayed exactly as
+    # _delete_remote_client does, and depth-1 coalescing structurally bounds
+    # the work any caller can cause (see TODO/account-scoped-acl.md, "API
+    # surface"). No body, no detail in the response - never region health,
+    # counts, or error information - so enqueue and return immediately.
+    del user
+    background_tasks.add_task(request.app.state.policy_coordinator.request)
+    return Response(status_code=202)
+
+
 @router.post("/admin/sync", response_model=AdminSyncResponse, response_model_exclude_none=True)
 def admin_sync(
     request: Request,
@@ -544,6 +616,24 @@ def admin_sync(
             error_code=ErrorCode.INTERNAL_ERROR.value,
         )
         raise InternalError() from exc
+
+    # Sync All is the repair path for a dropped poke, so it also reconciles the
+    # account-scoped ACL map. Blocking (not enqueued) so the admin sees a fresh
+    # Policy/{regionId} immediately after this call returns. A policy failure
+    # is logged inside run_blocking and must never fail this endpoint - it
+    # does not touch AdminSyncResponse at all.
+    try:
+        request.app.state.policy_coordinator.run_blocking()
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.POLICY_REFRESH_FAILED,
+            level=logging.ERROR,
+            request_id=request_id,
+            admin_uid=admin_user.uid,
+            region_id=settings.region_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
     result = outcome.result
     synced_at = utc_now()
@@ -772,6 +862,95 @@ def _origin_host(api_hostname: str) -> str:
     if hostname.count(".") >= 2:
         return hostname.split(".", 1)[1]
     return "gocloudlaunch.com"
+
+
+def _write_inline_policy_row(
+    *,
+    repository: FirebaseRepository,
+    policy: PolicyManager,
+    client: ClientDoc,
+    request_id: str,
+) -> None:
+    """Called from inside create_client's wireguard.lock() block. LOCK
+    ORDERING: the WireGuard lock may be held while taking the policy lock,
+    never the reverse - see policy.py's PolicyManager docstring.
+
+    A missing slot or an apply failure both fall through silently (beyond the
+    log below): the next reconcile (a poke or an admin sync) fixes either, and
+    neither may fail the client create.
+    """
+    slot = repository.get_account_slot(client.owner_uid)
+    if slot is None:
+        return
+    address_v4 = bare_tunnel_address(client.assigned_tunnel_ipv4, 4)
+    address_v6 = bare_tunnel_address(client.assigned_tunnel_ipv6, 6)
+    if address_v4 is None or address_v6 is None:
+        return
+    try:
+        admin = repository.get_role(client.owner_uid) == Role.ADMIN
+        with policy.lock():
+            policy.add_client_row(PolicyRow(address_v4=address_v4, address_v6=address_v6, slot=slot, admin=admin))
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.POLICY_ROW_APPLY_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            region_id=client.region_id,
+            client_id=client.client_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+def _poke_other_regions(request: Request, *, token: str, request_id: str) -> None:
+    """Fire-and-forget: runs as a BackgroundTask after the response is already
+    sent, so nothing here can affect the request result. Pokes every other
+    enabled region's /sync/refresh, replaying the caller's own bearer token
+    exactly as _delete_remote_client does."""
+    repository: FirebaseRepository = request.app.state.repository
+    settings = request.app.state.settings
+    try:
+        regions = repository.list_enabled_regions()
+    except Exception:
+        return
+    for region in regions:
+        if region.region_id == settings.region_id:
+            continue
+        _poke_regional_policy_refresh(
+            region_id=region.region_id,
+            token=token,
+            api_hostname=settings.api_hostname,
+            request_id=request_id,
+        )
+
+
+def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: str, request_id: str) -> None:
+    try:
+        url = _regional_api_url(region_id, "sync/refresh", api_hostname)
+        regional_request = URLRequest(
+            url,
+            data=b"",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": REGIONAL_API_USER_AGENT,
+            },
+        )
+        with urlopen(regional_request, timeout=POLICY_POKE_TIMEOUT_SECONDS):
+            pass
+    except Exception as exc:
+        # Every error is swallowed by design (see TODO/account-scoped-acl.md,
+        # "Accepted risks": a dropped poke just leaves the region stale until
+        # the next fleet-wide event or an admin Sync All). Region id only -
+        # never the token, uid, or the response body.
+        log_event(
+            logger,
+            Event.POLICY_POKE_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            region_id=region_id,
+            error_type=type(exc).__name__,
+        )
 
 
 def _notify_user_access_granted(

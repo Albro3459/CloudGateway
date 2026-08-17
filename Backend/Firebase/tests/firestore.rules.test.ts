@@ -54,6 +54,15 @@ beforeAll(async () => {
     await setDoc(doc(db, "Regions/us-1/Instances/disabled-inst"), { ownerUid: "disabled1" });
     await setDoc(doc(db, "Regions/us-1/Instances/nofield-inst"), { ownerUid: "nofield1" });
     await setDoc(doc(db, "Mesh/us-1"), { regionId: "us-1", meshEnabled: true, peers: {} });
+    await setDoc(doc(db, "Policy/us-1"), {
+      regionId: "us-1",
+      mapHashV4: "abc",
+      mapHashV6: "def",
+      rowCount: 0,
+      appliedSequence: 1,
+      dataVintage: null,
+    });
+    await setDoc(doc(db, "Counters/accountSlots"), { nextSlot: 1 });
   });
 });
 
@@ -129,6 +138,21 @@ describe("reads stay allowed for the clients that use them", () => {
     await assertFails(getDoc(doc(unauthed(), "Mesh/us-1")));
     await assertFails(getDocs(collection(unauthed(), "Mesh")));
   });
+
+  it("policy status: admin reads, non-admin and unauthenticated cannot", async () => {
+    await assertSucceeds(getDoc(doc(authed("admin1"), "Policy/us-1")));
+    await assertSucceeds(getDocs(collection(authed("admin1"), "Policy")));
+    await assertFails(getDoc(doc(authed("user1"), "Policy/us-1")));
+    await assertFails(getDocs(collection(authed("user1"), "Policy")));
+    await assertFails(getDoc(doc(unauthed(), "Policy/us-1")));
+    await assertFails(getDocs(collection(unauthed(), "Policy")));
+  });
+
+  it("counters: no client, including admins, can read the account-slot allocator", async () => {
+    await assertFails(getDoc(doc(authed("admin1"), "Counters/accountSlots")));
+    await assertFails(getDoc(doc(authed("user1"), "Counters/accountSlots")));
+    await assertFails(getDoc(doc(unauthed(), "Counters/accountSlots")));
+  });
 });
 
 describe("region meshEnabled toggle", () => {
@@ -172,6 +196,8 @@ describe("every client write is denied — including admins", () => {
     "Users/user1",
     "Regions/us-1/Instances/inst1",
     "Mesh/us-1",
+    "Policy/us-1",
+    "Counters/accountSlots",
   ];
 
   for (const path of writeTargets) {
