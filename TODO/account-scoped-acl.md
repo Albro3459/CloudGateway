@@ -312,33 +312,43 @@ follow-up pass has already started.
 
 ### Wave 4 - account deletion ordering
 
-Replace the accidental per-client poke fan-out with one deliberate account
-deletion sequence:
+**Landed.** `DELETE /account` replaced the accidental per-client poke fan-out finding 8 identified
+(the ordinary `DELETE /clients/{clientId}` path always scheduled its own local reconcile and fleet
+poke, so remote per-client removal during account deletion raced the hard delete) with one
+deliberate sequence: snapshot the account's clients; remove their local and remote WireGuard peers,
+remote removal going through `DELETE /clients/{clientId}`'s new `accountCleanup` mode; mark every
+one of the account's client documents non-active fleet-wide in one trusted repository operation
+(the fence), including clients on a region whose host was unreachable during peer removal; send
+exactly one best-effort policy refresh wave to every other enabled region while `UserRoles/{uid}`
+and the caller's recent authentication still exist; queue the local reconcile separately; only then
+hard-delete the account documents and Auth user. A failure before the fence still leaves clients
+ACTIVE and retryable, exactly as before this wave.
 
-1. Snapshot the account's clients and remove their local/remote WireGuard
-   peers. Remote client deletion uses an explicit account-cleanup mode that is
-   honored only for a recently authenticated self-delete and suppresses that
-   handler's normal local reconcile and fleet poke.
-2. Mark every account client non-active in Firestore, including clients whose
-   regional host was unreachable, so any policy pull from this point forward
-   excludes the account. Repair the per-region counters in the same trusted
-   repository operation.
-3. While `UserRoles/{uid}` still exists and the caller token can authenticate,
-   send exactly one best-effort refresh to every other enabled region. An
-   accepted refresh no longer depends on the token after its response is
-   returned. Queue the local reconcile separately.
-4. Hard-delete the account documents and Auth user only after the refresh wave
-   has been accepted or recorded as unreachable.
+`accountCleanup` is gated, not trusted from the flag alone: the receiving region re-checks
+self-only (`userId == user.uid`), recent authentication, and the `user`-role restriction against
+the replayed bearer token before honoring it, and a request that fails any of those checks fails
+the whole delete instead of silently downgrading to an ordinary one. When accepted, it suppresses
+that handler's own local reconcile and fleet poke, so account deletion issues exactly one
+propagation wave fleet-wide - never the two-poke fan-out the pre-Wave-4 code produced.
 
-An unreachable region remains the existing accepted risk: its orphaned peer
-and stale row converge at its next boot/manual sync, while the account's
-Firestore clients are already non-active. Update the account-delete comment
-and design text to describe this real ordering instead of claiming no ordering
-can work.
+There is no stored per-region client counter in Firestore to repair - capacity is derived, and the
+only per-region counters, `Regions/{regionId}.tunnelIndexV4/V6`, are monotonic address allocator
+indices that must never roll back and are untouched by account deletion. "Repair the per-region
+counters" is satisfied by the fence operation's own authoritative read instead: it returns
+per-region counts of account client documents seen and transitioned, grouped by each document's
+region path rather than its `regionId` field so a document whose field disagrees with its path is
+still counted and fenced correctly, and `deletedClientCount` in the `DELETE /account` response is
+now that authoritative count rather than the pre-removal snapshot size - the two agree for a fleet
+in a consistent state, so this is not an observable API change.
 
-Add tests for local-only, remote, mixed-region, unreachable-region, partial
-failure/retry, spoofed cleanup mode, no duplicate poke fan-out, and the guarantee
-that every policy snapshot starting after step 2 excludes the deleting account.
+An unreachable region remains the existing accepted risk, not a fixed one: its orphaned peer and
+stale policy row converge only at its next boot or a manual `cloudgateway-sync-peers` run, while its
+Firestore client rows are already non-active for that whole window. The bounded consequence is that
+a deleted account's existing configuration can still reach that one region until it syncs; it can
+never reach another account, because slots are never reused, and every other region already refuses
+it. Tests cover local-only, remote, mixed-region, unreachable-region,
+partial failure/retry, a spoofed `accountCleanup` flag, no duplicate poke fan-out, and that every
+policy snapshot pulled after the fence excludes the deleting account.
 
 ### Wave 5 - complete live hashes and Web status
 
@@ -436,7 +446,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 * [x] Boot and `POST /api/admin/sync` call the policy reconcile.
 * [x] `POST /api/sync/refresh`: provisioned user, no body, no detail, enqueue-and-return.
 * [x] Fire-and-forget pokes from `POST /clients` and `DELETE /clients/{clientId}`; inline local map row on create.
-* [ ] Wave 4 - account cleanup mode, clients-non-active fence, one authenticated fleet refresh, then hard delete.
+* [x] Wave 4 - account cleanup mode, clients-non-active fence, one authenticated fleet refresh, then hard delete.
 * [x] `Policy/{regionId}` schema, Firestore rules, and `schema.ts`.
 * [x] Server Health policy status display and failure card.
 * [ ] Wave 5 - comprehensive live-policy hashes, `updatedAt` last-applied display, enabled-region comparison, and mandatory Sync All after out-of-band role edits.

@@ -186,6 +186,22 @@ across the fleet.
 until the first successful reconcile. So an unreachable Firestore means "peer-to-peer is down,"
 never "VPN is down" - client-to-server tunnel connectivity is unaffected.
 
+**Account deletion:** `DELETE /account` marks every one of the account's client documents
+non-active fleet-wide, in every region's `Instances` subcollection, before it hard-deletes
+anything - including a region whose host was unreachable when its peer/client cleanup ran. That
+fence means no later policy pull, on that region or any other, can ever restore a deleted
+account's connectivity, so the deleting account's rows are already non-active for the entire
+window an unreachable region stays stale. An unreachable region is not repaired automatically: it
+keeps an orphaned WireGuard peer and a stale policy row until its next boot or a manual
+`cloudgateway-sync-peers` run (see
+[docs/wireguard-drift-repair.md](wireguard-drift-repair.md)). This is an accepted, documented
+risk with a bounded consequence: until that region syncs, a deleted account's existing
+configuration can still bring up a tunnel to *that one region* and use it for egress, and its own
+clients on that region can still reach each other through the stale policy row. It cannot reach
+any other account's clients - account slots are never reused, so no live account holds the stale
+row's slot - and every other region already refuses it. Run `cloudgateway-sync-peers` on the
+region once it is reachable, rather than leaving it stale indefinitely.
+
 **Inspecting live state on a host:**
 
 ```sh

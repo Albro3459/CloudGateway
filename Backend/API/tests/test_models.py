@@ -10,6 +10,7 @@ from src.models import (
     CreateClientResponse,
     CreateUserRequest,
     CreateUserResponse,
+    DeleteClientRequest,
     DeleteClientResponse,
 )
 
@@ -77,6 +78,16 @@ def test_delete_response_serializes_camel_case():
         "regionId": "us-test-1",
         "status": "removed",
     }
+
+
+def test_delete_client_request_account_cleanup_defaults_false_and_accepts_camel_case():
+    default_request = DeleteClientRequest(user_id="uid", region_id="us-test-1")
+    assert default_request.account_cleanup is False
+
+    cleanup_request = DeleteClientRequest.model_validate(
+        {"userId": "uid", "regionId": "us-test-1", "accountCleanup": True}
+    )
+    assert cleanup_request.account_cleanup is True
 
 
 def test_admin_sync_response_requires_current_mesh_updated_field():

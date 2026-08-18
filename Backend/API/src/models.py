@@ -57,6 +57,11 @@ class CreateClientResponse(ApiModel):
 class DeleteClientRequest(ApiModel):
     user_id: str = Field(min_length=1)
     region_id: str = Field(min_length=1)
+    # Honored only for a recently authenticated self-delete under the same
+    # conditions DELETE /account requires (see routes._ensure_account_cleanup_allowed);
+    # a rejected cleanup request fails the whole request rather than being
+    # silently downgraded to an ordinary delete.
+    account_cleanup: bool = False
 
 
 class DeleteClientResponse(ApiModel):

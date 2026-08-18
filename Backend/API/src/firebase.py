@@ -20,6 +20,7 @@ from .errors import (
 )
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
+    AccountCleanupTally,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
@@ -396,6 +397,51 @@ class FirestoreRepository(FirebaseRepository):
                 for ref in refs[index : index + 500]:
                     batch.delete(ref)
                 batch.commit()
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
+    def mark_account_clients_inactive(self, uid: str) -> AccountCleanupTally:
+        # Deliberately not ensure_local_region-gated (see
+        # repository.FirebaseRepository.mark_account_clients_inactive): the
+        # only cross-region client write in the API, so it can fence a client
+        # whose host is unreachable.
+        db = self._db()
+        try:
+            snapshots = (
+                db.collection_group("Instances")
+                .where(filter=FieldFilter("ownerUid", "==", uid))
+                .stream()
+            )
+            clients_by_region: dict[str, int] = {}
+            pending: list[tuple[BaseDocumentReference, str]] = []
+            for raw_snapshot in snapshots:
+                snapshot = _sync_snapshot(raw_snapshot)
+                data = snapshot.to_dict() or {}
+                region_id = _instance_region_id(snapshot, data)
+                clients_by_region[region_id] = clients_by_region.get(region_id, 0) + 1
+                if _client_needs_non_active_fence(data, snapshot.id):
+                    pending.append((snapshot.reference, region_id))
+
+            marked_by_region: dict[str, int] = {}
+            for _ref, region_id in pending:
+                marked_by_region[region_id] = marked_by_region.get(region_id, 0) + 1
+
+            for index in range(0, len(pending), 500):
+                batch = db.batch()
+                for ref, _region_id in pending[index : index + 500]:
+                    batch.update(
+                        ref,
+                        {
+                            "status": ClientStatus.REMOVED.value,
+                            "updatedAt": _server_timestamp(),
+                            "removedAt": _server_timestamp(),
+                            "wireguardConfig": None,
+                            "lastErrorCode": None,
+                            "lastErrorMessage": None,
+                        },
+                    )
+                batch.commit()
+            return AccountCleanupTally(clients_by_region=clients_by_region, marked_by_region=marked_by_region)
         except Exception as exc:
             raise FirebaseWriteFailedError() from exc
 
@@ -995,6 +1041,37 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
         last_error_code=data.get("lastErrorCode"),
         last_error_message=data.get("lastErrorMessage"),
     )
+
+
+def _instance_region_id(snapshot: DocumentSnapshot, data: dict[str, Any]) -> str:
+    """Region grouping comes from the document's own path
+    (Regions/{regionId}/Instances/{clientId}), not its regionId field (see
+    repository.FirebaseRepository.mark_account_clients_inactive), so a doc
+    whose field disagrees with its path is still counted and fenced under its
+    true region. Falls back to the regionId field only when the path is
+    unavailable."""
+    try:
+        region_id = snapshot.reference.parent.parent.id
+    except Exception:
+        region_id = None
+    if isinstance(region_id, str) and region_id:
+        return region_id
+    field = data.get("regionId")
+    return field if isinstance(field, str) else ""
+
+
+def _client_needs_non_active_fence(data: dict[str, Any], client_id: str) -> bool:
+    """True when a document must receive the account-deletion terminal write:
+    it is ACTIVE or CREATING (CREATING is fenced too, so a concurrent
+    mark_client_active cannot re-activate it), or its status cannot be
+    trusted at all - fail-closed, mirroring list_policy_clients/
+    _client_from_snapshot's handling of a malformed document. Already
+    removed/failed is skipped with no write so a retry stays idempotent."""
+    try:
+        client = _client_from_data(data, client_id)
+    except (TypeError, ValueError):
+        return True
+    return client.status in (ClientStatus.ACTIVE, ClientStatus.CREATING)
 
 
 def _user_write_data(*, uid: str, email: str | None, exists: bool, account_slot: int | None = None) -> dict[str, Any]:

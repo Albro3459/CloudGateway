@@ -155,6 +155,32 @@ class PolicyStatus:
     row_count: int
 
 
+@dataclass(frozen=True)
+class AccountCleanupTally:
+    """Result of mark_account_clients_inactive: the trusted, fleet-wide
+    non-active fence run by DELETE /account (see TODO/account-scoped-acl.md
+    Wave 4). Region grouping comes from each client document's own path
+    (Regions/{regionId}/Instances/{clientId}), not its regionId field, so a
+    doc whose field disagrees with its path is still counted and fenced under
+    its true region.
+    """
+
+    clients_by_region: dict[str, int]
+    marked_by_region: dict[str, int]
+
+    @property
+    def client_count(self) -> int:
+        return sum(self.clients_by_region.values())
+
+    @property
+    def marked_count(self) -> int:
+        return sum(self.marked_by_region.values())
+
+    @property
+    def region_count(self) -> int:
+        return len(self.clients_by_region)
+
+
 def clean_client_name(value: str) -> str:
     return value.strip()
 
@@ -467,6 +493,29 @@ class FirebaseRepository(ABC):
     @abstractmethod
     def hard_delete_account_documents(self, uid: str) -> None:
         """Hard-delete the user's Firestore account, role, and owned client documents."""
+
+    @abstractmethod
+    def mark_account_clients_inactive(self, uid: str) -> AccountCleanupTally:
+        """Fence every one of a deleting account's client documents non-active.
+
+        Fleet-wide and deliberately *not* gated by ensure_local_region: it
+        must fence clients in regions whose hosts are unreachable, so every
+        policy pull anywhere - starting from this call's completion - excludes
+        the account. The only cross-region client write in the API; reachable
+        only from DELETE /account after _ensure_recent_auth and
+        _ensure_account_delete_allowed have both already passed.
+
+        Every ACTIVE or CREATING document gets the same terminal field set
+        _write_terminal_client writes (status=removed, updatedAt/removedAt
+        server timestamps, wireguardConfig/lastErrorCode/lastErrorMessage
+        cleared). CREATING is fenced too, so a concurrent mark_client_active
+        cannot re-activate a client after this call returns. Already
+        removed/failed documents are skipped with no write (idempotent - a
+        retry after a partial failure converges, it never re-activates or
+        resurrects anything). A document whose data cannot be parsed gets the
+        terminal write anyway, fail-closed, since its status cannot be
+        trusted.
+        """
 
     @abstractmethod
     def reserve_client(

@@ -53,6 +53,14 @@ now enforced by the policy flock itself, not by any counter, so the field carrie
 meaning and Wave 5 drops it alongside `dataVintage`. Policy documents deliberately never contain a
 uid, email, address, or key.
 
+Account deletion (`DELETE /account`) performs the one fleet-wide client-document write the API
+ever makes: an Admin-SDK-only, cross-region write across every region's `Instances`
+subcollection (`Regions/*/Instances`) that marks every one of the deleting account's client
+documents non-active, regardless of whether that region's host is reachable. It is the only place
+any regional API writes into another region's `Instances` path, and it is reachable only from a
+recently authenticated self-delete - see [docs/api-contract.md](../../docs/api-contract.md) and
+[TODO/account-scoped-acl.md](../../TODO/account-scoped-acl.md).
+
 Role documents are defaults keyed by role name:
 
 * `Roles/user.defaultPerRegionClientLimit`: default per-region client limit for normal users.

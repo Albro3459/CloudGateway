@@ -93,6 +93,18 @@ while the WireGuard lock is held any more, so a slow policy pull or status write
 stall client creation or make a non-blocking Sync All shed, and a policy failure never turns a
 successful client create into an error response.
 
+**Account deletion against an unreachable region** converges the same way as any other missed
+peer sync, not through a special repair path. `DELETE /account` marks every one of the account's
+client documents non-active fleet-wide - including a region whose host could not be reached to
+remove its live peer or accept a cleanup-mode client delete - before the account documents are
+hard-deleted. That region's client docs are therefore already `removed` by the time it next runs a
+sync: its next boot, or a manual `cloudgateway-sync-peers`, removes the orphaned peer exactly like
+the "client-classified peer Firebase does not know"/"doc is removed but a matching peer exists"
+rows in the drift table above, and its policy reconcile drops the stale `cg_slot4/6`/`cg_pairs4/6`
+rows on the same pass, since both reconciles read the same non-active Firestore state. There is no
+separate repair path and no retry loop for this case; it is the accepted risk recorded in
+[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md).
+
 **Open verification item:** nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
 across the pre-existing `iptables`/`ip6tables` `FORWARD` chains), the `cg_forward` chain's
 `priority -10` actually running ahead of those chains, and the `ip daddr @cg_tunnel4 ip daddr .

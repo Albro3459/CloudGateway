@@ -21,6 +21,7 @@ from src.errors import (
 from src.policy import LivePolicyMap, PolicyManager, PolicyRow
 from src.repository import (
     ALLOCATED_CLIENT_STATUSES,
+    AccountCleanupTally,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
@@ -258,6 +259,8 @@ class FakeRepository(FirebaseRepository):
         self.delete_client_error: Exception | None = None
         self.hard_delete_account_error: Exception | None = None
         self.delete_auth_user_error: Exception | None = None
+        self.mark_account_clients_inactive_error: Exception | None = None
+        self.mark_account_clients_inactive_calls = 0
         # Last mesh status written per region, keyed by region_id: (mesh_enabled, peers).
         self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
         self.write_mesh_status_error: Exception | None = None
@@ -437,6 +440,36 @@ class FakeRepository(FirebaseRepository):
         for key, client in list(self.clients.items()):
             if client.owner_uid == uid:
                 del self.clients[key]
+
+    def mark_account_clients_inactive(self, uid: str) -> AccountCleanupTally:
+        # Mirrors firebase.py's semantics, including ignoring local_region_id:
+        # fleet-wide, not gated to this fake's own region. Region grouping
+        # uses client.region_id, the fake's stand-in for the real path-based
+        # region (the fake has no Firestore document path to fall back from).
+        self.mark_account_clients_inactive_calls += 1
+        if self.mark_account_clients_inactive_error is not None:
+            raise self.mark_account_clients_inactive_error
+        clients_by_region: dict[str, int] = {}
+        marked_by_region: dict[str, int] = {}
+        with self._lock:
+            for key, client in list(self.clients.items()):
+                if client.owner_uid != uid:
+                    continue
+                clients_by_region[client.region_id] = clients_by_region.get(client.region_id, 0) + 1
+                if client.status not in {ClientStatus.ACTIVE, ClientStatus.CREATING}:
+                    continue
+                marked_by_region[client.region_id] = marked_by_region.get(client.region_id, 0) + 1
+                now = utc_now()
+                self.clients[key] = replace(
+                    client,
+                    status=ClientStatus.REMOVED,
+                    wireguard_config=None,
+                    updated_at=now,
+                    removed_at=now,
+                    last_error_code=None,
+                    last_error_message=None,
+                )
+        return AccountCleanupTally(clients_by_region=clients_by_region, marked_by_region=marked_by_region)
 
     def reserve_client(
         self,

@@ -45,6 +45,7 @@ from .notifications import create_ses_client, send_access_grant_email
 from .policy import PolicyManager, PolicyRow
 from .policy_sync import bare_tunnel_address
 from .repository import (
+    AccountCleanupTally,
     ClientDoc,
     FirebaseRepository,
     ensure_delete_allowed,
@@ -324,8 +325,11 @@ def delete_client(
         target_uid=body.user_id,
         region_id=body.region_id,
         client_id=client_id,
+        account_cleanup=body.account_cleanup,
     )
     try:
+        if body.account_cleanup:
+            _ensure_account_cleanup_allowed(repository, user=user, body=body)
         ensure_local_region(body.region_id, request.app.state.settings.region_id)
         ensure_delete_allowed(
             requester_uid=user.uid,
@@ -402,16 +406,22 @@ def delete_client(
         region_id=removed_client.region_id,
         client_id=removed_client.client_id,
         status=removed_client.status.value,
+        account_cleanup=body.account_cleanup,
     )
     # No inline removal exists (add_client_row is additive-only), so the local
     # map is corrected by a real reconcile rather than a single-row edit.
-    background_tasks.add_task(request.app.state.policy_coordinator.request)
-    background_tasks.add_task(
-        _poke_other_regions,
-        request,
-        token=bearer_token(request),
-        request_id=request_id,
-    )
+    # Account-cleanup mode skips both: the account-delete orchestrator
+    # (delete_account) owns propagation for the whole account in one
+    # deliberate sequence instead of letting each per-client delete fan out
+    # its own poke (see review finding 8).
+    if not body.account_cleanup:
+        background_tasks.add_task(request.app.state.policy_coordinator.request)
+        background_tasks.add_task(
+            _poke_other_regions,
+            request,
+            token=bearer_token(request),
+            request_id=request_id,
+        )
     return DeleteClientResponse(
         user_id=body.user_id,
         client_id=removed_client.client_id,
@@ -423,6 +433,7 @@ def delete_client(
 @router.delete("/account", response_model=DeleteAccountResponse)
 def delete_account(
     request: Request,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> DeleteAccountResponse:
     repository = request.app.state.repository
@@ -430,7 +441,12 @@ def delete_account(
     settings = request.app.state.settings
     request_id = request.state.request_id
     token = bearer_token(request)
-    clients = []
+    unreachable_region_ids: tuple[str, ...] = ()
+    refresh_failed_region_count = 0
+    # Defaults only reached if an exception path below somehow fell through
+    # without raising, which it never does (every except clause re-raises) -
+    # kept for the same reason the original code defaulted `clients = []`.
+    tally = AccountCleanupTally(clients_by_region={}, marked_by_region={})
 
     log_event(
         logger,
@@ -443,17 +459,54 @@ def delete_account(
         _ensure_recent_auth(user)
         _ensure_account_delete_allowed(repository, user.uid)
 
-        # Ordering: snapshot the owner's clients, remove their WireGuard peers,
-        # then hard-delete the account docs. We keep the UserRoles doc until the
-        # hard delete (do not delete it first) so a retry of DELETE /account can
-        # still authorize. There is an accepted, sub-second race: a user racing
-        # their own deletion from a second device could orphan a single peer if
-        # a client is created between the snapshot and the hard delete. We do
-        # not fence it; cloudgateway-sync-peers reconciles any orphaned peer on
-        # its next run. See the plan (Medium #4) for why role-first fencing is
-        # rejected.
+        # Ordering (see TODO/account-scoped-acl.md "Account deletion" and
+        # review finding 8 - account deletion must not accidentally issue the
+        # per-client pokes the design otherwise rejects):
+        #
+        # 1. Snapshot this account's clients and remove their local/remote
+        #    WireGuard peers. Remote removal runs in account-cleanup mode
+        #    (_delete_remote_client sends accountCleanup=True), which the
+        #    remote handler only honors for this same recently authenticated
+        #    self-delete and which suppresses that handler's own reconcile
+        #    and fleet poke - this sequence owns propagation instead.
+        # 2. Fence every one of this account's clients non-active in
+        #    Firestore via the trusted mark_account_clients_inactive
+        #    operation, including clients whose regional host was
+        #    unreachable in step 1. From this point on, any policy pull in
+        #    any region - now or after a boot/manual sync - excludes this
+        #    account, because the fence is keyed by ownerUid, not by which
+        #    region answered.
+        # 3. While UserRoles/{uid} and this token are both still valid, send
+        #    exactly one best-effort refresh wave to every other enabled
+        #    region synchronously, then queue the local reconcile separately.
+        #    /sync/refresh enqueues and returns 202, so an accepted refresh no
+        #    longer depends on the token after its response returns.
+        # 4. Only now hard-delete the account documents and Auth user.
+        #
+        # A failure before step 2 leaves clients ACTIVE and retryable, exactly
+        # as before this design - UserRoles/{uid} survives until step 4 so a
+        # retry of DELETE /account can still authorize. A failure after step 2
+        # drops the queued local reconcile (FastAPI does not run background
+        # tasks for a failed response) - acceptable, since the fence is
+        # already committed and a retry re-queues it.
+        #
+        # Still accepted, unchanged by this design: a user racing their own
+        # deletion from a second device can orphan a peer if a client is
+        # created between the step 1 snapshot and step 4. Its document is
+        # caught anyway (the fence and the hard delete each re-query), so no
+        # policy row survives; only the peer is orphaned, and
+        # cloudgateway-sync-peers removes it on its next run. Creation after
+        # step 4 fails outright - UserRoles/{uid} is gone by then.
+        #
+        # Preserved, accepted risk (see review finding 8 and
+        # TODO/account-scoped-acl.md): a region that never answers in step 1
+        # or step 3 keeps an orphaned peer and a stale policy row until its
+        # next boot or a manual cloudgateway-sync-peers. It cannot restore the
+        # account, because this account's Firestore client rows are already
+        # non-active by the time step 2 returns - no pull anywhere can
+        # resurrect them.
         clients = repository.list_clients_for_owner(user.uid)
-        _remove_account_peers(
+        unreachable_region_ids = _remove_account_peers(
             clients=clients,
             user=user,
             token=token,
@@ -462,16 +515,13 @@ def delete_account(
             wireguard=wireguard,
             request_id=request_id,
         )
-        # Deliberately no policy poke here, unlike the client create/delete
-        # paths. No ordering works: poking before this line refreshes peers to
-        # the pre-delete state, and poking after it means UserRoles/{uid} is
-        # already gone, so the remote rejects the call and
-        # require_role_or_disable_unprovisioned tries to disable a user that
-        # is being deleted. This is accepted (see TODO/account-scoped-acl.md,
-        # "Account deletion"): _remove_account_peers above already removed
-        # this account's WireGuard peers, so it cannot put a packet on the
-        # tunnel regardless of a stale policy row, and any address it freed is
-        # reclaimed by the next allocation, which itself pokes.
+        tally = repository.mark_account_clients_inactive(user.uid)
+        refresh_failed_region_count = _refresh_other_regions_once(
+            request,
+            token=token,
+            request_id=request_id,
+        )
+        background_tasks.add_task(request.app.state.policy_coordinator.request)
         repository.hard_delete_account_documents(user.uid)
         repository.delete_auth_user(user.uid)
     except ApiError:
@@ -499,11 +549,15 @@ def delete_account(
         Event.ACCOUNT_DELETE_COMPLETED,
         request_id=request_id,
         user_id=user.uid,
-        deleted_client_count=len(clients),
+        deleted_client_count=tally.client_count,
+        marked_non_active_count=tally.marked_count,
+        region_count=tally.region_count,
+        unreachable_region_count=len(unreachable_region_ids),
+        refresh_failed_region_count=refresh_failed_region_count,
     )
     return DeleteAccountResponse(
         user_id=user.uid,
-        deleted_client_count=len(clients),
+        deleted_client_count=tally.client_count,
     )
 
 
@@ -770,6 +824,24 @@ def _ensure_account_delete_allowed(repository: FirebaseRepository, uid: str) -> 
     raise InvalidRequestError("Account deletion is not available for this account.")
 
 
+def _ensure_account_cleanup_allowed(
+    repository: FirebaseRepository,
+    *,
+    user: AuthenticatedUser,
+    body: DeleteClientRequest,
+) -> None:
+    """Account-cleanup mode on DELETE /clients/{clientId} is honored only for
+    a self-delete under exactly the conditions DELETE /account itself
+    requires (review finding 8: the ordinary per-client delete must not be
+    usable to smuggle account-wide propagation suppression). A rejection
+    fails the whole request; it is never silently downgraded to an ordinary
+    delete."""
+    if body.user_id != user.uid:
+        raise InvalidRequestError("Account cleanup mode is only available for a self-delete.")
+    _ensure_recent_auth(user)
+    _ensure_account_delete_allowed(repository, user.uid)
+
+
 def _remove_account_peers(
     *,
     clients: list[ClientDoc],
@@ -779,7 +851,7 @@ def _remove_account_peers(
     api_hostname: str,
     wireguard: WireGuardManager,
     request_id: str,
-) -> None:
+) -> tuple[str, ...]:
     local_clients = [
         client for client in clients
         if client.region_id == local_region_id and client.client_public_key
@@ -800,6 +872,7 @@ def _remove_account_peers(
                     operation="remove_peer",
                 )
 
+    unreachable_region_ids: set[str] = set()
     for client in remote_clients:
         try:
             _delete_remote_client(client=client, user=user, token=token, api_hostname=api_hostname)
@@ -809,8 +882,10 @@ def _remove_account_peers(
                 # the peer is gone, so abort rather than silently lose it.
                 raise
             # Region host unreachable: continue the deletion. The client doc is
-            # hard-deleted next and cloudgateway-sync-peers reconciles the
-            # orphaned peer when the host returns.
+            # fenced non-active next by mark_account_clients_inactive and
+            # cloudgateway-sync-peers reconciles the orphaned peer when the
+            # host returns.
+            unreachable_region_ids.add(client.region_id)
             log_event(
                 logger,
                 Event.ACCOUNT_DELETE_PEER_UNREACHABLE,
@@ -820,6 +895,7 @@ def _remove_account_peers(
                 client_id=client.client_id,
                 region_id=client.region_id,
             )
+    return tuple(sorted(unreachable_region_ids))
 
 
 def _delete_remote_client(
@@ -830,7 +906,10 @@ def _delete_remote_client(
     api_hostname: str,
 ) -> None:
     url = _regional_api_url(client.region_id, f"clients/{quote(client.client_id, safe='')}", api_hostname)
-    body = json.dumps({"userId": user.uid, "regionId": client.region_id}).encode("utf-8")
+    # Only ever called from _remove_account_peers, so the flag is
+    # unconditional here: the remote region validates it independently
+    # (see _ensure_account_cleanup_allowed) rather than trusting it on sight.
+    body = json.dumps({"userId": user.uid, "regionId": client.region_id, "accountCleanup": True}).encode("utf-8")
     regional_request = URLRequest(
         url,
         data=body,
@@ -936,29 +1015,72 @@ def _write_inline_policy_row(
         )
 
 
+def _other_enabled_region_ids(request: Request, *, request_id: str) -> list[str]:
+    """Every enabled region except this one. Shared by the fire-and-forget
+    create/delete poke and the synchronous account-deletion refresh wave, so
+    the two paths can never define "other enabled regions" differently.
+
+    A failed region read is logged, not silently swallowed: without it the
+    account-deletion wave would report zero failed regions for a wave it
+    never sent. `stage` distinguishes it from a per-region poke failure -
+    region_id here is this region, the one that could not read the list.
+    """
+    repository: FirebaseRepository = request.app.state.repository
+    settings = request.app.state.settings
+    try:
+        regions = repository.list_enabled_regions()
+    except Exception as exc:
+        log_event(
+            logger,
+            Event.POLICY_POKE_FAILED,
+            level=logging.WARNING,
+            request_id=request_id,
+            region_id=settings.region_id,
+            stage="region_list",
+            error_type=type(exc).__name__,
+        )
+        return []
+    return [region.region_id for region in regions if region.region_id != settings.region_id]
+
+
 def _poke_other_regions(request: Request, *, token: str, request_id: str) -> None:
     """Fire-and-forget: runs as a BackgroundTask after the response is already
     sent, so nothing here can affect the request result. Pokes every other
     enabled region's /sync/refresh, replaying the caller's own bearer token
     exactly as _delete_remote_client does."""
-    repository: FirebaseRepository = request.app.state.repository
     settings = request.app.state.settings
-    try:
-        regions = repository.list_enabled_regions()
-    except Exception:
-        return
-    for region in regions:
-        if region.region_id == settings.region_id:
-            continue
+    for region_id in _other_enabled_region_ids(request, request_id=request_id):
         _poke_regional_policy_refresh(
-            region_id=region.region_id,
+            region_id=region_id,
             token=token,
             api_hostname=settings.api_hostname,
             request_id=request_id,
         )
 
 
-def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: str, request_id: str) -> None:
+def _refresh_other_regions_once(request: Request, *, token: str, request_id: str) -> int:
+    """Exactly one refresh wave for DELETE /account (see
+    TODO/account-scoped-acl.md Wave 4): runs synchronously inside the
+    request, not as a BackgroundTask, because the hard delete must not start
+    until every other enabled region has accepted the refresh or been
+    recorded as failed. Called while UserRoles/{uid} and this token are both
+    still valid; /sync/refresh enqueues and returns 202, so an accepted
+    refresh no longer depends on the token after its response returns.
+    Returns the count of regions whose refresh failed."""
+    settings = request.app.state.settings
+    failed_count = 0
+    for region_id in _other_enabled_region_ids(request, request_id=request_id):
+        if not _poke_regional_policy_refresh(
+            region_id=region_id,
+            token=token,
+            api_hostname=settings.api_hostname,
+            request_id=request_id,
+        ):
+            failed_count += 1
+    return failed_count
+
+
+def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: str, request_id: str) -> bool:
     try:
         url = _regional_api_url(region_id, "sync/refresh", api_hostname)
         regional_request = URLRequest(
@@ -972,6 +1094,7 @@ def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: s
         )
         with urlopen(regional_request, timeout=POLICY_POKE_TIMEOUT_SECONDS):
             pass
+        return True
     except Exception as exc:
         # Every error is swallowed by design (see TODO/account-scoped-acl.md,
         # "Accepted risks": a dropped poke just leaves the region stale until
@@ -985,6 +1108,7 @@ def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: s
             region_id=region_id,
             error_type=type(exc).__name__,
         )
+        return False
 
 
 def _notify_user_access_granted(

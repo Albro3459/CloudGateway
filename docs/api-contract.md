@@ -137,13 +137,24 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 ```json
 {
   "userId": "firebase-uid",
-  "regionId": "us-sanjose-1"
+  "regionId": "us-sanjose-1",
+  "accountCleanup": false
 }
 ```
 
 - Normal users can only pass their own UID. Admins can pass any target UID.
 - The API verifies the client document at `Regions/{regionId}/Instances/{clientId}`
   exists and matches the requested IDs before mutating WireGuard.
+- `accountCleanup` (optional, defaults to `false`) marks this delete as part of `DELETE
+  /account`'s cross-region peer removal. The receiving region honors it only for a recently
+  authenticated self-delete by a `user`-role account - `userId` must equal the caller's own uid,
+  the caller's Firebase sign-in must be recent, and the caller's role must permit account
+  deletion - and re-checks all three against the replayed bearer token itself; the flag is never
+  trusted on its own. A request that fails any of those checks fails the whole delete (`400
+  INVALID_REQUEST` for the self-only/role checks, `401 AUTH_REQUIRED` for stale auth); cleanup
+  mode is never silently downgraded to an ordinary delete. When accepted, the handler skips its
+  usual local policy reconcile and fleet poke, because `DELETE /account` owns propagation for the
+  whole account (see below).
 - Response `200`:
 
 ```json
@@ -157,9 +168,20 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 ### `DELETE /account`
 
-- Apex. Requires Firebase bearer auth from a recent sign-in.
-- Removes any live regional peers for the authenticated user, then hard-deletes the user's
-  owned client docs, account doc, role doc, and Firebase Auth user.
+- Apex. Requires Firebase bearer auth from a recent sign-in, restricted to `user`-role accounts.
+- Real ordering: snapshot the caller's client docs; remove their WireGuard peers (local directly,
+  remote via `DELETE /clients/{clientId}` in `accountCleanup` mode - see above); mark every one of
+  the account's client documents non-active fleet-wide in one trusted repository operation (the
+  fence), including clients on a region whose host was unreachable during peer removal; send
+  exactly one best-effort policy refresh wave to every other enabled region while
+  `UserRoles/{uid}` and the caller's recent authentication still exist; queue the local policy
+  reconcile separately; only then hard-delete the account's client docs, account doc, role doc,
+  and Firebase Auth user.
+- The hard delete does not start until every other enabled region has accepted the refresh
+  (`202` from `POST /sync/refresh`) or been recorded as unreachable. An accepted refresh no
+  longer depends on the caller's token once its `202` returns. The fence commits before the
+  refresh wave goes out, so from that point no policy pull anywhere - on any region, including one
+  that races ahead of the refresh - can restore the deleting account's connectivity.
 - Request body: none.
 - Response `200`:
 
@@ -169,6 +191,16 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   "deletedClientCount": 3
 }
 ```
+
+- `deletedClientCount` is the count reported by the fence's own authoritative read of the
+  account's client documents (grouped by region from each document's path), not the
+  pre-removal snapshot. For a fleet in a consistent state the two counts agree, so this is not an
+  observable contract change.
+- An unreachable region is an accepted risk, not a retry loop: it keeps an orphaned WireGuard peer
+  and a stale policy row until its next boot or a manual `cloudgateway-sync-peers` run (see
+  [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)). Its Firestore client rows
+  are already non-active by the time the account documents are hard-deleted, so the orphaned peer
+  cannot be used to reach a live account.
 
 ### `POST /users`
 
@@ -347,12 +379,15 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 - Failure behaviour: because the pass is detached from the response, a failed apply surfaces only
   in host logs and the `Policy/{regionId}` status doc, never in this endpoint's response. Use
   `POST /api/admin/sync` (Sync All) as the repair path for a dropped or failed poke.
-- Poke sites: `POST /clients` and `DELETE /clients/{clientId}` call this on every other region,
-  fire-and-forget after the response, so a dropped poke never blocks or fails the caller's request.
-  A dropped poke leaves the un-poked region's policy map stale until the next fleet-wide client
-  event or an admin Sync All - this is an accepted risk, not a bug (see
-  [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)). `DELETE /account` deliberately does
-  not poke; see the comment at the delete site in `Backend/API/src/routes.py`.
+- Poke sites: `POST /clients` and `DELETE /clients/{clientId}` (ordinary, non-cleanup deletes) call
+  this on every other region, fire-and-forget after the response, so a dropped poke never blocks or
+  fails the caller's request. A dropped poke leaves the un-poked region's policy map stale until the
+  next fleet-wide client event or an admin Sync All - this is an accepted risk, not a bug (see
+  [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)). `DELETE /account` is different: it
+  calls this endpoint synchronously, inside the request, exactly once per other enabled region, as
+  the deliberate last propagation step before its hard delete (see `DELETE /account` above); it
+  does not also fire the fire-and-forget poke, and the per-client deletes it issues in
+  `accountCleanup` mode suppress their own poke so the account delete is never fanned out twice.
 
 ## Error Responses
 

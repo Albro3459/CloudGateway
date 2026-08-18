@@ -328,6 +328,9 @@ def test_delete_account_removes_peer_and_hard_deletes_all_owned_docs(client, rep
     assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=failed.client_id) is None
     assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=removed.client_id) is None
     assert repository.get_client(owner_uid="user-2", region_id=REGION_ID, client_id=other_user_client.client_id) is not None
+    # The non-active fence ran exactly once, before the hard delete (see
+    # TODO/account-scoped-acl.md Wave 4).
+    assert repository.mark_account_clients_inactive_calls == 1
 
 
 def test_delete_account_rejects_admin_without_deleting_docs(client, repository):
@@ -435,8 +438,9 @@ def test_remove_account_peers_continues_when_remote_region_unreachable(monkeypat
     monkeypatch.setattr(routes, "urlopen", _unreachable)
 
     # Unreachable host must not raise: the account deletion continues and the
-    # orphaned peer is reconciled later by cloudgateway-sync-peers.
-    routes._remove_account_peers(
+    # orphaned peer is reconciled later by cloudgateway-sync-peers. The
+    # unreachable region id is returned so the caller can report it.
+    unreachable = routes._remove_account_peers(
         clients=[_remote_client_doc()],
         user=AuthenticatedUser(uid="user-1", email="user@example.com"),
         token="user-token",
@@ -447,6 +451,7 @@ def test_remove_account_peers_continues_when_remote_region_unreachable(monkeypat
     )
 
     assert calls["count"] == 1
+    assert unreachable == ("us-other-1",)
 
 
 def test_remove_account_peers_aborts_on_remote_http_error(monkeypatch, wireguard):
@@ -496,21 +501,23 @@ def test_remove_account_peers_rejects_a_malformed_region_id_before_calling_out(m
     assert calls["count"] == 0
 
 
-def test_delete_account_sends_no_policy_poke(client, repository, wireguard, monkeypatch):
-    # DELETE /account deliberately never pokes (see the comment at its delete
-    # site in routes.py): no ordering of a poke around the hard delete works.
+def test_delete_account_sends_exactly_one_refresh_per_other_region(client, repository, wireguard, monkeypatch):
+    # DELETE /account sends exactly one synchronous /sync/refresh wave to
+    # every other enabled region (see TODO/account-scoped-acl.md Wave 4) and
+    # no other cross-region call - the account has only a local client here,
+    # so no remote per-client delete call is expected either.
     seed_region(repository)
     repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
     create_active_client(repository, wireguard)
-    calls = {"count": 0}
+    calls: list[tuple[str, str]] = []
 
-    def _record(*args, **kwargs):
-        calls["count"] += 1
-        raise AssertionError("DELETE /account must never call out to another region")
+    def _record(request, timeout=None):
+        calls.append((request.get_method(), request.full_url))
+        raise URLError("simulated unreachable region")
 
     monkeypatch.setattr(routes, "urlopen", _record)
 
     response = client.delete("/account", headers=auth_header("user-token"))
 
     assert response.status_code == 200
-    assert calls["count"] == 0
+    assert calls == [("POST", "https://us-other-1.gocloudlaunch.com/api/sync/refresh")]
