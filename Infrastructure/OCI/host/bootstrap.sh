@@ -551,6 +551,60 @@ if [[ ! -f "$WORK_DIR/Backend/API/pyproject.toml" ]]; then
   exit 1
 fi
 
+# Account-scoped ACL rollout gate. This release enforces client-to-client
+# isolation with an nftables table loaded by wg0's PostUp, which only runs
+# when the interface transitions from down to up. An API-only upgrade onto a
+# host that never had that table would run policy code against nothing: nft
+# calls fail, those failures are swallowed, and cross-account forwarding
+# stays wide open while the API keeps serving as if nothing were wrong. The
+# only supported rollout for this release is destroying and rebuilding every
+# region from one deploy tag with ./scripts/terraform.sh. Detect an
+# ACL-aware source tree by the presence of a file that only exists on that
+# branch, then confirm the live host actually has the ACL loaded before
+# touching anything.
+if [[ -f "$WORK_DIR/Backend/API/src/policy.py" ]]; then
+  if [[ "${CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE:-}" == "1" ]]; then
+    echo "WARNING: CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1 is set." >&2
+    echo "WARNING: Skipping the account-scoped ACL rollout gate. This is unsupported" >&2
+    echo "WARNING: outside a genuine emergency and leaves the account boundary" >&2
+    echo "WARNING: unenforced if the live host has no ACL loaded." >&2
+  else
+    # Capture status explicitly: this script runs under set -euo pipefail, and
+    # letting a failing nft call abort here would exit with the pipefail
+    # message instead of the operator-facing explanation below.
+    NFT_STATUS=0
+    NFT_OUTPUT="$(nft list table inet cloudgateway 2>&1)" || NFT_STATUS=$?
+    ACL_LIVE=0
+    if [[ "$NFT_STATUS" -eq 0 ]] \
+        && grep -q 'chain cg_forward' <<<"$NFT_OUTPUT" \
+        && grep -q 'map cg_slot4' <<<"$NFT_OUTPUT" \
+        && grep -q 'map cg_slot6' <<<"$NFT_OUTPUT"; then
+      ACL_LIVE=1
+    fi
+
+    if [[ "$ACL_LIVE" -ne 1 ]]; then
+      echo "ERROR: This ref carries the account-scoped ACL (Backend/API/src/policy.py)," >&2
+      echo "ERROR: but this host has no live 'inet cloudgateway' nftables table with the" >&2
+      echo "ERROR: cg_forward chain and cg_slot4/cg_slot6 maps." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: cloudgateway-install-api is not a supported upgrade path for this" >&2
+      echo "ERROR: release. Running the new API against a host with no ACL loaded would" >&2
+      echo "ERROR: execute policy code with nothing to enforce it: nft calls fail, those" >&2
+      echo "ERROR: failures are swallowed, and cross-account forwarding stays completely" >&2
+      echo "ERROR: unrestricted while the API keeps serving as if nothing were wrong." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: Re-running bootstrap on this host is NOT a migration: 'systemctl" >&2
+      echo "ERROR: enable --now wg-quick@wg0' does not rerun PostUp on an interface that" >&2
+      echo "ERROR: is already active, so the ACL table would still never get loaded." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: The only supported rollout is destroying and rebuilding this region" >&2
+      echo "ERROR: through ./scripts/terraform.sh from the same deploy tag as every" >&2
+      echo "ERROR: other region." >&2
+      exit 1
+    fi
+  fi
+fi
+
 cp -R "$WORK_DIR/Backend/API/." /opt/cloudgateway/api/
 /opt/cloudgateway/api/.venv/bin/pip install /opt/cloudgateway/api
 systemctl restart cloudgateway-api

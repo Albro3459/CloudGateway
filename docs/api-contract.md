@@ -332,8 +332,10 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 - The reconcile is enqueued and the request returns immediately, so the caller's timeout never
   matters and each request costs approximately nothing.
 - No dedicated secret and no rate limit. The caller's own Firebase token is replayed, matching the
-  existing cross-region pattern in `_delete_remote_client` (`Backend/API/src/routes.py:722`);
-  depth-1 coalescing in `reconcile_policy()` structurally bounds the work any caller can cause (see
+  existing cross-region pattern in `_delete_remote_client` (`Backend/API/src/routes.py:722`).
+  Depth-1 coalescing in `reconcile_policy()` bounds the *pending backlog* to one queued follow-up
+  pass at a time - it does not bound the total number of sequential refreshes a caller can trigger
+  over time, and there is no rate limit (see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)).
 - Failure behaviour: because the pass is detached from the response, a failed apply surfaces only
   in host logs and the `Policy/{regionId}` status doc, never in this endpoint's response. Use

@@ -410,7 +410,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 ## Checklist
 
 * [x] New-account slot allocation: counter document, `Users/{uid}.accountSlot`, allocated at provisioning or a later client reservation.
-* [ ] Wave 1 - legacy slot migration, counter seeding, fail-closed runtime allocation, and migration tests.
+* [x] Wave 1 - legacy slot migration, counter seeding, fail-closed runtime allocation, and migration tests.
 * [x] Monotonic address allocation with wrap and in-use check, replacing `_first_unused_tunnel_ip`; paired v4/v6 indices.
 * [x] nftables table, sets, maps, and chain in `bootstrap.sh` `PostUp`/`PostDown`; `nftables` package installed for new or rebuilt hosts.
 * [x] Deployment decision: rebuild every region through `terraform.sh`; no API-only or mixed host rollout.

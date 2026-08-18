@@ -14,6 +14,8 @@ from src.errors import (
 )
 from src.firebase import FirestoreRepository, _region_from_data, _user_from_data, _user_write_data
 from src.repository import (
+    MAX_ACCOUNT_SLOT,
+    MIN_ACCOUNT_SLOT,
     ClientDoc,
     MeshPeerState,
     PolicyStatus,
@@ -212,14 +214,21 @@ def test_tunnel_addresses_for_index_matches_hosts_output_form():
     )
 
 
-def test_next_account_slot_defaults_to_minimum_when_missing_or_invalid():
-    assert next_account_slot(None) == 1
-    assert next_account_slot(0) == 1
-    assert next_account_slot(-3) == 1
+def test_next_account_slot_defaults_to_minimum_when_missing_or_invalid_and_no_assigned_slots():
+    assert next_account_slot(stored_next_slot=None, assigned_slots=[]) == 1
+    assert next_account_slot(stored_next_slot=0, assigned_slots=[]) == 1
+    assert next_account_slot(stored_next_slot=-3, assigned_slots=[]) == 1
 
 
-def test_next_account_slot_returns_stored_value():
-    assert next_account_slot(42) == 42
+def test_next_account_slot_returns_stored_value_when_above_every_assigned_slot():
+    assert next_account_slot(stored_next_slot=42, assigned_slots=[1, 2]) == 42
+
+
+def test_next_account_slot_constants_agree_with_policy_module():
+    from src import policy
+
+    assert MIN_ACCOUNT_SLOT == policy.MIN_SLOT
+    assert MAX_ACCOUNT_SLOT == policy.MAX_SLOT
 
 
 def test_region_decode_parses_tunnel_indices():

@@ -464,7 +464,7 @@ class FirestoreRepository(FirebaseRepository):
             new_slot = existing_slot
             if new_slot is None:
                 counter_snapshot = _sync_snapshot(counter_ref.get(transaction=transaction))
-                new_slot = _allocate_account_slot(transaction, counter_ref, counter_snapshot)
+                new_slot = _allocate_account_slot(transaction, db, counter_ref, counter_snapshot, exclude_uid=uid)
 
             transaction.set(
                 user_ref,
@@ -531,7 +531,9 @@ class FirestoreRepository(FirebaseRepository):
             new_account_slot = existing_slot
             if new_account_slot is None:
                 counter_snapshot = _sync_snapshot(counter_ref.get(transaction=transaction))
-                new_account_slot = _allocate_account_slot(transaction, counter_ref, counter_snapshot)
+                new_account_slot = _allocate_account_slot(
+                    transaction, db, counter_ref, counter_snapshot, exclude_uid=owner_uid
+                )
 
             next_index = next_tunnel_index(
                 stored_index=region.tunnel_index_v4,
@@ -1005,12 +1007,42 @@ def _account_slot_ref(db):
     return db.collection("Counters").document("accountSlots")
 
 
-def _allocate_account_slot(transaction, counter_ref, counter_snapshot: DocumentSnapshot) -> int:
+def _allocate_account_slot(
+    transaction,
+    db,
+    counter_ref,
+    counter_snapshot: DocumentSnapshot,
+    *,
+    exclude_uid: str,
+) -> int:
     """Transactional Counters/accountSlots.nextSlot allocation; caller must have
     already read counter_snapshot (Firestore transactions require every read
-    before any write) and must not have written anything yet."""
-    stored_next_slot = _optional_safe_int((counter_snapshot.to_dict() or {}).get("nextSlot")) if counter_snapshot.exists else None
-    slot = next_account_slot(stored_next_slot)
+    before any write) and must not have written anything yet.
+
+    Reads the full Users collection inside the transaction so a lost or
+    corrupted counter can be recovered from the live assigned slots instead of
+    resetting to slot 1 and colliding with an existing account (see
+    TODO/account-scoped-acl-review.md finding 2). The fleet is tiny
+    (region_capacity_limit 20, single-digit accounts today), so a full
+    collection read on this rare allocation path is acceptable. exclude_uid is
+    the uid being provisioned: both callers only reach this function when that
+    uid does not already carry a slot, so it never contributes a valid entry
+    here anyway - excluding it is defensive, not load-bearing.
+    """
+    stored_next_slot = (counter_snapshot.to_dict() or {}).get("nextSlot") if counter_snapshot.exists else None
+    assigned_slots: list[object] = []
+    for raw_snapshot in db.collection("Users").stream(transaction=transaction):
+        snapshot = _sync_snapshot(raw_snapshot)
+        if snapshot.id == exclude_uid:
+            continue
+        slot_value = (snapshot.to_dict() or {}).get("accountSlot")
+        # An explicit null is "no slot", not a malformed one: _user_write_data
+        # omits the field rather than writing None, and a null can never reach
+        # the wire, so it must not fail the recovery path closed.
+        if slot_value is not None:
+            assigned_slots.append(slot_value)
+
+    slot = next_account_slot(stored_next_slot=stored_next_slot, assigned_slots=assigned_slots)
     transaction.set(counter_ref, {"nextSlot": slot + 1, "updatedAt": _server_timestamp()}, merge=True)
     return slot
 

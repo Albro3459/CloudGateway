@@ -261,11 +261,15 @@ class FakeRepository(FirebaseRepository):
         self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
         self.write_mesh_status_error: Exception | None = None
         self.list_clients_by_public_key_error: Exception | None = None
-        # Mirrors Counters/accountSlots: uid -> allocated slot, plus the next
-        # value the counter would hand out. Slot 0 is reserved, so allocation
-        # starts at 1 (see repository.MIN_ACCOUNT_SLOT).
+        # Mirrors Counters/accountSlots: uid -> allocated slot, plus the raw
+        # counter value the real Firestore doc would hold. Slot 0 is reserved,
+        # so allocation starts at 1 (see repository.MIN_ACCOUNT_SLOT). None
+        # models a deleted/missing counter doc; tests may also set this to an
+        # out-of-range int to model a corrupted counter, exercising
+        # repository.next_account_slot's fail-closed recovery path end to end
+        # (see TODO/account-scoped-acl-review.md finding 2).
         self.account_slots: dict[str, int] = {}
-        self._next_account_slot = 1
+        self.account_slot_counter: int | None = 1
         # Last policy status written per region, keyed by region_id.
         self.policy_status: dict[str, PolicyStatus] = {}
         self.write_policy_status_error: Exception | None = None
@@ -692,10 +696,15 @@ class FakeRepository(FirebaseRepository):
         return client
 
     def _allocate_account_slot(self) -> int:
-        # Mirrors firebase.py's counter allocation: read-then-increment, never
-        # reused, matching next_account_slot's default-on-missing behaviour.
-        slot = next_account_slot(self._next_account_slot)
-        self._next_account_slot = slot + 1
+        # Mirrors firebase.py's transactional counter allocation: read the
+        # live assigned slots before deriving the next value, so a deleted or
+        # corrupted account_slot_counter recovers safely instead of reissuing
+        # an already-assigned slot (see repository.next_account_slot).
+        slot = next_account_slot(
+            stored_next_slot=self.account_slot_counter,
+            assigned_slots=list(self.account_slots.values()),
+        )
+        self.account_slot_counter = slot + 1
         return slot
 
     def _with_account_slot(self, user: UserDoc) -> UserDoc:

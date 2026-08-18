@@ -90,6 +90,8 @@ Record the instance's public IPv4. After cloud-init finishes, confirm on the hos
 
 If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started; Terraform apply wall time also includes OCI instance provisioning before cloud-init starts. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudgateway-install-api <ref>` - no redeploy needed.
 
+The account-scoped ACL release is host-level, not an API-only change: it depends on the `inet cloudgateway` nftables table that `PostUp` loads, and `PostUp` only runs when `wg0` transitions from down to up. `cloudgateway-install-api` refuses an ACL-aware ref when the live host has no loaded ACL table, so this release ships only by rebuilding every region through `./scripts/terraform.sh` from one deploy tag. During a sequential multi-region rebuild the fleet is only partially enforced; the ACL is not active until the last region finishes.
+
 ## 3. Cloudflare DNS (Terraform-managed) and one-time zone setup
 
 The regional API hostname is `<regionId>.<origin>`, for example `us-sanjose-1.gocloudlaunch.com`.

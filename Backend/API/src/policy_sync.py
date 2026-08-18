@@ -244,7 +244,9 @@ class PolicyCoordinator:
         """Fire-and-forget entry point for a poke. Any number of concurrent
         callers arriving while a pass is running coalesce into a single
         follow-up pass - one is sufficient since the pull is a full snapshot,
-        not a delta. Never blocks the caller and never raises."""
+        not a delta. That bounds the pending backlog to one queued pass, not
+        the total work a caller can request over time; there is no rate limit.
+        Never blocks the caller and never raises."""
         with self._condition:
             if self._running:
                 self._pending = True
@@ -268,9 +270,13 @@ class PolicyCoordinator:
         return self._drain()
 
     def _drain(self) -> PolicyOutcome | None:
-        # Do not turn this into a real queue: at most one extra pass ever runs
-        # per invocation of the loop below, no matter how many callers set
-        # `pending` while it was in flight.
+        # Do not turn this into a real queue. The invariant is depth-1 on the
+        # *pending backlog*: at most one follow-up pass is ever queued, however
+        # many callers poke while a pass is in flight. It is not a bound on the
+        # total passes this loop can run - a caller arriving after the follow-up
+        # has already started may set `pending` again, deliberately, because its
+        # Firestore mutation may be newer than that follow-up's snapshot and
+        # dropping it would lose the event.
         outcome: PolicyOutcome | None = None
         while True:
             outcome = self._run_one_pass()

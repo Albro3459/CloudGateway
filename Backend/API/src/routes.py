@@ -559,10 +559,12 @@ def refresh_policy(
 ) -> Response:
     # Any provisioned user, not admin-only: no dedicated secret and no rate
     # limit, the caller's own Firebase token is replayed exactly as
-    # _delete_remote_client does, and depth-1 coalescing structurally bounds
-    # the work any caller can cause (see TODO/account-scoped-acl.md, "API
-    # surface"). No body, no detail in the response - never region health,
-    # counts, or error information - so enqueue and return immediately.
+    # _delete_remote_client does. Depth-1 coalescing bounds the *pending
+    # backlog* to one queued follow-up pass; it does not bound the total
+    # number of sequential refreshes a caller can trigger over time (see
+    # TODO/account-scoped-acl.md, "API surface"). No body, no detail in the
+    # response - never region health, counts, or error information - so
+    # enqueue and return immediately.
     del user
     background_tasks.add_task(request.app.state.policy_coordinator.request)
     return Response(status_code=202)

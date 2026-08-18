@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from .enums import ClientStatus, MeshPeerStatus, Role
 from .errors import (
+    AccountSlotUnavailableError,
     AdminRequiredError,
     CapacityReachedError,
     LimitReachedError,
@@ -207,7 +208,13 @@ MIN_TUNNEL_INDEX = 2
 
 # Slot 0 is reserved on the wire (see policy.py MIN_SLOT: an unmarked packet's
 # mark defaults to 0, meaning "unknown source"), so account slots start at 1.
+# MIN_ACCOUNT_SLOT/MAX_ACCOUNT_SLOT must always agree with policy.MIN_SLOT/
+# policy.MAX_SLOT (the 32-bit nft mark range). Duplicated here rather than
+# imported from policy.py to keep repository.py free of the nft-facing
+# module's dependencies; test_repository.py asserts the two pairs never
+# drift.
 MIN_ACCOUNT_SLOT = 1
+MAX_ACCOUNT_SLOT = 2**32 - 1
 
 
 def region_tunnel_index_bounds(ipv4_cidr: str) -> tuple[int, int]:
@@ -291,15 +298,75 @@ def tunnel_addresses_for_index(*, index: int, ipv4_cidr: str, ipv6_cidr: str) ->
     )
 
 
-def next_account_slot(stored_next_slot: int | None) -> int:
+def _valid_slot(value: object) -> int | None:
+    """value as a slot int in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT, else None."""
+    if isinstance(value, int) and not isinstance(value, bool) and MIN_ACCOUNT_SLOT <= value <= MAX_ACCOUNT_SLOT:
+        return value
+    return None
+
+
+def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[object]) -> int:
     """Next value to allocate from Counters/accountSlots.nextSlot.
 
-    Defaults to MIN_ACCOUNT_SLOT when the counter doc doesn't exist yet or
-    holds something malformed.
+    Fails closed instead of ever resetting to MIN_ACCOUNT_SLOT once a slot has
+    been handed out (see TODO/account-scoped-acl-review.md finding 2: a lost
+    or corrupted counter must never re-issue an already-assigned slot, or two
+    accounts collide onto one nftables tenant). `stored_next_slot` and every
+    value in `assigned_slots` are raw, unclassified Firestore reads - this
+    function does all malformed-value handling so callers never have to.
+
+    stored_next_slot is classified as:
+      * valid   - a real int (never bool) in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT.
+      * exhausted - a real int above MAX_ACCOUNT_SLOT. Always raises: an
+        exhausted counter must never recover downward, which is the reset
+        hazard this function exists to prevent, in a subtler form.
+      * absent/malformed - doc missing, field missing, non-int, bool, or
+        below MIN_ACCOUNT_SLOT. Enters the recovery path below.
     """
-    if isinstance(stored_next_slot, int) and not isinstance(stored_next_slot, bool) and stored_next_slot >= MIN_ACCOUNT_SLOT:
-        return stored_next_slot
-    return MIN_ACCOUNT_SLOT
+    if isinstance(stored_next_slot, int) and not isinstance(stored_next_slot, bool) and stored_next_slot > MAX_ACCOUNT_SLOT:
+        raise AccountSlotUnavailableError()
+
+    valid_stored = _valid_slot(stored_next_slot)
+    if valid_stored is not None:
+        # Valid-counter path. A malformed or duplicated slot on some *other*
+        # user document does not block allocation: the candidate derived here
+        # is provably above every *valid* assigned slot, and Wave 2 excludes
+        # non-conforming rows from the policy map, so no on-wire collision is
+        # possible. Contrast with the recovery path below, which derives the
+        # counter from this data and therefore must be able to trust it.
+        valid_assigned = [slot for value in assigned_slots if (slot := _valid_slot(value)) is not None]
+        candidate = valid_stored
+        if valid_assigned and candidate <= max(valid_assigned):
+            # A counter that would hand out an already-assigned slot is
+            # inconsistent and must never be used as-is.
+            candidate = max(valid_assigned) + 1
+        assigned_for_check = valid_assigned
+    else:
+        # Recovery path: the counter is absent or malformed. This is the only
+        # place a counter may be re-derived, and only "when safe" - every
+        # assigned slot must itself be a valid, unique int, or the live data
+        # cannot be trusted enough to derive a counter from.
+        validated: list[int] = []
+        seen: set[int] = set()
+        for value in assigned_slots:
+            slot = _valid_slot(value)
+            if slot is None or slot in seen:
+                raise AccountSlotUnavailableError()
+            seen.add(slot)
+            validated.append(slot)
+
+        # Zero assigned slots fleet-wide is a genuine first allocation, not a
+        # reset, so seeding at MIN_ACCOUNT_SLOT is permitted here.
+        candidate = MIN_ACCOUNT_SLOT if not validated else max(validated) + 1
+        assigned_for_check = validated
+
+    if candidate > MAX_ACCOUNT_SLOT:
+        raise AccountSlotUnavailableError()
+    if candidate in assigned_for_check:
+        # Defensive: every path above is constructed to make this
+        # unreachable.
+        raise AccountSlotUnavailableError()
+    return candidate
 
 
 def new_client_id() -> str:

@@ -91,6 +91,13 @@ peers and clients only need to re-resolve the endpoint after the public IP chang
 If a multi-region apply fails partway through, the script stops; regions already
 applied stay deployed.
 
+The account-scoped ACL release is a host-level change and can only be deployed by
+rebuilding every region through `./scripts/terraform.sh` from one deploy tag;
+`cloudgateway-install-api` is not a supported path for it and refuses an ACL-aware
+ref on a host without a live ACL table. During a sequential multi-region rebuild
+the fleet is only partially enforced - the ACL is not active until the last region
+finishes.
+
 Useful forms:
 
 ```sh

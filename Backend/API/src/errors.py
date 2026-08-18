@@ -18,6 +18,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.POLICY_APPLY_FAILED: 500,
     ErrorCode.FIREBASE_WRITE_FAILED: 500,
     ErrorCode.ROLE_DEFAULT_MISSING: 500,
+    ErrorCode.ACCOUNT_SLOT_UNAVAILABLE: 500,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 
@@ -121,6 +122,14 @@ class FirebaseWriteFailedError(ApiError):
 class RoleDefaultMissingError(ApiError):
     code = ErrorCode.ROLE_DEFAULT_MISSING
     default_message = "Role default document is missing. Seed Roles/{roleId} in Firestore."
+
+
+class AccountSlotUnavailableError(ApiError):
+    code = ErrorCode.ACCOUNT_SLOT_UNAVAILABLE
+    default_message = (
+        "Account slot allocation is unavailable. The account-scoped ACL slot counter is "
+        "missing, corrupt, or exhausted and requires operator intervention."
+    )
 
 
 class InternalError(ApiError):

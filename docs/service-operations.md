@@ -150,6 +150,16 @@ server (SSH proxy jump support), but not other accounts' clients.
 * A client reaching its own region's server (DNS, API) - that traffic is `INPUT`, not `FORWARD`.
 * Mesh server-to-server links between regions.
 
+**Legacy account-slot migration (one-time, before enforcement):** every provisioned account needs
+`Users/{uid}.accountSlot` before any region enforces the ACL - an account with no slot is absent
+from every policy map and loses same-account connectivity the moment enforcement is on. Take a
+fresh Firestore backup with `scripts/backup_firestore.py`, run
+`releases/access-control-lists/backfill_account_slots.py` in its default dry-run mode, review the
+aggregate counts, run it again with `--apply`, then rerun the dry-run and confirm it reports a
+no-op. This must complete before any region is rebuilt with the ACL enforced. See
+[releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
+script's flags, credentials handling, and failure modes.
+
 **Reading the Server Health policy display:** per region, row count, data vintage, and map hashes
 (v4/v6). Maps are identical fleet-wide by design, which is what makes the hashes comparable across
 regions - a differing hash between regions is drift, even if both regions report recently. A

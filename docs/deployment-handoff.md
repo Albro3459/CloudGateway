@@ -70,6 +70,22 @@ subnets, and endpoint hostname unchanged; boot sync rebuilds peers from Firebase
 and WireGuard endpoint roaming handles a new public IP. Check `wg show` on the
 rebuilt host and validate the API before leaving the region enabled.
 
+## Account-scoped ACL rollout
+
+The account-scoped ACL is host-level: the `inet cloudgateway` nftables table is
+loaded by `PostUp`, which only runs when `wg0` transitions from down to up, not
+on an API restart. `cloudgateway-install-api` checks the incoming ref for
+`Backend/API/src/policy.py` and, if present, requires `nft list table inet
+cloudgateway` to show the `cg_forward` chain and the `cg_slot4`/`cg_slot6` maps
+before it copies the new API or restarts the service; otherwise it exits 1
+without touching the host. This release therefore ships only by rebuilding
+every region through `./scripts/terraform.sh` from one deploy tag, never by
+`cloudgateway-install-api` alone. The check has a documented, unsupported
+escape hatch (`CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1`) that leaves the
+account boundary unenforced and is for genuine emergencies only. During a
+sequential multi-region rebuild the fleet is only partially enforced; the ACL
+is not active until the last region finishes.
+
 For mesh changes, follow [service-operations.md](service-operations.md). After
 all Terraform regions are deployed and ready, run **Sync All Regions** from the
 admin dashboard.
