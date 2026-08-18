@@ -43,7 +43,15 @@ from .models import (
 from .notifications import create_ses_client, send_access_grant_email
 from .policy import PolicyManager, PolicyRow
 from .policy_sync import bare_tunnel_address
-from .repository import ClientDoc, FirebaseRepository, ensure_delete_allowed, ensure_local_region, require_region, utc_now
+from .repository import (
+    ClientDoc,
+    FirebaseRepository,
+    ensure_delete_allowed,
+    ensure_local_region,
+    require_region,
+    utc_now,
+    valid_account_slot,
+)
 from .sync import build_sync_audit_log, run_sync
 from .wireguard import WireGuardManager
 
@@ -877,11 +885,11 @@ def _write_inline_policy_row(
     ORDERING: the WireGuard lock may be held while taking the policy lock,
     never the reverse - see policy.py's PolicyManager docstring.
 
-    A missing slot or an apply failure both fall through silently (beyond the
-    log below): the next reconcile (a poke or an admin sync) fixes either, and
-    neither may fail the client create.
+    A missing or invalid slot or an apply failure both fall through silently
+    (beyond the log below): the next reconcile (a poke or an admin sync)
+    fixes either, and neither may fail the client create.
     """
-    slot = repository.get_account_slot(client.owner_uid)
+    slot = valid_account_slot(repository.get_account_slot(client.owner_uid))
     if slot is None:
         return
     address_v4 = bare_tunnel_address(client.assigned_tunnel_ipv4, 4)

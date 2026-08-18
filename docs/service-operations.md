@@ -160,11 +160,16 @@ no-op. This must complete before any region is rebuilt with the ACL enforced. Se
 [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
 script's flags, credentials handling, and failure modes.
 
-**Reading the Server Health policy display:** per region, row count, data vintage, and map hashes
-(v4/v6). Maps are identical fleet-wide by design, which is what makes the hashes comparable across
-regions - a differing hash between regions is drift, even if both regions report recently. A
-lagging vintage is staleness even if the hash still happens to match. Neither is a failure of the
-last sync pass; status writes are best effort and a status write failure never fails a pass.
+**Reading the Server Health policy display:** per region, row count and map hashes (v4/v6).
+`dataVintage` is written `null` on every pass starting with the Wave 2 ACL remediation (see
+[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)), so the card shows "No applied
+snapshot yet" and its staleness signal reads "unknown" fleet-wide - this is expected, not an
+outage, and holds until Wave 5 replaces the status model with comprehensive live-policy hashes plus
+a "Last applied" time. Maps are identical fleet-wide by design, which is what makes the hashes
+comparable across regions - read hash agreement across regions as the real signal in the meantime:
+a differing hash between regions is drift, even if both regions report recently. Neither a hash
+mismatch nor the missing vintage is a failure of the last sync pass; status writes are best effort
+and a status write failure never fails a pass.
 
 **Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard. A
 region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches

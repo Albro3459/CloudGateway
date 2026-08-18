@@ -3,13 +3,13 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 
 from .enums import Event
 from .logs import log_event
 from .policy import LivePolicyMap, PolicyManager, PolicyRow
-from .repository import FirebaseRepository, PolicyStatus
+from .repository import FirebaseRepository, PolicyStatus, valid_account_slot
 from .settings import Settings
+from .wireguard import MESH_AGGREGATE_V4, MESH_AGGREGATE_V6, is_valid_tunnel_ip
 
 logger = logging.getLogger("src.policy_sync")
 
@@ -18,38 +18,50 @@ logger = logging.getLogger("src.policy_sync")
 # a newer pull has already applied (see PolicyCoordinator._sequence_is_current).
 SequenceGuard = Callable[[int], bool]
 
+# Same aggregates bootstrap.sh installs as cg_tunnel4/6 (see wireguard.py).
+# Precomputed once so bare_tunnel_address/_infra_address don't re-parse a
+# constant CIDR on every row.
+_TUNNEL_AGGREGATE_V4 = ipaddress.ip_network(MESH_AGGREGATE_V4)
+_TUNNEL_AGGREGATE_V6 = ipaddress.ip_network(MESH_AGGREGATE_V6)
+
 
 @dataclass(frozen=True)
 class DesiredPolicy:
     rows: tuple[PolicyRow, ...] = ()
     infra_v4: tuple[str, ...] = ()
     infra_v6: tuple[str, ...] = ()
-    data_vintage: datetime | None = None
-    # Client rows excluded this pass (no account slot, malformed address, or a
-    # duplicate address) - a count only, never which client or its address/uid.
+    # Client rows excluded this pass (no/duplicate account slot, malformed or
+    # out-of-aggregate address, or a duplicate address) - a count only, never
+    # which client or its address/uid/slot.
     skipped_rows: int = 0
 
 
 def bare_tunnel_address(value: object, version: int) -> str | None:
     """Strip a stored tunnel address's CIDR prefix ("10.0.0.2/32") down to the
-    bare host address the nftables map wants. Never raises: a malformed or
-    wrong-family value is reported as None so a corrupt row can be skipped
-    instead of aborting the pass."""
-    if not isinstance(value, str) or not value:
+    bare host address the nftables map wants. Never raises: a malformed,
+    wrong-family, wrong-prefix, or out-of-aggregate value is reported as None
+    so a corrupt row can be skipped instead of aborting the pass.
+
+    Reuses wireguard.is_valid_tunnel_ip for the family/host-prefix rule so the
+    policy map and WireGuard peer validation cannot drift apart.
+    """
+    if not isinstance(value, str):
         return None
-    try:
-        interface = ipaddress.ip_interface(value)
-    except ValueError:
+    if not is_valid_tunnel_ip(value, version):
         return None
-    if interface.ip.version != version:
+    interface = ipaddress.ip_interface(value)
+    aggregate = _TUNNEL_AGGREGATE_V4 if version == 4 else _TUNNEL_AGGREGATE_V6
+    if interface.ip not in aggregate:
         return None
     return str(interface.ip)
 
 
 def _infra_address(cidr: object, version: int) -> str | None:
     """The region's interface address: network address + 1 of its tunnel CIDR
-    (see TODO/account-scoped-acl.md, "Filter design" - cg_infra). Malformed or
-    wrong-family CIDRs are skipped, matching desired_mesh_peers's tolerance."""
+    (see TODO/account-scoped-acl.md, "Filter design" - cg_infra). Malformed,
+    wrong-family, or out-of-aggregate CIDRs are skipped, matching
+    desired_mesh_peers's tolerance - a garbage region CIDR must never put a
+    public address in cg_infra."""
     if not isinstance(cidr, str) or not cidr:
         return None
     try:
@@ -59,28 +71,67 @@ def _infra_address(cidr: object, version: int) -> str | None:
     if network.version != version:
         return None
     try:
-        return str(network.network_address + 1)
+        address = network.network_address + 1
     except ValueError:
         return None
+    aggregate = _TUNNEL_AGGREGATE_V4 if version == 4 else _TUNNEL_AGGREGATE_V6
+    if address not in aggregate:
+        return None
+    return str(address)
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """A row that passed owner/slot/address validation but has not yet
+    cleared the address-collision pass below."""
+
+    owner_uid: str
+    address_v4: str
+    address_v6: str
+    slot: int
 
 
 def desired_policy(repository: FirebaseRepository) -> DesiredPolicy:
     """Build the fleet-wide account-scoped ACL map from Firestore. Malformed
     data must never abort a pass, exactly like desired_mesh_peers: a bad row is
-    excluded and counted, not raised."""
-    account_slots = repository.list_account_slots()
+    excluded and counted, not raised.
+
+    Two passes over the fleet snapshot: pass 1 validates each row in
+    isolation (owner, slot, addresses) into candidates; pass 2 drops every
+    candidate whose v4 or v6 address collides with another candidate's, so
+    collection order never picks a winner between them. Account-slot
+    collisions are resolved up front, excluding every uid that shares a slot
+    with another uid (not clients that legitimately share their own uid's
+    slot).
+    """
     admin_uids = repository.list_admin_uids()
 
-    seen_v4: set[str] = set()
-    seen_v6: set[str] = set()
-    rows: list[PolicyRow] = []
-    skipped_rows = 0
-    data_vintage: datetime | None = None
+    # A slot claimed by more than one uid is a collision that excludes every
+    # participating uid, never just the loser.
+    valid_slots: dict[str, int] = {}
+    for uid, raw_slot in repository.list_account_slots().items():
+        slot = valid_account_slot(raw_slot)
+        if slot is not None:
+            valid_slots[uid] = slot
+    slot_owners: dict[int, set[str]] = {}
+    for uid, slot in valid_slots.items():
+        slot_owners.setdefault(slot, set()).add(uid)
+    collided_uids = {uid for uids in slot_owners.values() if len(uids) > 1 for uid in uids}
 
+    skipped_rows = 0
+    candidates: list[_Candidate] = []
     for entry in repository.list_policy_clients():
-        slot = account_slots.get(entry.owner_uid)
+        owner_uid = entry.owner_uid
+        if not isinstance(owner_uid, str) or not owner_uid:
+            # Unhashable/blank owner: skipped, never used as a dict key/set member.
+            skipped_rows += 1
+            continue
+        if owner_uid in collided_uids:
+            skipped_rows += 1
+            continue
+        slot = valid_slots.get(owner_uid)
         if slot is None:
-            # Fail closed: an owner with no slot is skipped, never defaulted.
+            # Fail closed: an owner with no valid slot is skipped, never defaulted.
             skipped_rows += 1
             continue
         address_v4 = bare_tunnel_address(entry.assigned_tunnel_ipv4, 4)
@@ -88,24 +139,32 @@ def desired_policy(repository: FirebaseRepository) -> DesiredPolicy:
         if address_v4 is None or address_v6 is None:
             skipped_rows += 1
             continue
-        if address_v4 in seen_v4 or address_v6 in seen_v6:
+        candidates.append(_Candidate(owner_uid=owner_uid, address_v4=address_v4, address_v6=address_v6, slot=slot))
+
+    # Count occurrences across every candidate before excluding any of them,
+    # so both collection orders of a duplicate pair exclude both rows.
+    v4_counts: dict[str, int] = {}
+    v6_counts: dict[str, int] = {}
+    for candidate in candidates:
+        v4_counts[candidate.address_v4] = v4_counts.get(candidate.address_v4, 0) + 1
+        v6_counts[candidate.address_v6] = v6_counts.get(candidate.address_v6, 0) + 1
+
+    rows: list[PolicyRow] = []
+    for candidate in candidates:
+        if v4_counts[candidate.address_v4] > 1 or v6_counts[candidate.address_v6] > 1:
             # Corruption, not a legitimate collision (addresses are allocated
             # per-region, monotonically, and never reused while live): skip
             # rather than let one client's slot claim another's address.
             skipped_rows += 1
             continue
-        seen_v4.add(address_v4)
-        seen_v6.add(address_v6)
         rows.append(
             PolicyRow(
-                address_v4=address_v4,
-                address_v6=address_v6,
-                slot=slot,
-                admin=entry.owner_uid in admin_uids,
+                address_v4=candidate.address_v4,
+                address_v6=candidate.address_v6,
+                slot=candidate.slot,
+                admin=candidate.owner_uid in admin_uids,
             )
         )
-        if entry.updated_at is not None and (data_vintage is None or entry.updated_at > data_vintage):
-            data_vintage = entry.updated_at
 
     infra_v4: list[str] = []
     infra_v6: list[str] = []
@@ -121,9 +180,10 @@ def desired_policy(repository: FirebaseRepository) -> DesiredPolicy:
 
     return DesiredPolicy(
         rows=tuple(rows),
-        infra_v4=tuple(infra_v4),
-        infra_v6=tuple(infra_v6),
-        data_vintage=data_vintage,
+        # De-duplicated: a repeated element makes apply_map's atomic nft
+        # batch reject the whole set (see _infra_address).
+        infra_v4=tuple(dict.fromkeys(infra_v4)),
+        infra_v6=tuple(dict.fromkeys(infra_v6)),
         skipped_rows=skipped_rows,
     )
 
@@ -194,7 +254,6 @@ def reconcile_policy(
                     map_hash_v6=live.hash_v6,
                     row_count=live.row_count,
                     applied_sequence=sequence,
-                    data_vintage=desired.data_vintage,
                 )
             )
         except Exception as exc:

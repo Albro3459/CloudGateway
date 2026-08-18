@@ -45,6 +45,7 @@ from .repository import (
     tunnel_addresses_for_index,
     used_tunnel_indices,
     utc_now,
+    valid_account_slot,
 )
 from .settings import Settings
 
@@ -713,7 +714,6 @@ class FirestoreRepository(FirebaseRepository):
                     region_id=client.region_id,
                     assigned_tunnel_ipv4=client.assigned_tunnel_ipv4,
                     assigned_tunnel_ipv6=client.assigned_tunnel_ipv6,
-                    updated_at=client.updated_at,
                 )
             )
         return entries
@@ -723,8 +723,8 @@ class FirestoreRepository(FirebaseRepository):
         slots: dict[str, int] = {}
         for raw_snapshot in snapshots:
             snapshot = _sync_snapshot(raw_snapshot)
-            slot = _optional_safe_int((snapshot.to_dict() or {}).get("accountSlot"))
-            if slot is not None and slot > 0:
+            slot = valid_account_slot((snapshot.to_dict() or {}).get("accountSlot"))
+            if slot is not None:
                 slots[snapshot.id] = slot
         return slots
 
@@ -741,7 +741,7 @@ class FirestoreRepository(FirebaseRepository):
         doc = _sync_snapshot(self._db().collection("Users").document(uid).get())
         if not doc.exists:
             return None
-        return _optional_safe_int((doc.to_dict() or {}).get("accountSlot"))
+        return valid_account_slot((doc.to_dict() or {}).get("accountSlot"))
 
     def write_policy_status(self, status: PolicyStatus) -> None:
         # Full replacement (not merge), mirroring write_mesh_status: a status
@@ -754,7 +754,11 @@ class FirestoreRepository(FirebaseRepository):
                     "mapHashV6": status.map_hash_v6,
                     "rowCount": status.row_count,
                     "appliedSequence": status.applied_sequence,
-                    "dataVintage": status.data_vintage,
+                    # Always null: the policy path dropped updatedAt in Wave 2
+                    # (see TODO/account-scoped-acl.md). Kept here, not omitted,
+                    # so the documented Firestore shape is unchanged until
+                    # Wave 5 removes the field from schema/UI.
+                    "dataVintage": None,
                     "updatedAt": _server_timestamp(),
                 }
             )

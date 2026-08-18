@@ -44,6 +44,7 @@ from src.repository import (
     tunnel_addresses_for_index,
     used_tunnel_indices,
     utc_now,
+    valid_account_slot,
 )
 from src.wireguard import (
     MESH_AGGREGATE_V4,
@@ -607,20 +608,26 @@ class FakeRepository(FirebaseRepository):
                 region_id=client.region_id,
                 assigned_tunnel_ipv4=client.assigned_tunnel_ipv4,
                 assigned_tunnel_ipv6=client.assigned_tunnel_ipv6,
-                updated_at=client.updated_at,
             )
             for client in self.clients.values()
             if client.status == ClientStatus.ACTIVE and client.client_public_key
         ]
 
     def list_account_slots(self) -> dict[str, int]:
-        return {uid: slot for uid, slot in self.account_slots.items() if slot > 0}
+        # Mirrors firebase.py: validated once, here, the same way the real
+        # Firestore read is validated (see repository.valid_account_slot).
+        slots: dict[str, int] = {}
+        for uid, raw in self.account_slots.items():
+            slot = valid_account_slot(raw)
+            if slot is not None:
+                slots[uid] = slot
+        return slots
 
     def list_admin_uids(self) -> set[str]:
         return {uid for uid, role in self.roles.items() if role == Role.ADMIN}
 
     def get_account_slot(self, uid: str) -> int | None:
-        return self.account_slots.get(uid)
+        return valid_account_slot(self.account_slots.get(uid))
 
     def write_policy_status(self, status: PolicyStatus) -> None:
         if self.write_policy_status_error is not None:

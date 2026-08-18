@@ -43,9 +43,11 @@ It is allocated once, in a transaction, from `Counters/accountSlots`, the sole a
 
 Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
 only, written by each region's host via the Admin SDK after a policy reconcile pass, describing
-what the live account-scoped ACL map on that host actually contains (row count, data vintage, map
-hashes), not what the region intended to apply. They deliberately never contain a uid, email,
-address, or key.
+what the live account-scoped ACL map on that host actually contains (row count, map hashes), not
+what the region intended to apply. The document still carries a `dataVintage` field for schema
+compatibility, but every pass writes it `null` starting with the ACL Wave 2 remediation; Wave 5
+drops the field once the status model moves to comprehensive live-policy hashes plus a last-applied
+time. Policy documents deliberately never contain a uid, email, address, or key.
 
 Role documents are defaults keyed by role name:
 

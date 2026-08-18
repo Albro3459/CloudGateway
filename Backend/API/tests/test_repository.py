@@ -27,6 +27,7 @@ from src.repository import (
     region_tunnel_index_bounds,
     tunnel_addresses_for_index,
     used_tunnel_indices,
+    valid_account_slot,
 )
 
 from .fakes import FakeRepository
@@ -229,6 +230,19 @@ def test_next_account_slot_constants_agree_with_policy_module():
 
     assert MIN_ACCOUNT_SLOT == policy.MIN_SLOT
     assert MAX_ACCOUNT_SLOT == policy.MAX_SLOT
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, True, False, "5", "not-a-slot", 2**32, MAX_ACCOUNT_SLOT + 1, None, 3.5, [], {}],
+)
+def test_valid_account_slot_rejects_invalid_types_and_ranges(value):
+    assert valid_account_slot(value) is None
+
+
+@pytest.mark.parametrize("value", [MIN_ACCOUNT_SLOT, MAX_ACCOUNT_SLOT, 42])
+def test_valid_account_slot_accepts_in_range_ints(value):
+    assert valid_account_slot(value) == value
 
 
 def test_region_decode_parses_tunnel_indices():
@@ -602,12 +616,28 @@ def test_list_account_slots_returns_positive_slots_only(repository: FakeReposito
     assert repository.list_account_slots() == {"user-1": 3}
 
 
+def test_list_account_slots_excludes_invalid_types_and_out_of_range_values(repository: FakeRepository):
+    repository.account_slots["user-1"] = 3
+    repository.account_slots["user-2"] = -1
+    repository.account_slots["user-3"] = MAX_ACCOUNT_SLOT + 1
+    repository.account_slots["user-4"] = True  # type: ignore[assignment]
+    repository.account_slots["user-5"] = "5"  # type: ignore[assignment]
+
+    assert repository.list_account_slots() == {"user-1": 3}
+
+
 def test_list_admin_uids_returns_admin_role_uids(repository: FakeRepository):
     assert repository.list_admin_uids() == {"admin-1"}
 
 
 def test_get_account_slot_returns_none_when_absent(repository: FakeRepository):
     assert repository.get_account_slot("nobody") is None
+
+
+def test_get_account_slot_returns_none_for_invalid_stored_value(repository: FakeRepository):
+    repository.account_slots["user-1"] = MAX_ACCOUNT_SLOT + 1
+
+    assert repository.get_account_slot("user-1") is None
 
 
 def test_write_policy_status_records_last_write_per_region(repository: FakeRepository):

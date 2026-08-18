@@ -19,6 +19,16 @@ review findings before any region enforces the nftables ACL
   separate change to `Backend/API/src/repository.py` /
   `Backend/API/src/firebase.py`) takes effect.
 
+It also carries the **Wave 2 fleet-wide policy-row preflight**
+(`TODO/account-scoped-acl.md`, "Wave 2 - policy input normalization and
+collision handling"): before any region enforces the nftables ACL, this
+script re-validates every active client's owner, account slot, and tunnel
+addresses against the exact same strict rules
+`Backend/API/src/policy_sync.py desired_policy()` applies at runtime, so
+known-bad policy data blocks the release instead of silently dropping rows
+(or worse, misapplying them) on the first host that enforces the ACL. See
+"Fleet-wide policy-row preflight" below.
+
 ## What this migration is - and isn't
 
 New-account provisioning **already assigns slots**. In
@@ -77,9 +87,10 @@ credentials path, its contents, or any other path-derived value.
      --credentials /path/to/service-account.json
    ```
 
-   Review the aggregate counts (below) and confirm there are zero validation
-   failures. If any validation failure is nonzero, stop - see "Validation
-   failures" below.
+   Review the aggregate counts (below) and confirm there are zero account-slot
+   validation failures and zero policy-row preflight failures. If any
+   category is nonzero, stop - see "Validation failures" and "Fleet-wide
+   policy-row preflight" below.
 3. **Apply:**
 
    ```sh
@@ -96,10 +107,13 @@ credentials path, its contents, or any other path-derived value.
 The script prints aggregate counts only - mode, provisioned account count,
 already-assigned count, newly-assigned count, unassigned-after count,
 counter before/after (slot numbers, which are opaque integers with no
-identifying meaning), and a count for each validation-failure category. It
-never prints a uid, email, client address, key, token, or configuration
-value, including in error paths: any Firestore exception is surfaced by its
-type name only, since exception messages/args can embed document paths.
+identifying meaning), a count for each account-slot validation-failure
+category, and then the policy-row preflight block: whether the preflight is
+`ok` or `blocked`, how many rows were checked and how many were valid, and a
+count for each policy-row failure category (below). It never prints a uid,
+email, client address, key, token, or configuration value, including in
+error paths: any Firestore exception is surfaced by its type name only,
+since exception messages/args can embed document paths.
 
 ## Validation failures and remediation
 
@@ -130,6 +144,60 @@ refuses to write anything at all, in both dry-run and `--apply`.
 
 After remediating, rerun the dry-run from scratch - the validation categories
 above are recomputed fresh each run.
+
+## Fleet-wide policy-row preflight
+
+Independently of the account-slot backfill above, the script reads every
+active, keyed client (`Instances` documents fleet-wide, outside any
+transaction - the fleet is single-digit clients, so a plain
+`collection_group` scan is cheap) and validates each one with the exact same
+strict rules `Backend/API/src/policy_sync.py desired_policy()` applies at
+runtime: a non-empty owner, a valid account slot (counting both slots already
+assigned and slots this run's plan would assign, so a legacy owner this same
+run is about to fix is never misreported as a failure), and `/32`/`/128`
+tunnel addresses inside the mesh aggregates, with no address or account slot
+claimed by more than one participant. A slot collision is evaluated over
+every account, so an account with no active client still excludes the account
+it collides with - the same rule the runtime pull applies. This is the release
+gate for known-bad policy data: **any nonzero policy-row failure category refuses to write
+anything, in both dry-run and `--apply`**, exactly like the account-slot
+validation failures above - a bad row must never reach a host's nftables
+ACL map.
+
+* **Malformed document** - an `Instances` document's data isn't a mapping, so
+  the script cannot tell whether it's part of the active policy fleet.
+  Inspect the document by hand; this usually means a partial/corrupt write
+  rather than a normal client state. A document merely missing `status` or
+  `clientPublicKey` is not a failure: the runtime read treats an absent field
+  as "not active"/"not keyed", so such a document is simply outside the
+  policy fleet.
+* **Invalid owner** - the client's `ownerUid` is missing, not a string, or
+  empty. Fix the document's `ownerUid` or remove the client if it's stale.
+* **Invalid slot** - the client's owner has no valid account slot, even after
+  accounting for slots this run's backfill would assign. Rerun the
+  account-slot backfill first (see "Run order" above); if the owner still has
+  no slot after that, the account is not provisioned (no `UserRoles`
+  document) and needs investigation.
+* **Invalid address** - `assignedTunnelIpv4` or `assignedTunnelIpv6` isn't a
+  string, doesn't parse, is the wrong address family, doesn't carry an exact
+  `/32` (v4) or `/128` (v6) host prefix, or falls outside the tunnel
+  aggregates (`10.0.0.0/16`, `fd42:42:42::/48`). Fix the stored address by
+  hand or re-provision the client.
+* **Duplicate address** - the same IPv4 or IPv6 tunnel address is assigned to
+  more than one active client. Addresses are allocated per-region,
+  monotonically, and never reused while live, so this indicates corruption,
+  not a legitimate collision. Every client sharing the address is excluded
+  until it's resolved - reassign or remove the duplicates.
+* **Duplicate slot** - two different owners hold the same account slot. This
+  is the same finding-2 failure mode the account-slot validation above
+  guards against, seen from the policy-row side; multiple clients belonging
+  to the *same* owner sharing that owner's slot is expected and is not a
+  failure. Resolve it the same way: pick one account to keep the slot and
+  reassign or clear it on the other.
+
+After remediating, rerun the dry-run from scratch - like the account-slot
+validation categories, these are recomputed fresh each run and never mutate
+`Instances` documents themselves (the preflight is read-only).
 
 ## The 400-write guard
 

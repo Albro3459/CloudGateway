@@ -267,6 +267,17 @@ release before hosts enforce it. Cover wrong types, host-prefix mismatches,
 out-of-aggregate addresses, duplicate participants in different collection
 orders, invalid slots, and mixed valid/invalid snapshots.
 
+**Landed.** `backfill_account_slots.py`'s fleet-wide policy-row preflight (mirroring the same
+owner/slot/address/collision rules standalone) is the release gate for known-bad data: it blocks both dry-run and
+`--apply` with exit code 1 when any row fails, before any region enforces the ACL. `updatedAt` no
+longer feeds policy status - `DesiredPolicy.data_vintage` and `PolicyStatus.data_vintage` are gone
+from the API, though `write_policy_status` still writes `Policy/{regionId}.dataVintage` as `null`
+so the documented Firestore shape is unchanged until Wave 5. Between Wave 2 and Wave 5 this is an
+expected interim state, not a regression: Server Health renders "No applied snapshot yet" and its
+staleness signal reads "unknown" for every region (see
+[docs/service-operations.md](../docs/service-operations.md)); read hash agreement across regions as
+the real signal instead.
+
 ### Wave 3 - cross-process ordering and create-path isolation
 
 Make the policy flock cover the complete ordered operation:
@@ -417,7 +428,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 * [x] `reconcile_policy()`: fleet-wide pull, atomic apply, read-back, status write.
 * [x] Dedicated policy flock, separate from the WireGuard flock.
 * [x] Depth-1 pending-bit coalescing; repeated requests cannot create more than one queued pass at a time.
-* [ ] Wave 2 - strict policy input normalization and fail-closed collision handling.
+* [x] Wave 2 - strict policy input normalization and fail-closed collision handling.
 * [ ] Wave 3 - cross-process pull/apply serialization, sequence cleanup, and non-blocking post-WireGuard inline row.
 * [x] Boot and `POST /api/admin/sync` call the policy reconcile.
 * [x] `POST /api/sync/refresh`: provisioned user, no body, no detail, enqueue-and-return.

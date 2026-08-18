@@ -260,7 +260,12 @@ sites, and Server Health policy card.
 * [ ] Replace accidental per-client deletion pokes with the authenticated,
   account-scoped cleanup and one-refresh-wave ordering in the implementation
   plan.
-* [ ] Make malformed/duplicate rows fail closed without aborting the fleet pass.
+* [x] Make malformed/duplicate rows fail closed without aborting the fleet pass.
+  Fixed in Wave 2: `Backend/API/src/policy_sync.py` (`bare_tunnel_address`,
+  `desired_policy`) validates owner/slot/address before building a row and
+  excludes every participant in a duplicate address or slot, and
+  `releases/access-control-lists/backfill_account_slots.py` runs the same
+  rules as a fleet-wide preflight gate ahead of enforcement.
 * [ ] Remove policy-lock contention from the WireGuard create critical section.
 * [ ] Replace `dataVintage` with comprehensive live-policy hash agreement and
   show `Policy.updatedAt` as last applied.

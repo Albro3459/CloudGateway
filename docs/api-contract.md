@@ -319,6 +319,13 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   full pull-apply-read back-status pass `POST /api/sync/refresh` enqueues - see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md). So Sync All is also the
   repair path for a dropped or lost policy poke, not just for peer/mesh drift.
+- The Firestore pull that feeds `reconcile_policy()` is fail-closed per row, not per pass: a
+  malformed entry (wrong type, a host prefix other than `/32`/`/128`, an address outside the tunnel
+  aggregate, or an invalid/out-of-range account slot) is skipped and counted in an aggregate
+  skipped-row total, never logged with its uid, address, or slot, and never aborts the pass. Every
+  participant in a duplicate address or duplicate account-slot collision is excluded, not just the
+  later row in collection order - a collision removes connectivity for the colliding rows rather
+  than granting it to whichever happened to win.
 
 ### `POST /sync/refresh`
 

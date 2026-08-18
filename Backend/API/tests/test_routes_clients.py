@@ -475,6 +475,24 @@ def test_create_client_missing_account_slot_does_not_fail_create(client, reposit
     assert policy.add_row_calls == 0
 
 
+def test_create_client_invalid_account_slot_does_not_fail_create(client, repository, wireguard, policy):
+    seed_region(repository)
+    # Defense in depth (see repository.valid_account_slot): even if a
+    # repository implementation ever returned an out-of-range slot, the
+    # route's own guard must still skip the inline row rather than write a
+    # bad mark to the wire.
+    repository.get_account_slot = lambda uid: 0  # type: ignore[method-assign]
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.add_row_calls == 0
+
+
 def test_create_client_inline_row_failure_does_not_fail_create(client, repository, wireguard, policy, caplog):
     seed_region(repository)
     policy.fail_add_row_count = 1

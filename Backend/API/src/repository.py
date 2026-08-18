@@ -130,13 +130,18 @@ class MeshPeerState:
 
 @dataclass(frozen=True)
 class PolicyClientEntry:
-    """One fleet-wide row input to the account-scoped ACL map (see policy.py)."""
+    """One fleet-wide row input to the account-scoped ACL map (see policy.py).
+
+    No updated_at: a malformed timestamp must never be able to abort a
+    policy pass, so the field never entered the policy path (see
+    TODO/account-scoped-acl.md Wave 2). ClientDoc.updated_at still exists for
+    other features.
+    """
 
     owner_uid: str
     region_id: str
     assigned_tunnel_ipv4: str
     assigned_tunnel_ipv6: str
-    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,6 @@ class PolicyStatus:
     map_hash_v6: str
     row_count: int
     applied_sequence: int
-    data_vintage: datetime | None = None
 
 
 def clean_client_name(value: str) -> str:
@@ -298,8 +302,14 @@ def tunnel_addresses_for_index(*, index: int, ipv4_cidr: str, ipv6_cidr: str) ->
     )
 
 
-def _valid_slot(value: object) -> int | None:
-    """value as a slot int in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT, else None."""
+def valid_account_slot(value: object) -> int | None:
+    """value as a slot int in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT, else None.
+
+    The one source of truth for slot range validation across the API package
+    (next_account_slot, policy_sync.desired_policy, and
+    routes._write_inline_policy_row all call this instead of duplicating the
+    range check).
+    """
     if isinstance(value, int) and not isinstance(value, bool) and MIN_ACCOUNT_SLOT <= value <= MAX_ACCOUNT_SLOT:
         return value
     return None
@@ -326,7 +336,7 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
     if isinstance(stored_next_slot, int) and not isinstance(stored_next_slot, bool) and stored_next_slot > MAX_ACCOUNT_SLOT:
         raise AccountSlotUnavailableError()
 
-    valid_stored = _valid_slot(stored_next_slot)
+    valid_stored = valid_account_slot(stored_next_slot)
     if valid_stored is not None:
         # Valid-counter path. A malformed or duplicated slot on some *other*
         # user document does not block allocation: the candidate derived here
@@ -334,7 +344,7 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
         # non-conforming rows from the policy map, so no on-wire collision is
         # possible. Contrast with the recovery path below, which derives the
         # counter from this data and therefore must be able to trust it.
-        valid_assigned = [slot for value in assigned_slots if (slot := _valid_slot(value)) is not None]
+        valid_assigned = [slot for value in assigned_slots if (slot := valid_account_slot(value)) is not None]
         candidate = valid_stored
         if valid_assigned and candidate <= max(valid_assigned):
             # A counter that would hand out an already-assigned slot is
@@ -349,7 +359,7 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
         validated: list[int] = []
         seen: set[int] = set()
         for value in assigned_slots:
-            slot = _valid_slot(value)
+            slot = valid_account_slot(value)
             if slot is None or slot in seen:
                 raise AccountSlotUnavailableError()
             seen.add(slot)

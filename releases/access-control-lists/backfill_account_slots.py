@@ -15,16 +15,30 @@ accountSlots counter document needs to exist and sit strictly above every
 already-assigned slot before runtime allocation can safely fail closed.
 
 This script is standalone by design: it does NOT import from Backend/API. It
-duplicates two constants that must stay in sync with the source of truth:
+duplicates constants that must stay in sync with the source of truth:
 
   * MIN_ACCOUNT_SLOT mirrors Backend/API/src/repository.py MIN_ACCOUNT_SLOT.
   * MAX_ACCOUNT_SLOT mirrors Backend/API/src/policy.py MAX_SLOT
     (2**32 - 1, the width of an nftables packet mark).
+  * MESH_AGGREGATE_V4/MESH_AGGREGATE_V6 mirror
+    Backend/API/src/wireguard.py MESH_AGGREGATE_V4/MESH_AGGREGATE_V6.
+  * _CLIENT_STATUS_ACTIVE mirrors Backend/API/src/enums.py
+    ClientStatus.ACTIVE.
 
 Dry-run is the default; --apply is required to write anything. Output is
 aggregate counts only - this script must never print a uid, email, client
 address, key, token, or configuration, even in error paths, since a Firestore
 exception's message/args can embed a document path.
+
+Wave 2 (TODO/account-scoped-acl.md, "Wave 2 - policy input normalization and
+collision handling") added a second, independent preflight: a fleet-wide
+policy-row check that applies the exact same strict rules Wave 2 applies at
+runtime in Backend/API/src/policy_sync.py desired_policy() (owner, slot,
+address, and collision validation) to every active, keyed Instances document,
+duplicated standalone for the same reason as the constants above. See
+compute_plan (account-slot backfill, Wave 1) and validate_policy_rows
+(policy-row preflight, Wave 2) below; both must pass before this script writes
+anything.
 
 See releases/access-control-lists/README.md for the full operator runbook.
 """
@@ -32,6 +46,7 @@ See releases/access-control-lists/README.md for the full operator runbook.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import sys
 from collections.abc import Iterable, Mapping
@@ -50,6 +65,19 @@ MAX_ACCOUNT_SLOT = 2**32 - 1
 # under that (counting the counter write) and refuse to run a migration that
 # would get close, per the README's maintenance-window guidance.
 MAX_TRANSACTION_WRITES = 400
+
+# Mirrors Backend/API/src/wireguard.py MESH_AGGREGATE_V4. Do not import it -
+# this script must stay standalone and runnable without the API package.
+MESH_AGGREGATE_V4 = "10.0.0.0/16"
+
+# Mirrors Backend/API/src/wireguard.py MESH_AGGREGATE_V6.
+MESH_AGGREGATE_V6 = "fd42:42:42::/48"
+
+_TUNNEL_AGGREGATE_V4 = ipaddress.ip_network(MESH_AGGREGATE_V4)
+_TUNNEL_AGGREGATE_V6 = ipaddress.ip_network(MESH_AGGREGATE_V6)
+
+# Mirrors Backend/API/src/enums.py ClientStatus.ACTIVE.
+_CLIENT_STATUS_ACTIVE = "active"
 
 
 class MigrationAbortedError(RuntimeError):
@@ -204,7 +232,7 @@ def compute_plan(
     )
 
 
-def format_report(plan: Plan, mode: str) -> str:
+def format_report(plan: Plan, row_result: "RowPreflightResult", mode: str) -> str:
     """Aggregate-only report text. Never includes a uid, email, address, key,
     token, or configuration - only fixed labels and counts/slot numbers."""
     counter_before_text = plan.counter_before if plan.counter_before is not None else plan.counter_state
@@ -221,6 +249,15 @@ def format_report(plan: Plan, mode: str) -> str:
         f"validation failures - duplicate slot: {plan.failures.duplicate_slot}",
         f"validation failures - orphaned slot: {plan.failures.orphaned_slot}",
         f"validation failures - overflow: {plan.failures.overflow}",
+        f"policy row preflight: {'ok' if row_result.ok else 'blocked'}",
+        f"policy rows checked: {row_result.rows_checked}",
+        f"policy rows valid: {row_result.rows_valid}",
+        f"policy row failures - malformed document: {row_result.failures.malformed_document}",
+        f"policy row failures - invalid owner: {row_result.failures.invalid_owner}",
+        f"policy row failures - invalid slot: {row_result.failures.invalid_slot}",
+        f"policy row failures - invalid address: {row_result.failures.invalid_address}",
+        f"policy row failures - duplicate address: {row_result.failures.duplicate_address}",
+        f"policy row failures - duplicate slot: {row_result.failures.duplicate_slot}",
     ]
     return "\n".join(lines)
 
@@ -259,6 +296,232 @@ def _read_state(db: Any, transaction: Any | None = None) -> tuple[set[str], dict
         raw_next_slot = counter_data.get("nextSlot")
 
     return provisioned_uids, user_slots, raw_next_slot
+
+
+# --- Wave 2: fleet-wide policy-row preflight ---
+#
+# TODO/account-scoped-acl.md, "Wave 2 - policy input normalization and
+# collision handling" requires this migration's live preflight to be "equally
+# strict" as the runtime rules Backend/API/src/policy_sync.py desired_policy()
+# applies when building the nftables ACL map. Everything below duplicates that
+# algorithm (owner/slot/address validation, then address and slot collision
+# passes) standalone, since this script must not import from Backend/API.
+# Known-bad policy data must block the release before any host enforces it.
+
+
+@dataclass(frozen=True)
+class RawPolicyRow:
+    """One active, keyed Instances document's raw policy-relevant fields, read
+    exactly as stored in Firestore (any type, including malformed ones) -
+    mirrors the fields policy_sync.PolicyClientEntry carries into
+    desired_policy(): ownerUid, assignedTunnelIpv4, assignedTunnelIpv6."""
+
+    owner_uid: Any
+    address_v4: Any
+    address_v6: Any
+
+
+@dataclass(frozen=True)
+class RowPreflightFailures:
+    malformed_document: int = 0
+    invalid_owner: int = 0
+    invalid_slot: int = 0
+    invalid_address: int = 0
+    duplicate_address: int = 0
+    duplicate_slot: int = 0
+
+    @property
+    def blocking(self) -> bool:
+        return bool(
+            self.malformed_document
+            or self.invalid_owner
+            or self.invalid_slot
+            or self.invalid_address
+            or self.duplicate_address
+            or self.duplicate_slot
+        )
+
+
+@dataclass(frozen=True)
+class RowPreflightResult:
+    ok: bool
+    failures: RowPreflightFailures
+    rows_checked: int
+    rows_valid: int
+
+
+def _preflight_bare_tunnel_address(value: Any, version: int) -> str | None:
+    """Mirrors Backend/API/src/policy_sync.py bare_tunnel_address: a
+    non-empty str that parses as ipaddress.ip_interface, whose family matches
+    version, whose prefix is exactly /32 (v4) or /128 (v6) - the same rule
+    Backend/API/src/wireguard.py is_valid_tunnel_ip applies - and whose host
+    address falls inside the matching tunnel aggregate. Never raises: a
+    malformed, wrong-family, wrong-prefix, or out-of-aggregate value is
+    reported as None so a corrupt row can be counted, not crash the preflight.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        interface = ipaddress.ip_interface(value)
+    except ValueError:
+        return None
+    if interface.version != version:
+        return None
+    prefix_length = 32 if version == 4 else 128
+    if interface.network.prefixlen != prefix_length:
+        return None
+    aggregate = _TUNNEL_AGGREGATE_V4 if version == 4 else _TUNNEL_AGGREGATE_V6
+    if interface.ip not in aggregate:
+        return None
+    return str(interface.ip)
+
+
+def _preflight_valid_account_slot(value: Any) -> int | None:
+    """Mirrors Backend/API/src/repository.py valid_account_slot: a real
+    int (bool excluded) in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT, else None."""
+    return value if _is_valid_slot(value) else None
+
+
+def build_effective_slot_map(user_slots: Mapping[str, Any], assignments: Mapping[str, int]) -> dict[str, int]:
+    """uid -> slot for the row preflight's owner-has-a-slot check: every
+    already-valid Users.accountSlot value, unioned with the slots this
+    migration's own plan would assign to otherwise-missing owners. Without the
+    union, a legitimately unassigned legacy owner that compute_plan is about
+    to fix would be misreported as a row-preflight failure."""
+    effective: dict[str, int] = {}
+    for uid, raw in user_slots.items():
+        slot = _preflight_valid_account_slot(raw)
+        if slot is not None:
+            effective[uid] = slot
+    effective.update(assignments)
+    return effective
+
+
+def validate_policy_rows(
+    rows: Iterable[RawPolicyRow],
+    effective_slots: Mapping[str, int],
+    *,
+    malformed_document_count: int = 0,
+) -> RowPreflightResult:
+    """Pure planning function - no I/O. Applies the same strict rules Wave 2
+    applies at runtime in Backend/API/src/policy_sync.py desired_policy():
+
+      * owner: a non-empty str; an unhashable/blank owner is a failure, never
+        used as a dict key or set member.
+      * no account slot claimed by more than one owner in effective_slots;
+        every row belonging to a participating owner is excluded, exactly as
+        desired_policy() excludes them. Multiple rows from the same owner
+        legitimately share that owner's slot and are not a collision.
+      * slot: the owner must have a valid slot in effective_slots.
+      * addresses: exact /32 (v4) and /128 (v6) tunnel addresses inside the
+        mesh aggregates.
+      * no v4 or no v6 address shared by more than one candidate row,
+        collection-order independent - a duplicate excludes every row sharing
+        it, not just the "losing" one.
+
+    malformed_document_count is folded straight into the result: it comes from
+    the caller's defensive Firestore read (see _read_policy_rows), which
+    counts a document whose data isn't a dict instead of silently excluding
+    it.
+    """
+    rows = list(rows)
+
+    # A slot claimed by more than one owner is resolved up front, over the
+    # whole effective map rather than only the owners that happen to have an
+    # active client: desired_policy() builds its collision set from the whole
+    # Users slot map too, so an account with no active client still excludes
+    # the account it collides with.
+    slot_owners: dict[int, set[str]] = {}
+    for uid, slot_value in effective_slots.items():
+        slot_owners.setdefault(slot_value, set()).add(uid)
+    collided_owners = {uid for owners in slot_owners.values() if len(owners) > 1 for uid in owners}
+
+    invalid_owner = 0
+    invalid_slot = 0
+    duplicate_slot = 0
+    invalid_address = 0
+    candidates: list[tuple[str, str, str]] = []
+    for row in rows:
+        owner_uid = row.owner_uid
+        if not isinstance(owner_uid, str) or not owner_uid:
+            invalid_owner += 1
+            continue
+        if owner_uid in collided_owners:
+            duplicate_slot += 1
+            continue
+        if effective_slots.get(owner_uid) is None:
+            invalid_slot += 1
+            continue
+        address_v4 = _preflight_bare_tunnel_address(row.address_v4, 4)
+        address_v6 = _preflight_bare_tunnel_address(row.address_v6, 6)
+        if address_v4 is None or address_v6 is None:
+            invalid_address += 1
+            continue
+        candidates.append((owner_uid, address_v4, address_v6))
+
+    # Count occurrences across every candidate before excluding any of them,
+    # so both collection orders of a duplicate pair exclude both rows.
+    v4_counts: dict[str, int] = {}
+    v6_counts: dict[str, int] = {}
+    for _owner_uid, address_v4, address_v6 in candidates:
+        v4_counts[address_v4] = v4_counts.get(address_v4, 0) + 1
+        v6_counts[address_v6] = v6_counts.get(address_v6, 0) + 1
+
+    duplicate_address = 0
+    rows_valid = 0
+    for _owner_uid, address_v4, address_v6 in candidates:
+        if v4_counts[address_v4] > 1 or v6_counts[address_v6] > 1:
+            duplicate_address += 1
+        else:
+            rows_valid += 1
+
+    failures = RowPreflightFailures(
+        malformed_document=malformed_document_count,
+        invalid_owner=invalid_owner,
+        invalid_slot=invalid_slot,
+        invalid_address=invalid_address,
+        duplicate_address=duplicate_address,
+        duplicate_slot=duplicate_slot,
+    )
+    rows_checked = len(rows) + malformed_document_count
+
+    return RowPreflightResult(
+        ok=not failures.blocking,
+        failures=failures,
+        rows_checked=rows_checked,
+        rows_valid=rows_valid,
+    )
+
+
+def _read_policy_rows(db: Any) -> tuple[list[RawPolicyRow], int]:
+    """I/O read, not pure - pulls every Instances document fleet-wide outside
+    any transaction (the fleet is single-digit clients; see README), filtered
+    to active clients with a non-empty clientPublicKey, mirroring
+    Backend/API/src/firebase.py list_policy_clients's filter. Stays defensive
+    rather than silently dropping a corrupt document: a document whose data
+    isn't a dict, or that is missing the fields needed to tell whether it is
+    isn't a dict is counted as malformed instead of being excluded unnoticed.
+    A missing status or clientPublicKey field is treated exactly as
+    _client_from_data treats it - absent means "not active" or "not keyed", so
+    the document is simply not part of the policy fleet. Returns
+    (rows, malformed_document_count)."""
+    rows: list[RawPolicyRow] = []
+    malformed_document_count = 0
+    for snapshot in db.collection_group("Instances").stream():
+        data = snapshot.to_dict()
+        if not isinstance(data, dict):
+            malformed_document_count += 1
+            continue
+        if data.get("status") != _CLIENT_STATUS_ACTIVE or not data.get("clientPublicKey"):
+            continue
+        rows.append(
+            RawPolicyRow(
+                owner_uid=data.get("ownerUid"),
+                address_v4=data.get("assignedTunnelIpv4"),
+                address_v6=data.get("assignedTunnelIpv6"),
+            )
+        )
+    return rows, malformed_document_count
 
 
 def _apply_within_transaction(
@@ -380,10 +643,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     plan = compute_plan(provisioned_uids, user_slots, raw_next_slot)
+
+    try:
+        raw_rows, malformed_document_count = _read_policy_rows(db)
+    except Exception as exc:
+        print(f"Failed to read Firestore policy rows: {type(exc).__name__}", file=sys.stderr)
+        return 2
+
+    # Effective slot map: already-valid Users.accountSlot values plus the
+    # slots this plan would assign, so a legacy owner this run is about to fix
+    # is not misreported as a row-preflight failure.
+    effective_slots = build_effective_slot_map(user_slots, plan.assignments)
+    row_result = validate_policy_rows(raw_rows, effective_slots, malformed_document_count=malformed_document_count)
+
     mode = "apply" if args.apply else "dry-run"
 
-    if not plan.ok:
-        print(format_report(plan, mode=mode))
+    if not plan.ok or not row_result.ok:
+        print(format_report(plan, row_result, mode=mode))
         print(
             "Refusing to write: validation failures present. See counts above and "
             "the README for remediation guidance.",
@@ -393,7 +669,7 @@ def main(argv: list[str] | None = None) -> int:
 
     write_count = len(plan.assignments) + (1 if plan.counter_after is not None else 0)
     if write_count > MAX_TRANSACTION_WRITES:
-        print(format_report(plan, mode=mode))
+        print(format_report(plan, row_result, mode=mode))
         print(
             f"Refusing to write: plan requires {write_count} writes, exceeding the "
             f"{MAX_TRANSACTION_WRITES}-write safety margin. Run in a controlled "
@@ -403,7 +679,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if not args.apply:
-        print(format_report(plan, mode=mode))
+        print(format_report(plan, row_result, mode=mode))
         return 0
 
     try:
@@ -417,7 +693,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Firestore error during apply: {type(exc).__name__}", file=sys.stderr)
         return 1
 
-    print(format_report(applied_plan, mode=mode))
+    print(format_report(applied_plan, row_result, mode=mode))
     return 0
 
 

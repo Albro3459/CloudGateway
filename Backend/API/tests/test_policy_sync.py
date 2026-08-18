@@ -1,6 +1,7 @@
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
+
+import pytest
 
 from src.enums import Role
 from src.errors import PolicyApplyFailedError
@@ -46,6 +47,28 @@ def test_bare_tunnel_address_rejects_wrong_family_and_malformed():
     assert bare_tunnel_address("10.0.0.2/99", 4) is None
     assert bare_tunnel_address(None, 4) is None
     assert bare_tunnel_address("", 4) is None
+
+
+def test_bare_tunnel_address_rejects_non_host_prefixes():
+    # Only the exact /32 (v4) and /128 (v6) host prefix is accepted, not a
+    # wider network prefix nor an adjacent single-bit-off prefix.
+    assert bare_tunnel_address("10.0.0.2/24", 4) is None
+    assert bare_tunnel_address("10.0.0.2/31", 4) is None
+    assert bare_tunnel_address("fd42:42:42::2/64", 6) is None
+    assert bare_tunnel_address("fd42:42:42::2/127", 6) is None
+
+
+def test_bare_tunnel_address_rejects_addresses_outside_the_tunnel_aggregate():
+    # Syntactically valid /32 and /128 host addresses, right family, but
+    # outside MESH_AGGREGATE_V4/V6 (10.0.0.0/16, fd42:42:42::/48).
+    assert bare_tunnel_address("10.1.0.2/32", 4) is None
+    assert bare_tunnel_address("fd42:42:43::2/128", 6) is None
+
+
+def test_bare_tunnel_address_rejects_non_string_values():
+    assert bare_tunnel_address(123, 4) is None
+    assert bare_tunnel_address(["10.0.0.2/32"], 4) is None
+    assert bare_tunnel_address({"ip": "10.0.0.2/32"}, 4) is None
 
 
 # --- desired_policy ------------------------------------------------------
@@ -96,6 +119,8 @@ def test_desired_policy_skips_duplicate_address_as_corruption():
     first = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
     second = reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
     # Simulate corrupt data: two different owners' rows claim the same address.
+    # Every participant is excluded, not just the "loser" - collection order
+    # must never choose a winner (see test_..._regardless_of_collection_order).
     collided = replace(
         second,
         assigned_tunnel_ipv4=first.assigned_tunnel_ipv4,
@@ -105,9 +130,145 @@ def test_desired_policy_skips_duplicate_address_as_corruption():
 
     desired = desired_policy(repository)
 
-    assert len(desired.rows) == 1
+    assert desired.rows == ()
+    assert desired.skipped_rows == 2
+
+
+@pytest.mark.parametrize("reorder_first_last", [False, True])
+def test_desired_policy_duplicate_ipv4_excludes_both_regardless_of_collection_order(reorder_first_last):
+    repository = make_repository()
+    first = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+    second = reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
+    second_key = (second.owner_uid, second.region_id, second.client_id)
+    repository.clients[second_key] = replace(second, assigned_tunnel_ipv4=first.assigned_tunnel_ipv4)
+    if reorder_first_last:
+        # Move the non-colliding row to the end of iteration order, so the
+        # colliding row is seen first - the outcome must not depend on this.
+        first_key = (first.owner_uid, first.region_id, first.client_id)
+        repository.clients[first_key] = repository.clients.pop(first_key)
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 2
+
+
+@pytest.mark.parametrize("reorder_first_last", [False, True])
+def test_desired_policy_duplicate_ipv6_excludes_both_regardless_of_collection_order(reorder_first_last):
+    repository = make_repository()
+    first = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+    second = reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
+    second_key = (second.owner_uid, second.region_id, second.client_id)
+    repository.clients[second_key] = replace(second, assigned_tunnel_ipv6=first.assigned_tunnel_ipv6)
+    if reorder_first_last:
+        first_key = (first.owner_uid, first.region_id, first.client_id)
+        repository.clients[first_key] = repository.clients.pop(first_key)
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 2
+
+
+def test_desired_policy_duplicate_account_slot_excludes_every_participating_uid():
+    repository = make_repository()
+    reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+    reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
+    # Simulate corrupt Counters/accountSlots data: two different uids assigned
+    # the same slot.
+    repository.account_slots["user-2"] = repository.account_slots["user-1"]
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 2
+
+
+def test_desired_policy_same_uid_multiple_clients_sharing_one_slot_is_not_a_collision():
+    repository = make_repository()
+    first = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+    second = activate(repository, reserve(repository, uid="user-1", client_name="Second"), FAKE_PUBLIC_KEY_2)
+
+    desired = desired_policy(repository)
+
+    assert len(desired.rows) == 2
+    assert desired.skipped_rows == 0
+    slot = repository.get_account_slot("user-1")
+    assert {row.slot for row in desired.rows} == {slot}
+    assert {row.address_v4 for row in desired.rows} == {
+        first.assigned_tunnel_ipv4.split("/")[0],
+        second.assigned_tunnel_ipv4.split("/")[0],
+    }
+
+
+def test_desired_policy_skips_non_string_owner_uid():
+    repository = make_repository()
+    active = reserve_and_activate(repository)
+    key = (active.owner_uid, active.region_id, active.client_id)
+    repository.clients[key] = replace(active, owner_uid=123)  # type: ignore[arg-type]
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
     assert desired.skipped_rows == 1
-    assert desired.rows[0].address_v4 == first.assigned_tunnel_ipv4.split("/")[0]
+
+
+def test_desired_policy_skips_unhashable_owner_uid():
+    repository = make_repository()
+    active = reserve_and_activate(repository)
+    key = (active.owner_uid, active.region_id, active.client_id)
+    repository.clients[key] = replace(active, owner_uid=["not", "hashable"])  # type: ignore[arg-type]
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 1
+
+
+def test_desired_policy_skips_blank_owner_uid():
+    repository = make_repository()
+    active = reserve_and_activate(repository)
+    key = (active.owner_uid, active.region_id, active.client_id)
+    repository.clients[key] = replace(active, owner_uid="")
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 1
+
+
+def test_desired_policy_skips_non_string_client_address():
+    repository = make_repository()
+    active = reserve_and_activate(repository)
+    key = (active.owner_uid, active.region_id, active.client_id)
+    repository.clients[key] = replace(active, assigned_tunnel_ipv4=12345)  # type: ignore[arg-type]
+
+    desired = desired_policy(repository)
+
+    assert desired.rows == ()
+    assert desired.skipped_rows == 1
+
+
+def test_desired_policy_mixed_valid_and_invalid_rows_skipped_count_is_exact():
+    repository = make_repository()
+    valid = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+
+    no_slot = reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
+    repository.account_slots.pop(no_slot.owner_uid, None)
+
+    malformed_address = reserve_and_activate(repository, uid="user-3", public_key="pubkey-3")
+    malformed_key = (malformed_address.owner_uid, malformed_address.region_id, malformed_address.client_id)
+    repository.clients[malformed_key] = replace(malformed_address, assigned_tunnel_ipv4="garbage")
+
+    bad_owner = reserve_and_activate(repository, uid="user-4", public_key="pubkey-4")
+    bad_owner_key = (bad_owner.owner_uid, bad_owner.region_id, bad_owner.client_id)
+    repository.clients[bad_owner_key] = replace(bad_owner, owner_uid=None)  # type: ignore[arg-type]
+
+    desired = desired_policy(repository)
+
+    assert len(desired.rows) == 1
+    assert desired.rows[0].address_v4 == valid.assigned_tunnel_ipv4.split("/")[0]
+    assert desired.skipped_rows == 3
 
 
 def test_desired_policy_skips_malformed_region_cidr_for_infra():
@@ -145,22 +306,56 @@ def test_desired_policy_infra_address_is_network_address_plus_one():
     assert desired.infra_v6 == ("fd42:42:42:5::1",)
 
 
-def test_desired_policy_data_vintage_is_max_updated_at_of_included_rows():
+def test_desired_policy_dedupes_infra_addresses_across_regions():
     repository = make_repository()
-    older = reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
-    newer = reserve_and_activate(repository, uid="user-2", public_key=FAKE_PUBLIC_KEY_2)
-    older_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    newer_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    repository.clients[(older.owner_uid, older.region_id, older.client_id)] = replace(
-        repository.clients[(older.owner_uid, older.region_id, older.client_id)], updated_at=older_time
+    # Two distinct regions that happen to derive the same interface address
+    # (e.g. a misconfiguration): apply_map's atomic nft batch rejects a
+    # repeated set element, so the pass must de-duplicate before returning.
+    repository.regions[REGION_ID] = replace(
+        enabled_region(), tunnel_network_v4="10.0.0.0/24", tunnel_network_v6="fd42:42:42::/64"
     )
-    repository.clients[(newer.owner_uid, newer.region_id, newer.client_id)] = replace(
-        repository.clients[(newer.owner_uid, newer.region_id, newer.client_id)], updated_at=newer_time
+    repository.regions["us-dup-1"] = replace(
+        enabled_region(),
+        region_id="us-dup-1",
+        tunnel_network_v4="10.0.0.0/24",
+        tunnel_network_v6="fd42:42:42::/64",
     )
 
     desired = desired_policy(repository)
 
-    assert desired.data_vintage == newer_time
+    assert desired.infra_v4 == ("10.0.0.1",)
+    assert desired.infra_v6 == ("fd42:42:42::1",)
+
+
+def test_desired_policy_rejects_infra_address_outside_tunnel_aggregate():
+    repository = make_repository()
+    # A garbage region CIDR must never put a public address in cg_infra.
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4="203.0.113.0/24",
+        tunnel_network_v6="2001:db8::/64",
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ()
+    assert desired.infra_v6 == ()
+
+
+def test_desired_policy_malformed_updated_at_cannot_affect_a_pass():
+    # updatedAt never enters the policy path at all (see
+    # repository.PolicyClientEntry); a garbage value on the underlying client
+    # doc is structurally incapable of aborting the pass or changing its
+    # output, since desired_policy never reads it.
+    repository = make_repository()
+    active = reserve_and_activate(repository)
+    key = (active.owner_uid, active.region_id, active.client_id)
+    repository.clients[key] = replace(active, updated_at="not-a-timestamp")  # type: ignore[arg-type]
+
+    desired = desired_policy(repository)
+
+    assert len(desired.rows) == 1
+    assert desired.skipped_rows == 0
 
 
 # --- reconcile_policy ------------------------------------------------------
