@@ -20,6 +20,7 @@ from .errors import (
     FirebaseWriteFailedError,
     InvalidRequestError,
     InternalError,
+    SyncInProgressError,
     WireGuardApplyFailedError,
 )
 from .logs import log_event
@@ -261,19 +262,21 @@ def create_client(
                 raise
             raise FirebaseWriteFailedError() from exc
 
-        # Inline local row: LOCK ORDERING - the WireGuard lock (held by this
-        # block) may be held while taking the policy lock, never the reverse,
-        # or the create path and a policy reconcile could deadlock against
-        # each other. Written here so a client whose sibling is in the same
-        # region works immediately with no cross-region dependency; a missing
-        # slot or an apply failure must never fail the client create, since
-        # the next reconcile (poke or boot) repairs it either way.
-        _write_inline_policy_row(
-            repository=repository,
-            policy=policy,
-            client=active_client,
-            request_id=request_id,
-        )
+    # Inline local row: written after the WireGuard critical section closes,
+    # not inside it - no Firestore read, no policy lock, and no nft call ever
+    # runs while wireguard.lock() is held, so a slow policy pull or status
+    # write can never stall add_peer or make a non-blocking Sync All shed.
+    # Written here (rather than left entirely to the background reconcile) so
+    # a client whose sibling is in the same region works immediately with no
+    # cross-region dependency; a missing slot or an apply failure must never
+    # fail the client create, since the next reconcile (poke or boot) repairs
+    # it either way.
+    _write_inline_policy_row(
+        repository=repository,
+        policy=policy,
+        client=active_client,
+        request_id=request_id,
+    )
 
     log_event(
         logger,
@@ -881,25 +884,46 @@ def _write_inline_policy_row(
     client: ClientDoc,
     request_id: str,
 ) -> None:
-    """Called from inside create_client's wireguard.lock() block. LOCK
-    ORDERING: the WireGuard lock may be held while taking the policy lock,
-    never the reverse - see policy.py's PolicyManager docstring.
+    """Called from create_client after the wireguard.lock() block has already
+    closed - the client is ACTIVE with a live peer by this point, so nothing
+    below may turn a successful create into a failed response.
 
-    A missing or invalid slot or an apply failure both fall through silently
-    (beyond the log below): the next reconcile (a poke or an admin sync)
-    fixes either, and neither may fail the client create.
+    Slot lookup, role lookup, address normalization, policy-lock acquisition,
+    and the row apply all run inside one exception boundary: a Firestore
+    error, a missing/invalid slot, or an apply failure all fall through
+    silently (beyond the log below).
+
+    The policy lock is taken non-blocking: if a full reconcile pass currently
+    owns it, this just skips the row rather than waiting. That is safe to
+    shed because create_client queues policy_coordinator.request() immediately
+    after this call, and the coordinator's depth-1 pending bit guarantees a
+    follow-up pass whose *pull* starts only after this client's Firestore
+    commit - so the row is picked up by that pass even if it never lands here.
     """
-    slot = valid_account_slot(repository.get_account_slot(client.owner_uid))
-    if slot is None:
-        return
-    address_v4 = bare_tunnel_address(client.assigned_tunnel_ipv4, 4)
-    address_v6 = bare_tunnel_address(client.assigned_tunnel_ipv6, 6)
-    if address_v4 is None or address_v6 is None:
-        return
     try:
+        slot = valid_account_slot(repository.get_account_slot(client.owner_uid))
+        if slot is None:
+            return
+        address_v4 = bare_tunnel_address(client.assigned_tunnel_ipv4, 4)
+        address_v6 = bare_tunnel_address(client.assigned_tunnel_ipv6, 6)
+        if address_v4 is None or address_v6 is None:
+            return
         admin = repository.get_role(client.owner_uid) == Role.ADMIN
-        with policy.lock():
+        with policy.lock(blocking=False):
             policy.add_client_row(PolicyRow(address_v4=address_v4, address_v6=address_v6, slot=slot, admin=admin))
+    except SyncInProgressError:
+        # Expected under load, not a failure: a full pass already owns the
+        # lock. Its own snapshot may predate this client's commit, so the
+        # repair is the reconcile create_client queues right after this call,
+        # not the pass currently holding the lock.
+        log_event(
+            logger,
+            Event.POLICY_ROW_LOCK_BUSY,
+            level=logging.INFO,
+            request_id=request_id,
+            region_id=client.region_id,
+            client_id=client.client_id,
+        )
     except Exception as exc:
         log_event(
             logger,

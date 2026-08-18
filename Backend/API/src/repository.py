@@ -153,7 +153,6 @@ class PolicyStatus:
     map_hash_v4: str
     map_hash_v6: str
     row_count: int
-    applied_sequence: int
 
 
 def clean_client_name(value: str) -> str:

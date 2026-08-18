@@ -47,7 +47,11 @@ what the live account-scoped ACL map on that host actually contains (row count, 
 what the region intended to apply. The document still carries a `dataVintage` field for schema
 compatibility, but every pass writes it `null` starting with the ACL Wave 2 remediation; Wave 5
 drops the field once the status model moves to comprehensive live-policy hashes plus a last-applied
-time. Policy documents deliberately never contain a uid, email, address, or key.
+time. It also still carries `appliedSequence`, written `null` on every pass starting with the ACL
+Wave 3 remediation: cross-process ordering between the API process and the boot/manual sync CLI is
+now enforced by the policy flock itself, not by any counter, so the field carries no ordering
+meaning and Wave 5 drops it alongside `dataVintage`. Policy documents deliberately never contain a
+uid, email, address, or key.
 
 Role documents are defaults keyed by role name:
 

@@ -1,7 +1,6 @@
 import ipaddress
 import logging
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from .enums import Event
@@ -12,11 +11,6 @@ from .settings import Settings
 from .wireguard import MESH_AGGREGATE_V4, MESH_AGGREGATE_V6, is_valid_tunnel_ip
 
 logger = logging.getLogger("src.policy_sync")
-
-# Checked under policy.lock() immediately before apply_map, so it is evaluated
-# atomically with the mutation it may veto. Returns True to proceed, False when
-# a newer pull has already applied (see PolicyCoordinator._sequence_is_current).
-SequenceGuard = Callable[[int], bool]
 
 # Same aggregates bootstrap.sh installs as cg_tunnel4/6 (see wireguard.py).
 # Precomputed once so bare_tunnel_address/_infra_address don't re-parse a
@@ -190,8 +184,6 @@ def desired_policy(repository: FirebaseRepository) -> DesiredPolicy:
 
 @dataclass(frozen=True)
 class PolicyOutcome:
-    applied: bool
-    applied_sequence: int
     skipped_rows: int
     row_count: int = 0
     map_hash_v4: str = ""
@@ -206,8 +198,6 @@ def reconcile_policy(
     repository: FirebaseRepository,
     policy: PolicyManager,
     settings: Settings,
-    sequence: int,
-    sequence_guard: SequenceGuard | None = None,
 ) -> PolicyOutcome:
     """One account-scoped ACL pass: pull the fleet snapshot, apply it
     atomically, read back what is actually on the wire, and write status from
@@ -215,33 +205,27 @@ def reconcile_policy(
     always look healthy and report nothing (mirrors write_mesh_status's rule
     in sync.py). The status write is best effort and never fails the pass.
 
-    sequence_guard, when given, is evaluated under policy.lock() immediately
-    before the apply. Boot's one-shot pass (sync.main()) has no coordinator
-    and no concurrent pass to race, so it passes none.
+    The Firestore pull happens *inside* policy.lock(), not before it, so the
+    whole operation - pull, apply, read back, write status - runs as one
+    ordered unit under the host flock. Ordering across processes is enforced
+    by the flock itself: a later writer cannot start its pull until the
+    earlier writer has applied, read back, and written status, so a stale
+    snapshot can never wait outside the lock and overwrite a newer map. This
+    does not rely on any process-local counter - there is no fleet-wide
+    ordering value to check, only mutual exclusion. Both the API's
+    PolicyCoordinator and the boot/manual `cloudgateway-sync-peers` process
+    (sync.main()) call this same function.
     """
-    desired = desired_policy(repository)
-    if desired.skipped_rows:
-        log_event(
-            logger,
-            Event.POLICY_ROWS_SKIPPED,
-            level=logging.WARNING,
-            region_id=settings.region_id,
-            skipped_rows=desired.skipped_rows,
-        )
-
     with policy.lock():
-        if sequence_guard is not None and not sequence_guard(sequence):
-            # A newer pull already applied while this one was in flight.
-            # Cancellation is not available in this runtime, so the older
-            # result is discarded here instead of overwriting fresher state.
+        desired = desired_policy(repository)
+        if desired.skipped_rows:
             log_event(
                 logger,
-                Event.POLICY_REFRESH_DISCARDED,
+                Event.POLICY_ROWS_SKIPPED,
                 level=logging.WARNING,
                 region_id=settings.region_id,
-                sequence=sequence,
+                skipped_rows=desired.skipped_rows,
             )
-            return PolicyOutcome(applied=False, applied_sequence=sequence, skipped_rows=desired.skipped_rows)
 
         policy.apply_map(desired.rows, infra_v4=desired.infra_v4, infra_v6=desired.infra_v6)
         live: LivePolicyMap = policy.read_map()
@@ -253,7 +237,6 @@ def reconcile_policy(
                     map_hash_v4=live.hash_v4,
                     map_hash_v6=live.hash_v6,
                     row_count=live.row_count,
-                    applied_sequence=sequence,
                 )
             )
         except Exception as exc:
@@ -269,8 +252,6 @@ def reconcile_policy(
             )
 
     return PolicyOutcome(
-        applied=True,
-        applied_sequence=sequence,
         skipped_rows=desired.skipped_rows,
         row_count=live.row_count,
         map_hash_v4=live.hash_v4,
@@ -280,9 +261,10 @@ def reconcile_policy(
 
 
 class PolicyCoordinator:
-    """Depth-1 coalescing plus the sequence guard (see
-    TODO/account-scoped-acl.md, "Refresh model"). One instance lives on
-    app.state, shared by the /sync/refresh poke handler and admin Sync All.
+    """Depth-1 coalescing (see TODO/account-scoped-acl.md, "Refresh model").
+    Cross-process ordering is enforced by policy.lock() itself inside
+    reconcile_policy, not by anything here. One instance lives on app.state,
+    shared by the /sync/refresh poke handler and admin Sync All.
 
     request() is called from a background task with nothing able to observe
     or react to a failure, so it - and everything it calls - must never raise.
@@ -295,8 +277,6 @@ class PolicyCoordinator:
         self._condition = threading.Condition()
         self._running = False
         self._pending = False
-        self._next_sequence = 1
-        self._last_applied_sequence = 0
         self._last_outcome: PolicyOutcome | None = None
 
     def request(self) -> None:
@@ -349,17 +329,12 @@ class PolicyCoordinator:
                 return outcome
 
     def _run_one_pass(self) -> PolicyOutcome | None:
-        with self._condition:
-            sequence = self._next_sequence
-            self._next_sequence += 1
-        log_event(logger, Event.POLICY_REFRESH_STARTED, region_id=self._settings.region_id, sequence=sequence)
+        log_event(logger, Event.POLICY_REFRESH_STARTED, region_id=self._settings.region_id)
         try:
             outcome = reconcile_policy(
                 repository=self._repository,
                 policy=self._policy,
                 settings=self._settings,
-                sequence=sequence,
-                sequence_guard=self._sequence_is_current,
             )
         except Exception as exc:
             # PolicyApplyFailedError, Firestore errors, etc. must not escape:
@@ -370,25 +345,16 @@ class PolicyCoordinator:
                 Event.POLICY_REFRESH_FAILED,
                 level=logging.ERROR,
                 region_id=self._settings.region_id,
-                sequence=sequence,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             return None
 
-        if outcome.applied:
-            with self._condition:
-                self._last_applied_sequence = max(self._last_applied_sequence, sequence)
-            log_event(
-                logger,
-                Event.POLICY_REFRESH_COMPLETED,
-                region_id=self._settings.region_id,
-                sequence=sequence,
-                row_count=outcome.row_count,
-                skipped_rows=outcome.skipped_rows,
-                status_written=outcome.status_written,
-            )
+        log_event(
+            logger,
+            Event.POLICY_REFRESH_COMPLETED,
+            region_id=self._settings.region_id,
+            row_count=outcome.row_count,
+            skipped_rows=outcome.skipped_rows,
+            status_written=outcome.status_written,
+        )
         return outcome
-
-    def _sequence_is_current(self, sequence: int) -> bool:
-        with self._condition:
-            return sequence >= self._last_applied_sequence

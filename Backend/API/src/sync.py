@@ -618,7 +618,7 @@ def main() -> int:
     # it, but a policy failure here is not a peer-sync failure.
     log_event(logger, Event.POLICY_REFRESH_STARTED, region_id=settings.region_id)
     try:
-        policy_outcome = reconcile_policy(repository=repository, policy=policy, settings=settings, sequence=1)
+        policy_outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
     except Exception as exc:
         log_event(
             logger,

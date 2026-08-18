@@ -280,32 +280,35 @@ the real signal instead.
 
 ### Wave 3 - cross-process ordering and create-path isolation
 
-Make the policy flock cover the complete ordered operation:
+**Landed.** The policy flock now covers the complete ordered operation:
 
 ```text
 lock -> pull current Firestore snapshot -> apply -> read back -> write status -> unlock
 ```
 
-Both `PolicyCoordinator` and the boot/manual `cloudgateway-sync-peers` process
-must use that same path. A later writer therefore pulls only after the prior
-writer has finished, so an older snapshot cannot wait outside the flock and
-overwrite a newer map. Remove the process-local sequence guard and
-`appliedSequence` status field unless a remaining caller genuinely needs a
-local diagnostic counter; no process-local value may be presented as a fleet
-ordering guarantee.
+Both `PolicyCoordinator` and the boot/manual `cloudgateway-sync-peers` process call the identical
+`reconcile_policy()`, so a later writer can only pull after the prior writer has applied, read back,
+and written status - an older snapshot can no longer wait outside the flock and overwrite a newer
+map. The process-local sequence guard and the `appliedSequence` status field are gone as an
+ordering signal; no process-local value is presented as a fleet ordering guarantee.
+`write_policy_status` still writes `Policy/{regionId}.appliedSequence` as a literal `null`, the same
+pattern Wave 2 used for `dataVintage`, so the documented Firestore shape holds until Wave 5 removes
+both fields from schema, parser, and UI.
 
-Move `_write_inline_policy_row()` after the WireGuard critical section. Put the
-slot lookup, role lookup, address normalization, lock acquisition, and row apply
-inside one best-effort exception boundary. Acquire the policy flock
-non-blocking; if a full pass owns it, log the aggregate failure and rely on the
-already-scheduled local reconcile. A policy error must never turn a client that
-is already ACTIVE with a live peer into a 500 response, and a slow policy pull
-must never hold the WireGuard lock indirectly.
+`_write_inline_policy_row()` now runs after the WireGuard critical section closes, not inside it.
+Slot lookup, role lookup, address normalization, policy-lock acquisition, and the row apply all sit
+inside one best-effort exception boundary, so a policy error can never turn a client that is already
+ACTIVE with a live peer into a 500 response. Lock acquisition is non-blocking: if a full pass already
+owns it, the row is shed and logged (`policy_row_lock_busy`) rather than waited for, relying on the
+create path's own already-queued reconcile. No Firestore read or nft call happens while the
+WireGuard lock is held any more, so a slow policy pull or status write can no longer stall client
+creation or make a non-blocking Sync All shed with `409 SYNC_IN_PROGRESS`.
 
-Keep the existing depth-1 pending-bit behavior. Add concurrency coverage for
-API-versus-boot serialization, an inline row racing a full pass, a busy policy
-lock not failing create, and a poke arriving after the follow-up snapshot has
-started.
+The depth-1 pending-bit coordinator is unchanged by design: it bounds the *pending backlog* to one
+queued follow-up pass, not the total work callers can trigger over time - not a queue, not a rate
+limit, not a refresh-cadence feature. Concurrency coverage added: API-versus-boot serialization, an
+inline row racing a full pass, a busy policy lock not failing create, and a poke arriving after the
+follow-up pass has already started.
 
 ### Wave 4 - account deletion ordering
 
@@ -429,7 +432,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 * [x] Dedicated policy flock, separate from the WireGuard flock.
 * [x] Depth-1 pending-bit coalescing; repeated requests cannot create more than one queued pass at a time.
 * [x] Wave 2 - strict policy input normalization and fail-closed collision handling.
-* [ ] Wave 3 - cross-process pull/apply serialization, sequence cleanup, and non-blocking post-WireGuard inline row.
+* [x] Wave 3 - cross-process pull/apply serialization on one flock-ordered path for both writers, sequence-guard removal, and non-blocking post-WireGuard inline row.
 * [x] Boot and `POST /api/admin/sync` call the policy reconcile.
 * [x] `POST /api/sync/refresh`: provisioned user, no body, no detail, enqueue-and-return.
 * [x] Fire-and-forget pokes from `POST /clients` and `DELETE /clients/{clientId}`; inline local map row on create.

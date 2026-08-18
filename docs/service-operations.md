@@ -171,6 +171,12 @@ a differing hash between regions is drift, even if both regions report recently.
 mismatch nor the missing vintage is a failure of the last sync pass; status writes are best effort
 and a status write failure never fails a pass.
 
+`appliedSequence` is written `null` on every pass starting with the Wave 3 ACL remediation. It
+never proved fleet ordering even before removal - cross-process ordering is now enforced by the
+policy flock itself, which serializes the API process against the boot/manual sync CLI directly, not
+by any counter - and the field is kept only so the document shape stays stable until Wave 5 drops
+it alongside `dataVintage`.
+
 **Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard. A
 region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches
 only one region and returns no detail, so use Sync All when you need to confirm or force a repair

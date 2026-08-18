@@ -753,7 +753,12 @@ class FirestoreRepository(FirebaseRepository):
                     "mapHashV4": status.map_hash_v4,
                     "mapHashV6": status.map_hash_v6,
                     "rowCount": status.row_count,
-                    "appliedSequence": status.applied_sequence,
+                    # Always null: the process-local sequence was removed in
+                    # Wave 3 (see TODO/account-scoped-acl.md) - ordering is now
+                    # enforced by the host flock itself, not a counter. Kept
+                    # here, not omitted, so the documented Firestore shape is
+                    # unchanged until Wave 5 removes the field from schema/UI.
+                    "appliedSequence": None,
                     # Always null: the policy path dropped updatedAt in Wave 2
                     # (see TODO/account-scoped-acl.md). Kept here, not omitted,
                     # so the documented Firestore shape is unchanged until

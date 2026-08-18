@@ -445,6 +445,29 @@ def test_create_client_writes_inline_policy_row(client, repository, wireguard, p
     assert row.admin is False
 
 
+def test_create_client_inline_policy_row_runs_outside_the_wireguard_lock(client, repository, wireguard, policy):
+    # The inline row is written after create_client's wireguard.lock() block
+    # has already closed, so a slow policy pull can never stall add_peer.
+    seed_region(repository)
+    observed: dict[str, bool] = {}
+    original_add_client_row = policy.add_client_row
+
+    def spy(row):
+        observed["wireguard_locked"] = wireguard.locked
+        return original_add_client_row(row)
+
+    policy.add_client_row = spy
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert observed["wireguard_locked"] is False
+
+
 def test_create_client_admin_owner_writes_an_admin_policy_row(client, repository, wireguard, policy):
     seed_region(repository)
 

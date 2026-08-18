@@ -380,9 +380,8 @@ def test_reconcile_policy_writes_status_from_the_read_back_not_the_snapshot():
     policy = DriftingPolicyManager()
     settings = make_settings()
 
-    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings, sequence=1)
+    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
 
-    assert outcome.applied is True
     assert outcome.row_count == 2  # 1 real row applied + 1 phantom row read back
     assert policy.read_calls == 1
     status = repository.policy_status[REGION_ID]
@@ -397,34 +396,39 @@ def test_reconcile_policy_status_write_failure_does_not_fail_the_pass():
     policy = FakePolicyManager()
     settings = make_settings()
 
-    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings, sequence=1)
+    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
 
-    assert outcome.applied is True
     assert outcome.status_written is False
     assert policy.apply_calls == 1
     assert REGION_ID not in repository.policy_status
 
 
-def test_reconcile_policy_sequence_guard_discards_a_stale_pull():
-    repository = make_repository()
-    reserve_and_activate(repository)
+class LockObservingRepository(FakeRepository):
+    """Records whether the policy lock was already held at the moment the
+    Firestore pull started, proving reconcile_policy's pull runs inside
+    policy.lock() rather than before it."""
+
+    def __init__(self, *, policy: FakePolicyManager, **kwargs):
+        super().__init__(**kwargs)
+        self._policy = policy
+        self.locked_during_pull: bool | None = None
+
+    def list_policy_clients(self):
+        self.locked_during_pull = self._policy.locked
+        return super().list_policy_clients()
+
+
+def test_reconcile_policy_pull_happens_inside_the_lock():
     policy = FakePolicyManager()
+    repository = LockObservingRepository(policy=policy, local_region_id=REGION_ID)
+    repository.regions[REGION_ID] = enabled_region()
+    reserve_and_activate(repository)
     settings = make_settings()
 
-    fresh = reconcile_policy(repository=repository, policy=policy, settings=settings, sequence=5)
-    assert fresh.applied is True
-    assert policy.apply_calls == 1
+    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
 
-    stale = reconcile_policy(
-        repository=repository,
-        policy=policy,
-        settings=settings,
-        sequence=3,
-        sequence_guard=lambda sequence: sequence >= 5,
-    )
-
-    assert stale.applied is False
-    assert policy.apply_calls == 1  # the stale pull never touched the map
+    assert repository.locked_during_pull is True
+    assert outcome.row_count == 1
 
 
 def test_desired_policy_never_raises_on_malformed_client_address():
@@ -490,7 +494,6 @@ def test_policy_coordinator_run_blocking_returns_the_outcome():
     outcome = coordinator.run_blocking()
 
     assert outcome is not None
-    assert outcome.applied is True
     assert policy.apply_calls == 1
 
 

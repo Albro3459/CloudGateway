@@ -48,11 +48,12 @@ The sync's contract is otherwise one-directional and read-only against Firebase.
 The client-to-client isolation filter (`Backend/API/src/policy.py`, base ruleset in
 `/etc/cloudgateway/cloudgateway.nft`, installed by `bootstrap.sh` `PostUp` - see
 [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)) has its own one-directional
-Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above. It is
-not a systemd service or CLI command; it runs as part of the API process, triggered by:
+Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above. It has no
+systemd unit or CLI entry point of its own; it runs inside whichever process calls it, triggered by:
 
 * Boot, so a rebuilt or rebooted host repopulates its entire policy map from Firestore without
-  needing any peer to poke it.
+  needing any peer to poke it. This one runs in the separate `cloudgateway-sync-peers` process,
+  not the long-running API process.
 * `POST /api/admin/sync` (Sync All), which also reconciles peers and mesh - see
   [docs/api-contract.md](api-contract.md).
 * `POST /api/sync/refresh`, the poke any provisioned user's client create/delete triggers on every
@@ -68,12 +69,29 @@ status doc is intentionally opaque: row count, data vintage, and map hashes only
 email, address, or key.
 
 Concurrency is independent of the peer sync: `reconcile_policy()` takes its own flock at
-`/run/cloudgateway-policy.lock`, deliberately not `wireguard.lock()`, so a policy refresh never
+`/run/cloudgateway-policy.lock`, deliberately not `wireguard.lock()`, so a full policy pass never
 contends with `add_peer` on the client create path and never makes an admin's non-blocking Sync
 All shed with `409 SYNC_IN_PROGRESS`. Traffic-driven policy pokes in one region never slow client
 creation in another. Any number of pokes arriving during a running pull coalesce to one follow-up
-pull (depth-1; not a queue), and a sequence guard discards a slow in-flight pull that would
-otherwise overwrite newer state with older state.
+pull (depth-1; not a queue).
+
+The flock covers the whole ordered operation, not just the apply: a pass takes the lock first,
+then pulls the Firestore snapshot, applies it atomically, reads back the live map, and writes
+status - all before releasing it. A later writer therefore cannot pull until the earlier writer has
+applied, read back, and written status, so an older snapshot can no longer wait outside the lock
+and overwrite a newer map with stale state. Ordering is the flock's job, not a counter's: the
+long-running API process (`PolicyCoordinator`) and the separate boot/manual `cloudgateway-sync-peers`
+process both call the identical `reconcile_policy()` and are serialized against each other by that
+one lock alone. There is no process-local sequence guard or `appliedSequence` ordering signal any
+more; no process-local value is or may be presented as a fleet ordering guarantee.
+
+Client creation's inline local policy row (`_write_inline_policy_row()`) runs after the WireGuard
+critical section closes, not inside it, and takes the policy flock non-blocking. If a full pass
+already owns the lock, the row is shed and logged (`policy_row_lock_busy`) rather than waited for -
+the create path's own already-queued reconcile covers it. No Firestore read or nft call happens
+while the WireGuard lock is held any more, so a slow policy pull or status write can no longer
+stall client creation or make a non-blocking Sync All shed, and a policy failure never turns a
+successful client create into an error response.
 
 **Open verification item:** nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
 across the pre-existing `iptables`/`ip6tables` `FORWARD` chains), the `cg_forward` chain's

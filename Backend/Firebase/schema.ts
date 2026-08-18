@@ -98,7 +98,10 @@ export type FirebasePolicyDoc = {
     mapHashV4: string;
     mapHashV6: string;
     rowCount: number;
-    appliedSequence: number;
+    // Always written null since the Wave 3 ordering remediation - cross-process
+    // ordering is enforced by the policy flock itself, not a counter. Kept only
+    // so the document shape is stable until Wave 5 removes it.
+    appliedSequence: number | null;
     // Max updatedAt across the applied snapshot; the freshness signal, unlike
     // the hashes it stays meaningful even if maps are ever allowed to differ
     // between regions.

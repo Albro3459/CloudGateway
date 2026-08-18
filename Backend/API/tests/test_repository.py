@@ -646,7 +646,6 @@ def test_write_policy_status_records_last_write_per_region(repository: FakeRepos
         map_hash_v4="hash-v4",
         map_hash_v6="hash-v6",
         row_count=1,
-        applied_sequence=1,
     )
 
     repository.write_policy_status(status)
@@ -659,5 +658,5 @@ def test_write_policy_status_can_be_forced_to_fail(repository: FakeRepository):
 
     with pytest.raises(RuntimeError):
         repository.write_policy_status(
-            PolicyStatus(region_id=REGION_ID, map_hash_v4="", map_hash_v6="", row_count=0, applied_sequence=0)
+            PolicyStatus(region_id=REGION_ID, map_hash_v4="", map_hash_v6="", row_count=0)
         )
