@@ -139,9 +139,9 @@ non-active fence prevents any new pull from restoring the deleting account.
 
 ## Dashboard requirements
 
-Server Health shows each enabled region's policy row count, comprehensive IPv4
-and IPv6 policy hashes, and `updatedAt` as "Last applied." Hash disagreement is
-drift; timestamp age alone is not. Disabled regions do not participate in the
+Server Health - on Web and iOS alike - shows each enabled region's policy row
+count, comprehensive IPv4 and IPv6 policy hashes, and `updatedAt` as "Last
+applied." Hash disagreement is drift; timestamp age alone is not. Disabled regions do not participate in the
 comparison. A missing, malformed, or unreadable `Policy/{regionId}` renders an
 explicit failure card and must never crash or hide the independent Mesh status.
 
@@ -169,9 +169,8 @@ A static review of the original implementation commit `ae99c93` raised twelve
 findings across slot integrity, cross-process ordering, the create fast path,
 account deletion, malformed-row handling, policy status, and documentation. All
 twelve are closed: ten by implementation across Waves 1-6, two (findings 1 and
-5) as accepted dispositions. The iOS Server Health parity work shipped under
-its own plan, [TODO/ios-policy-parity.md](ios-policy-parity.md), closing that
-release blocker.
+5) as accepted dispositions. The iOS Server Health parity work shipped too,
+closing the last release blocker; see "iOS Server Health parity".
 
 Finding numbers below are durable identifiers - API source, tests, and the
 release migration cite them in comments. So are the wave names in "Delivery
@@ -198,9 +197,8 @@ waves".
   the previous allow-set until they do. Reconcile still re-reads current roles,
   applies `cg_admin4/6`, and includes them in read-back and status hashes, so
   partial fleet application is visible.
-* **iOS parity shipped under its own plan, not deferred to a later release.**
-  Delivered per [TODO/ios-policy-parity.md](ios-policy-parity.md); see "Open
-  release blockers".
+* **iOS parity shipped in this release, not deferred to a later one.** See
+  "iOS Server Health parity" for what landed and which decisions are durable.
 
 ### Findings and resolutions
 
@@ -387,22 +385,78 @@ Referenced by name from source comments.
   without changing any existing field; a region predating this release omits all
   three and the dashboard treats that as unknown, not as failure.
 
-### Open release blockers
+### iOS Server Health parity
 
-**iOS Server Health Policy parity.** *Closed:* implemented per
-[TODO/ios-policy-parity.md](ios-policy-parity.md). Shipped: shared
-`CloudGatewayAppCore` Policy models and `buildPolicyStatusRows` derivation, a
-Firebase-free Firestore mapper, `fetchPolicyDocs()` on the repository
-contract/facade/conformers, the iOS Firestore adapter with `Timestamp` ->
-`Date` conversion, independent Policy load-failure state that cannot blank
-fresh Mesh state, a post-Sync-All reload, the client-isolation panel and
-`RegionSyncResultCard` policy notes, sync-response
+Shipped in this PR, after the Web surface. Web and iOS are the two admin
+surfaces this release has, and a security boundary whose status appears on only
+one of them was the actual gap. iOS was never *broken* by the ACL work - the
+existing sync parser already ignored unknown response fields,
+`DeleteClientRequest.account_cleanup` is server-to-server only, and the
+`firestore.rules` change was purely additive - so this is observability parity,
+not a compatibility fix, and no VPN or client configuration behavior changed.
+
+What landed: shared `CloudGatewayAppCore` Policy models and
+`buildPolicyStatusRows` derivation (a direct port of
+`Frontend/Web/src/helpers/policyHelper.ts`), a Firebase-free Firestore mapper, `fetchPolicyDocs()` on the repository contract,
+facade, and every conformer, the iOS Firestore adapter with recursive
+`Timestamp` -> `Date` conversion, independent Policy load-failure state, a
+post-Sync-All reload, the client-isolation panel and `RegionSyncResultCard`
+policy notes, sync-response
 `policyApplied`/`policyRowCount`/`policyStatusWritten` parsing, and ported
-policy/view-model/parsing tests plus screenshot fixtures. Swift status
-semantics match the final Web semantics - comprehensive hash agreement among
+derivation/view-model/parsing tests plus screenshot fixtures. Swift status
+semantics are the final Web semantics - comprehensive hash agreement among
 enabled regions plus "Last applied" - not the superseded `dataVintage` model.
-This closes observability parity; it does not change any VPN/client
-configuration behavior, and iOS was never broken by the ACL release.
+
+Durable decisions - do not reintroduce:
+
+* **Shared-first.** Models, mapping, and derivation live in
+  `CloudGatewayAppCore` so macOS reuses them; SwiftUI and the Firebase SDK
+  repository stay in `Frontend/Apple/iOS/CloudGateway/`. A future macOS target
+  supplies its own UI and Firestore adapter against the same AppCore contracts.
+* **`CloudGatewayMeshRegion` is the region input.** It already carries
+  `regionId`, `displayName`, and `enabled`, which is all the derivation needs. A
+  second region model would duplicate the Firestore mapper for no gain.
+* **Policy is observability-only and counts-and-hashes-only.** iOS reads
+  `Policy/*` and never writes it - the collection is Admin-SDK-write in
+  `firestore.rules`. No uid, email, client name, address, or key reaches this
+  surface.
+* **Failure isolation is one-directional.** Policy is the isolated feed: its
+  failure clears the policy rows and shows the collection-level failure card
+  while fresh Regions/Mesh state still applies. A Regions or Mesh failure keeps
+  the existing page-level error behavior and does not apply a separately
+  completed policy result. Do not add the inverse isolation, which Web does not
+  have.
+* **A failed Policy read renders its own card, never a grid of "Never synced,"**
+  which would assert a fleet state we do not know. An absent entry means
+  never-synced only when the read itself succeeded.
+* **No policy-only sign-out reset and no standalone policy refresh control.**
+  The view model's uid and load-generation guards plus the existing Server
+  Health dismissal cover identity changes; pull-to-refresh covers reload.
+* **`rowCount` is `Int?` on iOS.** TS `numberOrNull` accepts any finite number,
+  so a fractional `rowCount` is "usable" on Web and `unreadable` on iOS; the
+  host only ever writes an integer. Coerce with `Int(exactly:)` and never a
+  hand-rolled range check: `Double(Int.max)` rounds up to 2^63, so a
+  `value <= Double(Int.max)` guard admits exactly 2^63 and the following
+  `Int(value)` traps on it. `updatedAt` likewise accepts only `Date`, because
+  the repository converts every `Timestamp` before the mapper runs.
+* **No majority tie-break.** Every comparable region is flagged drifted when no
+  hash clears a strict majority; crowning a plurality winner would hide the
+  ambiguity behind an arbitrary winner. Swift `Dictionary` iteration order is
+  unspecified but cannot change the outcome, because a strict majority is
+  unique.
+
+Review outcome: a three-reviewer pass over the parity commit found one real
+defect and two documentation gaps, all fixed on this branch. The `rowCount`
+mapper trapped on exactly 2^63 - the range guard was off by one ULP and its test
+used `1e300`, which never reached the bug - the `updatedAt` narrowing was
+undocumented, and two passages in this file still called iOS parity an open
+blocker. Derivation, parsing strictness, failure isolation, panel copy, severity
+colors, and the pasteboard path were each read against the Web source and found
+faithful. Periphery reports no dead code. `./scripts/test.sh apple` passes after
+the fixes; the full gate was last run green when the parity work landed and is
+re-run before release per "Validation and release order".
+
+### Open release blockers
 
 **Live-host verification.** Neither item is covered by the offline contract test:
 
@@ -417,7 +471,7 @@ configuration behavior, and iOS was never broken by the ACL release.
 1. Run targeted validation after each change through `./scripts/test.sh`; the
    release migration runs under the `release` target.
 2. Run the full `./scripts/test.sh` gate after the remediation and again after
-   the deferred iOS parity work lands.
+   the iOS parity work lands. Both runs are green.
 3. Create a fresh Firestore backup. Run the migration dry-run, review aggregate
    counts and invariants, run `--apply`, then rerun the dry-run and require a
    no-op. Do not reuse an older backup as the rollback point.
@@ -444,7 +498,7 @@ configuration behavior, and iOS was never broken by the ACL release.
 * [x] Findings 1 and 5 closed as accepted dispositions; rebuild-only rollout gate enforced in `bootstrap.sh`.
 * [x] Findings 2, 3, 4, 6, 7, 8, 9, 10, 11, and 12 implemented across Waves 1-6.
 * [x] Full `./scripts/test.sh` gate green after the remediation (2026-08-19).
-* [x] Write and implement the separate iOS Server Health Policy parity plan before release.
+* [x] iOS Server Health Policy parity implemented and reviewed before release.
 * [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.
 * [ ] Verify the four reachability cases end to end.
 * [ ] Run the migration (backup, dry-run, `--apply`, no-op rerun) and rebuild every region from one tag.
