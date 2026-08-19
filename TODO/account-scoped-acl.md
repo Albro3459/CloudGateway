@@ -169,8 +169,9 @@ A static review of the original implementation commit `ae99c93` raised twelve
 findings across slot integrity, cross-process ordering, the create fast path,
 account deletion, malformed-row handling, policy status, and documentation. All
 twelve are closed: ten by implementation across Waves 1-6, two (findings 1 and
-5) as accepted dispositions. The iOS Server Health parity work is deferred to
-its own plan and remains an open release blocker.
+5) as accepted dispositions. The iOS Server Health parity work shipped under
+its own plan, [TODO/ios-policy-parity.md](ios-policy-parity.md), closing that
+release blocker.
 
 Finding numbers below are durable identifiers - API source, tests, and the
 release migration cite them in comments. So are the wave names in "Delivery
@@ -197,8 +198,9 @@ waves".
   the previous allow-set until they do. Reconcile still re-reads current roles,
   applies `cg_admin4/6`, and includes them in read-back and status hashes, so
   partial fleet application is visible.
-* **iOS parity is deferred to its own plan, but not to a later release.** See
-  "Open release blockers".
+* **iOS parity shipped under its own plan, not deferred to a later release.**
+  Delivered per [TODO/ios-policy-parity.md](ios-policy-parity.md); see "Open
+  release blockers".
 
 ### Findings and resolutions
 

@@ -256,10 +256,13 @@ final class CloudGatewayPolicyStatusTests: XCTestCase {
     }
 
     func testRowCountRejectsAValueBeyondIntsRange() {
-        // `Int(_: Double)` traps rather than returning nil, so an out-of-range number has to be
-        // rejected before the conversion or a corrupt doc crashes the app.
-        let doc = CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": 1e300])
-        XCTAssertNil(doc.rowCount)
+        // `Int(_: Double)` traps on an out-of-range value rather than returning nil, so a corrupt
+        // doc must never reach it. 2^63 is the case a hand-rolled `value <= Double(Int.max)` guard
+        // would wrongly admit, since `Double(Int.max)` rounds up to 2^63 - it has to be covered
+        // here, not just a far-out value like 1e300.
+        XCTAssertNil(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": 0x1p63]).rowCount)
+        XCTAssertNil(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": -0x1p65]).rowCount)
+        XCTAssertNil(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": 1e300]).rowCount)
     }
 
     func testRowCountAcceptsIntegralDoubleIntNegativeAndZero() {
@@ -268,6 +271,8 @@ final class CloudGatewayPolicyStatusTests: XCTestCase {
         XCTAssertEqual(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": 12]).rowCount, 12)
         XCTAssertEqual(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": -1]).rowCount, -1)
         XCTAssertEqual(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": 0]).rowCount, 0)
+        // -2^63 is exactly representable as a `Double` and is exactly `Int.min`, so it must be accepted.
+        XCTAssertEqual(CloudGatewayFirestorePolicyMapper.policyDoc(documentId: "r", data: ["rowCount": -0x1p63]).rowCount, Int.min)
     }
 
     // MARK: - CloudGatewayFirestorePolicyMapper: updatedAt

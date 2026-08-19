@@ -4,9 +4,10 @@ import Foundation
 /// repository converts `Timestamp` -> `Date` recursively before calling this, so every date value
 /// this mapper sees is already a `Date`.
 ///
-/// Ports `parsePolicyDocument` (`policyHelper.ts`). Coercion matches
-/// `Frontend/Web/src/helpers/coerce.ts`. The policy coercion helpers deliberately live here rather
-/// than in a shared abstraction or a renamed `CloudGatewayFirestoreMeshMapper`.
+/// Ports `parsePolicyDocument` (`policyHelper.ts`). Coercion follows
+/// `Frontend/Web/src/helpers/coerce.ts`, except for two deliberate narrowings documented at
+/// `rowCount` and `date` below. The policy coercion helpers deliberately live here rather than in a
+/// shared abstraction or a renamed `CloudGatewayFirestoreMeshMapper`.
 public enum CloudGatewayFirestorePolicyMapper {
     /// Defensive by design: a malformed or partially-written doc must never throw while rendering.
     /// Missing/invalid fields come back nil rather than a fabricated default, so
@@ -33,6 +34,13 @@ public enum CloudGatewayFirestorePolicyMapper {
     /// Firebase `Timestamp` -> `Date` conversion is the iOS repository's job, done recursively
     /// before this mapper ever sees the data, so this module stays Firebase-free and never imports
     /// FirebaseFirestore.
+    ///
+    /// TS `dateOrNull` also accepts an ISO string, an epoch number, or any object with a `toDate()`
+    /// method; this accepts `Date` only, so a doc whose `updatedAt` was written as a string or
+    /// number would read `unreadable` here and fine on web. That cannot occur today -
+    /// `Backend/API/src/firebase.py` writes a server timestamp and the repository converts it to
+    /// `Date` before this mapper runs - so the narrow contract is deliberate rather than an
+    /// oversight.
     private static func date(_ value: Any?) -> Date? {
         value as? Date
     }
@@ -47,18 +55,13 @@ public enum CloudGatewayFirestorePolicyMapper {
     /// gated out explicitly rather than trusted as a 0/1 integer. Zero and negative integral values
     /// are accepted - the web Firestore mapper imposes no non-negativity check, so none is added
     /// here.
+    ///
+    /// `Int(exactly:)` does the whole rejection in one step - it returns nil for NaN, infinity,
+    /// fractional values, and anything outside `Int`'s range. A hand-rolled range check must not be
+    /// used here: `Double(Int.max)` rounds up to 2^63, so a `value <= Double(Int.max)` guard admits
+    /// exactly 2^63 and the following `Int(value)` then traps on it.
     private static func rowCount(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        let double = number.doubleValue
-        guard double.truncatingRemainder(dividingBy: 1) == 0 else { return nil }
-        return integer(double)
-    }
-
-    /// `Int(_: Double)` traps on NaN, infinity, and anything outside `Int`'s range, so a corrupt
-    /// Firestore number must be rejected before the conversion rather than after it.
-    private static func integer(_ value: Double) -> Int? {
-        guard value.isFinite,
-              value >= Double(Int.min), value <= Double(Int.max) else { return nil }
-        return Int(value)
+        return Int(exactly: number.doubleValue)
     }
 }
