@@ -1,123 +1,57 @@
-# Shared Subnet Mesh: Cross-Region Peer-to-Peer
+# Shared Subnet Mesh: Completed PR Plan
 
-Goal: give every regional server its own tunnel subnet and bridge mesh-enabled servers so a peer on one server can reach a peer on another by tunnel IP. Subnet allocation is operator-managed and authoritative in `subnet-registry.json`; bridging is reconciled from Firestore and triggered by boot, registration, or the admin dashboard.
+Status: fully implemented on the `shared-subnet` branch.
 
-## Architectural decisions
+## Goal
 
-* **Hard cutoff, no migration.** The implementation is complete on this branch, but live Firestore and OCI state have not been verified. The rollout supports no existing live `Mesh/{regionId}` documents and no mixed mesh versions. Chicago clients are disposable: before changing the Chicago subnet, delete every `Regions/us-chicago-1/Instances/*` document. Do not inspect, migrate, retain, or validate old assigned tunnel addresses.
-* A future subnet change uses the same exact hard cutoff: disable that region's mesh membership, run Sync All Regions, delete every client document, update the authoritative registry and matching tfvars, deploy, then explicitly re-enable mesh and run Sync All Regions again. Verify the resulting routes, handshakes, reachability, and Mesh status only after deployment.
-* **Manual-first sync, no timer.** Sync runs at boot, once after registration, and through the dashboard's Sync All Regions action. Periodic polling remains a possible future option.
-* **Mesh membership lives only in Firestore.** `meshEnabled` is operator-owned, defaults to false on creation, and is not duplicated in tfvars or environment variables. Only literal `true` enables a region or mesh membership; missing and every other value are false.
-* **No new keys.** Server links use each server's existing WireGuard interface keypair. No pairwise preshared keys are required.
-* **Hostname endpoints.** Mesh peers use `wg.<regionId>.gocloudlaunch.com:51820`, the existing grey-cloud client endpoint hostname.
-* `Mesh/{regionId}` is status and observability only.
+Give each regional server its own tunnel subnet and connect mesh-enabled regions so a peer on one server can reach a peer on another by tunnel IP. The implementation covers subnet allocation, WireGuard reconciliation, Firestore state, regional APIs, the web dashboard, and the iOS admin Server Health surface.
 
-## Lifecycle and operational assumptions
+## Completed implementation plan
 
-Normal server replacement must not disable the Region or mesh membership. A normal rebuild keeps the same WireGuard key, tunnel subnet, and endpoint hostname. Boot sync re-adds peers, and WireGuard endpoint roaming updates the remote peer when the rebuilt server handshakes from a new public address. No drain lifecycle is needed.
+### 1. Establish the subnet and state model
 
-`enabled=false` means no operational server exists in that region. Permanent region decommission is a separate, explicit future operation: remove the region from desired state and Sync All before permanent deletion. This PR does not require generic decommission automation.
+* Use `subnet-registry.json` as the authoritative non-secret allocation inventory. Each region has an exact `/24` IPv4 network and `/64` IPv6 network inside `10.0.0.0/16` and `fd42:42:42::/48`.
+* Store host-owned tunnel CIDRs and the operator-owned `meshEnabled` flag on `Regions/{regionId}`. New regions default to `meshEnabled: false`; only literal `true` enables a region or mesh membership.
+* Keep `Mesh/{regionId}` as status and observability data. Admins can update only `Regions/{regionId}.meshEnabled`; Mesh writes remain Admin-SDK-only.
+* Validate registry uniqueness, overlap, aggregate containment, active/reserved status, and exact registry-to-tfvars matches before Terraform deployment. Runtime overlap protection remains enabled for corrupted Firestore data.
 
-The obsolete lifecycle direction has been removed from implementation and documentation: `region-lifecycle.py`, `drainRequestedAt`, prepare-drain, verify-drain, Terraform apply/destroy drain gates, repeated per-target lifecycle verification, and transactional drain snapshots are not supported.
+### 2. Reconcile client and mesh peers together
 
-## Current state and subnet plan
+* Run one reconciliation pass for client peers, mesh peers, and routes at boot, after registration, and through the admin Sync All Regions action. There is no timer or legacy migration path.
+* Keep `wg0.conf` interface-only. Runtime mesh peers use the existing server WireGuard keypairs, hostname endpoints, subnet-width AllowedIPs, and `persistent-keepalive 25`; routes for remote `/24` and `/64` networks are managed explicitly on `wg0`.
+* Reconcile the union of desired client and mesh peers, remove unknown peers and routes, reject duplicate server keys, and reapply mesh endpoints on every sync so endpoint roaming and server replacement continue to work.
+* Validate mesh keys, endpoint hostnames, ports, exact network widths, local-network conflicts, and cross-candidate overlap. Isolate malformed candidates, preserve an already-live peer when its active record has a valid key but malformed tunnel metadata, and still remove peers for revoked or inactive records.
+* Write best-effort Mesh status with strict current response shapes and region-scoped audit output. Do not log private keys, full configs, emails, client names, tunnel IPs, or traffic metadata.
 
-The planned cutover assumes both regions use the same tunnel networks, so bridging is impossible until Chicago moves. Live allocation state must be confirmed by the operator; this repository cannot prove it:
+### 3. Complete the API, Firestore, and dashboard workflow
 
-| Region | Current v4 | Current v6 | Planned v4 | Planned v6 |
-| --- | --- | --- | --- | --- |
-| us-sanjose-1 | `10.0.0.0/24` | `fd42:42:42::/64` | `10.0.0.0/24` | `fd42:42:42::/64` |
-| us-chicago-1 | `10.0.0.0/24` | `fd42:42:42::/64` | `10.0.1.0/24` | `fd42:42:42:1::/64` |
-| next region | — | — | `10.0.2.0/24` | `fd42:42:42:2::/64` |
+* Add the admin sync fan-out across all enabled regions, including regions whose mesh membership is disabled so removal converges everywhere.
+* Isolate regional failures: a timeout, non-JSON proxy error, incompatible response, or `409 SYNC_IN_PROGRESS` affects only that region's result. Sync requests use a 45-second regional timeout and classify an already-running sync separately from a generic failure.
+* Expose strict mesh counters, peer snapshots, status, and `meshStatusWritten` in the current sync response. `appliedAt` and `updatedAt` are Firestore server timestamps from the same status write.
+* Implement the web Server Health page with mesh membership toggles, pending and persistent configuration states, link status, warnings, status freshness, Sync All Regions, and per-region results with safe expandable logs.
+* Keep toggling as a Firestore-only change until Sync All runs. Clear in-flight state on auth-generation changes and retire optimistic overrides when superseded reads complete.
 
-Each region uses an exact `/24` IPv4 interface network and `/64` IPv6 interface network. The interface address is the `.1`/`::1` address and DNS equals that interface address. Region networks derive from the allocation slot and remain inside aggregate `10.0.0.0/16` and `fd42:42:42::/48`; the aggregates are documentation-only and are not routed as a whole.
+### 4. Add the iOS Server Health surface
 
-`subnet-registry.json` is the authoritative non-secret allocation inventory because tfvars are gitignored. Terraform preflight and `terraform.sh` must validate registry uniqueness and overlap, aggregate containment, active/reserved status, and an exact match between the selected region's registry allocation and tfvars before deployment. Runtime skipped-overlap protection remains load-bearing corruption protection against bad Firestore data; it is not legacy compatibility and must remain enabled even when preflight passes.
+* Port mesh validation, status derivation, warning text, link rows, staleness, and strict sync-response parsing into shared `CloudGatewayAppCore` code for iOS and future macOS reuse.
+* Replace the per-region iOS sync action with an admin-only Server Health page. It reads `Regions/*` and `Mesh/*`, writes only `meshEnabled`, fans out syncs in parallel, and re-reads durable Mesh status after the fan-out.
+* Match the web behavior for mesh toggles, pending state, warnings, link statuses, per-region counts, `409` handling, incompatible responses, and sign-out protection. Use a 45-second timeout only for admin sync requests.
+* Use a monotonic load generation so an older refresh cannot overwrite a newer toggle reload. Keep pending reload bookkeeping correct across identity changes and remove the obsolete single-region sync API and result view.
+* Export sync logs with `ShareLink`; never write sensitive sync logs to disk or application logs.
 
-## How the bridge works
+### 5. Perform the Chicago cutover and deployment
 
-Server-to-server links use the same `wg0` interface. Each mesh-enabled server adds every other eligible mesh-enabled region as a peer with subnet-width AllowedIPs and `persistent-keepalive 25`, then installs routes for the remote `/24` and `/64` on `wg0`. Runtime peers need explicit route management because `wg set` does not install routes. Mesh peers are reapplied on every sync so endpoint hostnames resolve again; WireGuard endpoint roaming handles a remote rebuild without requiring a sync on the other host.
+* Keep San Jose on `10.0.0.0/24` and `fd42:42:42::/64`. Move Chicago to `10.0.1.0/24` with interface/DNS addresses `10.0.1.1`, and to `fd42:42:42:1::/64` with interface/DNS address `fd42:42:42:1::1`.
+* Before the subnet change, disable Chicago mesh membership, run Sync All Regions, and delete every `Regions/us-chicago-1/Instances/*` document without migrating old addresses.
+* Verify current `wireguardPort` and tunnel CIDRs, update the registry and live Chicago tfvars, deploy Chicago and San Jose, let registration backfill state, then explicitly enable mesh and run Sync All Regions.
+* Verify routes, WireGuard peers and handshakes, cross-region tunnel reachability, and Mesh status. Chicago clients are recreated on the new subnet; this is a hard cutoff, not an address migration.
 
-Client configs already use full-tunnel AllowedIPs, and existing forwarding permits wg0-to-wg0 traffic without NAT. No client, firewall, MTU, or OCI ingress change is required. A peer in San Jose can therefore reach a Chicago peer through the remote subnet route, with tunnel source addresses preserved.
+### 6. Close review findings and validate
 
-## Sync and Firestore model
+* Isolate malformed API client records; fix web optimistic-override retirement and login account-switch invalidation; add iOS load-generation and pending-reload protection.
+* Promote `validate_port`, use server timestamps for `appliedAt`, correct unknown mesh reason handling in web and Swift, consolidate the remaining login attempt state, and remove obsolete lifecycle/drain compatibility code.
+* Complete the bounded review, documentation cleanup, and full validation gate. `./scripts/test.sh` passed across API, web, Apple, infrastructure, and Firebase targets on 2026-08-16.
 
-One reconciliation pass converges client peers, mesh peers, and routes. It runs from boot, the post-register bootstrap pass, and `POST /api/admin/sync` fan-out from Sync All Regions. Sync All targets all enabled regions, including a region whose `meshEnabled` is false, so removal converges everywhere.
+## Delivered state
 
-Desired mesh peers are enabled regions other than self with complete, valid current metadata. Malformed metadata is isolated per candidate. `skipped-incomplete` and `skipped-overlap` are configuration failures while the condition persists, never pending; runtime overlap defense remains active. Pending means valid desired state differs from live state and Sync All can change live state. Once invalid or overlapping metadata is corrected, the candidate becomes pending until Sync All applies it.
-
-There is no legacy normalization or compatibility rollout. `applied` and `skipped-overlap` records must contain the complete current snapshot, including `endpointPort`; `skipped-incomplete` may omit whichever fields are missing or invalid and must preserve its reason code. Responses missing the current `meshUpdated` shape are incompatible. The dashboard requires the current API response shape: an incompatible response renders an explicit failure card and must never crash. There is no mixed-version rollout and no support for an older Mesh/API shape.
-
-Existing pre-feature Region documents are the one real schema rollout case. Missing `meshEnabled` is treated as false; registration backfills tunnel CIDRs; mesh remains disabled until all regions are updated. Malformed metadata must not prevent valid regions from progressing. Before removing or depending on no missing-`wireguardPort` fallback, an operator must verify and backfill `wireguardPort` on every existing Region document. The repository cannot prove live Firestore state, so this remains an unchecked live prerequisite; never silently default missing values to `51820`.
-
-Region documents contain host-owned tunnel CIDRs and operator-owned `meshEnabled`:
-
-```text
-Regions/{regionId}
-  tunnelNetworkV4
-  tunnelNetworkV6
-  meshEnabled
-```
-
-`Mesh/{regionId}` contains only server metadata and per-peer status such as endpoint hostname, public key, allowed networks, endpoint port, and `applied`, `skipped-incomplete`, or `skipped-overlap` status. Status writes are best effort and never make sync fail. Firestore rules permit admins to update only `meshEnabled`; Mesh reads are admin-only and writes remain Admin-SDK-only.
-
-## Backend and dashboard requirements
-
-The API must reconcile the union of client and mesh peers, remove unknown peers and routes, reject duplicate server public keys, and expose strict current sync counts/statuses. Mesh candidate validation must check keys, endpoint, port, exact network widths, local-network conflicts, and cross-candidate overlap.
-
-The Server Health page shows region enabled state, mesh state, status freshness, per-peer results, and configuration failures. Toggling `meshEnabled` changes no host until Sync All. Each regional Sync All request times out after 45 seconds and renders as an independent regional failure so one hung API cannot block the remaining results. Auth generation changes must clear syncing and toggling state so controls cannot remain disabled after a session refresh. Live endpoint drift is current when the live endpoint address is one of the DNS answers and the port matches. CloudGateway manages one grey-cloud A record and no AAAA record, so this is cheap defensive correctness.
-
-## Terraform and deploy requirements
-
-* Fix Terraform DNS/interface comparison to canonicalize and compare the address component, not `cidrhost(interfaceCIDR, 0)`.
-* Enforce strict booleans: only literal `true` enables Region or mesh; all other values are false.
-* Keep `wg0.conf` interface-only; runtime peers and routes are applied by sync.
-* Keep the planned Chicago values: `10.0.1.1/24`, `10.0.1.0/24`, DNS `10.0.1.1`, `fd42:42:42:1::1/64`, `fd42:42:42:1::/64`, DNS `fd42:42:42:1::1`.
-* Preflight must validate every present tfvars allocation against the registry, including inactive and reserved allocations as appropriate, and reject overlap or aggregate violations before deployment.
-
-## Cutover and rollback
-
-The implementation cleanup, bounded three-loop review, and final full validation gate are complete on this branch. The cutover was carried out on 2026-08-13/14 in this order, which any future subnet change must repeat:
-
-1. Verify and backfill `wireguardPort` on every existing Region document; keep mesh disabled until all Region documents have current tunnel CIDRs and verified ports. The repository cannot prove this live state.
-2. Before the Chicago subnet change, disable Chicago mesh membership and run Sync All Regions.
-3. Delete every `Regions/us-chicago-1/Instances/*` document without inspecting or migrating addresses.
-4. Update the authoritative `subnet-registry.json`, then edit the live, gitignored `us-chicago-1.terraform.tfvars` to the planned subnet values.
-5. Deploy Chicago and San Jose together with the normal Terraform flow.
-6. Let registration backfill current tunnel CIDRs and complete health checks. Keep mesh disabled until all Region documents are updated and the `wireguardPort` prerequisite is complete.
-7. After ready emails, explicitly enable mesh for the intended regions and run Sync All Regions.
-8. Verify routes, WireGuard peers/handshakes, cross-region tunnel reachability, and Mesh status documents. Chicago users recreate clients.
-
-Rollback of mesh membership is explicit: disable the affected `meshEnabled` flags and Sync All Regions. A future subnet change repeats the hard cutoff; it is not an address migration. Disabled-region drain concerns are inapplicable because `enabled=false` means the region is dead.
-
-## Accepted and out-of-scope review findings
-
-* Account-deletion local/remote peer races are accepted for this PR.
-* Destroy applying a newly generated plan is accepted.
-* Client old-address migration is rejected by the hard cutoff.
-* Permanent decommission automation is not required.
-* Per-target repeated lifecycle verification and transactional drain-snapshot concerns are removed with the drain system.
-
-## Checklist and status
-
-Implementation, documentation cleanup, the bounded three-loop review, and the final API, web, infrastructure, and Firebase validation gate are complete on the branch. The cutover ran on 2026-08-13/14; the evidence is in the repository rather than in a live query, and is cited per item below.
-
-* [x] Region registration and repository models publish tunnel CIDRs and create `meshEnabled: false`.
-* [x] WireGuard mesh peers, subnet-width validation, routes, union reconciliation, and endpoint reapplication.
-* [x] Sync desired mesh calculation, malformed-metadata isolation, overlap protection, status write, and audit output.
-* [x] Admin sync API, Firestore access/rules/schema, and Server Health Sync All UI.
-* [x] Post-register bootstrap sync and subnet documentation.
-* [x] Authoritative subnet registry, exact registry/tfvars matching, aggregate/status validation, fixed `/24`/`/64` invariants, and cross-region overlap preflight.
-* [x] Remove `region-lifecycle.py`, `drainRequestedAt`, prepare-drain/verify-drain, and Terraform drain-gate direction from implementation, docs, and follow-ups.
-* [x] Remove legacy applied/skipped response normalization and missing-`endpointPort`/missing-`meshUpdated` compatibility.
-* [x] Implement strict boolean handling and strict current sync-response failure cards.
-* [x] Fix Terraform address-component DNS/interface comparison.
-* [x] Implement pending versus persistent configuration-failure semantics, auth-generation state reset, and multi-address endpoint drift comparison.
-* [x] Verify and backfill `wireguardPort` on every existing Region document before removing or depending on no fallback. Both Region documents carry `wireguardPort: 51820` with tunnel CIDRs populated in `backups/backup-20260814T143552Z.json`.
-* [x] Edit live `us-chicago-1.terraform.tfvars` and update the authoritative registry for the cutover. The live tfvars is on `10.0.1.0/24` and `fd42:42:42:1::/64`, matching `subnet-registry.json` exactly, and pins `source_ref = "deploy-v1.0.23"`.
-* [x] Delete Chicago client documents, deploy the cutover, enable mesh, Sync All, and perform live verification. The same backup shows all Chicago clients readdressed onto `10.0.1.0/24`, `meshEnabled: true` on both regions, and each `Mesh/*` document holding the other region as an `applied` peer as of 2026-08-14T02:38:57Z.
-* [x] Complete the bounded three-loop review and final full validation gate after the direction change.
-
-The validation gate recorded when this checklist was written covered API, web, infrastructure, and Firebase only - the iOS Server Health work landed after it, so Apple was not represented. `./scripts/test.sh` has since been run across every target, Apple included, on 2026-08-16 after the `shared-subnet-mesh-review-fixes.md` waves landed, and passed.
-
-The cutover items above were carried out on 2026-08-13/14 but left unchecked here until 2026-08-16. Check them against the backups and the live tfvars before trusting this list again.
+The cutover completed on 2026-08-13/14. The repository backup records both regions with populated tunnel CIDRs and `wireguardPort: 51820`, Chicago clients on `10.0.1.0/24`, `meshEnabled: true` for both regions, and each `Mesh/*` document containing the other region as an `applied` peer. The implementation, review fixes, documentation, and validation are complete; no additional work remains for this PR.
