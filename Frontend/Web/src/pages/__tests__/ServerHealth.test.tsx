@@ -121,6 +121,9 @@ const syncResponse = (regionId: string, overrides: Partial<RegionSyncResponse> =
     meshRoutesRemoved: 0,
     meshStatusWritten: true,
     meshPeers: [],
+    policyApplied: true,
+    policyRowCount: 3,
+    policyStatusWritten: true,
     ...overrides,
 });
 
@@ -412,6 +415,119 @@ describe("ServerHealth", () => {
 
         expect(await screen.findByText("San Jose (us-sanjose-1)")).toBeTruthy();
         expect(screen.queryByText(/could not save its mesh status snapshot/)).toBeNull();
+    });
+
+    it("warns when a region's account-scoped ACL policy pass failed", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: {
+                    success: true,
+                    data: syncResponse("us-sanjose-1", {
+                        policyApplied: false,
+                        policyRowCount: null,
+                        policyStatusWritten: null,
+                    }),
+                },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText(/client-isolation policy pass failed/)).toBeTruthy();
+    });
+
+    it("warns more mildly when a region applied its policy map but could not save the status snapshot", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: {
+                    success: true,
+                    data: syncResponse("us-sanjose-1", {
+                        policyApplied: true,
+                        policyRowCount: 5,
+                        policyStatusWritten: false,
+                    }),
+                },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText(/policy status snapshot could not/)).toBeTruthy();
+        expect(screen.queryByText(/client-isolation policy pass failed/)).toBeNull();
+    });
+
+    it("stays quiet about policy status on a fully successful sync", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: {
+                    success: true,
+                    data: syncResponse("us-sanjose-1", {
+                        policyApplied: true,
+                        policyRowCount: 5,
+                        policyStatusWritten: true,
+                    }),
+                },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("San Jose (us-sanjose-1)")).toBeTruthy();
+        expect(screen.queryByText(/client-isolation policy pass failed/)).toBeNull();
+        expect(screen.queryByText(/policy status snapshot could not/)).toBeNull();
+    });
+
+    it("stays quiet about policy status for a region that predates account-scoped ACL policy sync", async () => {
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        runRegionsSync.mockResolvedValue([
+            {
+                regionId: "us-sanjose-1",
+                result: {
+                    success: true,
+                    data: syncResponse("us-sanjose-1", {
+                        policyApplied: null,
+                        policyRowCount: null,
+                        policyStatusWritten: null,
+                    }),
+                },
+            },
+        ]);
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("San Jose (us-sanjose-1)")).toBeTruthy();
+        expect(screen.queryByText(/client-isolation policy pass failed/)).toBeNull();
+        expect(screen.queryByText(/policy status snapshot could not/)).toBeNull();
     });
 
     it("writes a meshEnabled toggle to Firestore and marks the affected link pending", async () => {

@@ -156,6 +156,13 @@ export type RegionSyncResponse = {
     // host that has not been reinstalled yet.
     meshStatusWritten: boolean | null;
     meshPeers: RegionSyncMeshPeer[];
+    // null when the region predates account-scoped ACL policy sync entirely.
+    // false means peer/mesh sync succeeded but this region's policy pass
+    // failed - it keeps enforcing its previously applied policy map, and
+    // rowCount/statusWritten are omitted (unknown) in that case.
+    policyApplied: boolean | null;
+    policyRowCount: number | null;
+    policyStatusWritten: boolean | null;
 };
 
 export type RegionSyncResult = {
@@ -541,6 +548,13 @@ const parseRegionSyncResponse = (value: unknown): RegionSyncResponse | null => {
     // Deliberately not in requiredFields: absent means an older regional API, which
     // must stay compatible. A present non-boolean is still a malformed response.
     if (hasOwn(value, "meshStatusWritten") && typeof value.meshStatusWritten !== "boolean") return null;
+    // Same compatibility story for the account-scoped ACL policy fields: absent
+    // means an older regional API that predates policy sync entirely. rowCount
+    // and statusWritten are only ever present alongside a true policyApplied,
+    // but a present value of the wrong shape is still a malformed response.
+    if (hasOwn(value, "policyApplied") && typeof value.policyApplied !== "boolean") return null;
+    if (hasOwn(value, "policyRowCount") && !isNonNegativeInteger(value.policyRowCount)) return null;
+    if (hasOwn(value, "policyStatusWritten") && typeof value.policyStatusWritten !== "boolean") return null;
 
     const meshPeers: RegionSyncMeshPeer[] = [];
     for (const rawPeer of value.meshPeers) {
@@ -574,6 +588,9 @@ const parseRegionSyncResponse = (value: unknown): RegionSyncResponse | null => {
         meshRoutesRemoved: value.meshRoutesRemoved as number,
         meshStatusWritten: typeof value.meshStatusWritten === "boolean" ? value.meshStatusWritten : null,
         meshPeers,
+        policyApplied: typeof value.policyApplied === "boolean" ? value.policyApplied : null,
+        policyRowCount: isNonNegativeInteger(value.policyRowCount) ? value.policyRowCount : null,
+        policyStatusWritten: typeof value.policyStatusWritten === "boolean" ? value.policyStatusWritten : null,
     };
 };
 

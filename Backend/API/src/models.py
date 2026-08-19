@@ -149,6 +149,9 @@ class AdminSyncResponse(ApiModel):
     mesh_status_written: bool
     client_peers_degraded: int
     mesh_peers: list[AdminSyncMeshPeer]
+    policy_applied: bool
+    policy_row_count: int | None = None
+    policy_status_written: bool | None = None
 
 
 class ErrorDetail(ApiModel):

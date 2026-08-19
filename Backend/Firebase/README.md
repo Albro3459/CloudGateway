@@ -49,7 +49,10 @@ authorization-bearing live object read back from the host - `cg_tunnel4/6`, `cg_
 `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map, so an admin allow-set change is
 visible in the hash as soon as the next reconcile runs. `rowCount` is the `cg_slot4` row count.
 `updatedAt` is a server timestamp meaning the last successful live apply and read-back; Server
-Health renders it as "Last applied." Timestamp age alone is never drift or staleness - drift is
+Health renders it as "Last applied." A failed apply or read-back never writes this document at
+all - the write happens only after both succeed, so a failure leaves the previous successful
+document untouched rather than recording a failure state; the failure is visible only in host logs
+and, for Sync All, in that call's response. Timestamp age alone is never drift or staleness - drift is
 comprehensive hash disagreement among enabled regions only, and disabled regions never participate
 in the comparison. There is no role-mutation API, UI, timer, or automatic role propagation in this
 release: reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, so a trusted

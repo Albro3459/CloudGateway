@@ -284,7 +284,10 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
       "allowedNetworkV4": "10.0.0.0/24",
       "allowedNetworkV6": "fd42:42:42::/64"
     }
-  ]
+  ],
+  "policyApplied": true,
+  "policyRowCount": 12,
+  "policyStatusWritten": true
 }
 ```
 
@@ -351,6 +354,21 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   full pull-apply-read back-status pass `POST /api/sync/refresh` enqueues - see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md). So Sync All is also the
   repair path for a dropped or lost policy poke, not just for peer/mesh drift.
+- `policyApplied` is `true` only when this pass's `reconcile_policy()` call completed without
+  raising. It stays `true`/`false` for the entire response even though everything above it
+  (`added`, `meshApplied`, ...) is about the independent peer/mesh pass - the two legs share a
+  request but not a failure mode: a policy failure never fails this endpoint or touches the
+  peer/mesh fields, and the response is still `200`. On failure the response carries exactly
+  `"policyApplied": false` with `policyRowCount` and `policyStatusWritten` both omitted
+  (`response_model_exclude_none=True` drops null fields rather than serializing them), so a caller
+  should treat their absence as "policy leg failed," not as zero. On success `policyRowCount` is
+  the row count read back from the live map (mirrors `Policy/{regionId}.rowCount`) and
+  `policyStatusWritten` mirrors `meshStatusWritten`'s meaning for the policy status doc: `false`
+  means the map applied correctly but the best-effort `Policy/{regionId}` write failed, so the
+  dashboard should warn mildly rather than treat the pass as failed. All three fields are
+  **optional for consumers** for the same staggered-rollout reason as `meshStatusWritten`: a region
+  that predates this release omits all three, and a dashboard build must treat their absence as
+  unknown, not as `policyApplied: false`.
 - The Firestore pull that feeds `reconcile_policy()` is fail-closed per row, not per pass: a
   malformed entry (wrong type, a host prefix other than `/32`/`/128`, an address outside the tunnel
   aggregate, or an invalid/out-of-range account slot) is skipped and counted in an aggregate
@@ -376,9 +394,15 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   pass at a time - it does not bound the total number of sequential refreshes a caller can trigger
   over time, and there is no rate limit (see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)).
-- Failure behaviour: because the pass is detached from the response, a failed apply surfaces only
-  in host logs and the `Policy/{regionId}` status doc, never in this endpoint's response. Use
-  `POST /api/admin/sync` (Sync All) as the repair path for a dropped or failed poke.
+- Failure behaviour: because the pass is detached from the response, a failed apply is never
+  reported in this endpoint's response, and it does not surface in `Policy/{regionId}` either -
+  `reconcile_policy()` raises before it ever calls the status write, so a failed apply or a failed
+  read-back leaves the previous successful `Policy/{regionId}` document exactly as it was, and no
+  failure status is ever written there. The failure is visible only in host logs
+  (`policy_refresh_failed`); a stale-but-valid `Policy` doc can sit next to a region that is
+  actively failing to apply. Use `POST /api/admin/sync` (Sync All) as the repair path for a dropped
+  or failed poke - its response now distinguishes a policy failure via `policyApplied` (see
+  `POST /admin/sync` above).
 - Poke sites: `POST /clients` and `DELETE /clients/{clientId}` (ordinary, non-cleanup deletes) call
   this on every other region, fire-and-forget after the response, so a dropped poke never blocks or
   fails the caller's request. A dropped poke leaves the un-poked region's policy map stale until the

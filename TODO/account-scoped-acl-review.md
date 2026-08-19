@@ -281,8 +281,25 @@ sites, and Server Health policy card.
   `cg_pairs4/6`) per family, drift is comprehensive hash disagreement among enabled regions only,
   and `updatedAt` is displayed as "Last applied" with age alone never treated as drift or
   staleness.
-* [ ] Correct status validation, failure semantics, process-model docs, and the
+* [x] Correct status validation, failure semantics, process-model docs, and the
   claimed bootstrap/API contract test.
+  Landed in Wave 6: `sync.py` gains `EXIT_OK`/`EXIT_PEER_SYNC_FAILED`/`EXIT_POLICY_FAILED`, and a
+  policy-only failure now exits 2 so `cloudgateway-sync-peers.service` retries the whole idempotent
+  peer-plus-policy pass. `AdminSyncResponse` gains `policyApplied`/`policyRowCount`/
+  `policyStatusWritten` so Sync All distinguishes a policy failure from peer/mesh success without
+  changing any existing field. `reconcile_policy()` already raised before ever calling
+  `write_policy_status`, so a failed apply or read-back was already leaving the previous successful
+  `Policy/{regionId}` document untouched with no failure status ever written; `docs/api-contract.md`,
+  `Backend/Firebase/README.md`, and `docs/wireguard-drift-repair.md` now say so explicitly instead of
+  implying a failure state gets written there. `docs/wireguard-drift-repair.md`'s
+  "Account-Scoped ACL Policy Reconcile" opening no longer contradicts itself about which process runs
+  boot reconciliation - it now states the boot call runs inside the `cloudgateway-sync-peers` CLI
+  process while the two HTTP-triggered calls run inside the long-running API process.
+  `Backend/API/tests/test_bootstrap_contract.py` now exists and parses the bootstrap heredoc offline,
+  tying every object name, kind, tunnel aggregate, and rule family back to the policy renderer with
+  negative tests proving a rename on either side fails it - the claimed contract test is real. iOS
+  Server Health Policy parity, the two live-host verification items, and the final full
+  `./scripts/test.sh` gate remain open, tracked separately below.
 * [ ] Write and implement the separate iOS Server Health Policy parity plan.
 * [ ] Run `./scripts/test.sh` after the fixes.
 * [ ] Complete the two existing live-host verification items before rollout.

@@ -17,9 +17,11 @@ from src.policy import (
     render_policy_script,
 )
 
-# The literal table name is the contract with the base ruleset installed by
-# bootstrap.sh (`table inet cloudgateway { ... }`); if POLICY_TABLE is ever
-# renamed, that file must be updated in lockstep.
+# The literal table name below is only a readability aid for this file's own
+# fixtures/assertions. The real two-directional contract with the ruleset
+# bootstrap.sh installs (table name, chain, object names, object kinds,
+# tunnel aggregates, both address families, both rule families) is enforced
+# by tests/test_bootstrap_contract.py, which actually parses bootstrap.sh.
 assert POLICY_TABLE == "cloudgateway"
 
 

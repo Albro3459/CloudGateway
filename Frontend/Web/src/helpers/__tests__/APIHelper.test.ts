@@ -28,12 +28,15 @@ describe("APIHelper", () => {
         ...overrides,
     });
 
-    // syncResponse() is the pre-meshStatusWritten wire shape an older region still
-    // sends; the parser normalizes the absent field to null, so parsed results never
-    // deep-equal the raw body.
+    // syncResponse() is the pre-meshStatusWritten/pre-policy wire shape an older
+    // region still sends; the parser normalizes the absent fields to null, so
+    // parsed results never deep-equal the raw body.
     const parsedSyncResponse = (overrides: Record<string, unknown> = {}) => ({
         ...syncResponse(overrides),
         meshStatusWritten: null,
+        policyApplied: null,
+        policyRowCount: null,
+        policyStatusWritten: null,
     });
 
     const skippedIncompletePeer = (overrides: Record<string, unknown> = {}) => ({
@@ -219,6 +222,112 @@ describe("APIHelper", () => {
         });
     });
 
+    it("accepts an admin sync response from a region that predates account-scoped ACL policy sync", async () => {
+        // Regions are installed one at a time, so a newer dashboard must not reject
+        // a host that has not been reinstalled yet.
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse()));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.policyApplied).toBeNull();
+        expect(result[0].result.data.policyRowCount).toBeNull();
+        expect(result[0].result.data.policyStatusWritten).toBeNull();
+    });
+
+    it("carries a failed policyApplied through as a successful sync", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({ policyApplied: false })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.policyApplied).toBe(false);
+        expect(result[0].result.data.policyRowCount).toBeNull();
+        expect(result[0].result.data.policyStatusWritten).toBeNull();
+    });
+
+    it("carries a successful policy pass with rowCount and statusWritten through", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({
+            policyApplied: true,
+            policyRowCount: 12,
+            policyStatusWritten: true,
+        })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.policyApplied).toBe(true);
+        expect(result[0].result.data.policyRowCount).toBe(12);
+        expect(result[0].result.data.policyStatusWritten).toBe(true);
+    });
+
+    it("carries a false policyStatusWritten through as a successful sync", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({
+            policyApplied: true,
+            policyRowCount: 12,
+            policyStatusWritten: false,
+        })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({ success: true });
+        expect(result[0].result.data.policyStatusWritten).toBe(false);
+    });
+
+    it("rejects an admin sync response whose policyApplied is not a boolean", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({ policyApplied: "false" })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: false,
+            failureType: "incompatible-response",
+            errorCode: "INCOMPATIBLE_RESPONSE",
+        });
+    });
+
+    it.each([
+        ["negative", -1],
+        ["fractional", 1.5],
+    ])("rejects an admin sync response whose policyRowCount is %s", async (_label, policyRowCount) => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({
+            policyApplied: true,
+            policyRowCount,
+            policyStatusWritten: true,
+        })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: false,
+            failureType: "incompatible-response",
+            errorCode: "INCOMPATIBLE_RESPONSE",
+        });
+    });
+
+    it("rejects an admin sync response whose policyStatusWritten is not a boolean", async () => {
+        mockFetch.mockResolvedValue(mockJsonResponse(syncResponse({
+            policyApplied: true,
+            policyRowCount: 12,
+            policyStatusWritten: "true",
+        })));
+        const { runRegionsSync } = require("../APIHelper");
+
+        const result = await runRegionsSync(["us-sanjose-1"], "firebase-token");
+
+        expect(result[0].result).toMatchObject({
+            success: false,
+            failureType: "incompatible-response",
+            errorCode: "INCOMPATIBLE_RESPONSE",
+        });
+    });
+
     it("rejects an admin sync response for a different region", async () => {
         mockFetch.mockResolvedValue(mockJsonResponse({
             regionId: "us-chicago-1",
@@ -339,7 +448,16 @@ describe("APIHelper", () => {
 
         expect(result).toEqual([{
             regionId: "us-sanjose-1",
-            result: { success: true, data: { ...responseBody, meshStatusWritten: null } },
+            result: {
+                success: true,
+                data: {
+                    ...responseBody,
+                    meshStatusWritten: null,
+                    policyApplied: null,
+                    policyRowCount: null,
+                    policyStatusWritten: null,
+                },
+            },
         }]);
     });
 

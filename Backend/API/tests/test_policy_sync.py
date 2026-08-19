@@ -7,6 +7,7 @@ from src.enums import Role
 from src.errors import PolicyApplyFailedError
 from src.policy import LivePolicyMap, PolicyRow
 from src.policy_sync import PolicyCoordinator, bare_tunnel_address, desired_policy, reconcile_policy
+from src.repository import PolicyStatus
 
 from .conftest import make_settings
 from .fakes import FAKE_PUBLIC_KEY, FAKE_PUBLIC_KEY_2, FakePolicyManager, FakeRepository
@@ -409,6 +410,66 @@ def test_reconcile_policy_status_write_failure_does_not_fail_the_pass():
     assert outcome.status_written is False
     assert policy.apply_calls == 1
     assert REGION_ID not in repository.policy_status
+
+
+def test_reconcile_policy_status_write_failure_preserves_the_last_good_status_document():
+    # A best-effort status write failure must never raise (Wave 6, W6-2 for
+    # the write leg): the interface is already reconciled, so the pass
+    # returns a successful outcome with status_written=False and the last
+    # good Policy/{regionId} document is untouched, exactly like a failed
+    # apply or read-back below.
+    repository = make_repository()
+    reserve_and_activate(repository)
+    previous_status = PolicyStatus(region_id=REGION_ID, map_hash_v4="prev-v4", map_hash_v6="prev-v6", row_count=7)
+    repository.policy_status[REGION_ID] = previous_status
+    repository.write_policy_status_error = RuntimeError("simulated Firestore write failure")
+    policy = FakePolicyManager()
+    settings = make_settings()
+
+    outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
+
+    assert outcome.status_written is False
+    assert repository.policy_status[REGION_ID] == previous_status
+
+
+def test_reconcile_policy_apply_failure_raises_and_never_writes_status():
+    # W6-2: a failed apply must never reach write_policy_status at all - the
+    # raise in reconcile_policy precedes it - so the last good
+    # Policy/{regionId} document is preserved exactly, not overwritten with a
+    # failure status (there is no failure status; none is ever written).
+    repository = make_repository()
+    reserve_and_activate(repository)
+    previous_status = PolicyStatus(region_id=REGION_ID, map_hash_v4="prev-v4", map_hash_v6="prev-v6", row_count=7)
+    repository.policy_status[REGION_ID] = previous_status
+    policy = FakePolicyManager()
+    policy.fail_apply_count = 1
+    settings = make_settings()
+
+    with pytest.raises(PolicyApplyFailedError):
+        reconcile_policy(repository=repository, policy=policy, settings=settings)
+
+    assert policy.read_calls == 0
+    assert repository.policy_status[REGION_ID] == previous_status
+
+
+def test_reconcile_policy_read_failure_raises_and_never_writes_status():
+    # Same contract as the apply failure above, for the read-back leg: a
+    # failed read_map still precedes write_policy_status, so the last good
+    # status document survives untouched.
+    repository = make_repository()
+    reserve_and_activate(repository)
+    previous_status = PolicyStatus(region_id=REGION_ID, map_hash_v4="prev-v4", map_hash_v6="prev-v6", row_count=7)
+    repository.policy_status[REGION_ID] = previous_status
+    policy = FakePolicyManager()
+    policy.fail_read_count = 1
+    settings = make_settings()
+
+    with pytest.raises(PolicyApplyFailedError):
+        reconcile_policy(repository=repository, policy=policy, settings=settings)
+
+    assert policy.apply_calls == 1
+    assert policy.read_calls == 1
+    assert repository.policy_status[REGION_ID] == previous_status
 
 
 class LockObservingRepository(FakeRepository):

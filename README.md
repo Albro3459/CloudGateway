@@ -79,6 +79,8 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails, because those are needed to operate the control plane.
 * VPN traffic logs are forbidden. Never log DNS queries, domains or destination IPs requested by VPN users, browsing/app traffic metadata, packet metadata, or per-user connection history.
 * Never log WireGuard private keys, full WireGuard configs, Firebase service account secrets, or auth tokens.
+* Account-scoped ACL policy logs are aggregate-only: row counts, skipped-row counts, booleans, and region IDs. Never a uid, email, tunnel address, account slot, client name, or key.
+* The `Policy/{regionId}` status document is deliberately opaque: a region ID, two hashes, a row count, and a timestamp. The hashes are non-reversible digests of live nftables objects, not a client list, and reveal nothing about who is on the map.
 
 ## Languages and Frameworks
 

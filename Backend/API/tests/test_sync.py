@@ -5,10 +5,12 @@ from typing import cast
 
 import pytest
 
+import src.sync as sync
 from src.enums import ClientStatus, MeshPeerStatus
 from src.errors import WireGuardApplyFailedError
+from src.policy_sync import PolicyOutcome
 from src.repository import MeshPeerState, RegionDoc
-from src.sync import build_sync_audit_log, desired_mesh_peers, desired_peers, run_sync
+from src.sync import SyncOutcome, build_sync_audit_log, desired_mesh_peers, desired_peers, run_sync
 from src.wireguard import PEER_ADDED, PEER_REMOVED, MeshPeer, MeshPeerChange, PeerSyncResult, RouteChange
 
 from .conftest import make_settings
@@ -887,3 +889,99 @@ def test_build_sync_audit_log_includes_mesh_section_and_omits_public_keys():
     assert "reclaimed=true" in log
     assert FAKE_MESH_PUBLIC_KEY not in log
     assert "\x1b" not in log
+
+
+# --- main() exit codes (Wave 6: boot retry contract) ------------------------
+
+
+def _patch_main(
+    monkeypatch,
+    *,
+    run_sync_result: SyncOutcome | None = None,
+    run_sync_error: Exception | None = None,
+    reconcile_result: PolicyOutcome | None = None,
+    reconcile_error: Exception | None = None,
+) -> list[None]:
+    """Patches main()'s object construction to fakes/stand-ins and its two
+    reconcile calls to controllable stubs, mirroring test_register.py's
+    _patch_main style. Returns a list that records one entry per
+    reconcile_policy call, so a test can assert it was never invoked."""
+    # FirestoreRepository/LocalPolicyManager/LocalWireGuardManager are only
+    # constructed, never exercised (run_sync/reconcile_policy are stubbed
+    # below), so a bare object() stand-in for the repository is enough -
+    # main() never calls a method on it directly. LocalWireGuardManager's
+    # constructor does validate the server public key though, so the fake
+    # settings must carry a real base64-encoded key even though it is never
+    # used on the wire.
+    monkeypatch.setattr(sync, "Settings", lambda: make_settings(wg_server_public_key=FAKE_PUBLIC_KEY))
+    monkeypatch.setattr("src.firebase.FirestoreRepository", lambda settings: object())
+
+    reconcile_calls: list[None] = []
+
+    def fake_run_sync(*, repository, wireguard, settings):
+        if run_sync_error is not None:
+            raise run_sync_error
+        assert run_sync_result is not None
+        return run_sync_result
+
+    def fake_reconcile_policy(*, repository, policy, settings):
+        reconcile_calls.append(None)
+        if reconcile_error is not None:
+            raise reconcile_error
+        assert reconcile_result is not None
+        return reconcile_result
+
+    monkeypatch.setattr(sync, "run_sync", fake_run_sync)
+    monkeypatch.setattr(sync, "reconcile_policy", fake_reconcile_policy)
+    return reconcile_calls
+
+
+def test_main_returns_exit_ok_on_a_fully_successful_pass(monkeypatch):
+    reconcile_calls = _patch_main(
+        monkeypatch,
+        run_sync_result=SyncOutcome(result=PeerSyncResult(), mesh_enabled=False),
+        reconcile_result=PolicyOutcome(skipped_rows=0, row_count=1, status_written=True),
+    )
+
+    assert sync.main() == sync.EXIT_OK
+    assert reconcile_calls == [None]
+
+
+def test_main_returns_exit_policy_failed_when_reconcile_policy_raises_after_peer_sync_succeeds(monkeypatch, caplog):
+    # Peer success and policy failure are logged as distinct events (see
+    # sync.py's comment above the policy block); this proves both are still
+    # emitted even though the process now exits non-zero for the retry.
+    _patch_main(
+        monkeypatch,
+        run_sync_result=SyncOutcome(result=PeerSyncResult(), mesh_enabled=False),
+        reconcile_error=RuntimeError("simulated policy apply failure"),
+    )
+
+    with caplog.at_level("INFO", logger="src.sync"):
+        exit_code = sync.main()
+
+    assert exit_code == sync.EXIT_POLICY_FAILED
+    assert "peer_sync_completed" in caplog.text
+    assert "policy_refresh_failed" in caplog.text
+
+
+def test_main_returns_exit_peer_sync_failed_and_never_attempts_policy(monkeypatch):
+    reconcile_calls = _patch_main(
+        monkeypatch,
+        run_sync_error=RuntimeError("simulated peer sync failure"),
+    )
+
+    assert sync.main() == sync.EXIT_PEER_SYNC_FAILED
+    assert reconcile_calls == []
+
+
+def test_main_returns_exit_ok_when_apply_succeeded_but_status_write_failed(monkeypatch):
+    # status_written=False is a best-effort write failure, not an apply
+    # failure - the wire is already correct, so this must stay EXIT_OK.
+    _patch_main(
+        monkeypatch,
+        run_sync_result=SyncOutcome(result=PeerSyncResult(), mesh_enabled=False),
+        reconcile_result=PolicyOutcome(skipped_rows=0, row_count=3, status_written=False),
+    )
+
+    assert sync.main() == sync.EXIT_OK

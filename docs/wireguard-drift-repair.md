@@ -48,16 +48,28 @@ The sync's contract is otherwise one-directional and read-only against Firebase.
 The client-to-client isolation filter (`Backend/API/src/policy.py`, base ruleset in
 `/etc/cloudgateway/cloudgateway.nft`, installed by `bootstrap.sh` `PostUp` - see
 [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)) has its own one-directional
-Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above. It has no
-systemd unit or CLI entry point of its own; it runs inside whichever process calls it, triggered by:
+Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above.
+`reconcile_policy()` itself is one function, not a process, and has no systemd unit or CLI entry
+point of its own - but at boot it runs as part of the `cloudgateway-sync-peers` CLI process (a
+`Type=oneshot` systemd unit), not inside the long-running API process. It is called from:
 
-* Boot, so a rebuilt or rebooted host repopulates its entire policy map from Firestore without
-  needing any peer to poke it. This one runs in the separate `cloudgateway-sync-peers` process,
-  not the long-running API process.
-* `POST /api/admin/sync` (Sync All), which also reconciles peers and mesh - see
-  [docs/api-contract.md](api-contract.md).
+* Boot, and any manual `sudo cloudgateway-sync-peers`, so a rebuilt or rebooted host repopulates
+  its entire policy map from Firestore without needing any peer to poke it. This call runs inside
+  the `cloudgateway-sync-peers` CLI process, right after that same run's peer/mesh pass completes -
+  they are two separate reconciles inside one `oneshot` invocation, not two processes. A
+  policy-only failure here (the peer/mesh pass having already succeeded) makes `sync.py`'s
+  `main()` return `EXIT_POLICY_FAILED` (2), so `cloudgateway-sync-peers.service`
+  (`Restart=on-failure`, `RestartSec=30`, `StartLimitIntervalSec=0`) retries the whole idempotent
+  peer-plus-policy pass indefinitely - see [docs/service-operations.md](service-operations.md) for
+  the operator-facing diagnosis story.
+* `POST /api/admin/sync` (Sync All), which also reconciles peers and mesh and runs inside the
+  long-running API process via `PolicyCoordinator` - see [docs/api-contract.md](api-contract.md).
 * `POST /api/sync/refresh`, the poke any provisioned user's client create/delete triggers on every
-  other region - see [docs/api-contract.md](api-contract.md).
+  other region, also inside the long-running API process - see [docs/api-contract.md](api-contract.md).
+
+All three call the identical `reconcile_policy()` and are serialized against each other by the
+`/run/cloudgateway-policy.lock` flock described below - there is no separate code path for boot vs.
+request-triggered policy reconcile, only a different calling process.
 
 A pass pulls the fleet-wide client/account snapshot from Firestore, applies it to
 `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, and `cg_pairs4/6` atomically as a single `nft -f -`
@@ -67,7 +79,17 @@ canonicalizes and hashes each family into one comprehensive `mapHashV4`/`mapHash
 best-effort `Policy/{regionId}` status doc. Status is read back from the live map, not the pulled
 snapshot, so it describes what is actually on the wire, not what the region intended to apply - the
 same rule `write_mesh_status` follows for `Mesh/{regionId}`. A status write failure never fails a
-pass. The status doc is intentionally opaque: `regionId`, `mapHashV4`/`mapHashV6`, `rowCount` (the
+pass (the apply already happened and is not worth discarding over a status write). The reverse
+case matters more: if the Firestore pull, the `nft -f -` apply, or the read-back itself raises,
+that raise happens before `write_policy_status` is ever called, so nothing is written at all - the
+previous successful `Policy/{regionId}` document is left exactly as it was, and no failure status
+is ever recorded there. A failed pass is visible only in host logs (`policy_refresh_failed`) and,
+for Sync All, in that call's response (`policyApplied: false` - see
+[docs/api-contract.md](api-contract.md)). Operationally this means a stale-but-valid `Policy` doc
+and a healthy-looking Server Health card can coexist with a region that is actively failing to
+apply; the signal is comprehensive hashes disagreeing across enabled regions, or an `updatedAt`
+that stops advancing while the rest of the fleet keeps changing - host logs are authoritative. The
+status doc is intentionally opaque: `regionId`, `mapHashV4`/`mapHashV6`, `rowCount` (the
 `cg_slot4` row count), and `updatedAt` (a server timestamp for the last successful apply/read-back,
 shown in Server Health as "Last applied") - never a uid, email, address, or key. Because roles are
 re-read from `UserRoles` and applied to `cg_admin4/6` on every pass, an admin allow-set change is

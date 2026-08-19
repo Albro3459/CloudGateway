@@ -22,6 +22,12 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 # since they are still authorization-bearing for the comprehensive hash.
 POLICY_TABLE = "cloudgateway"
 
+# The forward chain bootstrap.sh installs inside POLICY_TABLE. Not otherwise
+# used by this module (apply_map/add_client_row/read_map only ever name the
+# sets/maps, never the chain), but tests/test_bootstrap_contract.py enforces
+# that this matches the live ruleset.
+POLICY_CHAIN = "cg_forward"
+
 DEFAULT_POLICY_LOCK_PATH = "/run/cloudgateway-policy.lock"
 # nft is local and fast; the caller holds lock() across this call, so a wedged
 # process must not pin it indefinitely (same reasoning as wireguard.py).

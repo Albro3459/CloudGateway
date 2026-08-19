@@ -27,6 +27,16 @@ from .wireguard import (
 
 logger = logging.getLogger("src.sync")
 
+# Exit codes for cloudgateway-sync-peers (systemd: Restart=on-failure, RestartSec=30,
+# StartLimitIntervalSec=0). A peer-sync failure short-circuits before policy is
+# attempted at all, since the policy pass depends on the same reconciled state.
+# A policy failure is now retriable too - the whole pass (peers + policy) is
+# idempotent, so a retry is safe and is how a rebuilt/rebooted host converges
+# its account-scoped ACL map without waiting for a client to poke it.
+EXIT_OK = 0
+EXIT_PEER_SYNC_FAILED = 1
+EXIT_POLICY_FAILED = 2
+
 
 @dataclass(frozen=True)
 class DesiredClientPeers:
@@ -592,7 +602,7 @@ def main() -> int:
             region_id=settings.region_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-        return 1
+        return EXIT_PEER_SYNC_FAILED
 
     log_event(
         logger,
@@ -612,10 +622,14 @@ def main() -> int:
         degraded_client_peers=outcome.degraded_client_peers,
     )
 
-    # Logged separately from the peer pass above and never affects this
-    # process's exit code: a rebuilt or rebooted host repopulates its whole
-    # account-scoped ACL map from Firestore without needing any peer to poke
-    # it, but a policy failure here is not a peer-sync failure.
+    # Logged separately from the peer pass above: PEER_SYNC_COMPLETED was
+    # already emitted, so an operator reading logs can tell "peers synced,
+    # policy failed" apart from a full pass failure - this is not a
+    # peer-sync failure. It does now affect this process's exit code: a
+    # policy failure returns EXIT_POLICY_FAILED so systemd retries the
+    # idempotent peer-plus-policy pass. A successful apply whose best-effort
+    # status write failed (status_written=False) still returns EXIT_OK - the
+    # wire is already correct and that write is best effort by contract.
     log_event(logger, Event.POLICY_REFRESH_STARTED, region_id=settings.region_id)
     try:
         policy_outcome = reconcile_policy(repository=repository, policy=policy, settings=settings)
@@ -627,17 +641,18 @@ def main() -> int:
             region_id=settings.region_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-    else:
-        log_event(
-            logger,
-            Event.POLICY_REFRESH_COMPLETED,
-            region_id=settings.region_id,
-            row_count=policy_outcome.row_count,
-            skipped_rows=policy_outcome.skipped_rows,
-            status_written=policy_outcome.status_written,
-        )
+        return EXIT_POLICY_FAILED
 
-    return 0
+    log_event(
+        logger,
+        Event.POLICY_REFRESH_COMPLETED,
+        region_id=settings.region_id,
+        row_count=policy_outcome.row_count,
+        skipped_rows=policy_outcome.skipped_rows,
+        status_written=policy_outcome.status_written,
+    )
+
+    return EXIT_OK
 
 
 if __name__ == "__main__":

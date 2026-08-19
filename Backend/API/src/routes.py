@@ -687,10 +687,14 @@ def admin_sync(
     # Sync All is the repair path for a dropped poke, so it also reconciles the
     # account-scoped ACL map. Blocking (not enqueued) so the admin sees a fresh
     # Policy/{regionId} immediately after this call returns. A policy failure
-    # is logged inside run_blocking and must never fail this endpoint - it
-    # does not touch AdminSyncResponse at all.
+    # is logged (inside run_blocking, or below when it returns None) and must
+    # never fail this endpoint - it only flips policyApplied to false on the
+    # response; the mesh/peer fields above are unaffected.
+    policy_applied = False
+    policy_row_count: int | None = None
+    policy_status_written: bool | None = None
     try:
-        request.app.state.policy_coordinator.run_blocking()
+        policy_outcome = request.app.state.policy_coordinator.run_blocking()
     except Exception as exc:
         log_event(
             logger,
@@ -701,6 +705,24 @@ def admin_sync(
             region_id=settings.region_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
+    else:
+        if policy_outcome is None:
+            # run_blocking already logged POLICY_REFRESH_FAILED (region_id only)
+            # inside the coordinator with the real traceback, so this is not a
+            # duplicate - it is the admin-request-scoped record of *which* Sync
+            # All call hit the failure. No exception to attach here.
+            log_event(
+                logger,
+                Event.POLICY_REFRESH_FAILED,
+                level=logging.WARNING,
+                request_id=request_id,
+                admin_uid=admin_user.uid,
+                region_id=settings.region_id,
+            )
+        else:
+            policy_applied = True
+            policy_row_count = policy_outcome.row_count
+            policy_status_written = policy_outcome.status_written
 
     result = outcome.result
     synced_at = utc_now()
@@ -774,6 +796,9 @@ def admin_sync(
         mesh_routes_removed=result.routes_removed,
         mesh_status_written=outcome.mesh_status_written,
         client_peers_degraded=outcome.degraded_client_peers,
+        policy_applied=policy_applied,
+        policy_row_count=policy_row_count,
+        policy_status_written=policy_status_written,
         mesh_peers=[
             AdminSyncMeshPeer(
                 region_id=candidate.region_id,

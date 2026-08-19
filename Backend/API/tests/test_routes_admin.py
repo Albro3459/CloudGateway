@@ -157,6 +157,12 @@ def test_admin_sync_response_carries_full_mesh_wire_contract(client, repository,
     assert payload["meshStatusWritten"] is True
     assert payload["clientPeersDegraded"] == 0
     assert payload["noChanges"] is False
+    # Wave 6 (W6-3): a successful policy pass is distinguishable from a
+    # successful mesh pass on the same response, without disturbing any
+    # existing peer/mesh field above.
+    assert payload["policyApplied"] is True
+    assert payload["policyRowCount"] == 0
+    assert payload["policyStatusWritten"] is True
     assert payload["meshPeers"] == [
         {
             "regionId": "us-other-1",
@@ -287,9 +293,18 @@ def test_admin_sync_also_reconciles_the_policy_map(client, repository, wireguard
     assert response.status_code == 200
     assert policy.apply_calls == 1
     assert REGION_ID in repository.policy_status
+    payload = response.json()
+    assert payload["policyApplied"] is True
+    assert payload["policyRowCount"] == 1
+    assert payload["policyStatusWritten"] is True
 
 
 def test_admin_sync_policy_failure_does_not_fail_the_endpoint(client, repository, wireguard, policy, caplog):
+    # Wave 6 (W6-3): coordinator.run_blocking() returns None on a failed
+    # apply/read-back; the endpoint still returns 200 with all existing
+    # peer/mesh fields intact, and exactly policyApplied: false - the two
+    # optional policy fields are omitted from the JSON body entirely
+    # (response_model_exclude_none=True), not sent as null.
     seed_region(repository)
     create_active_client(repository, wireguard)
     policy.fail_apply_count = 1
@@ -299,6 +314,42 @@ def test_admin_sync_policy_failure_does_not_fail_the_endpoint(client, repository
 
     assert response.status_code == 200
     assert "policy_refresh_failed" in caplog.text
+    payload = response.json()
+    assert (payload["added"], payload["updated"], payload["removed"]) == (0, 0, 0)
+    assert payload["noChanges"] is True
+    assert payload["policyApplied"] is False
+    assert "policyRowCount" not in payload
+    assert "policyStatusWritten" not in payload
+
+
+def test_admin_sync_policy_coordinator_raise_is_caught_and_yields_the_same_failure_shape(
+    client, repository, wireguard, policy, caplog
+):
+    # Belt-and-suspenders path: run_blocking() itself is documented to never
+    # raise (a failed pass is swallowed into None inside the coordinator),
+    # but admin_sync still wraps the call in its own try/except. Simulate
+    # that defensive branch directly against the real coordinator instance
+    # living on app.state, since nothing in the fakes can make run_blocking
+    # itself raise.
+    seed_region(repository)
+    create_active_client(repository, wireguard)
+
+    def boom() -> None:
+        raise RuntimeError("simulated coordinator crash")
+
+    client.app.state.policy_coordinator.run_blocking = boom
+
+    with caplog.at_level("ERROR", logger="src.routes"):
+        response = client.post("/admin/sync", json={"regionId": REGION_ID}, headers=auth_header("admin-token"))
+
+    assert response.status_code == 200
+    assert "policy_refresh_failed" in caplog.text
+    payload = response.json()
+    assert (payload["added"], payload["updated"], payload["removed"]) == (0, 0, 0)
+    assert payload["noChanges"] is True
+    assert payload["policyApplied"] is False
+    assert "policyRowCount" not in payload
+    assert "policyStatusWritten" not in payload
 
 
 def test_sync_refresh_accepts_a_provisioned_non_admin(client, repository, policy):

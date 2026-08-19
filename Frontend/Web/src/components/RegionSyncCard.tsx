@@ -55,7 +55,7 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
     const {
         added, updated, removed, noChanges, log, syncedAt,
         meshEnabled, meshApplied, meshAdded, meshUpdated, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved,
-        meshStatusWritten, meshPeers,
+        meshStatusWritten, meshPeers, policyApplied, policyStatusWritten,
     } = result.data;
 
     return (
@@ -97,6 +97,23 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
                     This region reconciled successfully, but could not save its mesh status snapshot.
                     The mesh link status shown above and on this page may be out of date until the next
                     successful sync.
+                </p>
+            )}
+
+            {policyApplied === false && (
+                <p className="mt-2 text-sm text-warning-strong">
+                    Peer and mesh reconciliation succeeded, but this region&apos;s account-scoped
+                    client-isolation policy pass failed. The region keeps enforcing its previously
+                    applied policy map, and its published policy status is unchanged. Retry Sync All
+                    and check the host logs.
+                </p>
+            )}
+
+            {policyApplied === true && policyStatusWritten === false && (
+                <p className="mt-2 text-sm text-content-secondary">
+                    This region&apos;s policy map was applied, but its policy status snapshot could not
+                    be saved. The policy hashes shown on this page may be out of date until the next
+                    successful pass.
                 </p>
             )}
 

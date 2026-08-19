@@ -66,6 +66,8 @@ journalctl -u cloudgateway-sync-peers --since "1 hour ago"
 
 * Logs structured JSON with added/updated/removed counts. Semantics and drift cases are documented in [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
 * It shares the API's mutation lock, so running it during live create/delete traffic is safe.
+* This unit also runs the account-scoped ACL policy reconcile (`reconcile_policy()`) after the peer/mesh pass completes - see [Account-Scoped ACL](#account-scoped-acl-client-to-client-isolation) below. A peer-sync failure short-circuits before policy is attempted at all and exits 1; a policy-only failure (peer sync succeeded) exits 2. Diagnose which happened with `systemctl status cloudgateway-sync-peers` and `journalctl -u cloudgateway-sync-peers`: a `peer_sync_completed` line followed by `policy_refresh_failed` (rather than `policy_refresh_completed`) means peers converged but the policy map did not. Either exit code is `Restart=on-failure` with `RestartSec=30` and `StartLimitIntervalSec=0`, so the unit retries the whole idempotent peer-plus-policy pass indefinitely without operator action - no manual restart is required unless you want the retry to happen immediately. **Sync All Regions** in the admin dashboard is the manual repair path for either failure and now reports `policyApplied` in its response so a stuck region is visible without reading host logs.
+* Two consequences of that indefinite retry are worth knowing before you read a bootstrap log or a Firestore bill. First, a fresh deploy runs this unit twice (once at the end of `bootstrap.sh` and once after region registration) and prints its `systemctl status` as the deploy's closing output; if only the policy leg is failing, that closing line reports the unit as failed or auto-restarting even though peers converged normally, so check for `peer_sync_completed` before concluding the region did not deploy. Second, every retry re-pulls the fleet-wide client/account snapshot from Firestore, so a region left looping on a persistent policy failure keeps reading Firestore every 30s indefinitely - the loop is the correct fail-closed behaviour (the region is not enforcing the ACL until it succeeds), but it is a signal to investigate, not a steady state to leave running.
 
 ## AdGuard Home (VPN DNS filter)
 
@@ -138,7 +140,11 @@ A stateless nftables filter (`inet cloudgateway` table, `cg_forward` chain, inst
 tunnel to clients owned by the same CloudGateway account. See
 [docs/wireguard-drift-repair.md](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile) for
 how the reconcile pass works and [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md) for
-the design.
+the design. This is a host-level change with a mandatory full-region rollout gate - it ships only
+by rebuilding every region through `./scripts/terraform.sh` from one deploy tag, and the fleet is
+only partially enforced until the last region finishes; see
+[docs/regional-deployment.md](regional-deployment.md) and
+[docs/deployment-handoff.md](deployment-handoff.md) for the gate itself.
 
 **What it guarantees:** a client can reach another client over the tunnel only when both belong to
 the same account. An admin-owned client can additionally reach, and be reached by, any regional

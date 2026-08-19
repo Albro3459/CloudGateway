@@ -426,6 +426,35 @@ final full `./scripts/test.sh` gate remain open, tracked separately below.
   documentation for the final migration, account deletion, hash, role-sync,
   retry, and rollout behavior.
 
+**Landed.** `Backend/API/src/sync.py` gains `EXIT_OK`/`EXIT_PEER_SYNC_FAILED`/`EXIT_POLICY_FAILED`;
+a policy-only failure now returns 2 instead of 0, so `cloudgateway-sync-peers.service`
+(`Restart=on-failure`, `RestartSec=30`, `StartLimitIntervalSec=0`) retries the whole idempotent
+peer-plus-policy pass, while a peer-sync failure still short-circuits before policy is attempted
+and a successful apply with a best-effort status-write failure still exits 0. `AdminSyncResponse`
+gains `policyApplied`/`policyRowCount`/`policyStatusWritten` (the two optionals omitted on failure
+via `response_model_exclude_none`), so Sync All's response distinguishes a policy failure from
+peer/mesh success without changing any existing field; older, not-yet-reinstalled regions simply
+omit all three and the dashboard treats that as unknown. `reconcile_policy()` already raised before
+ever calling `write_policy_status`, so a failed apply or read-back was already leaving the previous
+successful `Policy/{regionId}` document untouched; `docs/api-contract.md`, `Backend/Firebase/README.md`,
+and `docs/wireguard-drift-repair.md` now say so explicitly instead of implying a failure status gets
+written. `docs/wireguard-drift-repair.md`'s "Account-Scoped ACL Policy Reconcile" section no longer
+opens by saying the reconcile has no CLI process of its own and then contradicting that in the next
+bullet - it now states plainly that the boot call runs inside the `cloudgateway-sync-peers` CLI
+process while the two HTTP-triggered calls run inside the long-running API process, all three
+serialized by the same flock. `Backend/API/tests/test_bootstrap_contract.py` now exists, parses the
+`table inet cloudgateway` heredoc in `bootstrap.sh` offline, and ties every object name, kind,
+tunnel aggregate, address family, rule family, and the `cloudgateway-install-api` gate strings back
+to the policy renderer in both directions, with negative tests proving a rename on either side fails
+it, and is enforced by `./scripts/test.sh api`. It does not verify runtime nftables behavior on a
+live host, so the two live-host verification items below remain open.
+`docs/regional-deployment.md`, `docs/quick-deployment.md`, and `docs/deployment-handoff.md` already
+carried the mandatory full-region-rebuild-through-`terraform.sh` gate from an earlier wave;
+`docs/service-operations.md` now cross-references it and documents the retry/diagnosis story
+(`systemctl status`/`journalctl` for `cloudgateway-sync-peers`, and Sync All as the manual repair
+path). iOS Server Health Policy parity, the live-host verification items, and the final full
+`./scripts/test.sh` gate remain open, tracked separately below.
+
 ### Deferred Apple plan, still blocking release
 
 Before release, write and implement a separate iOS Server Health parity plan.
@@ -471,7 +500,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 * [x] `Policy/{regionId}` schema, Firestore rules, and `schema.ts`.
 * [x] Server Health policy status display and failure card.
 * [x] Wave 5 - comprehensive live-policy hashes, `updatedAt` last-applied display, enabled-region comparison, and mandatory Sync All after out-of-band role edits.
-* [ ] Wave 6 - boot retry behavior, bootstrap/API contract checks, and final documentation alignment.
+* [x] Wave 6 - boot retry behavior, bootstrap/API contract checks, and final documentation alignment.
 * [ ] Write and implement the separate iOS Server Health Policy parity plan before release.
 * [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.
 * [ ] Verify the four reachability cases end to end: same-account same-region, same-account cross-region, cross-account denied both directions, admin proxy jump in both directions cross-region.
@@ -481,10 +510,12 @@ Original static review findings are tracked in
 [account-scoped-acl-review.md](account-scoped-acl-review.md).
 
 The final two live-host items need a running regional host and cannot be closed
-from a workstation. The API renderer has byte-for-byte unit coverage, but the
-current tests do not parse `bootstrap.sh` or prove that its object names and
-aggregates still match the renderer. Add that contract check as part of the
-review fixes. What also stays unproven until a host runs it is nftables' own
+from a workstation. The API renderer has byte-for-byte unit coverage, and
+`Backend/API/tests/test_bootstrap_contract.py` (Wave 6) now parses `bootstrap.sh`'s
+`table inet cloudgateway` heredoc offline and proves its object names, kinds, tunnel
+aggregates, and both rule families still match the renderer in both directions, with
+negative tests proving a rename on either side fails it - that contract check is closed.
+What stays unproven until a host runs it is nftables' own runtime
 behaviour - that `priority -10` really evaluates ahead of the existing iptables
 `FORWARD` accepts, that a `drop` verdict is terminal across tables, and that the
 `ip daddr . meta mark != @cg_pairs` concatenation parses and matches as

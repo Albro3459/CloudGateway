@@ -162,6 +162,10 @@ log "==> Step 6/13: Writing WireGuard configuration"
 # subsystem uses the packet mark and that no `ip rule fwmark` exists; the API
 # only ever replaces element contents of these objects, never the table or
 # chain itself, and never touches cg_tunnel4/cg_tunnel6.
+# The table/chain names, every object name and kind (set vs map), the
+# cg_tunnel4/6 aggregates, and both rule families below are checked offline
+# against the API renderer by Backend/API/tests/test_bootstrap_contract.py -
+# a rename or type change on either side must be made on both.
 cat > /etc/cloudgateway/cloudgateway.nft <<NFTCONF
 table inet cloudgateway {
 	set cg_tunnel4 { type ipv4_addr; flags interval; elements = { 10.0.0.0/16 } }
