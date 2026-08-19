@@ -160,22 +160,25 @@ no-op. This must complete before any region is rebuilt with the ACL enforced. Se
 [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
 script's flags, credentials handling, and failure modes.
 
-**Reading the Server Health policy display:** per region, row count and map hashes (v4/v6).
-`dataVintage` is written `null` on every pass starting with the Wave 2 ACL remediation (see
-[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)), so the card shows "No applied
-snapshot yet" and its staleness signal reads "unknown" fleet-wide - this is expected, not an
-outage, and holds until Wave 5 replaces the status model with comprehensive live-policy hashes plus
-a "Last applied" time. Maps are identical fleet-wide by design, which is what makes the hashes
-comparable across regions - read hash agreement across regions as the real signal in the meantime:
-a differing hash between regions is drift, even if both regions report recently. Neither a hash
-mismatch nor the missing vintage is a failure of the last sync pass; status writes are best effort
-and a status write failure never fails a pass.
+**Reading the Server Health policy display:** per enabled region, row count, comprehensive IPv4/
+IPv6 policy hashes (`mapHashV4`/`mapHashV6`, covering every authorization-bearing live object -
+`cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map),
+and `updatedAt` shown as "Last applied," the server timestamp of that region's last successful
+live apply and read-back. Timestamp age alone is never drift and never staleness - the staleness
+concept from earlier waves is gone entirely. Drift is comprehensive hash disagreement among
+enabled regions only; a disabled region renders as excluded from the comparison, keeps showing
+whatever its document holds, and can never be drifted or drift anyone else. For an enabled region,
+a missing, malformed, or unreadable `Policy/{regionId}` is an explicit per-region failure state
+("Never synced" / "Unreadable"), and a failure to read the `Policy` collection at all gets its own
+card rather than reporting every region as never synced; none of these ever takes down the
+independent Mesh status. Status writes remain best effort and a status write
+failure never fails a sync pass.
 
-`appliedSequence` is written `null` on every pass starting with the Wave 3 ACL remediation. It
-never proved fleet ordering even before removal - cross-process ordering is now enforced by the
-policy flock itself, which serializes the API process against the boot/manual sync CLI directly, not
-by any counter - and the field is kept only so the document shape stays stable until Wave 5 drops
-it alongside `dataVintage`.
+Because reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, an admin allow-set
+change is visible in the comprehensive hash as soon as the next reconcile runs. There is no
+role-mutation API, UI, timer, or automatic role propagation in this release: a trusted operator who
+edits `UserRoles` out of band must run Sync All Regions immediately, and until they do, the fleet
+keeps enforcing the previous allow-set.
 
 **Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard. A
 region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches

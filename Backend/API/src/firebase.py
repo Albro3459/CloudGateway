@@ -792,6 +792,10 @@ class FirestoreRepository(FirebaseRepository):
     def write_policy_status(self, status: PolicyStatus) -> None:
         # Full replacement (not merge), mirroring write_mesh_status: a status
         # doc must describe exactly what the last reconcile pass applied.
+        # appliedSequence (Wave 3) and dataVintage (Wave 2) are gone from this
+        # document, not merely nulled - see TODO/account-scoped-acl.md Wave 5:
+        # ordering is enforced by the host flock, not a counter, and staleness
+        # is read from hash agreement plus updatedAt, not a vintage field.
         try:
             self._db().collection("Policy").document(status.region_id).set(
                 {
@@ -799,17 +803,6 @@ class FirestoreRepository(FirebaseRepository):
                     "mapHashV4": status.map_hash_v4,
                     "mapHashV6": status.map_hash_v6,
                     "rowCount": status.row_count,
-                    # Always null: the process-local sequence was removed in
-                    # Wave 3 (see TODO/account-scoped-acl.md) - ordering is now
-                    # enforced by the host flock itself, not a counter. Kept
-                    # here, not omitted, so the documented Firestore shape is
-                    # unchanged until Wave 5 removes the field from schema/UI.
-                    "appliedSequence": None,
-                    # Always null: the policy path dropped updatedAt in Wave 2
-                    # (see TODO/account-scoped-acl.md). Kept here, not omitted,
-                    # so the documented Firestore shape is unchanged until
-                    # Wave 5 removes the field from schema/UI.
-                    "dataVintage": None,
                     "updatedAt": _server_timestamp(),
                 }
             )

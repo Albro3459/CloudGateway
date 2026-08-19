@@ -255,8 +255,13 @@ sites, and Server Health policy card.
 * [ ] Keep inline policy lookup/apply failures from escaping client creation.
 * [x] Accept the current depth-1 pending-bit behavior for finding 5 and narrow
   its documentation to the one-item pending backlog guarantee.
-* [ ] Re-read, apply, read back, hash, and display admin allow-set changes;
+* [x] Re-read, apply, read back, hash, and display admin allow-set changes;
   require manual Sync All after any trusted out-of-band role edit.
+  Landed in Wave 5: reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, and
+  `cg_admin4/6` is now part of the comprehensive `mapHashV4`/`mapHashV6` read-back, so an admin
+  promotion or demotion changes the published hash. No role-mutation API/UI/timer was added; docs
+  now say a trusted operator must run Sync All Regions immediately after any out-of-band
+  `UserRoles` edit, and the fleet keeps enforcing the previous allow-set until they do.
 * [ ] Replace accidental per-client deletion pokes with the authenticated,
   account-scoped cleanup and one-refresh-wave ordering in the implementation
   plan.
@@ -267,8 +272,15 @@ sites, and Server Health policy card.
   `releases/access-control-lists/backfill_account_slots.py` runs the same
   rules as a fleet-wide preflight gate ahead of enforcement.
 * [ ] Remove policy-lock contention from the WireGuard create critical section.
-* [ ] Replace `dataVintage` with comprehensive live-policy hash agreement and
+* [x] Replace `dataVintage` with comprehensive live-policy hash agreement and
   show `Policy.updatedAt` as last applied.
+  Landed in Wave 5: `dataVintage` and `appliedSequence` are removed entirely from `schema.ts`,
+  `Backend/Firebase/README.md`, the Firestore rules test fixtures, and every doc. `Policy/{regionId}`
+  is now `regionId`, `mapHashV4`, `mapHashV6`, `rowCount`, `updatedAt`; the hashes cover every
+  authorization-bearing live object (`cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`,
+  `cg_pairs4/6`) per family, drift is comprehensive hash disagreement among enabled regions only,
+  and `updatedAt` is displayed as "Last applied" with age alone never treated as drift or
+  staleness.
 * [ ] Correct status validation, failure semantics, process-model docs, and the
   claimed bootstrap/API contract test.
 * [ ] Write and implement the separate iOS Server Health Policy parity plan.

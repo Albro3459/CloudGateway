@@ -43,14 +43,18 @@ It is allocated once, in a transaction, from `Counters/accountSlots`, the sole a
 
 Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
 only, written by each region's host via the Admin SDK after a policy reconcile pass, describing
-what the live account-scoped ACL map on that host actually contains (row count, map hashes), not
-what the region intended to apply. The document still carries a `dataVintage` field for schema
-compatibility, but every pass writes it `null` starting with the ACL Wave 2 remediation; Wave 5
-drops the field once the status model moves to comprehensive live-policy hashes plus a last-applied
-time. It also still carries `appliedSequence`, written `null` on every pass starting with the ACL
-Wave 3 remediation: cross-process ordering between the API process and the boot/manual sync CLI is
-now enforced by the policy flock itself, not by any counter, so the field carries no ordering
-meaning and Wave 5 drops it alongside `dataVintage`. Policy documents deliberately never contain a
+what the live account-scoped ACL map on that host actually contains, not what the region intended
+to apply. `mapHashV4`/`mapHashV6` are one composite hash per address family over every
+authorization-bearing live object read back from the host - `cg_tunnel4/6`, `cg_infra4/6`,
+`cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map, so an admin allow-set change is
+visible in the hash as soon as the next reconcile runs. `rowCount` is the `cg_slot4` row count.
+`updatedAt` is a server timestamp meaning the last successful live apply and read-back; Server
+Health renders it as "Last applied." Timestamp age alone is never drift or staleness - drift is
+comprehensive hash disagreement among enabled regions only, and disabled regions never participate
+in the comparison. There is no role-mutation API, UI, timer, or automatic role propagation in this
+release: reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, so a trusted
+operator who edits `UserRoles` out of band must run Sync All Regions immediately, and the fleet
+keeps enforcing the previous allow-set until they do. Policy documents deliberately never contain a
 uid, email, address, or key.
 
 Account deletion (`DELETE /account`) performs the one fleet-wide client-document write the API

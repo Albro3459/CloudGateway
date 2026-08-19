@@ -18,7 +18,7 @@ from src.errors import (
     SyncInProgressError,
     WireGuardApplyFailedError,
 )
-from src.policy import LivePolicyMap, PolicyManager, PolicyRow
+from src.policy import LivePolicyFamily, LivePolicyMap, PolicyManager, PolicyRow
 from src.repository import (
     ALLOCATED_CLIENT_STATUSES,
     AccountCleanupTally,
@@ -1139,16 +1139,35 @@ class FakePolicyManager(PolicyManager):
         if self.fail_read_count:
             self.fail_read_count -= 1
             raise PolicyApplyFailedError("Simulated policy map read failure.")
-        rows_v4 = tuple(
+        return LivePolicyMap(v4=self._family(4), v6=self._family(6))
+
+    def _family(self, version: int) -> LivePolicyFamily:
+        # Mirrors the real host: cg_tunnel4/6 are the static mesh aggregate
+        # bootstrap.sh installs and apply_map never touches; cg_infra4/6 come
+        # from apply_map's own args; cg_admin4/6, cg_slot4/6, and cg_pairs4/6
+        # are all derived from the same applied rows, so a role change that
+        # flips a row's .admin flag changes the admin set and therefore the
+        # family hash through the same path production code exercises.
+        address_attr = "address_v4" if version == 4 else "address_v6"
+        tunnel = (MESH_AGGREGATE_V4,) if version == 4 else (MESH_AGGREGATE_V6,)
+        infra = self.infra_v4 if version == 4 else self.infra_v6
+        admin = tuple(
             sorted(
-                ((row.address_v4, row.slot) for row in self.rows.values()),
+                (getattr(row, address_attr) for row in self.rows.values() if row.admin),
+                key=lambda address: ip_address(address).packed,
+            )
+        )
+        slots = tuple(
+            sorted(
+                ((getattr(row, address_attr), row.slot) for row in self.rows.values()),
                 key=lambda item: ip_address(item[0]).packed,
             )
         )
-        rows_v6 = tuple(
-            sorted(
-                ((row.address_v6, row.slot) for row in self.rows.values()),
-                key=lambda item: ip_address(item[0]).packed,
-            )
+        return LivePolicyFamily(
+            version=version,
+            tunnel=tunnel,
+            infra=tuple(sorted(infra, key=lambda address: ip_address(address).packed)),
+            admin=admin,
+            slots=slots,
+            pairs=slots,  # cg_pairs carries the same (address, mark) content as cg_slot.
         )
-        return LivePolicyMap(rows_v4=rows_v4, rows_v6=rows_v6)

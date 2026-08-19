@@ -99,8 +99,6 @@ const policyDoc = (regionId: string, overrides: Partial<PolicyDoc> = {}): Policy
     mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     rowCount: 3,
-    appliedSequence: 1,
-    dataVintage: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
 });
@@ -949,7 +947,12 @@ describe("ServerHealth", () => {
 
         render(<ServerHealth />);
 
-        expect(await screen.findByText("Disabled")).toBeTruthy();
+        // The Client isolation card also renders a "Disabled" state for a
+        // disabled region (excluded from the policy comparison), so this has
+        // to scope to the Mesh membership card specifically.
+        await screen.findByText("Mesh membership");
+        const meshCard = screen.getByText("Mesh membership").closest("div") as HTMLElement;
+        expect(within(meshCard).getByText("Disabled")).toBeTruthy();
         // San Jose still has Chicago's peer installed even though Chicago is
         // dead, so the link stays on the page and reads as pending removal.
         expect(screen.getByText(
@@ -1041,7 +1044,7 @@ describe("ServerHealth", () => {
         expect(getAllRegionDocs).not.toHaveBeenCalled();
     });
 
-    it("renders per-region policy row count, data vintage, and both map hashes without running a sync", async () => {
+    it("renders per-region policy row count, last-applied time, and both comprehensive hashes without running a sync", async () => {
         const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
         const { runRegionsSync } = require("../../helpers/APIHelper");
         const { default: ServerHealth } = require("../ServerHealth");
@@ -1057,10 +1060,28 @@ describe("ServerHealth", () => {
         expect(await screen.findByText("Client isolation")).toBeTruthy();
         expect(screen.getByText("OK")).toBeTruthy();
         expect(screen.getByText("7 rows")).toBeTruthy();
-        expect(screen.getByText(/^Data as of /)).toBeTruthy();
-        expect(screen.getByLabelText("Copy San Jose IPv4 map hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBeTruthy();
-        expect(screen.getByLabelText("Copy San Jose IPv6 map hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")).toBeTruthy();
+        expect(screen.getByText(/^Last applied /)).toBeTruthy();
+        expect(screen.getByLabelText("Copy San Jose comprehensive IPv4 policy hash: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBeTruthy();
+        expect(screen.getByLabelText("Copy San Jose comprehensive IPv6 policy hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")).toBeTruthy();
         expect(runRegionsSync).not.toHaveBeenCalled();
+    });
+
+    it("renders a zero-row snapshot's row count and last-applied time rather than a 'no snapshot' message", async () => {
+        const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", true, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        getPolicyDocs.mockResolvedValue(new Map([
+            ["us-sanjose-1", policyDoc("us-sanjose-1", { rowCount: 0 })],
+        ]));
+
+        render(<ServerHealth />);
+
+        expect(await screen.findByText("Client isolation")).toBeTruthy();
+        expect(screen.getByText("0 rows")).toBeTruthy();
+        expect(screen.getByText(/^Last applied /)).toBeTruthy();
+        expect(screen.queryByText("No applied snapshot yet")).toBeNull();
     });
 
     it("flags a region as drifted against the fleet majority without requiring a sync first", async () => {
@@ -1087,26 +1108,34 @@ describe("ServerHealth", () => {
         expect(runRegionsSync).not.toHaveBeenCalled();
     });
 
-    it("flags a region as stale when its data vintage lags its peers without requiring a sync first", async () => {
+    it("excludes a disabled region from the policy comparison: its divergent hash cannot drift enabled regions, and it renders its own disabled state instead of ok/drifted", async () => {
         const { getAllRegionDocs, getMeshDocs, getPolicyDocs } = require("../../helpers/firebaseDbHelper");
         const { default: ServerHealth } = require("../ServerHealth");
 
-        const fresh = new Date("2026-01-02T00:00:00Z");
-        const lagging = new Date(fresh.getTime() - 25 * 60 * 60 * 1000);
         getAllRegionDocs.mockResolvedValue([
             region("us-sanjose-1", "San Jose", true, 1),
             region("us-chicago-1", "Chicago", true, 2),
+            region("us-dallas-1", "Dallas", true, 3, false),
         ]);
         getMeshDocs.mockResolvedValue(new Map());
         getPolicyDocs.mockResolvedValue(new Map([
-            ["us-sanjose-1", policyDoc("us-sanjose-1", { dataVintage: fresh, updatedAt: fresh })],
-            ["us-chicago-1", policyDoc("us-chicago-1", { dataVintage: lagging, updatedAt: lagging })],
+            ["us-sanjose-1", policyDoc("us-sanjose-1")],
+            ["us-chicago-1", policyDoc("us-chicago-1")],
+            // Dallas is disabled and wildly divergent - must not drift anyone,
+            // and must not be flagged drifted itself.
+            ["us-dallas-1", policyDoc("us-dallas-1", { mapHashV4: "cccccccccccccccccccccccccccccccc" })],
         ]));
 
         render(<ServerHealth />);
 
-        expect(await screen.findByText("Stale")).toBeTruthy();
-        expect(screen.getByText("Data vintage lags the rest of the fleet.")).toBeTruthy();
+        await screen.findByText("Client isolation");
+        const policyCard = screen.getByText("Client isolation").closest("div") as HTMLElement;
+        // Both enabled regions stay OK - Dallas's divergent hash never enters
+        // the comparison.
+        expect(within(policyCard).getAllByText("OK")).toHaveLength(2);
+        expect(within(policyCard).queryByText("Drifted")).toBeNull();
+        expect(within(policyCard).getByText("Disabled")).toBeTruthy();
+        expect(within(policyCard).getByText("Region disabled - excluded from the fleet comparison.")).toBeTruthy();
     });
 
     it("renders an explicit failure card for a missing or unreadable Policy doc without crashing the page", async () => {

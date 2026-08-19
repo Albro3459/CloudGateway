@@ -271,12 +271,12 @@ orders, invalid slots, and mixed valid/invalid snapshots.
 owner/slot/address/collision rules standalone) is the release gate for known-bad data: it blocks both dry-run and
 `--apply` with exit code 1 when any row fails, before any region enforces the ACL. `updatedAt` no
 longer feeds policy status - `DesiredPolicy.data_vintage` and `PolicyStatus.data_vintage` are gone
-from the API, though `write_policy_status` still writes `Policy/{regionId}.dataVintage` as `null`
-so the documented Firestore shape is unchanged until Wave 5. Between Wave 2 and Wave 5 this is an
-expected interim state, not a regression: Server Health renders "No applied snapshot yet" and its
-staleness signal reads "unknown" for every region (see
-[docs/service-operations.md](../docs/service-operations.md)); read hash agreement across regions as
-the real signal instead.
+from the API. Between Wave 2 and Wave 5, `write_policy_status` kept writing
+`Policy/{regionId}.dataVintage` as `null` so the documented Firestore shape stayed unchanged in the
+interim, and Server Health rendered "No applied snapshot yet" with an "unknown" staleness signal for
+every region; that interim state ended with Wave 5, which removes `dataVintage` from the schema
+entirely and replaces it with comprehensive live-policy hash agreement (see
+[docs/service-operations.md](../docs/service-operations.md)).
 
 ### Wave 3 - cross-process ordering and create-path isolation
 
@@ -290,10 +290,11 @@ Both `PolicyCoordinator` and the boot/manual `cloudgateway-sync-peers` process c
 `reconcile_policy()`, so a later writer can only pull after the prior writer has applied, read back,
 and written status - an older snapshot can no longer wait outside the flock and overwrite a newer
 map. The process-local sequence guard and the `appliedSequence` status field are gone as an
-ordering signal; no process-local value is presented as a fleet ordering guarantee.
-`write_policy_status` still writes `Policy/{regionId}.appliedSequence` as a literal `null`, the same
-pattern Wave 2 used for `dataVintage`, so the documented Firestore shape holds until Wave 5 removes
-both fields from schema, parser, and UI.
+ordering signal; no process-local value is presented as a fleet ordering guarantee. Between Wave 3
+and Wave 5, `write_policy_status` kept writing `Policy/{regionId}.appliedSequence` as a literal
+`null`, the same interim pattern Wave 2 used for `dataVintage`, so the documented Firestore shape
+stayed unchanged; that interim state ended with Wave 5, which removes both fields from schema,
+parser, and UI.
 
 `_write_inline_policy_row()` now runs after the WireGuard critical section closes, not inside it.
 Slot lookup, role lookup, address normalization, policy-lock acquisition, and the row apply all sit
@@ -386,6 +387,26 @@ change followed by Sync All changes `cg_admin4/6`, changes the comprehensive
 hash, and converges every enabled region. Document Sync All as mandatory after
 any trusted out-of-band `UserRoles` edit; do not add role mutation support.
 
+**Landed.** `Policy/{regionId}` is now exactly `regionId`, `mapHashV4`, `mapHashV6`, `rowCount`,
+`updatedAt` - `dataVintage` and `appliedSequence` are gone from `schema.ts`, its comments, the
+Firestore rules test fixtures, and every doc that described them; the Wave 2/Wave 3 interim
+null-placeholder state is over. `mapHashV4`/`mapHashV6` are one composite hash per address family
+over every authorization-bearing live object read back from the host - `cg_tunnel4/6`,
+`cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not only the slot map; `rowCount` stays
+the `cg_slot4` row count. `updatedAt` is the last successful live apply/read-back and Server Health
+shows it as "Last applied"; timestamp age alone is never drift or staleness, and the staleness
+concept from the interim waves is gone entirely. Drift is comprehensive hash disagreement among
+enabled regions only - disabled regions are excluded and can never be drifted - and a missing,
+malformed, or unreadable `Policy/{regionId}` renders an explicit per-region failure state without
+taking down the independent Mesh status. Because reconcile re-reads `UserRoles` and applies
+`cg_admin4/6` on every pass, an admin allow-set change is visible in the comprehensive hash as soon
+as the next reconcile runs; there is still no role-mutation API, UI, timer, or automatic
+propagation - a trusted operator who edits `UserRoles` out of band must run Sync All Regions
+immediately, and the fleet keeps enforcing the previous allow-set until they do.
+`Backend/Firebase/README.md` and `docs/service-operations.md`/`docs/wireguard-drift-repair.md`
+were updated to match. iOS Server Health Policy parity, the live-host verification items, and the
+final full `./scripts/test.sh` gate remain open, tracked separately below.
+
 ### Wave 6 - boot retry, contracts, and documentation
 
 * A policy-only failure in `cloudgateway-sync-peers` returns nonzero so systemd
@@ -449,7 +470,7 @@ the final Web semantics from Wave 5 rather than porting the superseded
 * [x] Wave 4 - account cleanup mode, clients-non-active fence, one authenticated fleet refresh, then hard delete.
 * [x] `Policy/{regionId}` schema, Firestore rules, and `schema.ts`.
 * [x] Server Health policy status display and failure card.
-* [ ] Wave 5 - comprehensive live-policy hashes, `updatedAt` last-applied display, enabled-region comparison, and mandatory Sync All after out-of-band role edits.
+* [x] Wave 5 - comprehensive live-policy hashes, `updatedAt` last-applied display, enabled-region comparison, and mandatory Sync All after out-of-band role edits.
 * [ ] Wave 6 - boot retry behavior, bootstrap/API contract checks, and final documentation alignment.
 * [ ] Write and implement the separate iOS Server Health Policy parity plan before release.
 * [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.

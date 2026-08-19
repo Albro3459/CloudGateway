@@ -1,17 +1,15 @@
 import {
     buildPolicyStatusRows,
-    getPolicyStaleness,
     parsePolicyDocument,
-    POLICY_STALE_THRESHOLD_MS,
     PolicyDoc,
     PolicyDocsById,
 } from "../policyHelper";
 import { Region } from "../regionsHelper";
 
-const region = (regionId: string): Region => ({
+const region = (regionId: string, enabled = true): Region => ({
     regionId,
     displayName: regionId,
-    enabled: true,
+    enabled,
     displayOrder: 1000,
     meshEnabled: true,
     wireguardEndpointHostname: "wg.example.com",
@@ -26,8 +24,6 @@ const policyDoc = (regionId: string, overrides: Partial<PolicyDoc> = {}): Policy
     mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     rowCount: 3,
-    appliedSequence: 1,
-    dataVintage: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
 });
@@ -39,8 +35,6 @@ describe("policyHelper", () => {
                 mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 rowCount: 12,
-                appliedSequence: 4,
-                dataVintage: new Date("2026-01-01T00:00:00Z"),
                 updatedAt: new Date("2026-01-02T00:00:00Z"),
             });
 
@@ -49,8 +43,6 @@ describe("policyHelper", () => {
                 mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 rowCount: 12,
-                appliedSequence: 4,
-                dataVintage: new Date("2026-01-01T00:00:00Z"),
                 updatedAt: new Date("2026-01-02T00:00:00Z"),
             });
         });
@@ -60,8 +52,6 @@ describe("policyHelper", () => {
                 mapHashV4: 12345,
                 mapHashV6: undefined,
                 rowCount: "not-a-number",
-                appliedSequence: Number.NaN,
-                dataVintage: "not-a-date",
                 // updatedAt missing entirely
             });
 
@@ -70,8 +60,6 @@ describe("policyHelper", () => {
                 mapHashV4: null,
                 mapHashV6: null,
                 rowCount: null,
-                appliedSequence: null,
-                dataVintage: null,
                 updatedAt: null,
             });
         });
@@ -79,6 +67,17 @@ describe("policyHelper", () => {
         it("treats an empty object as a fully null doc rather than throwing", () => {
             expect(() => parsePolicyDocument("us-sanjose-1", {})).not.toThrow();
             expect(parsePolicyDocument("us-sanjose-1", {}).regionId).toBe("us-sanjose-1");
+        });
+
+        it("parses a zero-row snapshot as usable rather than as a missing field", () => {
+            const doc = parsePolicyDocument("us-sanjose-1", {
+                mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                rowCount: 0,
+                updatedAt: new Date("2026-01-02T00:00:00Z"),
+            });
+
+            expect(doc.rowCount).toBe(0);
         });
     });
 
@@ -146,33 +145,32 @@ describe("policyHelper", () => {
             expect(rows[0]).toMatchObject({ state: "ok", driftedV4: false, driftedV6: false });
         });
 
-        it("marks a region stale when its dataVintage lags peers beyond the threshold", () => {
-            const regions = [region("us-sanjose-1"), region("us-chicago-1")];
-            const fresh = new Date("2026-01-02T00:00:00Z");
-            const lagging = new Date(fresh.getTime() - POLICY_STALE_THRESHOLD_MS - 1000);
+        it("excludes a disabled region from the comparison entirely: its divergent hash cannot drift the enabled majority, and it is never itself drifted", () => {
+            const regions = [region("us-sanjose-1"), region("us-chicago-1"), region("us-dallas-1", false)];
             const docs: PolicyDocsById = new Map([
-                ["us-sanjose-1", policyDoc("us-sanjose-1", { dataVintage: fresh, updatedAt: fresh })],
-                ["us-chicago-1", policyDoc("us-chicago-1", { dataVintage: lagging, updatedAt: lagging })],
+                ["us-sanjose-1", policyDoc("us-sanjose-1")],
+                ["us-chicago-1", policyDoc("us-chicago-1")],
+                // Dallas is disabled and wildly divergent - must not affect anyone.
+                ["us-dallas-1", policyDoc("us-dallas-1", { mapHashV4: "cccccccccccccccccccccccccccccccc", mapHashV6: "dddddddddddddddddddddddddddddddd" })],
             ]);
 
             const rows = buildPolicyStatusRows(regions, docs);
 
-            expect(rows.find(r => r.regionId === "us-chicago-1")).toMatchObject({ state: "stale", stale: true });
-            expect(rows.find(r => r.regionId === "us-sanjose-1")).toMatchObject({ state: "ok", stale: false });
+            expect(rows.find(r => r.regionId === "us-sanjose-1")).toMatchObject({ state: "ok", driftedV4: false, driftedV6: false });
+            expect(rows.find(r => r.regionId === "us-chicago-1")).toMatchObject({ state: "ok", driftedV4: false, driftedV6: false });
+            const dallas = rows.find(r => r.regionId === "us-dallas-1");
+            expect(dallas).toMatchObject({ state: "disabled", driftedV4: false, driftedV6: false });
+            // Its doc values still render even though it doesn't participate.
+            expect(dallas?.doc?.mapHashV4).toBe("cccccccccccccccccccccccccccccccc");
         });
 
-        it("does not mark a region stale when it is within the threshold of its peers", () => {
-            const regions = [region("us-sanjose-1"), region("us-chicago-1")];
-            const fresh = new Date("2026-01-02T00:00:00Z");
-            const justInside = new Date(fresh.getTime() - POLICY_STALE_THRESHOLD_MS + 1000);
-            const docs: PolicyDocsById = new Map([
-                ["us-sanjose-1", policyDoc("us-sanjose-1", { dataVintage: fresh, updatedAt: fresh })],
-                ["us-chicago-1", policyDoc("us-chicago-1", { dataVintage: justInside, updatedAt: justInside })],
-            ]);
+        it("gives a disabled region its own state even with no doc at all, rather than never-synced", () => {
+            const regions = [region("us-sanjose-1", false)];
+            const docs: PolicyDocsById = new Map();
 
             const rows = buildPolicyStatusRows(regions, docs);
 
-            expect(rows.find(r => r.regionId === "us-chicago-1")).toMatchObject({ state: "ok", stale: false });
+            expect(rows[0]).toMatchObject({ state: "disabled", doc: null, driftedV4: false, driftedV6: false });
         });
 
         it("renders a region with no Policy doc as never-synced, not a crash or a failure", () => {
@@ -181,7 +179,7 @@ describe("policyHelper", () => {
 
             const rows = buildPolicyStatusRows(regions, docs);
 
-            expect(rows[0]).toMatchObject({ state: "never-synced", doc: null, driftedV4: false, driftedV6: false, stale: false });
+            expect(rows[0]).toMatchObject({ state: "never-synced", doc: null, driftedV4: false, driftedV6: false });
         });
 
         it("renders a region missing entirely from the docs map as never-synced", () => {
@@ -210,34 +208,18 @@ describe("policyHelper", () => {
             expect(chicago).toMatchObject({ state: "ok", driftedV4: false });
         });
 
-        it("does not treat a null dataVintage alone as corruption before any snapshot has applied", () => {
+        it("renders a zero-row snapshot's row count and last-applied time rather than treating it as unusable", () => {
             const regions = [region("us-sanjose-1")];
+            const updatedAt = new Date("2026-01-03T00:00:00Z");
             const docs: PolicyDocsById = new Map([
-                ["us-sanjose-1", policyDoc("us-sanjose-1", { dataVintage: null })],
+                ["us-sanjose-1", policyDoc("us-sanjose-1", { rowCount: 0, updatedAt })],
             ]);
 
             const rows = buildPolicyStatusRows(regions, docs);
 
-            expect(rows[0].state).not.toBe("unreadable");
-        });
-    });
-
-    describe("getPolicyStaleness", () => {
-        it("is unknown when there is no dataVintage", () => {
-            expect(getPolicyStaleness(null, new Date("2026-01-01T00:00:00Z"))).toBe("unknown");
-        });
-
-        it("is fresh when there is no peer to lag behind", () => {
-            expect(getPolicyStaleness(new Date("2020-01-01T00:00:00Z"), null)).toBe("fresh");
-        });
-
-        it("is fresh within the threshold and stale beyond it", () => {
-            const peerMax = new Date("2026-01-02T00:00:00Z");
-            const justInside = new Date(peerMax.getTime() - POLICY_STALE_THRESHOLD_MS + 1000);
-            const justOutside = new Date(peerMax.getTime() - POLICY_STALE_THRESHOLD_MS - 1000);
-
-            expect(getPolicyStaleness(justInside, peerMax)).toBe("fresh");
-            expect(getPolicyStaleness(justOutside, peerMax)).toBe("stale");
+            expect(rows[0]).toMatchObject({ state: "ok" });
+            expect(rows[0].doc?.rowCount).toBe(0);
+            expect(rows[0].doc?.updatedAt).toEqual(updatedAt);
         });
     });
 });

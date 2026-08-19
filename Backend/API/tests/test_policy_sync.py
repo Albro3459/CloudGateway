@@ -369,8 +369,16 @@ class DriftingPolicyManager(FakePolicyManager):
     def read_map(self) -> LivePolicyMap:
         live = super().read_map()
         return LivePolicyMap(
-            rows_v4=live.rows_v4 + (("10.0.0.250", 999),),
-            rows_v6=live.rows_v6 + (("fd42:42:42::250", 999),),
+            v4=replace(
+                live.v4,
+                slots=live.v4.slots + (("10.0.0.250", 999),),
+                pairs=live.v4.pairs + (("10.0.0.250", 999),),
+            ),
+            v6=replace(
+                live.v6,
+                slots=live.v6.slots + (("fd42:42:42::250", 999),),
+                pairs=live.v6.pairs + (("fd42:42:42::250", 999),),
+            ),
         )
 
 
@@ -530,3 +538,101 @@ def test_policy_apply_failed_error_is_reachable_through_the_fake():
             policy.apply_map([PolicyRow(address_v4="10.0.0.2", address_v6="fd42:42:42::2", slot=1)])
         except PolicyApplyFailedError as exc:
             assert exc.transient is False
+
+
+# --- role-change convergence (review finding 6) -----------------------------
+
+
+def test_reconcile_policy_role_change_updates_admin_hash_and_every_region_converges():
+    """Wave 5: current roles are re-read on every pass, an operator promoting
+    or demoting a user out of band changes cg_admin4/6, changes the
+    comprehensive live-policy hash, and every enabled region that reconciles
+    against the same Firestore state converges to the same hashes - proven
+    with two independent PolicyManager instances standing in for two hosts."""
+    repository = make_repository()
+    reserve_and_activate(repository, uid="user-1", public_key=FAKE_PUBLIC_KEY)
+    repository.roles["user-1"] = Role.USER
+    policy_region_a = FakePolicyManager()
+    policy_region_b = FakePolicyManager()
+    settings = make_settings()
+
+    baseline_a = reconcile_policy(repository=repository, policy=policy_region_a, settings=settings)
+    baseline_b = reconcile_policy(repository=repository, policy=policy_region_b, settings=settings)
+    assert baseline_a.map_hash_v4 == baseline_b.map_hash_v4
+    assert baseline_a.map_hash_v6 == baseline_b.map_hash_v6
+
+    # A trusted operator promotes the user directly in UserRoles, out of band -
+    # no role-mutation API is involved, matching the Wave 5 decision that role
+    # mutation is not a product feature.
+    repository.roles["user-1"] = Role.ADMIN
+
+    promoted_a = reconcile_policy(repository=repository, policy=policy_region_a, settings=settings)
+    promoted_b = reconcile_policy(repository=repository, policy=policy_region_b, settings=settings)
+
+    assert promoted_a.map_hash_v4 != baseline_a.map_hash_v4
+    assert promoted_a.map_hash_v6 != baseline_a.map_hash_v6
+    assert promoted_a.map_hash_v4 == promoted_b.map_hash_v4
+    assert promoted_a.map_hash_v6 == promoted_b.map_hash_v6
+    # row_count is slot-map rows only and must not move on a pure role change.
+    assert promoted_a.row_count == baseline_a.row_count == 1
+
+    # Demoting back must restore the original (pre-promotion) hash exactly -
+    # proves the admin set is rebuilt from current roles every pass, not
+    # accumulated.
+    repository.roles["user-1"] = Role.USER
+    demoted_a = reconcile_policy(repository=repository, policy=policy_region_a, settings=settings)
+    assert demoted_a.map_hash_v4 == baseline_a.map_hash_v4
+    assert demoted_a.map_hash_v6 == baseline_a.map_hash_v6
+
+
+# --- status write shape (Wave 5: dataVintage/appliedSequence removal) ------
+
+
+class _FakeDocRef:
+    def __init__(self, sink: dict):
+        self._sink = sink
+
+    def set(self, data):
+        self._sink["data"] = data
+
+
+class _FakeCollection:
+    def __init__(self, sink: dict):
+        self._sink = sink
+
+    def document(self, doc_id):
+        self._sink["doc_id"] = doc_id
+        return _FakeDocRef(self._sink)
+
+
+class _FakeFirestoreDb:
+    def __init__(self, sink: dict):
+        self._sink = sink
+
+    def collection(self, name):
+        self._sink["collection"] = name
+        return _FakeCollection(self._sink)
+
+
+def test_write_policy_status_document_has_exactly_five_keys(monkeypatch):
+    """Wave 5 removed dataVintage (Wave 2) and appliedSequence (Wave 3) from
+    the Policy/{regionId} document entirely, not merely nulled them - assert
+    the literal document FirestoreRepository.write_policy_status sends."""
+    from src.firebase import FirestoreRepository
+    from src.repository import PolicyStatus
+
+    repository = FirestoreRepository(make_settings())
+    sink: dict = {}
+    monkeypatch.setattr(repository, "_db", lambda: _FakeFirestoreDb(sink))
+
+    repository.write_policy_status(
+        PolicyStatus(region_id=REGION_ID, map_hash_v4="hash-v4", map_hash_v6="hash-v6", row_count=3)
+    )
+
+    assert sink["collection"] == "Policy"
+    assert sink["doc_id"] == REGION_ID
+    assert set(sink["data"].keys()) == {"regionId", "mapHashV4", "mapHashV6", "rowCount", "updatedAt"}
+    assert sink["data"]["regionId"] == REGION_ID
+    assert sink["data"]["mapHashV4"] == "hash-v4"
+    assert sink["data"]["mapHashV6"] == "hash-v6"
+    assert sink["data"]["rowCount"] == 3

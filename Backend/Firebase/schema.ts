@@ -95,17 +95,19 @@ export type FirebaseMeshDoc = {
 // what the region intended to apply.
 export type FirebasePolicyDoc = {
     regionId: string;
+    // One composite hash per address family over every authorization-bearing
+    // live object read back from the host: cg_tunnel4/6, cg_infra4/6,
+    // cg_admin4/6, cg_slot4/6, cg_pairs4/6. Comparable across enabled regions;
+    // a mismatch is drift. Disabled regions never participate in the
+    // comparison, and role changes are visible here because reconcile
+    // re-reads UserRoles and applies cg_admin4/6 on every pass.
     mapHashV4: string;
     mapHashV6: string;
+    // The cg_slot4 row count.
     rowCount: number;
-    // Always written null since the Wave 3 ordering remediation - cross-process
-    // ordering is enforced by the policy flock itself, not a counter. Kept only
-    // so the document shape is stable until Wave 5 removes it.
-    appliedSequence: number | null;
-    // Max updatedAt across the applied snapshot; the freshness signal, unlike
-    // the hashes it stays meaningful even if maps are ever allowed to differ
-    // between regions.
-    dataVintage: FirestoreTimestamp | null;
+    // Server timestamp: the last successful live apply and read-back on this
+    // region. Rendered as "Last applied" - age alone is never drift or
+    // staleness on its own.
     updatedAt: FirestoreTimestamp;
 };
 

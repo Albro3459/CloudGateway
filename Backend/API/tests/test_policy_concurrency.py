@@ -19,7 +19,8 @@ import src.routes as routes
 from src.app import create_app
 from src.auth import AuthenticatedUser
 from src.enums import Role
-from src.policy import LivePolicyMap, LocalPolicyManager, PolicyRow
+from src.policy import LivePolicyFamily, LivePolicyMap, LocalPolicyManager, PolicyRow
+from src.wireguard import MESH_AGGREGATE_V4, MESH_AGGREGATE_V6
 from src.policy_sync import PolicyCoordinator, PolicyOutcome, reconcile_policy
 
 from .conftest import REGION_ID, make_settings
@@ -92,19 +93,24 @@ class LockingPolicyManager(LocalPolicyManager):
         self._state.rows[(row.address_v4, row.address_v6)] = row
 
     def read_map(self) -> LivePolicyMap:
-        rows_v4 = tuple(
+        return LivePolicyMap(v4=self._family(4), v6=self._family(6))
+
+    def _family(self, version: int) -> LivePolicyFamily:
+        address_attr = "address_v4" if version == 4 else "address_v6"
+        slots = tuple(
             sorted(
-                ((row.address_v4, row.slot) for row in self._state.rows.values()),
+                ((getattr(row, address_attr), row.slot) for row in self._state.rows.values()),
                 key=lambda item: ip_address(item[0]).packed,
             )
         )
-        rows_v6 = tuple(
-            sorted(
-                ((row.address_v6, row.slot) for row in self._state.rows.values()),
-                key=lambda item: ip_address(item[0]).packed,
-            )
+        return LivePolicyFamily(
+            version=version,
+            tunnel=(MESH_AGGREGATE_V4,) if version == 4 else (MESH_AGGREGATE_V6,),
+            infra=(),
+            admin=(),
+            slots=slots,
+            pairs=slots,
         )
-        return LivePolicyMap(rows_v4=rows_v4, rows_v6=rows_v6)
 
 
 def test_reconcile_policy_two_processes_never_interleave_their_lock_sections(tmp_path):

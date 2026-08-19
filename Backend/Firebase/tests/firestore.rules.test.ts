@@ -59,8 +59,6 @@ beforeAll(async () => {
       mapHashV4: "abc",
       mapHashV6: "def",
       rowCount: 0,
-      appliedSequence: 1,
-      dataVintage: null,
     });
     await setDoc(doc(db, "Counters/accountSlots"), { nextSlot: 1 });
   });

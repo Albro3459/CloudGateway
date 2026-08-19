@@ -1,6 +1,6 @@
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -9,10 +9,10 @@ from src.policy import (
     MAX_SLOT,
     MIN_SLOT,
     POLICY_TABLE,
+    LivePolicyFamily,
     LocalPolicyManager,
     PolicyRow,
-    _parse_slot_map,
-    hash_policy_rows,
+    hash_policy_family,
     render_client_row_script,
     render_policy_script,
 )
@@ -31,15 +31,57 @@ class FakeCommandCall:
     timeout: float | None
 
 
+def _obj(kind: str, name: str, elem: list | None = None) -> dict:
+    obj: dict = {"family": "inet", "name": name, "table": "cloudgateway"}
+    if elem is not None:
+        obj["elem"] = elem
+    return {kind: obj}
+
+
+def make_table_json(overrides: dict | None = None) -> str:
+    """Builds a realistic `nft -j list table inet cloudgateway` payload with
+    sample content in every one of the ten named objects. `overrides` maps an
+    object name to a replacement entry dict, or to None to omit that object
+    entirely (simulating a missing object) - used to test malformed/missing
+    shapes without rebuilding the whole payload each time."""
+    entries = [
+        {"metainfo": {"version": "1.0.9"}},
+        {"table": {"family": "inet", "name": "cloudgateway"}},
+        _obj("set", "cg_tunnel4", [{"prefix": {"addr": "10.0.0.0", "len": 16}}]),
+        _obj("set", "cg_tunnel6", [{"prefix": {"addr": "fd42:42:42::", "len": 48}}]),
+        _obj("set", "cg_infra4", ["10.0.0.1"]),
+        _obj("set", "cg_infra6", ["fd42:42:42::1"]),
+        _obj("set", "cg_admin4", ["10.0.0.2"]),
+        _obj("set", "cg_admin6", ["fd42:42:42::2"]),
+        _obj("map", "cg_slot4", [["10.0.0.2", 1], ["10.0.0.3", 2]]),
+        _obj("map", "cg_slot6", [["fd42:42:42::2", 1], ["fd42:42:42::3", 2]]),
+        _obj("set", "cg_pairs4", [{"concat": ["10.0.0.2", 1]}, {"concat": ["10.0.0.3", 2]}]),
+        _obj("set", "cg_pairs6", [{"concat": ["fd42:42:42::2", 1]}, {"concat": ["fd42:42:42::3", 2]}]),
+    ]
+    if overrides:
+        replaced: list[dict] = []
+        for entry in entries:
+            obj = entry.get("set") or entry.get("map")
+            name = obj.get("name") if isinstance(obj, dict) else None
+            if name in overrides:
+                replacement = overrides[name]
+                if replacement is not None:
+                    replaced.append(replacement)
+                continue
+            replaced.append(entry)
+        entries = replaced
+    return json.dumps({"nftables": entries})
+
+
 class FakePolicyCommandRunner:
     """Emulates the `nft` CLI surface LocalPolicyManager drives: `nft -f -` for
-    script application and `nft -j list map inet cloudgateway <name>` for read-back."""
+    script application and one `nft -j list table inet cloudgateway` for
+    read-back (a single call covering every named object, not one per set/map)."""
 
     def __init__(
         self,
         *,
-        map_json_v4: str = '{"nftables": [{"map": {"elem": []}}]}',
-        map_json_v6: str = '{"nftables": [{"map": {"elem": []}}]}',
+        table_json: str = "",
         fail_apply: bool = False,
         timeout_apply: bool = False,
         fail_read: bool = False,
@@ -47,8 +89,7 @@ class FakePolicyCommandRunner:
         failure_stderr: str = "simulated nft failure",
     ):
         self.calls: list[FakeCommandCall] = []
-        self.map_json_v4 = map_json_v4
-        self.map_json_v6 = map_json_v6
+        self.table_json = table_json or make_table_json()
         self.fail_apply = fail_apply
         self.timeout_apply = timeout_apply
         self.fail_read = fail_read
@@ -82,14 +123,12 @@ class FakePolicyCommandRunner:
                 raise subprocess.CalledProcessError(1, list(argv), stderr=self.failure_stderr)
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-        if len(argv) == 7 and argv[0] == "nft" and argv[1] == "-j" and argv[2] == "list" and argv[3] == "map":
-            set_name = argv[6]
+        if argv == ("nft", "-j", "list", "table", "inet", POLICY_TABLE):
             if self.timeout_read:
                 raise subprocess.TimeoutExpired(list(argv), timeout)
             if self.fail_read:
                 raise subprocess.CalledProcessError(1, list(argv), stderr=self.failure_stderr)
-            stdout = self.map_json_v4 if set_name == "cg_slot4" else self.map_json_v6
-            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=self.table_json, stderr="")
 
         raise AssertionError(f"Unexpected policy command: {argv}")
 
@@ -247,96 +286,133 @@ def test_apply_map_runs_nft_with_rendered_script_as_input(tmp_path):
     )
 
 
-# --- read_map / _parse_slot_map ---------------------------------------------
+# --- read_map: one `nft -j list table` call, all ten named objects ---------
 
 
-def test_parse_slot_map_bare_scalar_shape_sorts_by_packed_address():
-    payload = json.dumps(
-        {
-            "nftables": [
-                {"metainfo": {"version": "1.0.9"}},
-                {
-                    "map": {
-                        "family": "inet",
-                        "name": "cg_slot4",
-                        "table": "cloudgateway",
-                        "elem": [
-                            ["10.0.0.3", 2],
-                            ["10.0.0.2", 1],
-                        ],
-                    }
-                },
-            ]
-        }
-    )
-
-    rows = _parse_slot_map(payload, 4)
-
-    assert rows == (("10.0.0.2", 1), ("10.0.0.3", 2))
-
-
-def test_parse_slot_map_wrapped_elem_val_shape():
-    payload = json.dumps(
-        {
-            "nftables": [
-                {
-                    "map": {
-                        "elem": [
-                            [{"elem": {"val": "10.0.0.5"}}, 3],
-                            ["10.0.0.4", {"val": 4}],
-                        ]
-                    }
-                }
-            ]
-        }
-    )
-
-    rows = _parse_slot_map(payload, 4)
-
-    assert rows == (("10.0.0.4", 4), ("10.0.0.5", 3))
-
-
-def test_parse_slot_map_empty_map_omitting_elem_key():
-    payload = json.dumps({"nftables": [{"map": {"family": "inet", "name": "cg_slot4", "table": "cloudgateway"}}]})
-
-    rows = _parse_slot_map(payload, 4)
-
-    assert rows == ()
-
-
-def test_read_map_end_to_end_sorts_hashes_and_counts(tmp_path):
-    v4_json = json.dumps(
-        {"nftables": [{"map": {"elem": [["10.0.0.9", 9], ["10.0.0.2", 2], ["10.0.0.5", 5]]}}]}
-    )
-    v6_json = json.dumps(
-        {
-            "nftables": [
-                {"map": {"elem": [["fd42:42:42::9", 9], ["fd42:42:42::2", 2], ["fd42:42:42::5", 5]]}}
-            ]
-        }
-    )
-    runner = FakePolicyCommandRunner(map_json_v4=v4_json, map_json_v6=v6_json)
-    manager = make_manager(tmp_path, runner)
-
-    live_map = manager.read_map()
-
-    assert live_map.rows_v4 == (("10.0.0.2", 2), ("10.0.0.5", 5), ("10.0.0.9", 9))
-    assert live_map.rows_v6 == (("fd42:42:42::2", 2), ("fd42:42:42::5", 5), ("fd42:42:42::9", 9))
-    assert live_map.row_count == 3
-    assert live_map.hash_v4 == hash_policy_rows(live_map.rows_v4)
-    assert live_map.hash_v6 == hash_policy_rows(live_map.rows_v6)
-    assert live_map.hash_v4 != live_map.hash_v6
-
-
-def test_read_map_empty_map_has_stable_hash_and_zero_row_count(tmp_path):
+def test_read_map_reads_the_whole_table_with_one_command(tmp_path):
     runner = FakePolicyCommandRunner()
     manager = make_manager(tmp_path, runner)
 
+    manager.read_map()
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0].args == ("nft", "-j", "list", "table", "inet", "cloudgateway")
+
+
+def test_read_map_end_to_end_parses_every_object_sorts_and_hashes(tmp_path):
+    runner = FakePolicyCommandRunner(table_json=make_table_json())
+    manager = make_manager(tmp_path, runner)
+
     live_map = manager.read_map()
 
-    assert live_map.rows_v4 == ()
+    assert live_map.v4.tunnel == ("10.0.0.0/16",)
+    assert live_map.v4.infra == ("10.0.0.1",)
+    assert live_map.v4.admin == ("10.0.0.2",)
+    assert live_map.v4.slots == (("10.0.0.2", 1), ("10.0.0.3", 2))
+    assert live_map.v4.pairs == (("10.0.0.2", 1), ("10.0.0.3", 2))
+    assert live_map.v6.tunnel == ("fd42:42:42::/48",)
+    assert live_map.row_count == 2
+    assert live_map.hash_v4 == hash_policy_family(live_map.v4)
+    assert live_map.hash_v6 == hash_policy_family(live_map.v6)
+    assert live_map.hash_v4 != live_map.hash_v6
+
+
+def test_read_map_wrapped_elem_and_val_forms_parse_the_same_as_bare(tmp_path):
+    # Every element wrapped in {"elem": ...}, and scalar marks additionally
+    # wrapped in {"val": ...} - both nft JSON quirks in one payload.
+    wrapped = make_table_json(
+        {
+            "cg_infra4": _obj("set", "cg_infra4", [{"elem": "10.0.0.1"}]),
+            "cg_slot4": _obj(
+                "map",
+                "cg_slot4",
+                [
+                    [{"elem": {"val": "10.0.0.5"}}, 3],
+                    ["10.0.0.4", {"elem": {"val": 4}}],
+                ],
+            ),
+            "cg_pairs4": _obj(
+                "set",
+                "cg_pairs4",
+                [{"elem": {"concat": [{"val": "10.0.0.4"}, {"val": 4}]}}, {"concat": ["10.0.0.5", 3]}],
+            ),
+        }
+    )
+    runner = FakePolicyCommandRunner(table_json=wrapped)
+    manager = make_manager(tmp_path, runner)
+
+    live_map = manager.read_map()
+
+    assert live_map.v4.infra == ("10.0.0.1",)
+    assert live_map.v4.slots == (("10.0.0.4", 4), ("10.0.0.5", 3))
+    assert live_map.v4.pairs == (("10.0.0.4", 4), ("10.0.0.5", 3))
+
+
+def test_read_map_tunnel_accepts_bare_host_address_alongside_prefix(tmp_path):
+    payload = make_table_json(
+        {
+            "cg_tunnel4": _obj(
+                "set", "cg_tunnel4", [{"prefix": {"addr": "10.0.0.0", "len": 16}}, "10.1.0.9"]
+            )
+        }
+    )
+    runner = FakePolicyCommandRunner(table_json=payload)
+    manager = make_manager(tmp_path, runner)
+
+    live_map = manager.read_map()
+
+    assert live_map.v4.tunnel == ("10.0.0.0/16", "10.1.0.9/32")
+
+
+def test_read_map_empty_objects_omitting_elem_key_produce_empty_family(tmp_path):
+    payload = make_table_json(
+        {
+            "cg_tunnel4": _obj("set", "cg_tunnel4"),
+            "cg_infra4": _obj("set", "cg_infra4"),
+            "cg_admin4": _obj("set", "cg_admin4"),
+            "cg_slot4": _obj("map", "cg_slot4"),
+            "cg_pairs4": _obj("set", "cg_pairs4"),
+        }
+    )
+    runner = FakePolicyCommandRunner(table_json=payload)
+    manager = make_manager(tmp_path, runner)
+
+    live_map = manager.read_map()
+
+    assert live_map.v4.tunnel == ()
+    assert live_map.v4.infra == ()
+    assert live_map.v4.admin == ()
+    assert live_map.v4.slots == ()
+    assert live_map.v4.pairs == ()
     assert live_map.row_count == 0
-    assert live_map.hash_v4 == hash_policy_rows(())
+    assert live_map.hash_v4 == hash_policy_family(live_map.v4)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cg_admin4": None},  # object missing from the table listing entirely
+        {"cg_tunnel4": None},
+        {"cg_pairs6": None},
+        {"cg_infra4": _obj("set", "cg_infra4", ["not-an-ip"])},  # malformed address
+        {"cg_infra4": _obj("set", "cg_infra4", ["fd42:42:42::1"])},  # wrong-family address
+        {"cg_admin4": _obj("set", "cg_admin4", [123])},  # not a string
+        {"cg_slot4": _obj("map", "cg_slot4", [["10.0.0.2"]])},  # element not a pair
+        {"cg_slot4": _obj("map", "cg_slot4", [["10.0.0.2", 0]])},  # slot 0 (reserved)
+        {"cg_slot4": _obj("map", "cg_slot4", [["10.0.0.2", MAX_SLOT + 1]])},  # slot out of range
+        {"cg_pairs4": _obj("set", "cg_pairs4", [{"concat": ["10.0.0.2"]}])},  # concat wrong length
+        {"cg_pairs4": _obj("set", "cg_pairs4", ["10.0.0.2 . 1"])},  # not a concat dict at all
+        {"cg_tunnel4": _obj("set", "cg_tunnel4", [{"prefix": {"addr": "10.0.0.0", "len": "16"}}])},  # len not int
+        {"cg_tunnel4": _obj("set", "cg_tunnel4", ["not-an-ip"])},  # malformed bare tunnel address
+        {"cg_tunnel4": _obj("set", "cg_tunnel4", [42])},  # neither prefix dict nor string
+    ],
+)
+def test_read_map_rejects_malformed_or_missing_objects(tmp_path, overrides):
+    runner = FakePolicyCommandRunner(table_json=make_table_json(overrides))
+    manager = make_manager(tmp_path, runner)
+
+    with pytest.raises(PolicyApplyFailedError):
+        manager.read_map()
 
 
 @pytest.mark.parametrize(
@@ -345,15 +421,14 @@ def test_read_map_empty_map_has_stable_hash_and_zero_row_count(tmp_path):
         "not json",
         json.dumps({}),  # missing "nftables"
         json.dumps({"nftables": "oops"}),  # not a list
-        json.dumps({"nftables": [{"metainfo": {}}]}),  # no map entry present
-        json.dumps({"nftables": [{"map": {"elem": "oops"}}]}),  # elem not a list
-        json.dumps({"nftables": [{"map": {"elem": [["10.0.0.2"]]}}]}),  # element not a pair
-        json.dumps({"nftables": [{"map": {"elem": [[123, 1]]}}]}),  # address not a string
     ],
 )
-def test_parse_slot_map_rejects_malformed_or_unexpected_json(payload):
+def test_read_map_rejects_malformed_top_level_json(tmp_path, payload):
+    runner = FakePolicyCommandRunner(table_json=payload)
+    manager = make_manager(tmp_path, runner)
+
     with pytest.raises(PolicyApplyFailedError):
-        _parse_slot_map(payload, 4)
+        manager.read_map()
 
 
 def test_read_map_nft_failure_maps_to_transient_policy_error(tmp_path):
@@ -376,20 +451,106 @@ def test_read_map_nft_timeout_maps_to_transient_policy_error(tmp_path):
     assert exc_info.value.transient is True
 
 
-# --- hash_policy_rows ---------------------------------------------------------
+# --- hash_policy_family --------------------------------------------------
 
 
-def test_hash_policy_rows_is_stable_and_content_sensitive():
-    rows = (("10.0.0.2", 1), ("10.0.0.3", 2))
-
-    assert hash_policy_rows(rows) == hash_policy_rows(rows)
-    assert hash_policy_rows(rows) != hash_policy_rows(())
-    assert hash_policy_rows(rows) != hash_policy_rows((("10.0.0.2", 1),))
-    assert hash_policy_rows(rows) != hash_policy_rows((("10.0.0.2", 1), ("10.0.0.3", 3)))
+def _family(version=4, *, tunnel=(), infra=(), admin=(), slots=(), pairs=()):
+    return LivePolicyFamily(version=version, tunnel=tunnel, infra=infra, admin=admin, slots=slots, pairs=pairs)
 
 
-def test_hash_policy_rows_empty_is_deterministic():
-    assert hash_policy_rows(()) == hash_policy_rows(())
+def test_hash_policy_family_is_stable_and_content_sensitive():
+    base = _family(slots=(("10.0.0.2", 1), ("10.0.0.3", 2)), pairs=(("10.0.0.2", 1), ("10.0.0.3", 2)))
+
+    assert hash_policy_family(base) == hash_policy_family(base)
+    assert hash_policy_family(base) != hash_policy_family(_family())
+    assert hash_policy_family(base) != hash_policy_family(replace(base, slots=(("10.0.0.2", 1),)))
+
+
+def test_hash_policy_family_empty_is_deterministic():
+    assert hash_policy_family(_family()) == hash_policy_family(_family())
+
+
+def test_read_map_element_order_in_the_nft_payload_never_affects_the_hash(tmp_path):
+    # Order-independence is canonicalized by LivePolicyFamily itself, so two
+    # payloads with identical content in different element order must read
+    # back identical hashes - otherwise two regions holding the same policy
+    # could publish different hashes and look drifted.
+    forward = make_table_json(
+        {
+            "cg_slot4": _obj("map", "cg_slot4", [["10.0.0.2", 1], ["10.0.0.3", 2]]),
+            "cg_pairs4": _obj("set", "cg_pairs4", [{"concat": ["10.0.0.2", 1]}, {"concat": ["10.0.0.3", 2]}]),
+            "cg_admin4": _obj("set", "cg_admin4", ["10.0.0.2", "10.0.0.3"]),
+        }
+    )
+    reversed_order = make_table_json(
+        {
+            "cg_slot4": _obj("map", "cg_slot4", [["10.0.0.3", 2], ["10.0.0.2", 1]]),
+            "cg_pairs4": _obj("set", "cg_pairs4", [{"concat": ["10.0.0.3", 2]}, {"concat": ["10.0.0.2", 1]}]),
+            "cg_admin4": _obj("set", "cg_admin4", ["10.0.0.3", "10.0.0.2"]),
+        }
+    )
+    manager_forward = make_manager(tmp_path, FakePolicyCommandRunner(table_json=forward))
+    manager_reversed = make_manager(tmp_path, FakePolicyCommandRunner(table_json=reversed_order), lock_path=str(tmp_path / "other.lock"))
+
+    assert manager_forward.read_map().hash_v4 == manager_reversed.read_map().hash_v4
+
+
+def test_live_policy_family_canonicalizes_element_order_at_construction():
+    # The digest must describe content, not the order nft happened to list it
+    # in, and must not depend on every caller remembering to pre-sort.
+    shuffled = _family(
+        tunnel=("10.1.0.0/16", "10.0.0.0/16"),
+        infra=("10.0.0.9", "10.0.0.1"),
+        admin=("10.0.0.10", "10.0.0.2"),
+        slots=(("10.0.0.10", 2), ("10.0.0.2", 1)),
+        pairs=(("10.0.0.2", 2), ("10.0.0.2", 1)),
+    )
+
+    assert shuffled.tunnel == ("10.0.0.0/16", "10.1.0.0/16")
+    assert shuffled.infra == ("10.0.0.1", "10.0.0.9")
+    assert shuffled.admin == ("10.0.0.2", "10.0.0.10")
+    assert shuffled.slots == (("10.0.0.2", 1), ("10.0.0.10", 2))
+    # Same address twice under different marks still has one canonical order.
+    assert shuffled.pairs == (("10.0.0.2", 1), ("10.0.0.2", 2))
+
+    sorted_family = _family(
+        tunnel=("10.0.0.0/16", "10.1.0.0/16"),
+        infra=("10.0.0.1", "10.0.0.9"),
+        admin=("10.0.0.2", "10.0.0.10"),
+        slots=(("10.0.0.2", 1), ("10.0.0.10", 2)),
+        pairs=(("10.0.0.2", 1), ("10.0.0.2", 2)),
+    )
+    assert hash_policy_family(shuffled) == hash_policy_family(sorted_family)
+
+
+def test_hash_policy_family_changing_admin_alone_changes_the_hash():
+    without_admin = _family(slots=(("10.0.0.2", 1),), pairs=(("10.0.0.2", 1),))
+    with_admin = replace(without_admin, admin=("10.0.0.2",))
+
+    assert hash_policy_family(without_admin) != hash_policy_family(with_admin)
+
+
+def test_hash_policy_family_changing_infra_or_tunnel_alone_changes_the_hash():
+    base = _family(slots=(("10.0.0.2", 1),), pairs=(("10.0.0.2", 1),))
+
+    assert hash_policy_family(base) != hash_policy_family(replace(base, infra=("10.0.0.1",)))
+    assert hash_policy_family(base) != hash_policy_family(replace(base, tunnel=("10.0.0.0/16",)))
+
+
+def test_hash_policy_family_object_label_distinguishes_identical_addresses_across_objects():
+    # The same address in cg_admin4 vs cg_infra4 must never collide - the
+    # object-name label on every digest line is what prevents that.
+    as_admin = _family(admin=("10.0.0.2",))
+    as_infra = _family(infra=("10.0.0.2",))
+
+    assert hash_policy_family(as_admin) != hash_policy_family(as_infra)
+
+
+def test_hash_policy_family_v4_and_v6_are_independent_even_with_identical_content():
+    v4 = _family(version=4, admin=("10.0.0.2",))
+    v6 = _family(version=6, admin=("10.0.0.2",))
+
+    assert hash_policy_family(v4) != hash_policy_family(v6)
 
 
 # --- validation: bad input never reaches nft --------------------------------

@@ -59,19 +59,20 @@ const linkRowClasses = (status: MeshLinkStatus): string => {
 // is an integrity signal (the fleet's maps disagree) and an unreadable doc
 // means client isolation status cannot be confirmed at all, unlike
 // "never-synced" which just means the region hasn't completed a first pass.
+// "disabled" gets the same neutral treatment as "never-synced": the region
+// is intentionally excluded from comparison, not in a bad state.
 const policyRowClasses = (state: PolicyRegionState): string => {
     if (state === "ok") return "border-success-soft-edge bg-success-soft text-success-strong";
     if (state === "drifted") return "border-danger-soft-edge bg-danger-soft text-danger-content";
     if (state === "unreadable") return "border-danger-soft-edge bg-danger-soft text-danger-content";
-    if (state === "stale") return "border-warning-soft-edge bg-warning-soft text-warning-strong";
     return "border-edge-subtle bg-inset text-content-secondary";
 };
 
 const policyStateLabel = (state: PolicyRegionState): string => {
     if (state === "ok") return "OK";
     if (state === "drifted") return "Drifted";
-    if (state === "stale") return "Stale";
     if (state === "unreadable") return "Unreadable";
+    if (state === "disabled") return "Disabled";
     return "Never synced";
 };
 
@@ -636,8 +637,12 @@ const ServerHealth: React.FC = () => {
                 <h3 className="text-xl font-semibold text-content">Client isolation</h3>
                 <p className="mt-1 text-xs text-content-muted">
                     Account-scoped ACL status, read back from each region&apos;s live nftables map. Row counts and
-                    hashes only - never uids, emails, client names, or addresses. Drift and staleness are visible
-                    without running a sync.
+                    hashes only - never uids, emails, client names, or addresses. Drift is visible without running
+                    a sync.
+                </p>
+                <p className="mt-1 text-xs text-content-muted">
+                    This dashboard has no role mutation. A trusted out-of-band <code>UserRoles</code> edit only
+                    reaches the fleet after an admin runs Sync All Regions.
                 </p>
                 {policyLoadFailed ? (
                     // A collection-level read failure gets its own card rather than
@@ -660,6 +665,9 @@ const ServerHealth: React.FC = () => {
                                     <span className="font-medium">{regionLabel(row.regionId, regionDisplayNames)}</span>
                                     <span className="text-xs font-semibold uppercase tracking-wide">{policyStateLabel(row.state)}</span>
                                 </div>
+                                {row.state === "disabled" && (
+                                    <p className="mt-1 text-xs">Region disabled - excluded from the fleet comparison.</p>
+                                )}
                                 {row.state === "never-synced" && (
                                     <p className="mt-1 text-xs">No policy reconcile has completed for this region yet.</p>
                                 )}
@@ -675,26 +683,21 @@ const ServerHealth: React.FC = () => {
                                                 : "IPv6 map differs from the fleet."}
                                     </p>
                                 )}
-                                {row.state === "stale" && (
-                                    <p className="mt-1 text-xs">Data vintage lags the rest of the fleet.</p>
-                                )}
                                 {row.doc && (
                                     <>
                                         <p className="mt-1 text-xs">{row.doc.rowCount ?? "-"} rows</p>
                                         <p className="text-xs">
-                                            {row.doc.dataVintage
-                                                ? `Data as of ${row.doc.dataVintage.toLocaleString()}`
-                                                : "No applied snapshot yet"}
+                                            {row.doc.updatedAt ? `Last applied ${row.doc.updatedAt.toLocaleString()}` : "-"}
                                         </p>
                                         <div className="mt-2 flex flex-wrap gap-2">
                                             <CopyableValue
                                                 value={row.doc.mapHashV4}
-                                                label={`${regionLabel(row.regionId, regionDisplayNames)} IPv4 map hash`}
+                                                label={`${regionLabel(row.regionId, regionDisplayNames)} comprehensive IPv4 policy hash`}
                                                 className="max-w-[9rem]"
                                             />
                                             <CopyableValue
                                                 value={row.doc.mapHashV6}
-                                                label={`${regionLabel(row.regionId, regionDisplayNames)} IPv6 map hash`}
+                                                label={`${regionLabel(row.regionId, regionDisplayNames)} comprehensive IPv6 policy hash`}
                                                 className="max-w-[9rem]"
                                             />
                                         </div>

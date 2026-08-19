@@ -61,12 +61,20 @@ systemd unit or CLI entry point of its own; it runs inside whichever process cal
 
 A pass pulls the fleet-wide client/account snapshot from Firestore, applies it to
 `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, and `cg_pairs4/6` atomically as a single `nft -f -`
-load (never incrementally), reads back the live `cg_slot4/6` maps, and writes a best-effort
-`Policy/{regionId}` status doc. Status is read back from the live map, not the pulled snapshot, so
-it describes what is actually on the wire, not what the region intended to apply - the same rule
-`write_mesh_status` follows for `Mesh/{regionId}`. A status write failure never fails a pass. The
-status doc is intentionally opaque: row count, data vintage, and map hashes only - never a uid,
-email, address, or key.
+load (never incrementally), then reads back every authorization-bearing live object for both
+address families - `cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, and `cg_pairs4/6` -
+canonicalizes and hashes each family into one comprehensive `mapHashV4`/`mapHashV6`, and writes a
+best-effort `Policy/{regionId}` status doc. Status is read back from the live map, not the pulled
+snapshot, so it describes what is actually on the wire, not what the region intended to apply - the
+same rule `write_mesh_status` follows for `Mesh/{regionId}`. A status write failure never fails a
+pass. The status doc is intentionally opaque: `regionId`, `mapHashV4`/`mapHashV6`, `rowCount` (the
+`cg_slot4` row count), and `updatedAt` (a server timestamp for the last successful apply/read-back,
+shown in Server Health as "Last applied") - never a uid, email, address, or key. Because roles are
+re-read from `UserRoles` and applied to `cg_admin4/6` on every pass, an admin allow-set change is
+visible in the comprehensive hash as soon as the next reconcile runs; there is no role-mutation
+API, UI, timer, or automatic propagation, so a trusted operator who edits `UserRoles` out of band
+must run Sync All Regions immediately, and the fleet keeps enforcing the previous allow-set until
+they do.
 
 Concurrency is independent of the peer sync: `reconcile_policy()` takes its own flock at
 `/run/cloudgateway-policy.lock`, deliberately not `wireguard.lock()`, so a full policy pass never
