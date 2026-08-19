@@ -1,13 +1,15 @@
 import CloudGatewayAppCore
 import Foundation
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 // Admin-only Server Health page: mesh membership toggles, link status derived
-// from Mesh/*, and per-region client-peer sync results. The page owns
-// confirm-and-run for Sync All Regions - there is no cross-page hand-off like
-// the web's pendingRunSync, since opening this page and running the fan-out
-// happen in the same place on iOS.
+// from Mesh/*, account-scoped ACL client-isolation status derived from
+// Policy/* (observability-only), and per-region client-peer sync results. The
+// page owns confirm-and-run for Sync All Regions - there is no cross-page
+// hand-off like the web's pendingRunSync, since opening this page and running
+// the fan-out happen in the same place on iOS.
 struct ServerHealthView: View {
     @ObservedObject var viewModel: CloudGatewayServerHealthViewModel
     let onClose: () -> Void
@@ -68,6 +70,7 @@ struct ServerHealthView: View {
                     headerPanel
                     meshMembershipPanel
                     meshLinksPanel
+                    clientIsolationPanel
                     clientPeerSyncPanel
                 }
             }
@@ -111,7 +114,7 @@ struct ServerHealthView: View {
                     Text("Server Health")
                         .font(.title3.bold())
                         .foregroundStyle(theme.content)
-                    Text("Mesh membership, link status, and client peer sync per region.")
+                    Text("Mesh membership, link status, client isolation, and client peer sync per region.")
                         .font(.subheadline)
                         .foregroundStyle(theme.contentMuted)
                     Text("Mesh status reflects durable configuration snapshots only; it does not prove a handshake or traffic reachability.")
@@ -369,6 +372,165 @@ struct ServerHealthView: View {
         let recorded = warning.appliedAt
             .map { " - recorded \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
         return "\(region) skipped \(peer): \(reason)\(code)\(recorded)"
+    }
+
+    // Ported from the web's "Client isolation" card grid. Account-scoped ACL status
+    // read back from each region's live nftables map - see clientIsolationPanel's
+    // caption notes for the security/scope constraints this panel keeps.
+    private var clientIsolationPanel: some View {
+        ThemedPanel {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Client isolation")
+                    .font(.title3.bold())
+                    .foregroundStyle(theme.content)
+
+                Text("Account-scoped ACL status, read back from each region's live nftables map. Row counts and hashes only - never uids, emails, client names, or addresses. Drift is visible without running a sync.")
+                    .font(.caption)
+                    .foregroundStyle(theme.contentMuted)
+                Text("This dashboard has no role mutation. A trusted out-of-band UserRoles edit only reaches the fleet after an admin runs Sync All Regions.")
+                    .font(.caption)
+                    .foregroundStyle(theme.contentMuted)
+
+                if viewModel.policyLoadFailed {
+                    // A collection-level read failure gets its own card rather than
+                    // falling through to the per-region grid: with no docs to work
+                    // from, every row would render "Never synced", which asserts a
+                    // fleet state we don't actually know and looks nothing like an
+                    // outage.
+                    Text("Unable to load client isolation status. This is a read failure, not a report that no region has completed a policy reconcile.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.dangerContent)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(theme.dangerSoft)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(theme.dangerSoftEdge, lineWidth: 1)
+                        }
+                } else if viewModel.policyRows.isEmpty {
+                    Text("No regions.")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.contentMuted)
+                } else {
+                    FlowLayout(spacing: 10) {
+                        ForEach(viewModel.policyRows) { row in
+                            policyRow(row)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func policyRow(_ row: CloudGatewayPolicyStatusRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(viewModel.displayName(for: row.regionId))
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(policyStateLabel(row.state))
+                    .font(.caption.weight(.semibold))
+                    .textCase(.uppercase)
+            }
+
+            if let sentence = policyStateSentence(row) {
+                Text(sentence)
+                    .font(.caption)
+            }
+
+            if let doc = row.doc {
+                Text("\(doc.rowCount.map(String.init) ?? "-") rows")
+                    .font(.caption)
+                Text(doc.updatedAt.map { "Last applied \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "-")
+                    .font(.caption)
+
+                HStack(spacing: 8) {
+                    PolicyHashChip(
+                        regionName: viewModel.displayName(for: row.regionId),
+                        family: "IPv4",
+                        value: doc.mapHashV4
+                    )
+                    PolicyHashChip(
+                        regionName: viewModel.displayName(for: row.regionId),
+                        family: "IPv6",
+                        value: doc.mapHashV6
+                    )
+                }
+            }
+        }
+        .foregroundStyle(policyRowForeground(row.state))
+        .frame(minWidth: 220, alignment: .leading)
+        .padding(10)
+        .background(policyRowBackground(row.state))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(policyRowBorder(row.state), lineWidth: 1)
+        }
+    }
+
+    private func policyStateLabel(_ state: CloudGatewayPolicyRegionState) -> String {
+        switch state {
+        case .ok: "OK"
+        case .drifted: "Drifted"
+        case .unreadable: "Unreadable"
+        case .disabled: "Disabled"
+        case .neverSynced: "Never synced"
+        }
+    }
+
+    private func policyStateSentence(_ row: CloudGatewayPolicyStatusRow) -> String? {
+        switch row.state {
+        case .ok:
+            return nil
+        case .disabled:
+            return "Region disabled - excluded from the fleet comparison."
+        case .neverSynced:
+            return "No policy reconcile has completed for this region yet."
+        case .unreadable:
+            return "Policy status could not be read for this region."
+        case .drifted:
+            if row.driftedV4 && row.driftedV6 {
+                return "IPv4 and IPv6 maps differ from the fleet."
+            } else if row.driftedV4 {
+                return "IPv4 map differs from the fleet."
+            } else {
+                return "IPv6 map differs from the fleet."
+            }
+        }
+    }
+
+    // Drift and "unreadable" both get the more alarming danger treatment: drift is an
+    // integrity signal (the fleet's maps disagree) and an unreadable doc means client
+    // isolation status cannot be confirmed at all - unlike "never-synced", which just
+    // means the region hasn't completed a first pass yet. "disabled" gets the same
+    // neutral treatment as "never-synced": the region is intentionally excluded from
+    // comparison, not in a bad state. Mirrors the linkRowBackground/Foreground/Border
+    // trio above.
+    private func policyRowBackground(_ state: CloudGatewayPolicyRegionState) -> Color {
+        switch state {
+        case .ok: theme.successSoft
+        case .drifted, .unreadable: theme.dangerSoft
+        case .disabled, .neverSynced: theme.inset
+        }
+    }
+
+    private func policyRowForeground(_ state: CloudGatewayPolicyRegionState) -> Color {
+        switch state {
+        case .ok: theme.successStrong
+        case .drifted, .unreadable: theme.dangerContent
+        case .disabled, .neverSynced: theme.contentSecondary
+        }
+    }
+
+    private func policyRowBorder(_ state: CloudGatewayPolicyRegionState) -> Color {
+        switch state {
+        case .ok: theme.successSoftEdge
+        case .drifted, .unreadable: theme.dangerSoftEdge
+        case .disabled, .neverSynced: theme.edgeSubtle
+        }
     }
 
     private var clientPeerSyncPanel: some View {
@@ -634,6 +796,20 @@ struct RegionSyncResultCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if response.policyApplied == false {
+                Text("Peer and mesh reconciliation succeeded, but this region's account-scoped client-isolation policy pass failed. The region keeps enforcing its previously applied policy map, and its published policy status is unchanged. Retry Sync All and check the host logs.")
+                    .font(.subheadline)
+                    .foregroundStyle(theme.warningStrong)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if response.policyApplied == true && response.policyStatusWritten == false {
+                Text("This region's policy map was applied, but its policy status snapshot could not be saved. The policy hashes shown on this page may be out of date until the next successful pass.")
+                    .font(.subheadline)
+                    .foregroundStyle(theme.contentSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if !response.meshPeers.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(response.meshPeers, id: \.regionId) { peer in
@@ -721,6 +897,41 @@ struct RegionSyncResultCard: View {
     private func syncedAtText(_ raw: String) -> String {
         guard let date = CloudGatewayRegionSyncParsing.syncedAtDate(raw) else { return raw }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+// Copyable comprehensive-hash chip, ported from the web's `CopyableValue`. Disabled
+// and shows "-" when the hash is nil, matching a region with no usable doc for that
+// address family. Copy interaction mirrors ContentView's copyAllDetails: pasteboard
+// write, success haptic, and an animated transient "Copied" label.
+private struct PolicyHashChip: View {
+    let regionName: String
+    let family: String
+    let value: String?
+    @State private var didCopy = false
+
+    var body: some View {
+        Button(action: copy) {
+            Text(didCopy ? "Copied" : (value ?? "-"))
+                .font(.caption.monospaced())
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 130, alignment: .leading)
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .disabled(value == nil)
+        .accessibilityLabel("\(regionName) comprehensive \(family) policy hash")
+    }
+
+    private func copy() {
+        guard let value else { return }
+        UIPasteboard.general.string = value
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation { didCopy = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation { didCopy = false }
+        }
     }
 }
 

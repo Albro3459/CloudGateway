@@ -202,8 +202,16 @@ import Testing
         tunnelNetworkV6: nil
     )
     let doc = CloudGatewayMeshDoc(regionId: "us-a", meshEnabled: true, updatedAt: nil, peers: [:])
+    let policyDoc = CloudGatewayPolicyDoc(
+        regionId: "us-a",
+        mapHashV4: "deadbeef",
+        mapHashV6: "beefdead",
+        rowCount: 3,
+        updatedAt: nil
+    )
     repository.meshRegions = [region]
     repository.meshDocs = ["us-a": doc]
+    repository.policyDocs = ["us-a": policyDoc]
     let facade = CloudGatewayAppServiceFacade(
         auth: FacadeAuthFake(events: EventLog()),
         repository: repository,
@@ -213,10 +221,12 @@ import Testing
 
     let regions = try await facade.fetchMeshRegions()
     let docs = try await facade.fetchMeshDocs()
+    let policyDocs = try await facade.fetchPolicyDocs()
     try await facade.setRegionMeshEnabled(regionId: "us-b", enabled: false)
 
     #expect(regions == [region])
     #expect(docs == ["us-a": doc])
+    #expect(policyDocs == ["us-a": policyDoc])
     #expect(repository.lastSetMeshEnabledRegionId == "us-b")
     #expect(repository.lastSetMeshEnabledFlag == false)
 }
@@ -458,6 +468,7 @@ private final class FacadeRepositoryFake: CloudGatewayClientRepository {
     var allClients: [CloudGatewayClient] = []
     var meshRegions: [CloudGatewayMeshRegion] = []
     var meshDocs: [String: CloudGatewayMeshDoc] = [:]
+    var policyDocs: [String: CloudGatewayPolicyDoc] = [:]
     var lastRoleUID: String?
     var lastOwnedUID: String?
     var lastSetMeshEnabledRegionId: String?
@@ -478,6 +489,8 @@ private final class FacadeRepositoryFake: CloudGatewayClientRepository {
     func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion] { meshRegions }
 
     func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] { meshDocs }
+
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] { policyDocs }
 
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
         lastSetMeshEnabledRegionId = regionId

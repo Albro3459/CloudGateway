@@ -131,6 +131,40 @@ public enum CloudGatewayRegionSyncParsing {
             meshStatusWritten = nil
         }
 
+        // Same compatibility story for the account-scoped ACL policy fields, matching
+        // APIHelper.ts: absent means an older regional API that predates policy sync
+        // entirely, unknown and never a failure. A present value of the wrong shape
+        // (including explicit null) still rejects the whole response, exactly like
+        // meshStatusWritten above. No relationship is enforced among the three - the
+        // web parser does not require rowCount only alongside a true policyApplied.
+        let policyApplied: Bool?
+        if dict["policyApplied"] != nil {
+            guard let applied = dict.boolValue("policyApplied") else { return nil }
+            policyApplied = applied
+        } else {
+            policyApplied = nil
+        }
+
+        // Reuses nonNegativeInt, which already rejects non-`.int` JSONValues - so a
+        // fractional rowCount (decoded as `.double`) is rejected here, unlike the
+        // Firestore policy mapper's `Int?` coercion, which has no such host-side
+        // guarantee to lean on and so does not enforce non-negativity.
+        let policyRowCount: Int?
+        if dict["policyRowCount"] != nil {
+            guard let rowCount = nonNegativeInt(dict, "policyRowCount") else { return nil }
+            policyRowCount = rowCount
+        } else {
+            policyRowCount = nil
+        }
+
+        let policyStatusWritten: Bool?
+        if dict["policyStatusWritten"] != nil {
+            guard let written = dict.boolValue("policyStatusWritten") else { return nil }
+            policyStatusWritten = written
+        } else {
+            policyStatusWritten = nil
+        }
+
         return CloudGatewayRegionSyncResponse(
             regionId: regionId,
             syncedAt: syncedAt,
@@ -148,7 +182,10 @@ public enum CloudGatewayRegionSyncParsing {
             meshRoutesAdded: meshRoutesAdded,
             meshRoutesRemoved: meshRoutesRemoved,
             meshStatusWritten: meshStatusWritten,
-            meshPeers: meshPeers
+            meshPeers: meshPeers,
+            policyApplied: policyApplied,
+            policyRowCount: policyRowCount,
+            policyStatusWritten: policyStatusWritten
         )
     }
 

@@ -387,13 +387,20 @@ Referenced by name from source comments.
 
 ### Open release blockers
 
-**iOS Server Health Policy parity.** Write and implement a separate plan. At
-minimum it must add shared `CloudGatewayAppCore` Policy models and derivation, a
-Firestore mapper, repository/facade fetch contract, the iOS Firestore adapter,
-independent Policy load-failure state, post-Sync-All reload, client-isolation
-status UI, tests, and screenshot fixtures. Swift status semantics must match the
-final Web semantics - comprehensive hash agreement among enabled regions plus
-"Last applied" - rather than porting the superseded `dataVintage` model.
+**iOS Server Health Policy parity.** *Closed:* implemented per
+[TODO/ios-policy-parity.md](ios-policy-parity.md). Shipped: shared
+`CloudGatewayAppCore` Policy models and `buildPolicyStatusRows` derivation, a
+Firebase-free Firestore mapper, `fetchPolicyDocs()` on the repository
+contract/facade/conformers, the iOS Firestore adapter with `Timestamp` ->
+`Date` conversion, independent Policy load-failure state that cannot blank
+fresh Mesh state, a post-Sync-All reload, the client-isolation panel and
+`RegionSyncResultCard` policy notes, sync-response
+`policyApplied`/`policyRowCount`/`policyStatusWritten` parsing, and ported
+policy/view-model/parsing tests plus screenshot fixtures. Swift status
+semantics match the final Web semantics - comprehensive hash agreement among
+enabled regions plus "Last applied" - not the superseded `dataVintage` model.
+This closes observability parity; it does not change any VPN/client
+configuration behavior, and iOS was never broken by the ACL release.
 
 **Live-host verification.** Neither item is covered by the offline contract test:
 
@@ -435,7 +442,7 @@ final Web semantics - comprehensive hash agreement among enabled regions plus
 * [x] Findings 1 and 5 closed as accepted dispositions; rebuild-only rollout gate enforced in `bootstrap.sh`.
 * [x] Findings 2, 3, 4, 6, 7, 8, 9, 10, 11, and 12 implemented across Waves 1-6.
 * [x] Full `./scripts/test.sh` gate green after the remediation (2026-08-19).
-* [ ] Write and implement the separate iOS Server Health Policy parity plan before release.
+* [x] Write and implement the separate iOS Server Health Policy parity plan before release.
 * [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.
 * [ ] Verify the four reachability cases end to end.
 * [ ] Run the migration (backup, dry-run, `--apply`, no-op rerun) and rebuild every region from one tag.

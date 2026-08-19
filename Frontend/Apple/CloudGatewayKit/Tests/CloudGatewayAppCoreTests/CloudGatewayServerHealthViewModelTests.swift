@@ -60,6 +60,18 @@ final class CloudGatewayServerHealthViewModelTests: XCTestCase {
         )
     }
 
+    private func policyDoc(
+        _ regionId: String,
+        mapHashV4: String? = "hash-v4",
+        mapHashV6: String? = "hash-v6",
+        rowCount: Int? = 10,
+        updatedAt: Date? = Date()
+    ) -> CloudGatewayPolicyDoc {
+        CloudGatewayPolicyDoc(
+            regionId: regionId, mapHashV4: mapHashV4, mapHashV6: mapHashV6, rowCount: rowCount, updatedAt: updatedAt
+        )
+    }
+
     private func signedInService() -> MockGatewayService {
         let service = MockGatewayService()
         service.currentUser = AuthenticatedUser(uid: "admin-1", email: "admin@example.com")
@@ -150,6 +162,184 @@ final class CloudGatewayServerHealthViewModelTests: XCTestCase {
 
         // A resolved last but is stale; it must not overwrite B's newer state.
         XCTAssertEqual(viewModel.regions.first?.meshEnabled, true)
+    }
+
+    // MARK: - Policy
+
+    func testLoadPopulatesPolicyRowsWithExpectedStatesAndLeavesPolicyLoadFailedFalse() async {
+        let service = signedInService()
+        service.meshRegions = [
+            region("us-sanjose-1"),
+            region("us-chicago-1"),
+            region("us-austin-1"),
+            region("us-portland-1", enabled: false),
+        ]
+        service.policyDocs = [
+            "us-sanjose-1": policyDoc("us-sanjose-1", mapHashV4: "hash-v4", mapHashV6: "hash-v6"),
+            "us-chicago-1": policyDoc("us-chicago-1", mapHashV4: "hash-v4", mapHashV6: "hash-v6"),
+            "us-austin-1": policyDoc("us-austin-1", mapHashV4: "different-v4", mapHashV6: "hash-v6"),
+            "us-portland-1": policyDoc("us-portland-1", mapHashV4: "hash-v4", mapHashV6: "hash-v6"),
+        ]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+
+        await viewModel.load()
+
+        XCTAssertFalse(viewModel.policyLoadFailed)
+        XCTAssertEqual(viewModel.policyRows.count, 4)
+        XCTAssertEqual(viewModel.policyRows.first { $0.regionId == "us-sanjose-1" }?.state, .ok)
+        XCTAssertEqual(viewModel.policyRows.first { $0.regionId == "us-chicago-1" }?.state, .ok)
+        let austin = viewModel.policyRows.first { $0.regionId == "us-austin-1" }
+        XCTAssertEqual(austin?.state, .drifted)
+        XCTAssertEqual(austin?.driftedV4, true)
+        XCTAssertEqual(austin?.driftedV6, false)
+        XCTAssertEqual(viewModel.policyRows.first { $0.regionId == "us-portland-1" }?.state, .disabled)
+    }
+
+    // A Policy read failure must not blank the fresh Regions/Mesh state, and must not
+    // manufacture a `neverSynced` row for every region out of the empty map a failure
+    // leaves behind - that would assert a fleet state we don't actually know.
+    func testPolicyFetchFailureAppliesFreshMeshStateAndLeavesPolicyRowsEmpty() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1"), region("us-chicago-1")]
+        service.meshDocs = [
+            "us-sanjose-1": CloudGatewayMeshDoc(
+                regionId: "us-sanjose-1", meshEnabled: true, updatedAt: nil,
+                peers: ["us-chicago-1": peer()]
+            ),
+        ]
+        service.fetchPolicyDocsError = URLError(.notConnectedToInternet)
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1", "us-chicago-1"])
+        XCTAssertEqual(viewModel.linkRows.count, 1)
+        XCTAssertTrue(viewModel.dataAvailable)
+        XCTAssertNil(viewModel.bannerText)
+
+        XCTAssertTrue(viewModel.policyLoadFailed)
+        XCTAssertTrue(viewModel.policyRows.isEmpty)
+    }
+
+    func testPolicyLoadFailedClearsOnASubsequentSuccessfulLoad() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        service.fetchPolicyDocsError = URLError(.notConnectedToInternet)
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        XCTAssertTrue(viewModel.policyLoadFailed)
+        XCTAssertTrue(viewModel.policyRows.isEmpty)
+
+        service.fetchPolicyDocsError = nil
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1")]
+        await viewModel.load()
+
+        XCTAssertFalse(viewModel.policyLoadFailed)
+        XCTAssertEqual(viewModel.policyRows.count, 1)
+        XCTAssertEqual(viewModel.policyRows.first?.state, .ok)
+    }
+
+    // The pre-existing Regions/Mesh all-or-nothing behavior is unchanged: a Regions
+    // failure keeps the existing page-level error and must not apply a Policy result
+    // that happened to succeed in the same concurrent fetch.
+    func testRegionsFailureKeepsPageLevelErrorAndDoesNotApplyASeparatelySucceededPolicyResult() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        XCTAssertFalse(viewModel.policyRows.isEmpty)
+
+        service.fetchMeshRegionsError = URLError(.notConnectedToInternet)
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1", mapHashV4: "should-not-apply")]
+        await viewModel.load()
+
+        XCTAssertEqual(viewModel.bannerText, "Unable to load server health data.")
+        XCTAssertNotEqual(viewModel.policyRows.first?.doc?.mapHashV4, "should-not-apply")
+        XCTAssertFalse(viewModel.policyLoadFailed)
+    }
+
+    func testSyncAllRereadsPolicyAfterTheFanOut() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let callCountBeforeSync = service.fetchPolicyDocsCallCount
+
+        await viewModel.syncAll()
+
+        XCTAssertGreaterThan(service.fetchPolicyDocsCallCount, callCountBeforeSync)
+    }
+
+    func testSyncAllPolicyReReadFailureStillAppliesFreshRegionsMeshAndFlipsPolicyLoadFailed() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+
+        service.meshDocs = [
+            "us-sanjose-1": CloudGatewayMeshDoc(regionId: "us-sanjose-1", meshEnabled: true, updatedAt: nil, peers: [:]),
+        ]
+        service.fetchPolicyDocsError = URLError(.notConnectedToInternet)
+
+        await viewModel.syncAll()
+
+        XCTAssertTrue(viewModel.policyLoadFailed)
+        XCTAssertTrue(viewModel.policyRows.isEmpty)
+        XCTAssertNotNil(viewModel.meshDoc(for: "us-sanjose-1"))
+    }
+
+    // A slow load (A) can resolve after a newer load (B) has already applied fresher
+    // policy state; only the generation counter stops A's stale Policy result from
+    // clobbering B's, mirroring testStaleLoadDoesNotClobberNewerToggleReload for mesh.
+    func testStalePolicyResultIsDroppedWhenANewerLoadCompletesFirst() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1", mapHashV4: "v4-old")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        XCTAssertEqual(viewModel.policyRows.first?.doc?.mapHashV4, "v4-old")
+
+        let policyGateA = AsyncTestGate()
+        service.fetchPolicyDocsGate = policyGateA
+        let loadA = Task { await viewModel.load() }
+        await waitUntil { service.fetchPolicyDocsCallCount == 2 }
+
+        // Load A is now blocked mid-fetch. Unblock future fetchPolicyDocs calls and
+        // update the backing data so a newer load (B) can run to completion ahead of A.
+        service.fetchPolicyDocsGate = nil
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1", mapHashV4: "v4-new")]
+        await viewModel.load()
+        XCTAssertEqual(viewModel.policyRows.first?.doc?.mapHashV4, "v4-new")
+
+        await policyGateA.open()
+        await loadA.value
+
+        // A resolved last but is stale; it must not overwrite B's newer state.
+        XCTAssertEqual(viewModel.policyRows.first?.doc?.mapHashV4, "v4-new")
+    }
+
+    // A uid mismatch drops the whole combined apply(), including the Policy result,
+    // exactly like it drops the Regions/Mesh result.
+    func testUidMismatchDuringLoadDropsPolicyResultLikeMeshResult() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        XCTAssertFalse(viewModel.policyRows.isEmpty)
+
+        let policyGate = AsyncTestGate()
+        service.fetchPolicyDocsGate = policyGate
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1", mapHashV4: "changed")]
+        let load = Task { await viewModel.load() }
+        await waitUntil { service.fetchPolicyDocsCallCount == 2 }
+
+        service.currentUser = AuthenticatedUser(uid: "admin-2", email: "other@example.com")
+        await policyGate.open()
+        await load.value
+
+        XCTAssertNotEqual(viewModel.policyRows.first?.doc?.mapHashV4, "changed")
     }
 
     // MARK: - Toggle

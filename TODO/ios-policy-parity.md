@@ -262,6 +262,10 @@ partially-written doc yields nil fields, which `isPolicyDocUsable` reads as
 * `TODO/account-scoped-acl.md` - check off the iOS parity blocker and point at
   this plan.
 
+Docs pass update: all six files above (the iOS/macOS/CloudGatewayKit READMEs,
+`docs/service-operations.md`, `TODO/account-scoped-acl.md`, and this file's
+Docs section) were updated to reflect the delivered state described above.
+
 ## Risks
 
 * **Periphery is strict on the `apple` target.** Any new `public` API not
@@ -277,13 +281,43 @@ partially-written doc yields nil fields, which `isPolicyDocUsable` reads as
 
 ## Checklist
 
-* [ ] `CloudGatewayPolicyStatus.swift` models + `buildPolicyStatusRows` port.
-* [ ] Policy Firestore mapper with `Int?` `rowCount` and the divergence noted.
-* [ ] `fetchPolicyDocs()` on the service, repository, facade, and 3 conformers.
-* [ ] iOS `Policy` collection read with timestamp conversion.
-* [ ] Sync response policy fields + strict parsing parity.
-* [ ] View model policy state with independent failure isolation and post-sync reload.
-* [ ] Client isolation panel + failure card + `RegionSyncResultCard` notes.
-* [ ] Ported policy tests, view-model tests, parsing tests, screenshot fixtures.
-* [ ] Docs updated; `account-scoped-acl.md` blocker checked off.
-* [ ] `./scripts/test.sh apple`, then the full `./scripts/test.sh` gate the ACL release requires.
+* [x] `CloudGatewayPolicyStatus.swift` models + `buildPolicyStatusRows` port.
+* [x] Policy Firestore mapper with `Int?` `rowCount` and the divergence noted.
+* [x] `fetchPolicyDocs()` on the service, repository, facade, and 3 conformers.
+* [x] iOS `Policy` collection read with timestamp conversion.
+* [x] Sync response policy fields + strict parsing parity.
+* [x] View model policy state with independent failure isolation and post-sync reload.
+* [x] Client isolation panel + failure card + `RegionSyncResultCard` notes.
+* [x] Ported policy tests, view-model tests, parsing tests, screenshot fixtures.
+* [x] Docs updated; `account-scoped-acl.md` blocker checked off.
+* [x] `./scripts/test.sh apple`, then the full `./scripts/test.sh` gate the ACL release requires.
+
+## Validation record
+
+* `./scripts/test.sh apple` - passes. Dead-code scans (app project, Kit tests,
+  Firebase adapter tests), Kit/AppCore package tests, Firebase auth adapter
+  tests, and the unsigned no-device iOS build all report OK. 263 AppCore/Kit
+  tests executed with 0 failures, including the new policy derivation, mapper,
+  sync-response parsing, and view-model isolation cases.
+* Full `./scripts/test.sh` - passes end to end with no failed step: API
+  (pyright/pytest/compile/vulture), release migrations, Web
+  (jest/tsc/knip/CRA build), infrastructure, Firestore rules under the
+  emulator, and the Apple target.
+* Signed Apple builds and on-device runs were not part of this gate; the Apple
+  step is the unsigned no-device build, as `AGENTS.md` specifies.
+
+## Integration decisions made during review
+
+* **`CloudGatewayPolicyDoc.regionId` carries a narrow `periphery:ignore`.** The
+  strict app-project scan reports it as assign-only: production reads
+  `CloudGatewayPolicyStatusRow.regionId`, which is the correct source because it
+  also covers the never-synced case where there is no doc at all. The field is
+  kept to mirror the web `PolicyDoc` and `CloudGatewayMeshDoc` shape and is
+  compared via synthesized `Equatable`, matching the existing
+  `// periphery:ignore - compared via synthesized Equatable` idiom in the facade
+  tests. Removing it would have forced `policyDoc(documentId:data:)` to drop its
+  document-id parameter and diverge from `meshDoc(documentId:data:)`.
+* **No force-unwraps in the derivation.** `buildPolicyStatusRows` binds the
+  hashes through `compactMap`/`guard let` rather than `!` after
+  `isPolicyDocUsable`, so a later change to that predicate cannot turn into a
+  runtime trap in the admin UI.

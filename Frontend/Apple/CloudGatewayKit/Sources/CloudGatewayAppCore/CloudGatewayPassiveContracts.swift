@@ -254,6 +254,10 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable, Sendable {
     // absent = unknown (older regional host, not a failure); see CloudGatewayRegionSyncParsing.
     public let meshStatusWritten: Bool?
     public let meshPeers: [CloudGatewayRegionSyncMeshPeer]
+    // absent = unknown (older regional host predating policy sync, not a failure); see CloudGatewayRegionSyncParsing.
+    public let policyApplied: Bool?
+    public let policyRowCount: Int?
+    public let policyStatusWritten: Bool?
 
     public init(
         regionId: String,
@@ -272,7 +276,10 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable, Sendable {
         meshRoutesAdded: Int,
         meshRoutesRemoved: Int,
         meshStatusWritten: Bool?,
-        meshPeers: [CloudGatewayRegionSyncMeshPeer]
+        meshPeers: [CloudGatewayRegionSyncMeshPeer],
+        policyApplied: Bool?,
+        policyRowCount: Int?,
+        policyStatusWritten: Bool?
     ) {
         self.regionId = regionId
         self.syncedAt = syncedAt
@@ -291,6 +298,9 @@ public struct CloudGatewayRegionSyncResponse: Decodable, Equatable, Sendable {
         self.meshRoutesRemoved = meshRoutesRemoved
         self.meshStatusWritten = meshStatusWritten
         self.meshPeers = meshPeers
+        self.policyApplied = policyApplied
+        self.policyRowCount = policyRowCount
+        self.policyStatusWritten = policyStatusWritten
     }
 }
 
@@ -336,6 +346,7 @@ public protocol CloudGatewayServicing: AnyObject {
     func grantAccess(email: String, regionId: String, idToken: String) async throws -> CloudGatewayGrantAccessResponse
     func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion]
     func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc]
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc]
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws
 }
 

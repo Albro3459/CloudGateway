@@ -22,11 +22,13 @@ final class MockGatewayService: CloudGatewayServicing {
     var syncRegionsGate: AsyncTestGate?
     var fetchMeshRegionsGate: AsyncTestGate?
     var fetchMeshDocsGate: AsyncTestGate?
+    var fetchPolicyDocsGate: AsyncTestGate?
     var setRegionMeshEnabledGate: AsyncTestGate?
 
     // Mesh repository canned data.
     var meshRegions = [CloudGatewayMeshRegion]()
     var meshDocs = [String: CloudGatewayMeshDoc]()
+    var policyDocs = [String: CloudGatewayPolicyDoc]()
 
     // Per-region sync outcome injection; regions not listed default to a
     // canned success response. Keyed by regionId.
@@ -61,6 +63,7 @@ final class MockGatewayService: CloudGatewayServicing {
     var grantAccessError: Error?
     var fetchMeshRegionsError: Error?
     var fetchMeshDocsError: Error?
+    var fetchPolicyDocsError: Error?
     var setRegionMeshEnabledError: Error?
 
     // Grant-access response tuning.
@@ -108,6 +111,7 @@ final class MockGatewayService: CloudGatewayServicing {
     private(set) var syncRegionsCallCount = 0
     private(set) var fetchMeshRegionsCallCount = 0
     private(set) var fetchMeshDocsCallCount = 0
+    private(set) var fetchPolicyDocsCallCount = 0
     private(set) var setRegionMeshEnabledCallCount = 0
     var addAuthStateListenerCallCount: Int { authListenerStorage.addCallCount }
     var removeAuthStateListenerCallCount: Int { authListenerStorage.removeCallCount }
@@ -410,6 +414,18 @@ final class MockGatewayService: CloudGatewayServicing {
         return snapshot
     }
 
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        fetchPolicyDocsCallCount += 1
+        let snapshot = policyDocs
+        if let fetchPolicyDocsGate {
+            await fetchPolicyDocsGate.wait()
+        }
+        if let fetchPolicyDocsError {
+            throw fetchPolicyDocsError
+        }
+        return snapshot
+    }
+
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
         setRegionMeshEnabledCallCount += 1
         setRegionMeshEnabledCalls.append((regionId: regionId, enabled: enabled))
@@ -456,7 +472,10 @@ final class MockGatewayService: CloudGatewayServicing {
             meshRoutesAdded: 0,
             meshRoutesRemoved: 0,
             meshStatusWritten: true,
-            meshPeers: []
+            meshPeers: [],
+            policyApplied: true,
+            policyRowCount: 2,
+            policyStatusWritten: true
         )
     }
 }

@@ -309,6 +309,78 @@ final class CloudGatewayRegionSyncParsingTests: XCTestCase {
         XCTAssertNil(parse(baseFields(overrides: ["syncedAt": "   "])))
     }
 
+    // MARK: - Policy fields: absent vs. malformed
+
+    func testAllThreePolicyFieldsPresentParseAsGiven() {
+        let result = parse(baseFields(overrides: [
+            "policyApplied": true,
+            "policyRowCount": 12,
+            "policyStatusWritten": true,
+        ]))
+        XCTAssertEqual(result?.policyApplied, true)
+        XCTAssertEqual(result?.policyRowCount, 12)
+        XCTAssertEqual(result?.policyStatusWritten, true)
+    }
+
+    func testFalsePolicyAppliedParsesRatherThanRejecting() {
+        let result = parse(baseFields(overrides: ["policyApplied": false]))
+        XCTAssertEqual(result?.policyApplied, false)
+    }
+
+    func testAbsentPolicyFieldsParseAsNilForOlderHostCompatibility() {
+        let result = parse(baseFields())
+        XCTAssertNotNil(result)
+        XCTAssertNil(result?.policyApplied)
+        XCTAssertNil(result?.policyRowCount)
+        XCTAssertNil(result?.policyStatusWritten)
+    }
+
+    func testRejectsExplicitNullPolicyApplied() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyApplied": NSNull()])))
+    }
+
+    func testRejectsNonBooleanPolicyApplied() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyApplied": "true"])))
+    }
+
+    func testRejectsExplicitNullPolicyStatusWritten() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyStatusWritten": NSNull()])))
+    }
+
+    func testRejectsNonBooleanPolicyStatusWritten() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyStatusWritten": "true"])))
+    }
+
+    func testRejectsExplicitNullPolicyRowCount() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyRowCount": NSNull()])))
+    }
+
+    func testRejectsNonIntegerStringPolicyRowCount() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyRowCount": "12"])))
+    }
+
+    func testRejectsNegativePolicyRowCount() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyRowCount": -1])))
+    }
+
+    func testRejectsFractionalPolicyRowCount() {
+        XCTAssertNil(parse(baseFields(overrides: ["policyRowCount": 2.5])))
+    }
+
+    // No cross-field relationship is enforced: each of the three fields parses
+    // independently of the others' presence, matching APIHelper.ts.
+    func testPolicyRowCountParsesIndependentlyOfAbsentPolicyApplied() {
+        let result = parse(baseFields(overrides: ["policyRowCount": 5]))
+        XCTAssertEqual(result?.policyRowCount, 5)
+        XCTAssertNil(result?.policyApplied)
+    }
+
+    func testPolicyStatusWrittenParsesIndependentlyOfAbsentPolicyApplied() {
+        let result = parse(baseFields(overrides: ["policyStatusWritten": false]))
+        XCTAssertEqual(result?.policyStatusWritten, false)
+        XCTAssertNil(result?.policyApplied)
+    }
+
     // MARK: - Full round trip
 
     func testParsesAFullyPopulatedResponse() {

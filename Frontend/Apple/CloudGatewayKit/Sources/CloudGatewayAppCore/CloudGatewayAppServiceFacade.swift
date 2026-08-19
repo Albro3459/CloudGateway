@@ -66,6 +66,7 @@ public protocol CloudGatewayClientRepository: AnyObject {
     func fetchAllClients() async throws -> [CloudGatewayClient]
     func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion]
     func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc]
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc]
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws
 }
 
@@ -309,6 +310,10 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
 
     public func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] {
         try await repository.fetchMeshDocs()
+    }
+
+    public func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        try await repository.fetchPolicyDocs()
     }
 
     public func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {

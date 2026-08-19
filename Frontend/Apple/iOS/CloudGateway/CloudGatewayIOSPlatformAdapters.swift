@@ -58,6 +58,18 @@ final class CloudGatewayIOSFirestoreRepository: CloudGatewayClientRepository {
         return docs
     }
 
+    // Policy/* is observability-only: written by the regional host via the Admin SDK
+    // per firestore.rules, and never written by this client.
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        let snapshot = try await getDocuments(database.collection("Policy"))
+        var docs: [String: CloudGatewayPolicyDoc] = [:]
+        for document in snapshot.documents {
+            let data = convertingTimestamps(document.data())
+            docs[document.documentID] = CloudGatewayFirestorePolicyMapper.policyDoc(documentId: document.documentID, data: data)
+        }
+        return docs
+    }
+
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
         try await updateDocument(database.collection("Regions").document(regionId), fields: ["meshEnabled": enabled])
     }
@@ -92,9 +104,10 @@ final class CloudGatewayIOSFirestoreRepository: CloudGatewayClientRepository {
         }
     }
 
-    // CloudGatewayFirestoreMeshMapper lives in CloudGatewayAppCore and cannot import
-    // FirebaseFirestore, so every Timestamp (top-level updatedAt, and appliedAt nested
-    // inside each peers.{regionId} entry) must become a Date before it reaches the mapper.
+    // CloudGatewayFirestoreMeshMapper and CloudGatewayFirestorePolicyMapper live in
+    // CloudGatewayAppCore and cannot import FirebaseFirestore, so every Timestamp
+    // (top-level updatedAt, appliedAt nested inside each peers.{regionId} entry, and
+    // the Policy doc's updatedAt) must become a Date before it reaches the mapper.
     private func convertingTimestamps(_ data: [String: Any]) -> [String: Any] {
         data.mapValues { convertingTimestamps($0) }
     }

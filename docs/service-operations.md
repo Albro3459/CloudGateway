@@ -66,7 +66,7 @@ journalctl -u cloudgateway-sync-peers --since "1 hour ago"
 
 * Logs structured JSON with added/updated/removed counts. Semantics and drift cases are documented in [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
 * It shares the API's mutation lock, so running it during live create/delete traffic is safe.
-* This unit also runs the account-scoped ACL policy reconcile (`reconcile_policy()`) after the peer/mesh pass completes - see [Account-Scoped ACL](#account-scoped-acl-client-to-client-isolation) below. A peer-sync failure short-circuits before policy is attempted at all and exits 1; a policy-only failure (peer sync succeeded) exits 2. Diagnose which happened with `systemctl status cloudgateway-sync-peers` and `journalctl -u cloudgateway-sync-peers`: a `peer_sync_completed` line followed by `policy_refresh_failed` (rather than `policy_refresh_completed`) means peers converged but the policy map did not. Either exit code is `Restart=on-failure` with `RestartSec=30` and `StartLimitIntervalSec=0`, so the unit retries the whole idempotent peer-plus-policy pass indefinitely without operator action - no manual restart is required unless you want the retry to happen immediately. **Sync All Regions** in the admin dashboard is the manual repair path for either failure and now reports `policyApplied` in its response so a stuck region is visible without reading host logs.
+* This unit also runs the account-scoped ACL policy reconcile (`reconcile_policy()`) after the peer/mesh pass completes - see [Account-Scoped ACL](#account-scoped-acl-client-to-client-isolation) below. A peer-sync failure short-circuits before policy is attempted at all and exits 1; a policy-only failure (peer sync succeeded) exits 2. Diagnose which happened with `systemctl status cloudgateway-sync-peers` and `journalctl -u cloudgateway-sync-peers`: a `peer_sync_completed` line followed by `policy_refresh_failed` (rather than `policy_refresh_completed`) means peers converged but the policy map did not. Either exit code is `Restart=on-failure` with `RestartSec=30` and `StartLimitIntervalSec=0`, so the unit retries the whole idempotent peer-plus-policy pass indefinitely without operator action - no manual restart is required unless you want the retry to happen immediately. **Sync All Regions** in the admin dashboard, and the equivalent fan-out on the iOS app's Server Health page, is the manual repair path for either failure and now reports `policyApplied` in its response so a stuck region is visible without reading host logs.
 * Two consequences of that indefinite retry are worth knowing before you read a bootstrap log or a Firestore bill. First, a fresh deploy runs this unit twice (once at the end of `bootstrap.sh` and once after region registration) and prints its `systemctl status` as the deploy's closing output; if only the policy leg is failing, that closing line reports the unit as failed or auto-restarting even though peers converged normally, so check for `peer_sync_completed` before concluding the region did not deploy. Second, every retry re-pulls the fleet-wide client/account snapshot from Firestore, so a region left looping on a persistent policy failure keeps reading Firestore every 30s indefinitely - the loop is the correct fail-closed behaviour (the region is not enforcing the ACL until it succeeds), but it is a signal to investigate, not a steady state to leave running.
 
 ## AdGuard Home (VPN DNS filter)
@@ -166,7 +166,7 @@ no-op. This must complete before any region is rebuilt with the ACL enforced. Se
 [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
 script's flags, credentials handling, and failure modes.
 
-**Reading the Server Health policy display:** per enabled region, row count, comprehensive IPv4/
+**Reading the Server Health policy display (Web and iOS):** per enabled region, row count, comprehensive IPv4/
 IPv6 policy hashes (`mapHashV4`/`mapHashV6`, covering every authorization-bearing live object -
 `cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map),
 and `updatedAt` shown as "Last applied," the server timestamp of that region's last successful
@@ -178,7 +178,9 @@ a missing, malformed, or unreadable `Policy/{regionId}` is an explicit per-regio
 ("Never synced" / "Unreadable"), and a failure to read the `Policy` collection at all gets its own
 card rather than reporting every region as never synced; none of these ever takes down the
 independent Mesh status. Status writes remain best effort and a status write
-failure never fails a sync pass.
+failure never fails a sync pass. iOS Server Health reads the same `Policy/*`
+documents and applies the same derivation as Web, so the two surfaces agree by
+construction.
 
 Because reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, an admin allow-set
 change is visible in the comprehensive hash as soon as the next reconcile runs. There is no
@@ -186,7 +188,7 @@ role-mutation API, UI, timer, or automatic role propagation in this release: a t
 edits `UserRoles` out of band must run Sync All Regions immediately, and until they do, the fleet
 keeps enforcing the previous allow-set.
 
-**Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard. A
+**Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard, or its equivalent on the iOS app's Server Health page. A
 region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches
 only one region and returns no detail, so use Sync All when you need to confirm or force a repair
 across the fleet.

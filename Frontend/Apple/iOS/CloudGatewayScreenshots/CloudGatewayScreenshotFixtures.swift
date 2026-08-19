@@ -40,6 +40,7 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
     private(set) var clients: [CloudGatewayClient]
     private(set) var meshRegions: [CloudGatewayMeshRegion]
     private let meshDocs: [String: CloudGatewayMeshDoc]
+    private let policyDocs: [String: CloudGatewayPolicyDoc]
 
     var currentUser: AuthenticatedUser? {
         screenshotUser
@@ -112,6 +113,7 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
         ]
         self.meshRegions = meshRegions
         self.meshDocs = Self.makeMeshDocs(regions: meshRegions)
+        self.policyDocs = Self.makePolicyDocs(regions: meshRegions)
     }
 
     // Every region's Mesh/* doc carries an "applied" peer entry for every other
@@ -139,6 +141,22 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
                 meshEnabled: region.meshEnabled,
                 updatedAt: appliedAt,
                 peers: peers
+            )
+        }
+        return docs
+    }
+
+    // Both fixture regions agree on the comprehensive hashes so the client
+    // isolation panel renders ok, not drifted. Counts and hashes only.
+    private static func makePolicyDocs(regions: [CloudGatewayMeshRegion]) -> [String: CloudGatewayPolicyDoc] {
+        var docs: [String: CloudGatewayPolicyDoc] = [:]
+        for region in regions {
+            docs[region.regionId] = CloudGatewayPolicyDoc(
+                regionId: region.regionId,
+                mapHashV4: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                mapHashV6: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                rowCount: 2,
+                updatedAt: Self.fixtureDate
             )
         }
         return docs
@@ -281,7 +299,10 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
                 meshRoutesAdded: 0,
                 meshRoutesRemoved: 0,
                 meshStatusWritten: true,
-                meshPeers: []
+                meshPeers: [],
+                policyApplied: true,
+                policyRowCount: 2,
+                policyStatusWritten: true
             )
             return CloudGatewayRegionSyncOutcome(regionId: regionId, result: .success(response))
         }
@@ -293,6 +314,10 @@ final class CloudGatewayScreenshotService: CloudGatewayServicing {
 
     func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] {
         meshDocs
+    }
+
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        policyDocs
     }
 
     func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
