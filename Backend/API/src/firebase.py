@@ -1101,7 +1101,7 @@ def _allocate_account_slot(
     Reads the full Users collection inside the transaction so a lost or
     corrupted counter can be recovered from the live assigned slots instead of
     resetting to slot 1 and colliding with an existing account (see
-    TODO/account-scoped-acl-review.md finding 2). The fleet is tiny
+    TODO/account-scoped-acl.md finding 2). The fleet is tiny
     (region_capacity_limit 20, single-digit accounts today), so a full
     collection read on this rare allocation path is acceptable. exclude_uid is
     the uid being provisioned: both callers only reach this function when that

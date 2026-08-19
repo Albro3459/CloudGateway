@@ -344,7 +344,7 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
     """Next value to allocate from Counters/accountSlots.nextSlot.
 
     Fails closed instead of ever resetting to MIN_ACCOUNT_SLOT once a slot has
-    been handed out (see TODO/account-scoped-acl-review.md finding 2: a lost
+    been handed out (see TODO/account-scoped-acl.md finding 2: a lost
     or corrupted counter must never re-issue an already-assigned slot, or two
     accounts collide onto one nftables tenant). `stored_next_slot` and every
     value in `assigned_slots` are raw, unclassified Firestore reads - this

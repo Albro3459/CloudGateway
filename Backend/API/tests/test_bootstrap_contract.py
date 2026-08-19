@@ -1,7 +1,7 @@
 """Offline contract check between Infrastructure/OCI/host/bootstrap.sh's base
 nftables ruleset and the API's policy layer (src/policy.py).
 
-This is the check TODO/account-scoped-acl-review.md finding 12 required:
+This is the check TODO/account-scoped-acl.md finding 12 required:
 until this module existed, nothing read or validated the bootstrap ruleset,
 so the claim that renaming a bootstrap object "fails the build" was false. A
 rename on EITHER side - bootstrap.sh or src/policy.py - must fail a test in

@@ -1,4 +1,4 @@
-"""Account-scoped ACL slot allocator integrity (TODO/account-scoped-acl-review.md
+"""Account-scoped ACL slot allocator integrity (TODO/account-scoped-acl.md
 finding 2): a lost or corrupted Counters/accountSlots.nextSlot must never
 re-issue an already-assigned slot, which would merge two accounts onto one
 nftables tenant. See repository.next_account_slot for the fail-closed design.

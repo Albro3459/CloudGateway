@@ -119,7 +119,7 @@ class LivePolicyMap:
     @property
     def row_count(self) -> int:
         # The number of cg_slot4 rows, per TODO/account-scoped-acl.md Wave 5
-        # ("Keep rowCount as the number of slot-map rows").
+        # ("keep rowCount as the number of slot-map rows").
         return len(self.v4.slots)
 
 

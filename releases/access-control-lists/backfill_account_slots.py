@@ -2,8 +2,8 @@
 """Backfill Users/{uid}.accountSlot for legacy provisioned accounts and seed
 Counters/accountSlots.nextSlot.
 
-Context: TODO/account-scoped-acl.md ("PR blocker remediation plan" -> Wave 1)
-and TODO/account-scoped-acl-review.md findings 2 and 7.
+Context: TODO/account-scoped-acl.md ("Review remediation" -> Wave 1),
+closing findings 2 and 7.
 
 New-account provisioning (Backend/API/src/firebase.py
 _provision_user_documents) already assigns Users/{uid}.accountSlot at

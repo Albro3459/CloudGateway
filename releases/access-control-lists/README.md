@@ -3,7 +3,7 @@
 This is a one-time, release-scoped migration for the account-scoped client
 isolation feature (`TODO/account-scoped-acl.md`). It exists to close two
 review findings before any region enforces the nftables ACL
-(`TODO/account-scoped-acl-review.md`):
+(`TODO/account-scoped-acl.md`, "Review remediation"):
 
 * **Finding 7** - existing accounts are never migrated to account slots.
   `desired_policy()` skips every client whose owner lacks

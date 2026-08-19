@@ -163,360 +163,280 @@ Drift is not a failure of the sync pass. Status writes remain best effort and a 
 * Any regional host can reach admin-owned clients fleet-wide. Locally this is already true via `OUTPUT`; this extends it across the mesh, knowingly, to support admin proxy jumps.
 * Per-region map scoping, group or family sharing, and a periodic reconcile timer are out of scope. The version-document poll considered during design is rejected as unnecessary given event-driven propagation.
 
-## PR blocker remediation plan
+## Review remediation
 
-The static review in [account-scoped-acl-review.md](account-scoped-acl-review.md)
-found release blockers in slot migration/integrity, cross-process policy ordering,
-the create fast path, account deletion, malformed-row handling, policy status,
-and documentation. All work in this section must land before this branch is
-released unless an item explicitly says it is deferred.
+A static review of the original implementation commit `ae99c93` raised twelve
+findings across slot integrity, cross-process ordering, the create fast path,
+account deletion, malformed-row handling, policy status, and documentation. All
+twelve are closed: ten by implementation across Waves 1-6, two (findings 1 and
+5) as accepted dispositions. The iOS Server Health parity work is deferred to
+its own plan and remains an open release blocker.
 
-### Decisions after review
+Finding numbers below are durable identifiers - API source, tests, and the
+release migration cite them in comments. So are the wave names in "Delivery
+waves".
 
-* **Existing-host nft migration is not required.** This release will deploy
-  every region through `./scripts/terraform.sh`, which destroys and rebuilds
-  each host from the same deploy tag. Bootstrap installs nftables, writes the
-  base ruleset, and loads it through WireGuard `PostUp`. Do not deploy this
-  branch with `cloudgateway-install-api` or mix an API-only upgrade into the
-  rollout.
-* **The current depth-1 coordinator model stays.** There may be one running
-  pass and one pending pass. Repeated requests while the pending bit is already
-  set coalesce. A request arriving after the follow-up starts may set the bit
-  again because its Firestore mutation may be newer than that follow-up's
-  snapshot; dropping it would lose the event. Documentation must say this
-  bounds pending backlog, not the total work a caller can request over time.
-* **New accounts already receive slots.** `_provision_user_documents()` assigns
-  `Users/{uid}.accountSlot`, and `reserve_client()` has a lazy fallback. The
-  migration below is for legacy provisioned accounts and for establishing the
-  allocator counter before the stricter runtime invariant takes effect.
-* **Role mutation is not a product feature in this PR.** No role-change API,
-  UI, timer, or automatic role propagation is added. A trusted operator who
-  changes `UserRoles/{uid}` must run Sync All immediately. Reconcile must still
-  read current roles, apply `cg_admin4/6`, and include those sets in live
-  read-back and status hashes so partial fleet application is visible.
-* **Policy health is hash agreement plus last-applied time.** Remove
-  `dataVintage` staleness and the process-local `appliedSequence` from the
-  status contract. Compare comprehensive live-policy hashes across enabled
-  regions and display `Policy.updatedAt` as the last successful apply. Equal
-  comprehensive hashes mean the enforced state agrees even when regions last
-  reconciled at different times.
-* **iOS parity is deferred to its own implementation plan, but not to a later
-  release.** The current iOS Server Health surface has no `Policy/*` model,
-  mapper, repository method, view-model state, or UI. That work remains an
-  explicit blocker before this ACL release can ship.
+### Accepted dispositions - do not reintroduce
 
-### Wave 1 - legacy slot migration and allocator integrity
+* **No existing-host nftables migration (finding 1).** This release deploys by
+  destroying and rebuilding every region through `./scripts/terraform.sh` from
+  one deploy tag. Bootstrap installs nftables, writes the base ruleset, and
+  loads it through WireGuard `PostUp`. Never deploy this branch with
+  `cloudgateway-install-api` and never mix an API-only upgrade into the rollout.
+* **The depth-1 coordinator model stays (finding 5).** There may be one running
+  pass and one pending pass. Repeated pokes while the pending bit is set
+  coalesce. A poke arriving after the follow-up has started may set the bit
+  again, deliberately, because its Firestore mutation may postdate that
+  follow-up's snapshot and dropping it would lose the event. This bounds the
+  *pending backlog* to one queued pass - it is not a bound on the total work a
+  caller can trigger over time, and documentation must not claim otherwise. No
+  durable queue, no rate limit, no refresh-cadence feature.
+* **Role mutation is not a product feature in this PR.** No role-change API, UI,
+  timer, or automatic propagation. A trusted operator who edits `UserRoles/{uid}`
+  out of band must run Sync All Regions immediately; the fleet keeps enforcing
+  the previous allow-set until they do. Reconcile still re-reads current roles,
+  applies `cg_admin4/6`, and includes them in read-back and status hashes, so
+  partial fleet application is visible.
+* **iOS parity is deferred to its own plan, but not to a later release.** See
+  "Open release blockers".
 
-Create a release-scoped migration package:
+### Findings and resolutions
 
-```text
-releases/access-control-lists/
-  backfill_account_slots.py
-  README.md
-```
+Severity is as assessed at review time; P1 findings blocked rollout.
 
-The script uses the Firebase Admin SDK with either
-`--credentials <service-account-json>` or `GOOGLE_APPLICATION_CREDENTIALS`;
-the service-account file remains outside git. It is dry-run by default and
-requires an explicit `--apply` flag. It must:
+**1. Existing-region upgrades could run the new API with no ACL installed** (P1).
+`cloudgateway-install-api` copied `Backend/API/` and restarted the API, but the
+ruleset is loaded by `wg0`'s `PostUp`, which does not rerun on an already-active
+interface - so re-running bootstrap was not a migration either. The API would
+call `nft` against a table that does not exist, swallow the failures, and keep
+serving while cross-account forwarding stayed unrestricted. *Closed as an
+accepted disposition:* rebuild-only rollout, enforced in `bootstrap.sh` - an
+ACL-aware source tree refuses to install unless the live host already has `inet
+cloudgateway` with the `cg_forward` chain and `cg_slot4/6` maps, with an
+explicit `CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1` emergency override that warns
+loudly. The gate is documented in `docs/regional-deployment.md`,
+`docs/quick-deployment.md`, and `docs/deployment-handoff.md`, and
+cross-referenced from `docs/service-operations.md`.
 
-* Read the live `Users` and `UserRoles` collections and target every
-  provisioned account, including accounts with no active client.
-* Preserve valid existing slots, reject duplicate/out-of-range/malformed
-  slots, assign missing slots deterministically, and never print a uid, email,
-  client address, key, token, or configuration.
-* Create or advance `Counters/accountSlots.nextSlot` above the maximum assigned
-  slot in the same transaction as the writes. Re-running it is a no-op.
-* Abort if live counts or invariants change during the transaction; never
-  partially assign a second slot range.
-* Report only aggregate counts: provisioned, already assigned, newly assigned,
-  next slot, and validation failures.
+**2. Losing or corrupting the slot counter could merge two accounts** (P1,
+security boundary failure). A missing or invalid `Counters/accountSlots.nextSlot`
+reset to `1`, so a second account could be issued a slot already in use and the
+filter would treat two tenants as one. *Closed:* `repository.next_account_slot()`
+never resets once any slot exists - a valid counter is advanced past the maximum
+valid assigned slot, an absent or malformed counter is re-derived only when every
+assigned slot is itself valid and unique, and an exhausted counter always raises
+rather than recovering downward. `firebase._allocate_account_slot()` reads the
+whole `Users` collection inside the allocating transaction, so recovery cannot
+race an allocation. `valid_account_slot()` is the single source of truth for the
+type and range check across the package.
 
-The latest pre-ACL backup (`backup-20260817T004747Z.json`) scopes the current
-migration at six provisioned accounts, one admin, nine active clients across
-four owners, zero existing slots, and no counter document. Its active rows have
-valid owners, `/32` and `/128` addresses, timestamps, and no duplicate
-addresses. Take a new backup immediately before running the migration and
-validate the live dry-run rather than treating these historical counts as an
-apply precondition.
+**3. The sequence guard did not cover the process that runs at boot** (P1). The
+pull happened before the host flock was taken, and the last-applied sequence was
+in-memory only, so an older boot or manual pull could wait for the flock and then
+overwrite a newer map - reassociating a reused address with its former account
+slot. *Closed:* the Firestore pull moved *inside* `policy.lock()`, making
+`pull -> apply -> read back -> write status` one flock-ordered unit. The
+process-local sequence guard was deleted rather than extended, since a later
+writer now cannot begin its pull until the earlier writer has finished. Both
+writers - the API's `PolicyCoordinator` and the boot/manual
+`cloudgateway-sync-peers` process - call the identical `reconcile_policy()`, and
+additional API workers would serialize on the same flock.
 
-After migration, runtime allocation must fail closed when the counter is
-missing, malformed, exhausted, or not strictly above every assigned slot. It
-must never reset to slot `1`. Add unit coverage for first migration, idempotent
-rerun, partial prior assignment, counter corruption, duplicate slots, overflow,
-and concurrent transaction retry.
+**4. The inline fast path could fail a create after the client was active** (P1).
+The account-slot lookup sat outside the best-effort error boundary, so a
+Firestore error after `add_peer` and `mark_client_active()` had both succeeded
+returned a 500 and skipped the reconcile and remote pokes entirely. *Closed:*
+`routes._write_inline_policy_row()` performs slot lookup, role lookup, address
+normalization, lock acquisition, and the row apply inside one exception boundary.
+Nothing in the inline path can turn a successful creation into a failed response.
 
-### Wave 2 - policy input normalization and collision handling
+**5. Refresh coalescing is not structurally bounded** (P1). Any provisioned user
+can call `POST /api/sync/refresh`, there is no rate limit, and continued arrivals
+keep the drain loop alive. *Closed as an accepted disposition* (see above): the
+behavior is intended and unchanged, its documentation is narrowed to the
+one-item pending backlog guarantee, and a sustained-arrival test asserts that a
+poke arriving after the follow-up pass has started still runs a third pass.
+`POST /api/admin/sync`'s policy leg is synchronous and therefore waits for the
+coordinator to quiesce, which sustained pokes can extend; that is accepted, and
+the outcome it reports always comes from a pass whose pull started after the
+request.
 
-Normalize every Firestore value before it can become a `PolicyRow`:
+**6. Admin allow-set changes were neither propagated nor observable** (P1,
+privilege staleness). `desired_policy()` derived `cg_admin4/6` from `UserRoles`,
+but read-back and hashing covered only `cg_slot4/6`, so a demotion changed no
+published hash and Server Health still reported agreement. *Closed:* the status
+hashes now cover every authorization-bearing object per family, `cg_admin4/6`
+included, so a promotion or demotion changes the published hash as soon as the
+next reconcile runs. Propagation itself stays operator-driven by decision -
+Sync All Regions is mandatory after any out-of-band `UserRoles` edit.
 
-* `ownerUid` is a nonempty string with a valid, unique account slot in
-  `1...2^32-1`.
-* Client addresses are strings with exact `/32` and `/128` host prefixes and
-  are inside the expected tunnel aggregates.
-* `updatedAt`, while it remains on the client model for other features, is a
-  real timestamp or `None`; it no longer feeds policy status.
-* A duplicate IPv4 address, IPv6 address, or account slot excludes every row
-  participating in the collision. Collection order must never choose a winner.
-* Each rejected row increments the aggregate skipped count without logging its
-  uid, address, slot, name, email, key, or configuration. One malformed row
-  must not abort or retain an unsafe fleet map.
+**7. Existing accounts were never migrated to account slots** (P1 for rollout
+availability). `desired_policy()` skips every client whose owner lacks
+`Users.accountSlot`, and legacy accounts got one only on a future client
+reservation - so a legacy account with active clients and no further reservation
+would drop out of every map and lose its own same-account connectivity once
+enforcement began. *Closed:* `releases/access-control-lists/backfill_account_slots.py`
+assigns slots to every provisioned legacy account and seeds the counter strictly
+above every slot assigned anywhere, including orphaned `Users` documents. It is
+dry-run by default, transactional, aborts if live state changes between preflight
+and apply, reports aggregate counts only, and is a no-op on re-run.
 
-Keep the migration's live preflight equally strict so known-bad data blocks the
-release before hosts enforce it. Cover wrong types, host-prefix mismatches,
-out-of-aggregate addresses, duplicate participants in different collection
-orders, invalid slots, and mixed valid/invalid snapshots.
+**8. Account deletion indirectly issued the pokes the design rejects** (P2, plan
+deviation). Account cleanup deleted remote clients through the ordinary
+`DELETE /clients/{clientId}` path, which always scheduled its own local reconcile
+and fleet poke - so deletion raced the hard delete and exercised the exact
+missing-role behavior the design meant to avoid. *Closed:* that handler gained an
+`accountCleanup` mode which suppresses its own reconcile and fleet poke, honored
+only for a self-delete that independently satisfies every condition
+`DELETE /account` requires (self-only, recent authentication, role restriction),
+re-checked against the replayed bearer token. A request that fails any check
+fails outright rather than silently downgrading. `DELETE /account` then owns
+propagation in one sequence: remove local and remote peers; fence every one of
+the account's client documents non-active fleet-wide by `ownerUid` in one trusted
+repository operation, including clients whose region was unreachable; send exactly
+one best-effort refresh wave to the other enabled regions while `UserRoles/{uid}`
+and recent authentication both still exist; queue the local reconcile; only then
+hard-delete. A failure before the fence leaves clients ACTIVE and retryable.
 
-**Landed.** `backfill_account_slots.py`'s fleet-wide policy-row preflight (mirroring the same
-owner/slot/address/collision rules standalone) is the release gate for known-bad data: it blocks both dry-run and
-`--apply` with exit code 1 when any row fails, before any region enforces the ACL. `updatedAt` no
-longer feeds policy status - `DesiredPolicy.data_vintage` and `PolicyStatus.data_vintage` are gone
-from the API. Between Wave 2 and Wave 5, `write_policy_status` kept writing
-`Policy/{regionId}.dataVintage` as `null` so the documented Firestore shape stayed unchanged in the
-interim, and Server Health rendered "No applied snapshot yet" with an "unknown" staleness signal for
-every region; that interim state ended with Wave 5, which removes `dataVintage` from the schema
-entirely and replaces it with comprehensive live-policy hash agreement (see
-[docs/service-operations.md](../docs/service-operations.md)).
+**9. Malformed and colliding client rows were not consistently fail-closed** (P2).
+An unhashable `ownerUid` could abort the pass, raw `updatedAt` values were
+compared as datetimes, non-host client prefixes were accepted, duplicate
+addresses were resolved first-wins, duplicate slots merged accounts, and an
+oversized slot aborted the whole apply. *Closed:* `desired_policy()` validates
+owner type, slot, and host prefix per row and excludes *every* participant in an
+address or slot collision - counted across all candidates first, so collection
+order can never pick a winner. `bare_tunnel_address()` reuses
+`wireguard.is_valid_tunnel_ip`, so the policy map and peer validation cannot drift
+apart on the family/host-prefix rule. `updatedAt` no longer feeds policy status at
+all. Rejected rows increment an aggregate count and never log a uid, address,
+slot, name, email, key, or configuration. The migration's fleet-wide preflight
+applies the same rules as a release gate, so known-bad data blocks the rollout
+instead of silently dropping rows on the first host that enforces.
 
-### Wave 3 - cross-process ordering and create-path isolation
+**10. The policy lock could block the WireGuard create path** (P2, plan
+deviation). Client creation held `wireguard.lock()` while the inline policy write
+took the policy flock, which a reconcile holds through a Firestore status write -
+so a slow status write could stall a create and make an otherwise non-blocking
+peer sync shed. *Closed:* the inline write runs after the WireGuard critical
+section closes, and its policy-lock acquisition is non-blocking. No Firestore
+read, policy-lock acquisition, or `nft` call happens while the WireGuard lock is
+held. If a full pass already owns the policy lock the row is shed and logged
+(`policy_row_lock_busy`) rather than waited for - safe, because the reconcile
+`create_client` queues immediately afterwards pulls after this client's commit.
 
-**Landed.** The policy flock now covers the complete ordered operation:
+**11. `dataVintage` could not reliably identify a stale region** (P2, dashboard
+correctness). The maximum `updatedAt` among active rows is not monotonic:
+deleting the newest row moved a freshly reconciled region backward while a stale
+region kept the deleted row's later timestamp, so the dashboard could mark the
+correct regions stale. A successful empty snapshot also rendered as "No applied
+snapshot yet". *Closed:* `dataVintage` and the process-local `appliedSequence`
+are removed from the API model, Firestore schema, rules fixtures, Web parser, UI,
+and docs. Freshness is comprehensive live-policy hash agreement among *enabled*
+regions - disabled regions never participate and can never be drifted - plus
+`Policy.updatedAt` displayed as "Last applied". Timestamp age alone is never
+drift or staleness; keep `rowCount` as the number of slot-map rows. Where no strict
+majority hash exists, every comparable region is flagged rather than crowning a
+plurality winner; a missing, malformed, or unreadable document renders an
+explicit per-region failure state without taking down the independent Mesh cards.
 
-```text
-lock -> pull current Firestore snapshot -> apply -> read back -> write status -> unlock
-```
+**12. Status validation and documentation overstated what was verified** (P3).
+The Web parser accepted a document missing `appliedSequence`; `api-contract.md`
+claimed a failed apply surfaces in the status document; `wireguard-drift-repair.md`
+said boot reconciliation runs inside the API process; and the plan claimed a
+bootstrap rename fails the build when no test read the ruleset at all. *Closed:*
+the parser requires every field. `reconcile_policy()` raises before it ever calls
+the status write, so a failed apply or read-back leaves the last successful
+`Policy/{regionId}` document byte-identical and writes no failure status - the
+docs now say that explicitly. Boot reconciliation is documented as running inside
+the `cloudgateway-sync-peers` CLI process while the two HTTP-triggered calls run
+inside the long-running API process, all three serialized by the same flock.
+`Backend/API/tests/test_bootstrap_contract.py` parses the `table inet cloudgateway`
+heredoc offline and ties every object name, kind, tunnel aggregate, address
+family, rule family, rule *ordering*, and the `cloudgateway-install-api` gate
+string back to the policy renderer in both directions, with negative tests proving
+a rename or reorder on either side fails it. It does not verify runtime nftables
+behavior, so the live-host items below stay open.
 
-Both `PolicyCoordinator` and the boot/manual `cloudgateway-sync-peers` process call the identical
-`reconcile_policy()`, so a later writer can only pull after the prior writer has applied, read back,
-and written status - an older snapshot can no longer wait outside the flock and overwrite a newer
-map. The process-local sequence guard and the `appliedSequence` status field are gone as an
-ordering signal; no process-local value is presented as a fleet ordering guarantee. Between Wave 3
-and Wave 5, `write_policy_status` kept writing `Policy/{regionId}.appliedSequence` as a literal
-`null`, the same interim pattern Wave 2 used for `dataVintage`, so the documented Firestore shape
-stayed unchanged; that interim state ended with Wave 5, which removes both fields from schema,
-parser, and UI.
+### Delivery waves
 
-`_write_inline_policy_row()` now runs after the WireGuard critical section closes, not inside it.
-Slot lookup, role lookup, address normalization, policy-lock acquisition, and the row apply all sit
-inside one best-effort exception boundary, so a policy error can never turn a client that is already
-ACTIVE with a live peer into a 500 response. Lock acquisition is non-blocking: if a full pass already
-owns it, the row is shed and logged (`policy_row_lock_busy`) rather than waited for, relying on the
-create path's own already-queued reconcile. No Firestore read or nft call happens while the
-WireGuard lock is held any more, so a slow policy pull or status write can no longer stall client
-creation or make a non-blocking Sync All shed with `409 SYNC_IN_PROGRESS`.
+Referenced by name from source comments.
 
-The depth-1 pending-bit coordinator is unchanged by design: it bounds the *pending backlog* to one
-queued follow-up pass, not the total work callers can trigger over time - not a queue, not a rate
-limit, not a refresh-cadence feature. Concurrency coverage added: API-versus-boot serialization, an
-inline row racing a full pass, a busy policy lock not failing create, and a poke arriving after the
-follow-up pass has already started.
+* **Wave 1 - legacy slot migration and allocator integrity.** Findings 2 and 7.
+* **Wave 2 - policy input normalization and collision handling.** Finding 9,
+  plus the migration's fleet-wide policy-row preflight gate.
+* **Wave 3 - cross-process ordering and create-path isolation.** Findings 3, 4,
+  and 10.
+* **Wave 4 - account deletion ordering.** Finding 8. The response's
+  `deletedClientCount` became the fence operation's authoritative per-region
+  count rather than the pre-removal snapshot size; the two agree for a fleet in
+  a consistent state, so this is not an observable API change. There is no
+  stored per-region client counter to repair - capacity is derived, and
+  `Regions/{regionId}.tunnelIndexV4/V6` are monotonic allocator indices that must
+  never roll back and are untouched by deletion.
+* **Wave 5 - complete live hashes and Web status.** Findings 6 and 11.
+* **Wave 6 - boot retry, contracts, and documentation.** Finding 12, plus boot
+  retry: `sync.py` returns `EXIT_OK`/`EXIT_PEER_SYNC_FAILED`/`EXIT_POLICY_FAILED`,
+  so a policy-only failure exits 2 and `cloudgateway-sync-peers.service` retries
+  the whole idempotent peer-plus-policy pass, while a peer failure short-circuits
+  before policy is attempted and a successful apply with a failed best-effort
+  status write still exits 0. `AdminSyncResponse` gained
+  `policyApplied`/`policyRowCount`/`policyStatusWritten` (the optionals omitted on
+  failure) so Sync All distinguishes a policy failure from peer/mesh success
+  without changing any existing field; a region predating this release omits all
+  three and the dashboard treats that as unknown, not as failure.
 
-### Wave 4 - account deletion ordering
+### Open release blockers
 
-**Landed.** `DELETE /account` replaced the accidental per-client poke fan-out finding 8 identified
-(the ordinary `DELETE /clients/{clientId}` path always scheduled its own local reconcile and fleet
-poke, so remote per-client removal during account deletion raced the hard delete) with one
-deliberate sequence: snapshot the account's clients; remove their local and remote WireGuard peers,
-remote removal going through `DELETE /clients/{clientId}`'s new `accountCleanup` mode; mark every
-one of the account's client documents non-active fleet-wide in one trusted repository operation
-(the fence), including clients on a region whose host was unreachable during peer removal; send
-exactly one best-effort policy refresh wave to every other enabled region while `UserRoles/{uid}`
-and the caller's recent authentication still exist; queue the local reconcile separately; only then
-hard-delete the account documents and Auth user. A failure before the fence still leaves clients
-ACTIVE and retryable, exactly as before this wave.
-
-`accountCleanup` is gated, not trusted from the flag alone: the receiving region re-checks
-self-only (`userId == user.uid`), recent authentication, and the `user`-role restriction against
-the replayed bearer token before honoring it, and a request that fails any of those checks fails
-the whole delete instead of silently downgrading to an ordinary one. When accepted, it suppresses
-that handler's own local reconcile and fleet poke, so account deletion issues exactly one
-propagation wave fleet-wide - never the two-poke fan-out the pre-Wave-4 code produced.
-
-There is no stored per-region client counter in Firestore to repair - capacity is derived, and the
-only per-region counters, `Regions/{regionId}.tunnelIndexV4/V6`, are monotonic address allocator
-indices that must never roll back and are untouched by account deletion. "Repair the per-region
-counters" is satisfied by the fence operation's own authoritative read instead: it returns
-per-region counts of account client documents seen and transitioned, grouped by each document's
-region path rather than its `regionId` field so a document whose field disagrees with its path is
-still counted and fenced correctly, and `deletedClientCount` in the `DELETE /account` response is
-now that authoritative count rather than the pre-removal snapshot size - the two agree for a fleet
-in a consistent state, so this is not an observable API change.
-
-An unreachable region remains the existing accepted risk, not a fixed one: its orphaned peer and
-stale policy row converge only at its next boot or a manual `cloudgateway-sync-peers` run, while its
-Firestore client rows are already non-active for that whole window. The bounded consequence is that
-a deleted account's existing configuration can still reach that one region until it syncs; it can
-never reach another account, because slots are never reused, and every other region already refuses
-it. Tests cover local-only, remote, mixed-region, unreachable-region,
-partial failure/retry, a spoofed `accountCleanup` flag, no duplicate poke fan-out, and that every
-policy snapshot pulled after the fence excludes the deleting account.
-
-### Wave 5 - complete live hashes and Web status
-
-Read back every object that affects authorization for both families:
-
-* `cg_tunnel4/6`
-* `cg_infra4/6`
-* `cg_admin4/6`
-* `cg_slot4/6`
-* `cg_pairs4/6`
-
-Canonicalize each object's elements and compute one composite live-policy hash
-per address family. `mapHashV4`/`mapHashV6` become hashes of the complete family
-policy, not only `cg_slot4/6`. Keep `rowCount` as the number of slot-map rows.
-The status document becomes:
-
-```text
-Policy/{regionId}
-  regionId
-  mapHashV4
-  mapHashV6
-  rowCount
-  updatedAt        server timestamp; last successful live apply/read-back
-```
-
-Remove `dataVintage` and `appliedSequence` from the API model, Firestore schema,
-Web parser, UI, tests, and documentation. Server Health compares hashes only
-among enabled regions, flags every comparable region when no strict majority
-exists, and displays `updatedAt` as "Last applied" without treating age alone
-as drift or staleness. Missing, malformed, and collection-read-failure states
-remain explicit and must not take down Mesh cards.
-
-Current roles are re-read on every pass. Add tests proving an operator role
-change followed by Sync All changes `cg_admin4/6`, changes the comprehensive
-hash, and converges every enabled region. Document Sync All as mandatory after
-any trusted out-of-band `UserRoles` edit; do not add role mutation support.
-
-**Landed.** `Policy/{regionId}` is now exactly `regionId`, `mapHashV4`, `mapHashV6`, `rowCount`,
-`updatedAt` - `dataVintage` and `appliedSequence` are gone from `schema.ts`, its comments, the
-Firestore rules test fixtures, and every doc that described them; the Wave 2/Wave 3 interim
-null-placeholder state is over. `mapHashV4`/`mapHashV6` are one composite hash per address family
-over every authorization-bearing live object read back from the host - `cg_tunnel4/6`,
-`cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not only the slot map; `rowCount` stays
-the `cg_slot4` row count. `updatedAt` is the last successful live apply/read-back and Server Health
-shows it as "Last applied"; timestamp age alone is never drift or staleness, and the staleness
-concept from the interim waves is gone entirely. Drift is comprehensive hash disagreement among
-enabled regions only - disabled regions are excluded and can never be drifted - and a missing,
-malformed, or unreadable `Policy/{regionId}` renders an explicit per-region failure state without
-taking down the independent Mesh status. Because reconcile re-reads `UserRoles` and applies
-`cg_admin4/6` on every pass, an admin allow-set change is visible in the comprehensive hash as soon
-as the next reconcile runs; there is still no role-mutation API, UI, timer, or automatic
-propagation - a trusted operator who edits `UserRoles` out of band must run Sync All Regions
-immediately, and the fleet keeps enforcing the previous allow-set until they do.
-`Backend/Firebase/README.md` and `docs/service-operations.md`/`docs/wireguard-drift-repair.md`
-were updated to match. iOS Server Health Policy parity, the live-host verification items, and the
-final full `./scripts/test.sh` gate remain open, tracked separately below.
-
-### Wave 6 - boot retry, contracts, and documentation
-
-* A policy-only failure in `cloudgateway-sync-peers` returns nonzero so systemd
-  retries the idempotent peer-plus-policy pass. Admin Sync All can retain its
-  current API response contract, but logs and status must distinguish its
-  policy failure from peer success.
-* Correct the failure contract: a failed apply is visible in logs and leaves
-  the last successful `Policy/{regionId}` document unchanged; it does not write
-  a new failure status.
-* Document boot reconciliation as the separate sync CLI process, not part of
-  the long-running API process.
-* Add a real offline contract check between bootstrap and the policy layer for
-  the table name, chain, object names, object types, tunnel aggregates, and both
-  rule families. Do not claim a bootstrap rename fails the build until this
-  check exists.
-* Update API, Firebase, deployment, operations, drift-repair, and privacy/logging
-  documentation for the final migration, account deletion, hash, role-sync,
-  retry, and rollout behavior.
-
-**Landed.** `Backend/API/src/sync.py` gains `EXIT_OK`/`EXIT_PEER_SYNC_FAILED`/`EXIT_POLICY_FAILED`;
-a policy-only failure now returns 2 instead of 0, so `cloudgateway-sync-peers.service`
-(`Restart=on-failure`, `RestartSec=30`, `StartLimitIntervalSec=0`) retries the whole idempotent
-peer-plus-policy pass, while a peer-sync failure still short-circuits before policy is attempted
-and a successful apply with a best-effort status-write failure still exits 0. `AdminSyncResponse`
-gains `policyApplied`/`policyRowCount`/`policyStatusWritten` (the two optionals omitted on failure
-via `response_model_exclude_none`), so Sync All's response distinguishes a policy failure from
-peer/mesh success without changing any existing field; older, not-yet-reinstalled regions simply
-omit all three and the dashboard treats that as unknown. `reconcile_policy()` already raised before
-ever calling `write_policy_status`, so a failed apply or read-back was already leaving the previous
-successful `Policy/{regionId}` document untouched; `docs/api-contract.md`, `Backend/Firebase/README.md`,
-and `docs/wireguard-drift-repair.md` now say so explicitly instead of implying a failure status gets
-written. `docs/wireguard-drift-repair.md`'s "Account-Scoped ACL Policy Reconcile" section no longer
-opens by saying the reconcile has no CLI process of its own and then contradicting that in the next
-bullet - it now states plainly that the boot call runs inside the `cloudgateway-sync-peers` CLI
-process while the two HTTP-triggered calls run inside the long-running API process, all three
-serialized by the same flock. `Backend/API/tests/test_bootstrap_contract.py` now exists, parses the
-`table inet cloudgateway` heredoc in `bootstrap.sh` offline, and ties every object name, kind,
-tunnel aggregate, address family, rule family, and the `cloudgateway-install-api` gate strings back
-to the policy renderer in both directions, with negative tests proving a rename on either side fails
-it, and is enforced by `./scripts/test.sh api`. It does not verify runtime nftables behavior on a
-live host, so the two live-host verification items below remain open.
-`docs/regional-deployment.md`, `docs/quick-deployment.md`, and `docs/deployment-handoff.md` already
-carried the mandatory full-region-rebuild-through-`terraform.sh` gate from an earlier wave;
-`docs/service-operations.md` now cross-references it and documents the retry/diagnosis story
-(`systemctl status`/`journalctl` for `cloudgateway-sync-peers`, and Sync All as the manual repair
-path). iOS Server Health Policy parity, the live-host verification items, and the final full
-`./scripts/test.sh` gate remain open, tracked separately below.
-
-### Deferred Apple plan, still blocking release
-
-Before release, write and implement a separate iOS Server Health parity plan.
-At minimum it must add shared `CloudGatewayAppCore` Policy models and derivation,
-a Firestore mapper, repository/facade fetch contract, the iOS Firestore adapter,
+**iOS Server Health Policy parity.** Write and implement a separate plan. At
+minimum it must add shared `CloudGatewayAppCore` Policy models and derivation, a
+Firestore mapper, repository/facade fetch contract, the iOS Firestore adapter,
 independent Policy load-failure state, post-Sync-All reload, client-isolation
-status UI, tests, and screenshot fixtures. The Swift status semantics must match
-the final Web semantics from Wave 5 rather than porting the superseded
-`dataVintage` model.
+status UI, tests, and screenshot fixtures. Swift status semantics must match the
+final Web semantics - comprehensive hash agreement among enabled regions plus
+"Last applied" - rather than porting the superseded `dataVintage` model.
+
+**Live-host verification.** Neither item is covered by the offline contract test:
+
+* nft verdict precedence, chain priority, and the concatenated-set mark
+  comparison syntax on a real host.
+* The four reachability cases end to end: same-account same-region, same-account
+  cross-region, cross-account denied in both directions, and the admin proxy jump
+  in both directions cross-region.
 
 ### Validation and release order
 
-1. Run targeted validation after each wave through `./scripts/test.sh`; update
-   the test entry point so the release migration tests run under a named target.
+1. Run targeted validation after each change through `./scripts/test.sh`; the
+   release migration runs under the `release` target.
 2. Run the full `./scripts/test.sh` gate after the remediation and again after
    the deferred iOS parity work lands.
 3. Create a fresh Firestore backup. Run the migration dry-run, review aggregate
-   counts/invariants, run `--apply`, then rerun dry-run and require a no-op.
+   counts and invariants, run `--apply`, then rerun the dry-run and require a
+   no-op. Do not reuse an older backup as the rollback point.
 4. Deploy every region from one tag with `./scripts/terraform.sh <all regions>`.
-   The sequential interval is a rollout window with partial fleet enforcement;
-   do not treat the ACL as active until the last region finishes.
+   The sequential interval is a rollout window with partial fleet enforcement; do
+   not treat the ACL as active until the last region finishes.
 5. Run Sync All Regions and confirm every enabled region reports matching
    comprehensive IPv4/IPv6 hashes and a last-applied timestamp.
-6. Complete the nftables host verification and the four end-to-end reachability
-   cases before declaring the boundary active.
+6. Complete the live-host verification above before declaring the boundary
+   active.
 
 ## Checklist
 
 * [x] New-account slot allocation: counter document, `Users/{uid}.accountSlot`, allocated at provisioning or a later client reservation.
-* [x] Wave 1 - legacy slot migration, counter seeding, fail-closed runtime allocation, and migration tests.
 * [x] Monotonic address allocation with wrap and in-use check, replacing `_first_unused_tunnel_ip`; paired v4/v6 indices.
 * [x] nftables table, sets, maps, and chain in `bootstrap.sh` `PostUp`/`PostDown`; `nftables` package installed for new or rebuilt hosts.
-* [x] Deployment decision: rebuild every region through `terraform.sh`; no API-only or mixed host rollout.
 * [x] `reconcile_policy()`: fleet-wide pull, atomic apply, read-back, status write.
 * [x] Dedicated policy flock, separate from the WireGuard flock.
-* [x] Depth-1 pending-bit coalescing; repeated requests cannot create more than one queued pass at a time.
-* [x] Wave 2 - strict policy input normalization and fail-closed collision handling.
-* [x] Wave 3 - cross-process pull/apply serialization on one flock-ordered path for both writers, sequence-guard removal, and non-blocking post-WireGuard inline row.
 * [x] Boot and `POST /api/admin/sync` call the policy reconcile.
 * [x] `POST /api/sync/refresh`: provisioned user, no body, no detail, enqueue-and-return.
 * [x] Fire-and-forget pokes from `POST /clients` and `DELETE /clients/{clientId}`; inline local map row on create.
-* [x] Wave 4 - account cleanup mode, clients-non-active fence, one authenticated fleet refresh, then hard delete.
 * [x] `Policy/{regionId}` schema, Firestore rules, and `schema.ts`.
 * [x] Server Health policy status display and failure card.
-* [x] Wave 5 - comprehensive live-policy hashes, `updatedAt` last-applied display, enabled-region comparison, and mandatory Sync All after out-of-band role edits.
-* [x] Wave 6 - boot retry behavior, bootstrap/API contract checks, and final documentation alignment.
+* [x] Findings 1 and 5 closed as accepted dispositions; rebuild-only rollout gate enforced in `bootstrap.sh`.
+* [x] Findings 2, 3, 4, 6, 7, 8, 9, 10, 11, and 12 implemented across Waves 1-6.
+* [x] Full `./scripts/test.sh` gate green after the remediation (2026-08-19).
 * [ ] Write and implement the separate iOS Server Health Policy parity plan before release.
 * [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.
-* [ ] Verify the four reachability cases end to end: same-account same-region, same-account cross-region, cross-account denied both directions, admin proxy jump in both directions cross-region.
+* [ ] Verify the four reachability cases end to end.
+* [ ] Run the migration (backup, dry-run, `--apply`, no-op rerun) and rebuild every region from one tag.
 * [ ] Final `./scripts/test.sh` gate after all PR blockers, including Apple, are complete.
-
-Original static review findings are tracked in
-[account-scoped-acl-review.md](account-scoped-acl-review.md).
-
-The final two live-host items need a running regional host and cannot be closed
-from a workstation. The API renderer has byte-for-byte unit coverage, and
-`Backend/API/tests/test_bootstrap_contract.py` (Wave 6) now parses `bootstrap.sh`'s
-`table inet cloudgateway` heredoc offline and proves its object names, kinds, tunnel
-aggregates, and both rule families still match the renderer in both directions, with
-negative tests proving a rename on either side fails it - that contract check is closed.
-What stays unproven until a host runs it is nftables' own runtime
-behaviour - that `priority -10` really evaluates ahead of the existing iptables
-`FORWARD` accepts, that a `drop` verdict is terminal across tables, and that the
-`ip daddr . meta mark != @cg_pairs` concatenation parses and matches as
-intended. Confirm those before relying on the boundary.

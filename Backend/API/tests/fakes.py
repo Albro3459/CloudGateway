@@ -271,7 +271,7 @@ class FakeRepository(FirebaseRepository):
         # models a deleted/missing counter doc; tests may also set this to an
         # out-of-range int to model a corrupted counter, exercising
         # repository.next_account_slot's fail-closed recovery path end to end
-        # (see TODO/account-scoped-acl-review.md finding 2).
+        # (see TODO/account-scoped-acl.md finding 2).
         self.account_slots: dict[str, int] = {}
         self.account_slot_counter: int | None = 1
         # Last policy status written per region, keyed by region_id.
