@@ -296,10 +296,22 @@ class PolicyCoordinator:
     def run_blocking(self) -> PolicyOutcome | None:
         """Synchronous full pass for boot-equivalent and admin Sync All
         callers that want the outcome rather than fire-and-forget. Coalesces
-        with an in-flight pass exactly as request() does, but waits for the
-        pass that picks up the coalesced flag to finish. Returns None only
-        when reconcile_policy itself raised (logged in _run_one_pass, never
-        propagated - a policy failure must not fail the admin endpoint)."""
+        with an in-flight pass exactly as request() does, then waits for the
+        coordinator to quiesce and returns the last completed pass's outcome.
+
+        That wait is for the whole drain loop, not only for the pass that
+        picks up this caller's coalesced flag: pokes that keep arriving on
+        the unrated-limited POST /sync/refresh keep setting the pending bit,
+        so under sustained arrivals this call waits through them. Accepted,
+        not a bug - depth-1 bounds the pending backlog, never the total work
+        callers can trigger over time (see TODO/account-scoped-acl.md,
+        "Refresh model"). The outcome returned is always from a pass whose
+        pull started after this call, so a longer wait only ever returns a
+        fresher result.
+
+        Returns None only when reconcile_policy itself raised (logged in
+        _run_one_pass, never propagated - a policy failure must not fail the
+        admin endpoint)."""
         with self._condition:
             if self._running:
                 self._pending = True

@@ -18,6 +18,12 @@ its documentation is narrowed so it does not claim to bound total caller work.
 The iOS Server Health Policy surface is recorded as a separate blocker to plan
 and implement before release.
 
+Remediation status (2026-08-19): Waves 1-6 have landed on this branch. Every finding below is
+closed except the two accepted dispositions (1 and 5), which are closed as accepted rather than
+implemented, and the deferred iOS Server Health Policy parity work, which remains an open release
+blocker along with the two live-host verification items. The finding text below is preserved as
+written at review time; see the checklist at the end for what each one became.
+
 No tests were run during this review. The recovered implementation thread says
 `api`, `infra`, `firebase`, and `web` all passed immediately before `ae99c93` was
 created. This review also ran `git diff --check` successfully and otherwise used
@@ -250,9 +256,27 @@ sites, and Server Health policy card.
 
 * [x] Close finding 1 by requiring every region to be rebuilt through
   `terraform.sh`; do not add an existing-host nftables migration.
-* [ ] Backfill legacy account slots and make counter recovery collision-safe.
-* [ ] Make snapshot ordering effective across API, boot, and any future workers.
-* [ ] Keep inline policy lookup/apply failures from escaping client creation.
+* [x] Backfill legacy account slots and make counter recovery collision-safe.
+  Landed in Wave 1: `releases/access-control-lists/backfill_account_slots.py` is a dry-run-by-default,
+  transactional Admin SDK migration that assigns a slot to every provisioned legacy account and
+  seeds `Counters/accountSlots.nextSlot` strictly above every slot already assigned anywhere
+  (including orphaned `Users` documents). At runtime `repository.next_account_slot()` never resets
+  to slot 1 once any slot exists: a valid counter is advanced past the maximum valid assigned slot,
+  an absent/malformed counter is re-derived only when every assigned slot is itself valid and
+  unique, an exhausted counter always raises, and `firebase._allocate_account_slot()` reads the
+  full `Users` collection inside the same transaction so the recovery cannot race an allocation.
+* [x] Make snapshot ordering effective across API, boot, and any future workers.
+  Fixed in Wave 3: the Firestore pull moved *inside* `policy.lock()` in `reconcile_policy()`, so
+  pull, apply, read-back, and status write are one flock-ordered unit. The in-memory sequence guard
+  was deleted rather than extended - a later writer cannot begin its pull until the earlier writer
+  has finished, so there is nothing left for a process-local counter to guard. Both writers (the
+  API's `PolicyCoordinator` and the `cloudgateway-sync-peers` CLI process) call the same function,
+  and additional API workers would serialize on the same host flock.
+* [x] Keep inline policy lookup/apply failures from escaping client creation.
+  Fixed in Wave 3: `routes._write_inline_policy_row()` now performs the slot lookup, role lookup,
+  address normalization, lock acquisition, and row apply inside one exception boundary, so a
+  Firestore error, a missing/invalid slot, or an `nft` failure is logged and swallowed instead of
+  turning an ACTIVE client with a live peer into a 500.
 * [x] Accept the current depth-1 pending-bit behavior for finding 5 and narrow
   its documentation to the one-item pending backlog guarantee.
 * [x] Re-read, apply, read back, hash, and display admin allow-set changes;
@@ -262,16 +286,28 @@ sites, and Server Health policy card.
   promotion or demotion changes the published hash. No role-mutation API/UI/timer was added; docs
   now say a trusted operator must run Sync All Regions immediately after any out-of-band
   `UserRoles` edit, and the fleet keeps enforcing the previous allow-set until they do.
-* [ ] Replace accidental per-client deletion pokes with the authenticated,
+* [x] Replace accidental per-client deletion pokes with the authenticated,
   account-scoped cleanup and one-refresh-wave ordering in the implementation
   plan.
+  Fixed in Wave 4: `DELETE /clients/{clientId}` gained an `accountCleanup` mode that suppresses
+  that handler's own reconcile and fleet poke, honored only for a self-delete that independently
+  satisfies every condition `DELETE /account` requires (`_ensure_account_cleanup_allowed`), so it
+  cannot be used to smuggle propagation suppression. `DELETE /account` then owns propagation in one
+  ordered sequence: remove peers in cleanup mode, fence every one of the account's clients
+  non-active by `ownerUid`, send exactly one best-effort refresh wave while the token and
+  `UserRoles/{uid}` are both still valid, and only then hard-delete.
 * [x] Make malformed/duplicate rows fail closed without aborting the fleet pass.
   Fixed in Wave 2: `Backend/API/src/policy_sync.py` (`bare_tunnel_address`,
   `desired_policy`) validates owner/slot/address before building a row and
   excludes every participant in a duplicate address or slot, and
   `releases/access-control-lists/backfill_account_slots.py` runs the same
   rules as a fleet-wide preflight gate ahead of enforcement.
-* [ ] Remove policy-lock contention from the WireGuard create critical section.
+* [x] Remove policy-lock contention from the WireGuard create critical section.
+  Fixed in Wave 3: the inline policy write runs after the `wireguard.lock()` block closes, so no
+  Firestore read, policy-lock acquisition, or `nft` call ever happens while the WireGuard lock is
+  held. The policy lock is taken non-blocking, so a reconcile that already owns it makes the create
+  path skip the row rather than wait; the reconcile `create_client` queues immediately afterwards
+  pulls after this client's commit and picks it up.
 * [x] Replace `dataVintage` with comprehensive live-policy hash agreement and
   show `Policy.updatedAt` as last applied.
   Landed in Wave 5: `dataVintage` and `appliedSequence` are removed entirely from `schema.ts`,
@@ -301,5 +337,8 @@ sites, and Server Health policy card.
   Server Health Policy parity, the two live-host verification items, and the final full
   `./scripts/test.sh` gate remain open, tracked separately below.
 * [ ] Write and implement the separate iOS Server Health Policy parity plan.
-* [ ] Run `./scripts/test.sh` after the fixes.
+* [x] Run `./scripts/test.sh` after the fixes. Full gate green on 2026-08-19 after Wave 6: api
+  (pyright/vulture clean, 524 pytest), release (43), web (231 jest across 16 suites, tsc, knip, CRA
+  build), infra (terraform + script parse), firebase (33 rules tests), apple (275 package tests +
+  unsigned no-device iOS build). The plan's separate post-iOS rerun remains outstanding.
 * [ ] Complete the two existing live-host verification items before rollout.

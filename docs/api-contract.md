@@ -354,6 +354,13 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   full pull-apply-read back-status pass `POST /api/sync/refresh` enqueues - see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md). So Sync All is also the
   repair path for a dropped or lost policy poke, not just for peer/mesh drift.
+- The policy leg is synchronous: unlike `POST /api/sync/refresh`, this endpoint waits for the
+  policy pass before responding. It coalesces with any pass already in flight and then waits for
+  the coordinator to quiesce, so sustained pokes on the un-rate-limited `POST /api/sync/refresh`
+  can hold this response open for longer than one pass. That is accepted (depth-1 bounds the
+  pending backlog, never the total work callers can trigger); the outcome reported always comes
+  from a pass whose Firestore pull started after the Sync All request, so a longer wait only
+  returns a fresher result.
 - `policyApplied` is `true` only when this pass's `reconcile_policy()` call completed without
   raising. It stays `true`/`false` for the entire response even though everything above it
   (`added`, `meshApplied`, ...) is about the independent peer/mesh pass - the two legs share a
