@@ -55,6 +55,14 @@ final class CloudGatewayMeshStatusTests: XCTestCase {
         return data
     }
 
+    /// `peerData` takes an `Int?` port, so raw `Double` values (the corrupt-document cases the
+    /// mapper's numeric conversion has to survive) are injected through this instead.
+    private func peerDataWithRawEndpointPort(_ endpointPort: Any) -> [String: Any] {
+        var data = peerData(endpointPort: nil)
+        data["endpointPort"] = endpointPort
+        return data
+    }
+
     private func meshDoc(_ regionId: String, meshEnabled: Bool, peers: [String: Any] = [:]) -> CloudGatewayMeshDoc {
         CloudGatewayFirestoreMeshMapper.meshDoc(documentId: regionId, data: ["meshEnabled": meshEnabled, "peers": peers])
     }
@@ -576,6 +584,98 @@ final class CloudGatewayMeshStatusTests: XCTestCase {
             data: ["displayName": "San Jose", "displayOrder": Double.infinity]
         )
         XCTAssertEqual(infinite?.displayOrder, 1000)
+    }
+
+    // 2^63 is the value a hand-rolled `value <= Double(Int.max)` guard wrongly admits, because
+    // `Double(Int.max)` rounds up to exactly 2^63 - `Int(value)` then traps on it. Far-out values
+    // like 1e30 above do not reach that path, so the boundary needs its own coverage on every
+    // field that converts a Firestore number.
+    func testMeshRegionFallsBackInsteadOfTrappingOnTheIntMaxBoundary() {
+        let region = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": 0x1p63, "wireguardPort": 0x1p63]
+        )
+        XCTAssertEqual(region?.displayOrder, 1000)
+        XCTAssertNil(region?.wireguardPort)
+
+        let stringOrder = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": "9223372036854775808"]
+        )
+        XCTAssertEqual(stringOrder?.displayOrder, 1000)
+    }
+
+    func testMeshRegionRejectsNaNAndBothInfinitiesWithoutTrapping() {
+        let nan = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": Double.nan, "wireguardPort": Double.nan]
+        )
+        XCTAssertEqual(nan?.displayOrder, 1000)
+        XCTAssertNil(nan?.wireguardPort)
+
+        let negativeInfinity = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": -Double.infinity, "wireguardPort": Double.infinity]
+        )
+        XCTAssertEqual(negativeInfinity?.displayOrder, 1000)
+        XCTAssertNil(negativeInfinity?.wireguardPort)
+    }
+
+    // -2^63 is exactly `Int.min` as a `Double`, so the generic conversion must keep accepting it.
+    // The port field still rejects it afterwards on its own range check, not on the conversion.
+    func testMeshRegionAcceptsIntMinDisplayOrderAndStillRejectsItAsAPort() {
+        let region = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": -0x1p63, "wireguardPort": -0x1p63]
+        )
+        XCTAssertEqual(region?.displayOrder, Int.min)
+        XCTAssertNil(region?.wireguardPort)
+    }
+
+    // Truncating a fractional displayOrder would invent an ordering the document never stated;
+    // it takes the same fallback as every other unusable value instead.
+    func testMeshRegionFallsBackOnAFractionalDisplayOrder() {
+        let region = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": 42.5]
+        )
+        XCTAssertEqual(region?.displayOrder, 1000)
+
+        let integral = CloudGatewayFirestoreMeshMapper.meshRegion(
+            documentId: "us-sanjose-1",
+            data: ["displayName": "San Jose", "displayOrder": 42.0]
+        )
+        XCTAssertEqual(integral?.displayOrder, 42)
+    }
+
+    func testMeshPeerEndpointPortHandlesTheIntMaxBoundaryWithoutTrapping() {
+        let doc = CloudGatewayFirestoreMeshMapper.meshDoc(documentId: "us-sanjose-1", data: [
+            "peers": [
+                // Applied entries need a complete, valid snapshot: an unconvertible port drops
+                // the entry rather than crashing the parse.
+                "us-chicago-1": peerDataWithRawEndpointPort(0x1p63),
+                "us-dallas-1": peerDataWithRawEndpointPort(-0x1p63),
+                "us-newyork-1": peerDataWithRawEndpointPort(Double.nan),
+                "us-miami-1": peerDataWithRawEndpointPort(Double.infinity),
+                "us-portland-1": peerDataWithRawEndpointPort(51820.5),
+                // A normal port still parses through the same helper.
+                "us-seattle-1": peerData(endpointPort: 51820),
+            ],
+        ])
+
+        XCTAssertEqual(Array(doc.peers.keys), ["us-seattle-1"])
+        XCTAssertEqual(doc.peers["us-seattle-1"]?.endpointPort, 51820)
+    }
+
+    // A skipped-incomplete entry survives with its unusable port dropped to nil, so the boundary
+    // value has to be non-trapping on the status-first path too.
+    func testMeshPeerSkippedIncompleteEntrySurvivesAnOutOfRangeEndpointPort() {
+        let doc = CloudGatewayFirestoreMeshMapper.meshDoc(documentId: "us-sanjose-1", data: [
+            "peers": ["us-chicago-1": ["status": "skipped-incomplete", "endpointPort": 0x1p63]],
+        ])
+
+        XCTAssertEqual(doc.peers["us-chicago-1"]?.status, .skippedIncomplete)
+        XCTAssertNil(doc.peers["us-chicago-1"]?.endpointPort)
     }
 
     func testMeshRegionRejectsANonIntegralWireguardPort() {

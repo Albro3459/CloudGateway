@@ -39,14 +39,76 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
     // issued, alongside (not instead of) the existing togglingRegionIds/uid
     // guards.
     private var loadGeneration = 0
+    // The account session this view model's published state belongs to. This
+    // object outlives any one sign-in (the composition root builds exactly one
+    // per app process), and every field above is account-scoped - the sync log
+    // alone carries user emails, client names and IDs, public keys, and tunnel
+    // IPs - so an identity or authorization boundary has to clear it rather
+    // than relying on the view being dismissed. Bumped by every reset so work
+    // started for the previous session can never publish into the new one.
+    private var sessionGeneration: UInt64 = 0
+    private var sessionUid: String?
+    private var authRegistration: CloudGatewayAuthStateListenerRegistration?
 
     private func beginLoadGeneration() -> Int {
         loadGeneration += 1
         return loadGeneration
     }
 
+    /// Both halves of "this work still belongs to the page as it is now": the
+    /// uid catches an identity change the listener has not delivered yet, the
+    /// session generation catches one that has already been handled (including
+    /// an authorization loss, which auth state cannot report).
+    private func isCurrentSession(uid: String?, generation: UInt64) -> Bool {
+        generation == sessionGeneration && service.currentUser?.uid == uid
+    }
+
     public init(service: any CloudGatewayServicing) {
         self.service = service
+        sessionUid = service.currentUser?.uid
+        authRegistration = service.addAuthStateListener { [weak self] user in
+            Task { @MainActor in
+                self?.handleAuthState(user)
+            }
+        }
+    }
+
+    deinit {
+        authRegistration?.cancel()
+    }
+
+    private func handleAuthState(_ user: AuthenticatedUser?) {
+        // A -> B, A -> nil, and nil -> B all cross an account boundary. A
+        // repeated callback for the same uid (Firebase re-emits on token
+        // refresh and on listener registration) is not a boundary and must
+        // leave a populated page alone.
+        guard user?.uid != sessionUid else { return }
+        sessionUid = user?.uid
+        resetAccountScopedState()
+    }
+
+    /// Drops every account-scoped value and invalidates in-flight work.
+    ///
+    /// Called for each auth-state identity change, and by the iOS view layer
+    /// when the signed-in admin loses the admin role - authorization is not
+    /// part of auth state, so the listener cannot observe that boundary.
+    public func resetAccountScopedState() {
+        sessionGeneration &+= 1
+        regions = []
+        meshDocs = [:]
+        linkRows = []
+        warnings = []
+        anyPending = false
+        policyRows = []
+        policyDocs = [:]
+        policyLoadFailed = false
+        isLoading = false
+        isSyncing = false
+        dataAvailable = false
+        syncResults = nil
+        bannerText = nil
+        togglingRegionIds = []
+        reloadPendingAfterToggle = false
     }
 
     public var enabledRegions: [CloudGatewayMeshRegion] {
@@ -82,19 +144,22 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
 
     public func load() async {
         let uid = service.currentUser?.uid
+        let session = sessionGeneration
         let generation = beginLoadGeneration()
         isLoading = true
-        defer { isLoading = false }
+        // A load left over from a previous session must not reintroduce this
+        // session's loading state either; the reset already cleared it.
+        defer { if session == sessionGeneration { isLoading = false } }
         do {
             let (fetchedRegions, fetchedMeshDocs, policyResult) = try await fetchServerHealthState()
-            guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
+            guard isCurrentSession(uid: uid, generation: session), generation == loadGeneration else { return }
             guard togglingRegionIds.isEmpty else {
                 reloadPendingAfterToggle = true
                 return
             }
             apply(regions: fetchedRegions, meshDocs: fetchedMeshDocs, policyResult: policyResult)
         } catch {
-            guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
+            guard isCurrentSession(uid: uid, generation: session), generation == loadGeneration else { return }
             bannerText = "Unable to load server health data."
         }
     }
@@ -110,6 +175,7 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
             return
         }
         let uid = service.currentUser?.uid
+        let session = sessionGeneration
         let regionId = region.regionId
         let originalValue = region.meshEnabled
         let newValue = !originalValue
@@ -119,15 +185,22 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
         var succeeded = false
         do {
             try await service.setRegionMeshEnabled(regionId: regionId, enabled: newValue)
-            if service.currentUser?.uid == uid {
+            if isCurrentSession(uid: uid, generation: session) {
                 succeeded = true
             }
         } catch {
-            if service.currentUser?.uid == uid {
+            if isCurrentSession(uid: uid, generation: session) {
                 setLocalMeshEnabled(regionId: regionId, enabled: originalValue)
                 bannerText = "Unable to update \(region.displayName)."
             }
         }
+
+        // A session reset already cleared the toggling set and the pending
+        // reload, and both now describe whoever signed in next: a toggle from
+        // a dead session must neither clear their in-flight marker nor consume
+        // their catch-up reload, and must never issue a load that would
+        // repopulate the page it was just cleared from.
+        guard session == sessionGeneration else { return }
 
         // Both the success and failure paths above fall through to this
         // bookkeeping even on a uid mismatch, so a pending catch-up reload
@@ -145,25 +218,26 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
     public func syncAll() async {
         guard !isSyncing, !enabledRegions.isEmpty, togglingRegionIds.isEmpty else { return }
         let uid = service.currentUser?.uid
+        let session = sessionGeneration
         let regionIds = enabledRegions.map(\.regionId)
         isSyncing = true
-        defer { isSyncing = false }
+        defer { if session == sessionGeneration { isSyncing = false } }
 
         let idToken: String
         do {
             idToken = try await service.idToken()
         } catch {
-            guard service.currentUser?.uid == uid else { return }
+            guard isCurrentSession(uid: uid, generation: session) else { return }
             bannerText = "Unable to sync regions."
             return
         }
-        guard service.currentUser?.uid == uid else { return }
+        guard isCurrentSession(uid: uid, generation: session) else { return }
 
         // One token fetched immediately before the fan-out and reused across
         // all of it - no mid-fan-out refresh or retry. An expiry surfaces as
         // that region's own failure card.
         let outcomes = await service.syncRegions(regionIds: regionIds, idToken: idToken)
-        guard service.currentUser?.uid == uid else { return }
+        guard isCurrentSession(uid: uid, generation: session) else { return }
         syncResults = outcomes
 
         // The fan-out response is ephemeral; Mesh/* is the durable state the
@@ -181,7 +255,7 @@ public final class CloudGatewayServerHealthViewModel: ObservableObject {
         guard let (fetchedRegions, fetchedMeshDocs, policyResult) = try? await fetchServerHealthState() else {
             return
         }
-        guard service.currentUser?.uid == uid, generation == loadGeneration else { return }
+        guard isCurrentSession(uid: uid, generation: session), generation == loadGeneration else { return }
         apply(regions: fetchedRegions, meshDocs: fetchedMeshDocs, policyResult: policyResult)
     }
 

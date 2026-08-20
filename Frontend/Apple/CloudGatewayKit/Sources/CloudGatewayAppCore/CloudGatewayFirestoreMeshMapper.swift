@@ -125,10 +125,18 @@ public enum CloudGatewayFirestoreMeshMapper {
 
     /// `Int(_: Double)` traps on NaN, infinity, and anything outside `Int`'s range, so a corrupt
     /// Firestore number must be rejected before the conversion rather than after it.
+    ///
+    /// `Int(exactly:)` does that rejection in one step, matching
+    /// `CloudGatewayFirestorePolicyMapper.rowCount`. A hand-rolled range check must not be used
+    /// here: `Double(Int.max)` rounds up to 2^63, so a `value <= Double(Int.max)` guard admits
+    /// exactly 2^63 and the following `Int(value)` then traps on it. `-2^63` is exactly `Int.min`
+    /// and stays representable.
+    ///
+    /// It also rejects non-integral values instead of truncating them, so a fractional
+    /// `displayOrder` takes the caller's fallback the way every other unusable value does. Ports
+    /// were already gated on integrality by `meshPort`.
     private static func integer(_ value: Double) -> Int? {
-        guard value.isFinite,
-              value >= Double(Int.min), value <= Double(Int.max) else { return nil }
-        return Int(value)
+        Int(exactly: value)
     }
 
     private static func date(_ value: Any?) -> Date? {

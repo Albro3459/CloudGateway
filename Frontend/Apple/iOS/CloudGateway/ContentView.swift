@@ -109,6 +109,10 @@ struct ContentView: View {
         .onChange(of: viewModel.role) { _, _ in
             if !viewModel.isAdmin {
                 isShowingServerHealth = false
+                // Dismissal is presentation only. Losing the admin role keeps
+                // the same uid, so the view model's auth listener never sees a
+                // boundary - clear its account-scoped state from here.
+                serverHealthViewModel.resetAccountScopedState()
             }
         }
         .sheet(isPresented: $isShowingAbout) {

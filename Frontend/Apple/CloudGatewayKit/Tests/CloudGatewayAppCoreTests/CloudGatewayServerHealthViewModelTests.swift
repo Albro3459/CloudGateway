@@ -596,6 +596,257 @@ final class CloudGatewayServerHealthViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isSyncing)
     }
 
+    // MARK: - Session boundary
+
+    // The view model is built once per app process and outlives every sign-in,
+    // so nothing here may survive an identity change: the sync log alone
+    // carries user emails, client names and IDs, public keys, and tunnel IPs.
+    private func populatedViewModel(_ service: MockGatewayService) async -> CloudGatewayServerHealthViewModel {
+        service.meshRegions = [region("us-sanjose-1"), region("us-chicago-1")]
+        service.meshDocs = [
+            "us-sanjose-1": CloudGatewayMeshDoc(
+                regionId: "us-sanjose-1", meshEnabled: true, updatedAt: nil,
+                peers: ["us-chicago-1": peer(status: .skippedIncomplete, reasonCode: "missing-public-key")]
+            ),
+        ]
+        service.policyDocs = ["us-sanjose-1": policyDoc("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        await viewModel.syncAll()
+        XCTAssertNotNil(viewModel.syncResults)
+        XCTAssertTrue(viewModel.dataAvailable)
+        XCTAssertFalse(viewModel.regions.isEmpty)
+        XCTAssertFalse(viewModel.warnings.isEmpty)
+        XCTAssertFalse(viewModel.policyRows.isEmpty)
+        return viewModel
+    }
+
+    private func assertNoAccountScopedState(
+        _ viewModel: CloudGatewayServerHealthViewModel,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNil(viewModel.syncResults, file: file, line: line)
+        XCTAssertNil(viewModel.bannerText, file: file, line: line)
+        XCTAssertFalse(viewModel.dataAvailable, file: file, line: line)
+        XCTAssertTrue(viewModel.regions.isEmpty, file: file, line: line)
+        XCTAssertTrue(viewModel.meshDocs.isEmpty, file: file, line: line)
+        XCTAssertTrue(viewModel.linkRows.isEmpty, file: file, line: line)
+        XCTAssertTrue(viewModel.warnings.isEmpty, file: file, line: line)
+        XCTAssertFalse(viewModel.anyPending, file: file, line: line)
+        XCTAssertTrue(viewModel.policyRows.isEmpty, file: file, line: line)
+        XCTAssertFalse(viewModel.policyLoadFailed, file: file, line: line)
+        XCTAssertTrue(viewModel.togglingRegionIds.isEmpty, file: file, line: line)
+        XCTAssertFalse(viewModel.isLoading, file: file, line: line)
+        XCTAssertFalse(viewModel.isSyncing, file: file, line: line)
+    }
+
+    func testSignOutClearsCompletedSyncResultsAndEveryOtherAccountScopedValue() async {
+        let service = signedInService()
+        let viewModel = await populatedViewModel(service)
+
+        service.emitAuthState(nil)
+        await waitUntil { !viewModel.dataAvailable }
+
+        assertNoAccountScopedState(viewModel)
+    }
+
+    // A handoff between two admins never has to pass through a signed-out
+    // state, so the A -> B transition needs its own coverage.
+    func testDirectAccountSwapClearsPreviousAdminsData() async {
+        let service = signedInService()
+        let viewModel = await populatedViewModel(service)
+
+        service.emitAuthState(AuthenticatedUser(uid: "admin-2", email: "other@example.com"))
+        await waitUntil { !viewModel.dataAvailable }
+
+        assertNoAccountScopedState(viewModel)
+    }
+
+    func testCompletedSyncFromThePreviousAdminIsNeverPublishedAfterASwap() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1")]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let loadsBeforeSync = service.fetchMeshRegionsCallCount
+
+        let syncGate = AsyncTestGate()
+        service.syncRegionsGate = syncGate
+        let sync = Task { await viewModel.syncAll() }
+        await waitUntil { viewModel.isSyncing }
+
+        service.emitAuthState(AuthenticatedUser(uid: "admin-2", email: "other@example.com"))
+        await waitUntil { !viewModel.dataAvailable }
+        await syncGate.open()
+        await sync.value
+
+        // Neither the fan-out result nor its post-sync re-read may land in the
+        // new session.
+        assertNoAccountScopedState(viewModel)
+        XCTAssertEqual(service.fetchMeshRegionsCallCount, loadsBeforeSync)
+    }
+
+    func testInFlightLoadFromThePreviousAdminCannotRepopulateTheClearedPage() async {
+        let service = signedInService()
+        let viewModel = await populatedViewModel(service)
+
+        let loadGate = AsyncTestGate()
+        service.fetchMeshRegionsGate = loadGate
+        let load = Task { await viewModel.load() }
+        await waitUntil { viewModel.isLoading }
+
+        service.emitAuthState(nil)
+        await waitUntil { !viewModel.dataAvailable }
+        await loadGate.open()
+        await load.value
+
+        assertNoAccountScopedState(viewModel)
+    }
+
+    func testStaleToggleDoesNotLaunchACatchUpLoadForTheNewSession() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1", meshEnabled: false), region("us-chicago-1", meshEnabled: false)]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let target = viewModel.regions[0]
+
+        let writeGate = AsyncTestGate()
+        service.setRegionMeshEnabledGate = writeGate
+        let toggle = Task { await viewModel.toggleMesh(region: target) }
+        await waitUntil { service.setRegionMeshEnabledCallCount == 1 }
+
+        // Dropped because the toggle is in flight, so a catch-up reload is
+        // pending when the account changes.
+        await viewModel.load()
+
+        service.emitAuthState(AuthenticatedUser(uid: "admin-2", email: "other@example.com"))
+        await waitUntil { !viewModel.dataAvailable }
+        let loadsAfterSwap = service.fetchMeshRegionsCallCount
+
+        await writeGate.open()
+        await toggle.value
+
+        // The pending flag was cleared with the rest of the session state, and
+        // the toggle neither refetched nor republished anything.
+        XCTAssertEqual(service.fetchMeshRegionsCallCount, loadsAfterSwap)
+        assertNoAccountScopedState(viewModel)
+    }
+
+    // Firebase re-emits the current user on listener registration and on token
+    // refresh; that is not an account boundary and must not wipe a live page.
+    func testRepeatedAuthCallbackForTheSameUidLeavesTheLoadedPageIntact() async {
+        let service = signedInService()
+        let viewModel = await populatedViewModel(service)
+        let syncResultCount = viewModel.syncResults?.count
+
+        service.emitAuthState(AuthenticatedUser(uid: "admin-1", email: "admin@example.com"))
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(viewModel.dataAvailable)
+        XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1", "us-chicago-1"])
+        XCTAssertEqual(viewModel.syncResults?.count, syncResultCount)
+        XCTAssertFalse(viewModel.warnings.isEmpty)
+        XCTAssertFalse(viewModel.policyRows.isEmpty)
+    }
+
+    // Losing the admin role keeps the same uid, so auth state reports no
+    // boundary at all - the iOS view layer calls this directly when the role
+    // stops being admin, and it must invalidate in-flight work too.
+    func testAdminRoleLossClearsStateAndInvalidatesAnInFlightSync() async {
+        let service = signedInService()
+        let viewModel = await populatedViewModel(service)
+
+        let syncGate = AsyncTestGate()
+        service.syncRegionsGate = syncGate
+        let sync = Task { await viewModel.syncAll() }
+        await waitUntil { viewModel.isSyncing }
+
+        viewModel.resetAccountScopedState()
+        assertNoAccountScopedState(viewModel)
+
+        await syncGate.open()
+        await sync.value
+
+        assertNoAccountScopedState(viewModel)
+    }
+
+    // The uid never changes here, so only the session generation can stop the
+    // toggle's success path from refetching and repainting the cleared page.
+    func testRoleLossDuringToggleDoesNotRepopulateTheClearedPage() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1", meshEnabled: false)]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let target = viewModel.regions[0]
+
+        let writeGate = AsyncTestGate()
+        service.setRegionMeshEnabledGate = writeGate
+        let toggle = Task { await viewModel.toggleMesh(region: target) }
+        await waitUntil { service.setRegionMeshEnabledCallCount == 1 }
+
+        viewModel.resetAccountScopedState()
+        let loadsAfterReset = service.fetchMeshRegionsCallCount
+
+        await writeGate.open()
+        await toggle.value
+
+        XCTAssertEqual(service.fetchMeshRegionsCallCount, loadsAfterReset)
+        assertNoAccountScopedState(viewModel)
+    }
+
+    // togglingRegionIds and the deferred-reload flag are session state too, so
+    // a toggle left over from the previous admin must not clear the new
+    // admin's in-flight marker when it finally resolves.
+    func testStaleToggleDoesNotDisturbTheNewSessionsToggleBookkeeping() async {
+        let service = signedInService()
+        service.meshRegions = [region("us-sanjose-1", meshEnabled: false)]
+        let viewModel = CloudGatewayServerHealthViewModel(service: service)
+        await viewModel.load()
+        let target = viewModel.regions[0]
+
+        let staleWriteGate = AsyncTestGate()
+        service.setRegionMeshEnabledGate = staleWriteGate
+        let staleToggle = Task { await viewModel.toggleMesh(region: target) }
+        await waitUntil { service.setRegionMeshEnabledCallCount == 1 }
+
+        service.emitAuthState(AuthenticatedUser(uid: "admin-2", email: "other@example.com"))
+        await waitUntil { viewModel.togglingRegionIds.isEmpty }
+
+        // The new admin loads the page and starts their own toggle of the same
+        // region.
+        let freshWriteGate = AsyncTestGate()
+        service.setRegionMeshEnabledGate = freshWriteGate
+        await viewModel.load()
+        let freshTarget = viewModel.regions[0]
+        let freshToggle = Task { await viewModel.toggleMesh(region: freshTarget) }
+        await waitUntil { service.setRegionMeshEnabledCallCount == 2 }
+
+        await staleWriteGate.open()
+        await staleToggle.value
+
+        XCTAssertTrue(viewModel.togglingRegionIds.contains("us-sanjose-1"))
+        XCTAssertTrue(viewModel.dataAvailable)
+
+        await freshWriteGate.open()
+        await freshToggle.value
+        XCTAssertTrue(viewModel.togglingRegionIds.isEmpty)
+    }
+
+    func testAuthListenerIsRegisteredOnceAndCancelledWhenTheViewModelIsReleased() async {
+        let service = signedInService()
+        var viewModel: CloudGatewayServerHealthViewModel? = CloudGatewayServerHealthViewModel(service: service)
+        XCTAssertNotNil(viewModel)
+        XCTAssertEqual(service.addAuthStateListenerCallCount, 1)
+        XCTAssertEqual(service.removeAuthStateListenerCallCount, 0)
+
+        viewModel = nil
+
+        XCTAssertNil(viewModel)
+        XCTAssertEqual(service.removeAuthStateListenerCallCount, 1)
+    }
+
     // MARK: - Mutual exclusion
 
     func testSyncAllAndToggleMeshAreMutuallyExclusiveWhileEitherIsInFlight() async {
