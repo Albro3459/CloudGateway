@@ -27,11 +27,10 @@ const Login: React.FC = () => {
     //   is "current" only while it still equals this value.
     // - manualUserUid is null until the in-flight attempt's sign-in promise
     //   resolves, then holds that attempt's uid for the rest of the attempt.
-    // - manualStartGeneration snapshots authGeneration when the attempt began,
-    //   so the attempt can detect an auth-state change that raced ahead of it.
     // - manualInvalidated is set once a competing auth-state change (the
-    //   observer, or a same-flow uid mismatch) has invalidated the in-flight
-    //   attempt; once set it stays set for that attempt.
+    //   observer once this attempt's uid is known, a mismatch against Firebase's
+    //   own current user at completion, or unmount) has invalidated the
+    //   in-flight attempt; once set it stays set for that attempt.
     // - authGeneration is bumped on every onAuthStateChanged fire and once
     //   more on effect cleanup/unmount, so a stale observer closure can detect
     //   it has been superseded.
@@ -44,7 +43,6 @@ const Login: React.FC = () => {
         manualSignIn: false,
         manualAttempt: 0,
         manualUserUid: null as string | null,
-        manualStartGeneration: 0,
         manualInvalidated: false,
         authGeneration: 0,
         authUid: null as string | null,
@@ -163,26 +161,39 @@ const Login: React.FC = () => {
         if (isCurrent()) navigate("/home", { replace: true });
     }, [navigate]);
 
+    // Starting an attempt supersedes every older one: a captured attempt id can
+    // never be current again once this runs.
     const beginManualAttempt = () => {
         const attempt = ++attemptStateRef.current.manualAttempt;
         attemptStateRef.current.manualSignIn = true;
         attemptStateRef.current.manualUserUid = null;
-        attemptStateRef.current.manualStartGeneration = attemptStateRef.current.authGeneration;
         attemptStateRef.current.manualInvalidated = false;
         return attempt;
     };
 
+    // Firebase's own current user is the completion authority, never the
+    // observer's last snapshot. An unrelated cross-tab auth event can move
+    // authUid while this attempt's promise is still pending and then move back;
+    // rejecting on that snapshot stranded a sign-in whose user is now current,
+    // with no later observer callback left to navigate it.
     const isCurrentManualAttempt = (attempt: number, uid: string) => (
         mountedRef.current
         && attemptStateRef.current.manualAttempt === attempt
         && !attemptStateRef.current.manualInvalidated
         && attemptStateRef.current.manualUserUid === uid
-        && (attemptStateRef.current.authUid === null || attemptStateRef.current.authUid === uid)
-        && (
-            attemptStateRef.current.authGeneration === attemptStateRef.current.manualStartGeneration
-            || attemptStateRef.current.authUid === uid
-        )
+        && auth.currentUser?.uid === uid
     );
+
+    // The single completion path for password, Google, and Apple sign-in.
+    const completeManualAttempt = async (attempt: number, user: User) => {
+        attemptStateRef.current.manualUserUid = user.uid;
+        // A different current user at completion time is a real supersession,
+        // so the invalidation sticks even if Firebase later swings back.
+        if (auth.currentUser && auth.currentUser.uid !== user.uid) {
+            attemptStateRef.current.manualInvalidated = true;
+        }
+        await navigateProvisionedUser(user, true, () => isCurrentManualAttempt(attempt, user.uid));
+    };
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -201,12 +212,7 @@ const Login: React.FC = () => {
             setSuccess(null);
             setSigningIn(true);
             const result = await signInWithEmailAndPassword(auth, email, password);
-            attemptStateRef.current.manualUserUid = result.user.uid;
-            if (attemptStateRef.current.authUid && attemptStateRef.current.authUid !== result.user.uid) {
-                attemptStateRef.current.manualInvalidated = true;
-            }
-            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
-            await navigateProvisionedUser(result.user, true, isCurrent);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
             if (mountedRef.current && attemptStateRef.current.manualAttempt === attempt) {
                 setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
@@ -227,12 +233,7 @@ const Login: React.FC = () => {
 
         try {
             const result = await signInWithGoogle();
-            attemptStateRef.current.manualUserUid = result.user.uid;
-            if (attemptStateRef.current.authUid && attemptStateRef.current.authUid !== result.user.uid) {
-                attemptStateRef.current.manualInvalidated = true;
-            }
-            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
-            await navigateProvisionedUser(result.user, true, isCurrent);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
             if (attemptStateRef.current.manualAttempt !== attempt || !mountedRef.current) return;
             const message = getGoogleSignInError(err);
@@ -255,12 +256,7 @@ const Login: React.FC = () => {
 
         try {
             const result = await signInWithApple();
-            attemptStateRef.current.manualUserUid = result.user.uid;
-            if (attemptStateRef.current.authUid && attemptStateRef.current.authUid !== result.user.uid) {
-                attemptStateRef.current.manualInvalidated = true;
-            }
-            const isCurrent = () => isCurrentManualAttempt(attempt, result.user.uid);
-            await navigateProvisionedUser(result.user, true, isCurrent);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
             if (attemptStateRef.current.manualAttempt !== attempt || !mountedRef.current) return;
             const message = getAppleSignInError(err);
@@ -332,6 +328,9 @@ const Login: React.FC = () => {
         return () => {
             mountedRef.current = false;
             ++stateAtCleanup.current.authGeneration;
+            // An attempt still awaiting its provider promise is superseded by
+            // unmount, not just hidden behind mountedRef.
+            stateAtCleanup.current.manualInvalidated = true;
             unsubscribe();
         };
     }, [navigateProvisionedUser]);

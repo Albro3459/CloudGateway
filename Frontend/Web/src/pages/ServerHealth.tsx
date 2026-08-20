@@ -34,6 +34,8 @@ type NavigationState = {
     runSync?: boolean;
 };
 
+const MESH_WRITES_PENDING_HELP = "Waiting for mesh membership changes to save before syncing.";
+
 type ToggleOverride = {
     enabled: boolean;
     revision: number;
@@ -150,6 +152,10 @@ const ServerHealth: React.FC = () => {
     const [dataLoading, setDataLoading] = useState(false);
 
     const [togglingRegionIds, setTogglingRegionIds] = useState<Set<string>>(new Set());
+    // Presentation state above; the durable-write barrier below. togglingRegionIds
+    // is cleared by auth lifecycle code (and by a superseded toggle) while a
+    // Firestore write can still be unresolved, so it is not a barrier on its own.
+    const [pendingMeshWriteCount, setPendingMeshWriteCount] = useState(0);
 
     const [syncModalOpen, setSyncModalOpen] = useState(false);
     const [syncing, setSyncing] = useState(false);
@@ -166,6 +172,15 @@ const ServerHealth: React.FC = () => {
     // undefined until the observer's first callback; null once signed out.
     const authSubjectRef = useRef<string | null | undefined>(undefined);
     const loadGenerationRef = useRef(0);
+    // Unresolved setRegionMeshEnabled writes, keyed by region: Sync All must not
+    // call a regional API while one is outstanding, because the optimistic
+    // regions state already shows the new value while the host still reads the
+    // old Firestore document.
+    const pendingMeshWritesRef = useRef(new Map<string, Promise<boolean>>());
+    // Latest committed regions/token for work that resumes after awaiting that
+    // barrier, so a sync never targets a pre-barrier snapshot.
+    const regionsRef = useRef<Region[] | null>(null);
+    const jwtTokenRef = useRef<string | null>(null);
     const nextToggleRevisionRef = useRef(0);
     const toggleRevisionsRef = useRef(new Map<string, number>());
     const overridesRef = useRef(new Map<string, ToggleOverride>());
@@ -175,6 +190,41 @@ const ServerHealth: React.FC = () => {
         && authGenerationRef.current === authGeneration
         && (loadGeneration === undefined || loadGenerationRef.current === loadGeneration)
     ), []);
+
+    useEffect(() => {
+        regionsRef.current = regions;
+    }, [regions]);
+
+    useEffect(() => {
+        jwtTokenRef.current = jwtToken;
+    }, [jwtToken]);
+
+    // Registers a mesh-membership write for the barrier below. The tracked
+    // promise never rejects (false means the write failed) and retires itself
+    // before any awaiter resumes, so the registry cannot leak an entry.
+    const trackMeshWrite = (regionId: string, write: Promise<void>): void => {
+        const tracked: Promise<boolean> = write.then(() => true, () => false).finally(() => {
+            if (pendingMeshWritesRef.current.get(regionId) === tracked) {
+                pendingMeshWritesRef.current.delete(regionId);
+                setPendingMeshWriteCount(pendingMeshWritesRef.current.size);
+            }
+        });
+        pendingMeshWritesRef.current.set(regionId, tracked);
+        setPendingMeshWriteCount(pendingMeshWritesRef.current.size);
+    };
+
+    // Resolves once no mesh-membership write from this session is unresolved.
+    // Loops because a write can start while an earlier batch is being awaited.
+    // false means at least one awaited write failed: the fleet is not in the
+    // state the operator confirmed, so the sync intent is dropped.
+    const awaitPendingMeshWrites = useCallback(async (): Promise<boolean> => {
+        let allSucceeded = true;
+        while (pendingMeshWritesRef.current.size > 0) {
+            const settled = await Promise.all(Array.from(pendingMeshWritesRef.current.values()));
+            if (settled.some(succeeded => !succeeded)) allSucceeded = false;
+        }
+        return allSucceeded;
+    }, []);
 
     // Every region doc is rendered, including disabled ones: a disabled region
     // can still have a live peer installed on another host, and dropping it
@@ -195,6 +245,10 @@ const ServerHealth: React.FC = () => {
     const warnings = useMemo(() => collectMeshWarnings(meshDocs), [meshDocs]);
     const anyPending = useMemo(() => hasAnyMeshPending(allRegions, meshDocs), [allRegions, meshDocs]);
     const policyRows = useMemo(() => buildPolicyStatusRows(allRegions, policyDocs), [allRegions, policyDocs]);
+    // Only the write registry gates Sync All. togglingRegionIds stays set for the
+    // toggle's confirming read as well, and a sync is allowed to supersede that
+    // read - what it must never do is run while the write itself is unresolved.
+    const meshWritesPending = pendingMeshWriteCount > 0;
 
     const loadServerHealthData = useCallback(async (clearOverride?: ClearOverride): Promise<boolean> => {
         const loadGeneration = ++loadGenerationRef.current;
@@ -322,8 +376,11 @@ const ServerHealth: React.FC = () => {
             && toggleRevisionsRef.current.get(region.regionId) === revision
         );
 
+        const write = setRegionMeshEnabled(region.regionId, next);
+        trackMeshWrite(region.regionId, write);
+
         try {
-            await setRegionMeshEnabled(region.regionId, next);
+            await write;
             if (!isCurrentToggle()) return;
             await loadServerHealthData({ regionId: region.regionId, revision });
         } catch (error) {
@@ -346,6 +403,34 @@ const ServerHealth: React.FC = () => {
         }
     };
 
+    // The one entry point for a confirmed Sync All, used by this page's modal and
+    // by the Home-originated pendingRunSync path. UI gating does not protect the
+    // latter, so the barrier has to live here rather than on the button.
+    const startConfirmedSync = useCallback(async (token: string) => {
+        const subject = authSubjectRef.current;
+        const writesSucceeded = await awaitPendingMeshWrites();
+        if (!mountedRef.current) return;
+        // A same-user observer callback bumps the auth generation without ending
+        // the session, so it must not cancel a confirmed run; a real subject
+        // change or sign-out must.
+        if (authSubjectRef.current !== subject || (auth.currentUser?.uid ?? null) !== subject) return;
+        if (!writesSucceeded) {
+            setBanner({
+                type: "error",
+                message: "A mesh membership change did not save, so nothing was synced. Review the regions and sync again.",
+            });
+            return;
+        }
+        // A write that started while the barrier was draining.
+        if (pendingMeshWritesRef.current.size > 0) return;
+        // Same subject, so a token captured before the barrier still belongs to
+        // this session; the refreshed one is preferred when the observer has
+        // already published it.
+        const currentToken = jwtTokenRef.current ?? token;
+        // Only the acknowledged post-barrier membership decides the targets.
+        await runSync(getEnabledRegions(regionsRef.current).map(region => region.regionId), currentToken);
+    }, [awaitPendingMeshWrites, runSync]);
+
     const confirmSync = () => {
         setSyncModalOpen(false);
         if (!jwtToken) {
@@ -354,7 +439,7 @@ const ServerHealth: React.FC = () => {
             setBanner({ type: "error", message: "Your session is not ready. Try again in a moment." });
             return;
         }
-        void runSync(enabledRegions.map(region => region.regionId), jwtToken);
+        void startConfirmedSync(jwtToken);
     };
 
     useEffect(() => {
@@ -445,8 +530,8 @@ const ServerHealth: React.FC = () => {
     useEffect(() => {
         if (!pendingRunSync || !jwtToken || regions === null) return;
         setPendingRunSync(false);
-        void runSync(enabledRegions.map(region => region.regionId), jwtToken);
-    }, [pendingRunSync, jwtToken, regions, enabledRegions, runSync]);
+        void startConfirmedSync(jwtToken);
+    }, [pendingRunSync, jwtToken, regions, startConfirmedSync]);
 
     if (role !== "admin") {
         return (
@@ -523,8 +608,13 @@ const ServerHealth: React.FC = () => {
                         // Deliberately not gated on dataLoading: the fan-out does
                         // not depend on the read, and greying the page's primary
                         // action out on every background refresh is unexplainable.
-                        disabled={syncing || !enabledRegions.length}
-                        title={enabledRegions.length ? undefined : "No enabled regions to sync."}
+                        // Unsaved mesh membership is different: syncing then would
+                        // send the regional APIs a membership Firestore has not
+                        // acknowledged yet.
+                        disabled={syncing || !enabledRegions.length || meshWritesPending}
+                        title={meshWritesPending
+                            ? MESH_WRITES_PENDING_HELP
+                            : (enabledRegions.length ? undefined : "No enabled regions to sync.")}
                         className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled ${
                             anyPending ? "bg-primary ring-2 ring-warning-strong" : "bg-primary"
                         }`}
@@ -533,6 +623,9 @@ const ServerHealth: React.FC = () => {
                         {syncing ? "Syncing..." : "Sync All Regions"}
                     </button>
                 </div>
+                {meshWritesPending && (
+                    <p role="status" className="mt-2 text-xs text-content-muted">{MESH_WRITES_PENDING_HELP}</p>
+                )}
                 {anyPending && (
                     <p className="mt-2 text-sm text-warning-strong">Pending mesh changes - run Sync All Regions to apply them.</p>
                 )}
@@ -740,6 +833,8 @@ const ServerHealth: React.FC = () => {
                 regions={enabledRegions.map(region => ({ regionId: region.regionId, displayName: region.displayName }))}
                 onConfirm={confirmSync}
                 onClose={() => setSyncModalOpen(false)}
+                confirmDisabled={meshWritesPending}
+                confirmDisabledReason={MESH_WRITES_PENDING_HELP}
             />
                 </>
             )}

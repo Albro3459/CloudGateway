@@ -828,6 +828,11 @@ describe("ServerHealth", () => {
         getAllRegionDocs.mockImplementationOnce(() => confirmingRead.promise);
         fireEvent.click(checkbox);
         await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        // Sync All is blocked until the membership write acknowledges; the
+        // confirming read that follows it does not block a sync.
+        await waitFor(() => expect(
+            (screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled
+        ).toBe(false));
 
         // Sync All Regions re-reads Region/Mesh state before the confirming
         // read resolves, superseding it as the load that gets to render.
@@ -1310,5 +1315,225 @@ describe("ServerHealth", () => {
             "Unable to load client isolation status. This is a read failure, not a report that no region has completed a policy reconcile."
         )).toBeTruthy();
         expect(within(policyCard).queryByText("Never synced")).toBeNull();
+    });
+    // --- Sync All write barrier (mesh membership must be durable first) ---
+
+    const renderWithTwoRegions = async () => {
+        const { getAllRegionDocs, getMeshDocs } = require("../../helpers/firebaseDbHelper");
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        const { default: ServerHealth } = require("../ServerHealth");
+        render(<ServerHealth />);
+        return await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+    };
+
+    const syncAllButton = () => screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement;
+
+    it("blocks Sync All until an unresolved mesh membership write acknowledges", async () => {
+        const { setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const write = deferred<void>();
+        const checkbox = await renderWithTwoRegions();
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // The optimistic checkbox already shows the new value while Firestore
+        // has not acknowledged it, so a sync now would hand the regional API a
+        // membership it cannot read.
+        expect(checkbox.checked).toBe(true);
+        expect(syncAllButton().disabled).toBe(true);
+        expect(screen.getByText("Waiting for mesh membership changes to save before syncing.")).toBeTruthy();
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        await act(async () => {
+            write.resolve();
+            await write.promise;
+        });
+
+        await waitFor(() => expect(syncAllButton().disabled).toBe(false));
+    });
+
+    it("holds a confirmed sync until every concurrent membership write settles", async () => {
+        const { setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const firstWrite = deferred<void>();
+        const secondWrite = deferred<void>();
+        const checkbox = await renderWithTwoRegions();
+        setRegionMeshEnabled
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockReturnValueOnce(secondWrite.promise);
+
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+        fireEvent.click(screen.getByLabelText("Mesh enabled for Chicago"));
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledTimes(2));
+
+        await act(async () => {
+            firstWrite.resolve();
+            await firstWrite.promise;
+        });
+
+        expect(syncAllButton().disabled).toBe(true);
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        await act(async () => {
+            secondWrite.resolve();
+            await secondWrite.promise;
+        });
+
+        await waitFor(() => expect(syncAllButton().disabled).toBe(false));
+    });
+
+    it("aborts a Home-confirmed sync whose membership write failed", async () => {
+        // The Home path never passes through this page's button, so the button
+        // gating cannot protect it - the barrier has to live in the sync path.
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const write = deferred<void>();
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // The Home-originated run arrives while that write is unresolved.
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        await waitFor(() => expect(runRegionsSync).not.toHaveBeenCalled());
+
+        await act(async () => {
+            write.reject(new Error("firestore unavailable"));
+            await write.promise.catch(() => undefined);
+        });
+
+        await waitFor(() => expect(
+            screen.getByText("A mesh membership change did not save, so nothing was synced. Review the regions and sync again.")
+        ).toBeTruthy());
+        expect(runRegionsSync).not.toHaveBeenCalled();
+        // The optimistic value rolled back, so the page does not claim a
+        // membership the fleet never got.
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+    });
+
+    it("syncs the membership acknowledged after the barrier, not the pre-barrier snapshot", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const write = deferred<void>();
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2, false),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // Confirmed while the write is still outstanding, through the same
+        // entry point the Home button uses.
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        await waitFor(() => expect(
+            (screen.getByLabelText("Refresh") as HTMLButtonElement).disabled
+        ).toBe(false));
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        // Chicago is enabled fleet-side and rendered while the barrier waits,
+        // so the confirm-time membership is already out of date.
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement).disabled
+        ).toBe(false));
+
+        await act(async () => {
+            write.resolve();
+            await write.promise;
+        });
+
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(
+            ["us-sanjose-1", "us-chicago-1"],
+            "firebase-token",
+        ));
+    });
+
+    it("keeps the barrier across a repeated observer callback for the same admin", async () => {
+        const { setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const write = deferred<void>();
+        const checkbox = await renderWithTwoRegions();
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        // The callback clears togglingRegionIds (presentation state) but cannot
+        // clear the unresolved write.
+        await act(async () => {
+            authStateCallback?.(mockUser);
+        });
+
+        expect(syncAllButton().disabled).toBe(true);
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        await act(async () => {
+            write.resolve();
+            await write.promise;
+        });
+        await waitFor(() => expect(syncAllButton().disabled).toBe(false));
+    });
+
+    it("drops a confirmed sync when the account changes while the barrier is waiting", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { auth } = require("../../firebase");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const write = deferred<void>();
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        fireEvent.click(screen.getByLabelText("Refresh"));
+
+        const otherAdmin = { uid: "admin-2", email: "other@example.com", getIdToken: jest.fn().mockResolvedValue("other-token") };
+        auth.currentUser = otherAdmin;
+        await act(async () => {
+            authStateCallback?.(otherAdmin);
+        });
+        await act(async () => {
+            write.resolve();
+            await write.promise;
+        });
+
+        expect(runRegionsSync).not.toHaveBeenCalled();
     });
 });

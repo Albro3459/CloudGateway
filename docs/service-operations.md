@@ -114,7 +114,11 @@ redeploy are needed to enable, verify, or roll back mesh membership - only a das
    tunnel CIDRs at the end of bootstrap).
 3. In the admin dashboard, flip `meshEnabled` on for each region that should join.
 4. Click "Sync All Regions". This is the only sync action - there is no per-region selection,
-   because a partial sync can leave the mesh half-applied on the regions left out.
+   because a partial sync can leave the mesh half-applied on the regions left out. The button is
+   disabled while a `meshEnabled` change is still saving: the checkbox shows the new value
+   immediately, but each host reads the Firestore document, so a sync started before the write
+   lands would reconcile the old membership. If a membership write fails, the confirmed sync is
+   dropped with a banner rather than run against the state that did not save.
 
 **Verify (per host, over SSH):**
 

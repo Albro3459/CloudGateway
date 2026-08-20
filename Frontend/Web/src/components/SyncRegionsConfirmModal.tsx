@@ -13,6 +13,10 @@ type SyncRegionsConfirmModalProps = {
     regions: SyncRegionsConfirmModalRegion[];
     onConfirm: () => void;
     onClose: () => void;
+    // Server Health blocks confirmation while a mesh-membership write is still
+    // unresolved; Home has no such writes and leaves both unset.
+    confirmDisabled?: boolean;
+    confirmDisabledReason?: string;
 };
 
 // Reused by Home (confirm -> navigate to Server Health, which owns the
@@ -26,6 +30,8 @@ export const SyncRegionsConfirmModal: React.FC<SyncRegionsConfirmModalProps> = (
     regions,
     onConfirm,
     onClose,
+    confirmDisabled = false,
+    confirmDisabledReason,
 }) => {
     const modalRef = useModalDialog<HTMLDivElement>(open, onClose);
 
@@ -79,6 +85,12 @@ export const SyncRegionsConfirmModal: React.FC<SyncRegionsConfirmModalProps> = (
                     )}
                 </div>
 
+                {confirmDisabled && confirmDisabledReason && (
+                    <p role="status" className="border-t border-edge-faint px-6 pt-4 text-sm text-content-muted">
+                        {confirmDisabledReason}
+                    </p>
+                )}
+
                 <div className="flex flex-col-reverse gap-3 border-t border-edge-faint bg-card p-4 sm:flex-row sm:justify-end sm:px-6">
                     <button
                         type="button"
@@ -90,7 +102,8 @@ export const SyncRegionsConfirmModal: React.FC<SyncRegionsConfirmModalProps> = (
                     <button
                         type="button"
                         onClick={onConfirm}
-                        disabled={regions.length === 0}
+                        disabled={regions.length === 0 || confirmDisabled}
+                        title={confirmDisabled ? confirmDisabledReason : undefined}
                         className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
                     >
                         <RefreshCw size={17} aria-hidden="true" />

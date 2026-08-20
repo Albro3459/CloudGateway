@@ -7,7 +7,10 @@ jest.mock("react-router-dom", () => ({
 }), { virtual: true });
 
 jest.mock("../../firebase", () => ({
-    auth: {},
+    // Firebase updates auth.currentUser before a sign-in promise resolves and
+    // before an observer callback fires; the manual-attempt completion check
+    // reads it as the authority, so the mock has to model it.
+    auth: { currentUser: null as unknown },
     onAuthStateChanged: jest.fn((_auth, callback) => {
         setTimeout(() => callback(null), 0);
         return () => undefined;
@@ -44,8 +47,27 @@ describe("Login", () => {
     };
     let authCallback: ((user: unknown) => void) | undefined;
 
+    const setCurrentUser = (signedInUser: unknown) => {
+        const { auth } = require("../../firebase");
+        auth.currentUser = signedInUser;
+    };
+
+    // A resolving provider promise that moves Firebase's current user with it.
+    const signInResolvingAs = (signedInUser: unknown) => async () => {
+        setCurrentUser(signedInUser);
+        return { user: signedInUser };
+    };
+
+    const emitAuth = async (signedInUser: unknown) => {
+        setCurrentUser(signedInUser);
+        await act(async () => authCallback?.(signedInUser));
+    };
+
+    const homeNavigations = () => mockNavigate.mock.calls.filter(call => call[0] === "/home");
+
     beforeEach(() => {
         jest.clearAllMocks();
+        setCurrentUser(null);
         user.getIdToken.mockResolvedValue("firebase-token");
         const { onAuthStateChanged, signInWithEmailAndPassword, signInWithGoogle, signInWithApple, signOut } = require("../../firebase");
         const { checkAccountAccess } = require("../../helpers/APIHelper");
@@ -76,11 +98,11 @@ describe("Login", () => {
             resolveAccess = resolve;
         });
 
-        signInWithEmailAndPassword.mockResolvedValue({ user });
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockReturnValue(pendingAccess);
 
         render(<Login />);
-        await act(async () => authCallback?.(null));
+        await emitAuth(null);
         fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
             target: { value: "user@example.com" },
         });
@@ -90,7 +112,7 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: "Login" }));
         await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
 
-        await act(async () => authCallback?.(newerUser));
+        await emitAuth(newerUser);
         await act(async () => {
             resolveAccess({ success: false, error: "stale provisioning failure" });
             await pendingAccess;
@@ -124,7 +146,7 @@ describe("Login", () => {
 
         render(<Login />);
         // An existing session is signed in before the manual attempt begins.
-        await act(async () => authCallback?.(user));
+        await emitAuth(user);
 
         fireEvent.change(screen.getByPlaceholderText("Enter your email"), {
             target: { value: "new@example.com" },
@@ -138,8 +160,9 @@ describe("Login", () => {
         // resolves, which is the exact ordering finding 3 covers: the
         // observer's uid always differs from the uid signed in before the
         // attempt began, for any legitimate account switch.
-        await act(async () => authCallback?.(newUser));
+        await emitAuth(newUser);
         await act(async () => {
+            setCurrentUser(newUser);
             resolveSignIn({ user: newUser });
             await pendingSignIn;
         });
@@ -148,6 +171,161 @@ describe("Login", () => {
             expect(fetchOciRegions).toHaveBeenCalledWith("new-token", true);
             expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true });
         });
+    });
+
+    const fillCredentials = (email = "user@example.com") => {
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), { target: { value: email } });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), { target: { value: "Password1!" } });
+    };
+
+    it("navigates a completed sign-in that an unrelated cross-tab auth event raced past", async () => {
+        // A cross-tab event moves the observer's snapshot to another account
+        // while this tab's sign-in promise is still pending, then Firebase's
+        // current user is this attempt's user again by the time it resolves.
+        // Rejecting on the stale snapshot stranded the sign-in: the matching
+        // observer callback was already consumed, so nothing navigated.
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        const otherTabUser = { uid: "user-other-tab", getIdToken: jest.fn().mockResolvedValue("other-tab-token") };
+        let resolveSignIn!: (value: { user: typeof user }) => void;
+        const pendingSignIn = new Promise<{ user: typeof user }>(resolve => {
+            resolveSignIn = resolve;
+        });
+        signInWithEmailAndPassword.mockReturnValue(pendingSignIn);
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: user.uid, email: "user@example.com", role: "user" },
+        });
+
+        render(<Login />);
+        await emitAuth(null);
+        fillCredentials();
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(signInWithEmailAndPassword).toHaveBeenCalled());
+
+        await emitAuth(otherTabUser);
+        setCurrentUser(user);
+        await act(async () => {
+            resolveSignIn({ user });
+            await pendingSignIn;
+        });
+
+        await waitFor(() => expect(homeNavigations()).toHaveLength(1));
+    });
+
+    it("navigates a completed Google sign-in past the same cross-tab race", async () => {
+        // Password, Google, and Apple share one completion path; this pins that
+        // the provider buttons are not a separate code path with its own rule.
+        const { signInWithGoogle } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        const otherTabUser = { uid: "user-other-tab", getIdToken: jest.fn().mockResolvedValue("other-tab-token") };
+        let resolveSignIn!: (value: { user: typeof user }) => void;
+        const pendingSignIn = new Promise<{ user: typeof user }>(resolve => {
+            resolveSignIn = resolve;
+        });
+        signInWithGoogle.mockReturnValue(pendingSignIn);
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: user.uid, email: "user@example.com", role: "user" },
+        });
+
+        render(<Login />);
+        await emitAuth(null);
+        fireEvent.click(screen.getByRole("button", { name: /Sign in with Google/ }));
+        await waitFor(() => expect(signInWithGoogle).toHaveBeenCalled());
+
+        await emitAuth(otherTabUser);
+        setCurrentUser(user);
+        await act(async () => {
+            resolveSignIn({ user });
+            await pendingSignIn;
+        });
+
+        await waitFor(() => expect(homeNavigations()).toHaveLength(1));
+    });
+
+    it("does not navigate when Firebase switches accounts after the sign-in resolves", async () => {
+        // The mirror of the test above: a real later identity change must still
+        // cancel the attempt, not merely a stale snapshot.
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        const otherUser = { uid: "user-new", getIdToken: jest.fn().mockResolvedValue("new-token") };
+        let resolveAccess!: (value: { success: boolean; data?: unknown }) => void;
+        const pendingAccess = new Promise<{ success: boolean; data?: unknown }>(resolve => {
+            resolveAccess = resolve;
+        });
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockReturnValue(pendingAccess);
+
+        render(<Login />);
+        await emitAuth(null);
+        fillCredentials();
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
+
+        setCurrentUser(otherUser);
+        await act(async () => {
+            resolveAccess({ success: true, data: { userId: user.uid } });
+            await pendingAccess;
+        });
+
+        expect(homeNavigations()).toHaveLength(0);
+    });
+
+    it("does not navigate when the session signs out mid-provisioning", async () => {
+        const { signInWithEmailAndPassword, signOut } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        let resolveAccess!: (value: { success: boolean; data?: unknown }) => void;
+        const pendingAccess = new Promise<{ success: boolean; data?: unknown }>(resolve => {
+            resolveAccess = resolve;
+        });
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockReturnValue(pendingAccess);
+
+        render(<Login />);
+        await emitAuth(null);
+        fillCredentials();
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
+
+        await emitAuth(null);
+        await act(async () => {
+            resolveAccess({ success: true, data: { userId: user.uid } });
+            await pendingAccess;
+        });
+
+        expect(homeNavigations()).toHaveLength(0);
+        expect(signOut).not.toHaveBeenCalled();
+    });
+
+    it("does not navigate after the component unmounts mid-provisioning", async () => {
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { default: Login } = require("../Login");
+        let resolveAccess!: (value: { success: boolean; data?: unknown }) => void;
+        const pendingAccess = new Promise<{ success: boolean; data?: unknown }>(resolve => {
+            resolveAccess = resolve;
+        });
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockReturnValue(pendingAccess);
+
+        const { unmount } = render(<Login />);
+        await emitAuth(null);
+        fillCredentials();
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+        await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
+
+        unmount();
+        await act(async () => {
+            resolveAccess({ success: true, data: { userId: user.uid } });
+            await pendingAccess;
+        });
+
+        expect(homeNavigations()).toHaveLength(0);
     });
 
     it("keeps a manual sign-in alive when the auth observer repeats the same UID", async () => {
@@ -159,7 +337,7 @@ describe("Login", () => {
         const pendingAccess = new Promise<{ success: boolean; data?: unknown; error?: string }>(resolve => {
             resolveAccess = resolve;
         });
-        signInWithEmailAndPassword.mockResolvedValue({ user });
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockReturnValue(pendingAccess);
 
         render(<Login />);
@@ -172,7 +350,7 @@ describe("Login", () => {
         fireEvent.click(screen.getByRole("button", { name: "Login" }));
         await waitFor(() => expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null));
 
-        await act(async () => authCallback?.(user));
+        await emitAuth(user);
         await act(async () => {
             resolveAccess({ success: true, data: { userId: user.uid } });
             await pendingAccess;
@@ -190,7 +368,7 @@ describe("Login", () => {
         const { fetchOciRegions } = require("../../stores/ociRegionsStore");
         const { default: Login } = require("../Login");
 
-        signInWithGoogle.mockResolvedValue({ user });
+        signInWithGoogle.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockResolvedValue({
             success: true,
             data: { userId: "user-1", email: "user@example.com", role: "user" },
@@ -238,6 +416,7 @@ describe("Login", () => {
         expect(screen.getByRole("status").textContent).toContain("Signing in...");
         expect(screen.getAllByRole("button", { name: "Signing in..." })[0].hasAttribute("disabled")).toBe(true);
 
+        setCurrentUser(user);
         resolveSignIn({ user });
 
         await waitFor(() => {
@@ -254,7 +433,7 @@ describe("Login", () => {
         const { default: Login } = require("../Login");
 
         const message = "Your account does not have access to CloudGateway. Your account has been disabled until an admin grants access.";
-        signInWithGoogle.mockResolvedValue({ user });
+        signInWithGoogle.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockResolvedValue({
             success: false,
             errorCode: "USER_NOT_PROVISIONED",
@@ -283,7 +462,7 @@ describe("Login", () => {
         const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
         const { default: Login } = require("../Login");
 
-        signInWithGoogle.mockResolvedValue({ user });
+        signInWithGoogle.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockResolvedValue({
             success: true,
             data: { userId: "user-1", email: "user@example.com", role: "user" },
@@ -313,7 +492,7 @@ describe("Login", () => {
         const { fetchOciRegions } = require("../../stores/ociRegionsStore");
         const { default: Login } = require("../Login");
 
-        signInWithApple.mockResolvedValue({ user });
+        signInWithApple.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockResolvedValue({
             success: true,
             data: { userId: "user-1", email: "user@example.com", role: "user" },
@@ -339,7 +518,7 @@ describe("Login", () => {
         const { default: Login } = require("../Login");
 
         const message = "Your account does not have access to CloudGateway. Your account has been disabled until an admin grants access.";
-        signInWithApple.mockResolvedValue({ user });
+        signInWithApple.mockImplementation(signInResolvingAs(user));
         checkAccountAccess.mockResolvedValue({
             success: false,
             errorCode: "USER_NOT_PROVISIONED",
