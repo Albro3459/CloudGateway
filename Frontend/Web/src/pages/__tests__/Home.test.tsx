@@ -455,6 +455,11 @@ describe("Home admin tools", () => {
             expect.arrayContaining([expect.objectContaining({ regionId: "us-sanjose-1" })]),
         ));
         expect(await screen.findByText("new@example.com now has CloudGateway access.")).toBeTruthy();
+        // The grant is done, so a cleared email field would read as a second
+        // invite still waiting to be sent.
+        expect(screen.queryByLabelText("Email")).toBeNull();
+        expect(screen.queryByRole("button", { name: "Grant Access" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
     });
 
     it("renders the Server Health nav affordance for admins", async () => {

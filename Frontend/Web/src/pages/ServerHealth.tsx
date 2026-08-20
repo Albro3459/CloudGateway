@@ -35,6 +35,9 @@ type NavigationState = {
 };
 
 const MESH_WRITES_PENDING_HELP = "Waiting for mesh membership changes to save before syncing.";
+// Distinct from the line above: that one means "you cannot sync yet", this one
+// means "the sync you confirmed is queued and will start on its own".
+const SYNC_QUEUED_HELP = "Sync queued - it starts as soon as the mesh membership changes finish saving.";
 
 type ToggleOverride = {
     enabled: boolean;
@@ -156,6 +159,9 @@ const ServerHealth: React.FC = () => {
     // is cleared by auth lifecycle code (and by a superseded toggle) while a
     // Firestore write can still be unresolved, so it is not a barrier on its own.
     const [pendingMeshWriteCount, setPendingMeshWriteCount] = useState(0);
+    // A confirmed sync that is waiting on the barrier above. Without this the
+    // page reads the same whether or not the operator has already confirmed.
+    const [syncQueued, setSyncQueued] = useState(false);
 
     const [syncModalOpen, setSyncModalOpen] = useState(false);
     const [syncing, setSyncing] = useState(false);
@@ -409,7 +415,17 @@ const ServerHealth: React.FC = () => {
     // latter, so the barrier has to live here rather than on the button.
     const startConfirmedSync = useCallback(async (token: string) => {
         const subject = authSubjectRef.current;
-        const writesSucceeded = await awaitPendingMeshWrites();
+        // A confirmed run that has to wait is announced as queued: "you cannot
+        // sync yet" and "the sync you confirmed is waiting" are different states
+        // to an operator who has already confirmed.
+        const queued = pendingMeshWritesRef.current.size > 0;
+        if (queued) setSyncQueued(true);
+        let writesSucceeded: boolean;
+        try {
+            writesSucceeded = await awaitPendingMeshWrites();
+        } finally {
+            if (queued && mountedRef.current) setSyncQueued(false);
+        }
         if (!mountedRef.current) return;
         // A same-user observer callback bumps the auth generation without ending
         // the session, so it must not cancel a confirmed run; a real subject
@@ -478,6 +494,7 @@ const ServerHealth: React.FC = () => {
             setTogglingRegionIds(new Set());
             setSyncModalOpen(false);
             setSyncing(false);
+            setSyncQueued(false);
             setSyncResults(null);
             setSyncError(null);
             if (subjectChanged) setPendingRunSync(false);
@@ -614,18 +631,20 @@ const ServerHealth: React.FC = () => {
                         // acknowledged yet.
                         disabled={syncing || !enabledRegions.length || meshWritesPending}
                         title={meshWritesPending
-                            ? MESH_WRITES_PENDING_HELP
+                            ? (syncQueued ? SYNC_QUEUED_HELP : MESH_WRITES_PENDING_HELP)
                             : (enabledRegions.length ? undefined : "No enabled regions to sync.")}
                         className={`flex cursor-pointer items-center justify-center gap-2 rounded-lg px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled ${
                             anyPending ? "bg-primary ring-2 ring-warning-strong" : "bg-primary"
                         }`}
                     >
-                        <RefreshCw className={syncing ? "animate-spin" : ""} size={18} aria-hidden="true" />
-                        {syncing ? "Syncing..." : "Sync All Regions"}
+                        <RefreshCw className={syncing || syncQueued ? "animate-spin" : ""} size={18} aria-hidden="true" />
+                        {syncing ? "Syncing..." : (syncQueued ? "Sync queued..." : "Sync All Regions")}
                     </button>
                 </div>
                 {meshWritesPending && (
-                    <p role="status" className="mt-2 text-xs text-content-muted">{MESH_WRITES_PENDING_HELP}</p>
+                    <p role="status" className="mt-2 text-xs text-content-muted">
+                        {syncQueued ? SYNC_QUEUED_HELP : MESH_WRITES_PENDING_HELP}
+                    </p>
                 )}
                 {anyPending && (
                     <p className="mt-2 text-sm text-warning-strong">Pending mesh changes - run Sync All Regions to apply them.</p>

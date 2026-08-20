@@ -1359,18 +1359,22 @@ const Home: React.FC = () => {
                         )}
 
                         <form onSubmit={handleGrantAccess} className="mt-5">
-                            <label className="block text-sm font-medium text-content-secondary">
-                                Email
-                                <input
-                                    type="email"
-                                    value={grantAccessEmail}
-                                    onChange={(event) => setGrantAccessEmail(event.target.value)}
-                                    autoComplete="email"
-                                    placeholder="user@example.com"
-                                    disabled={grantingAccess}
-                                    className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
-                                />
-                            </label>
+                            {/* The grant already happened, so an empty email field
+                                would read as a second invite waiting to be sent. */}
+                            {!grantAccessSuccess && (
+                                <label className="block text-sm font-medium text-content-secondary">
+                                    Email
+                                    <input
+                                        type="email"
+                                        value={grantAccessEmail}
+                                        onChange={(event) => setGrantAccessEmail(event.target.value)}
+                                        autoComplete="email"
+                                        placeholder="user@example.com"
+                                        disabled={grantingAccess}
+                                        className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                    />
+                                </label>
+                            )}
                             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                                 <button
                                     type="button"
