@@ -373,6 +373,71 @@ def test_desired_policy_accepts_the_supported_region_prefix_widths():
     assert desired.infra_v6 == ("fd42:42:42:9::1",)
 
 
+def test_desired_policy_never_promotes_a_client_address_to_infra():
+    # Finding 8 exactly: a stored /32 region derives network-address-plus-one
+    # into a live client's address. cg_infra bypasses the account-slot
+    # boundary, so that client would have been reachable from every account.
+    # The client must stay an ordinary slot row and its address must never
+    # appear in either infra set.
+    repository = make_repository()
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4="10.0.5.5/32",
+        tunnel_network_v6="fd42:42:42:5::5/128",
+    )
+    neighbor = reserve_and_activate(repository)
+    key = (neighbor.owner_uid, neighbor.region_id, neighbor.client_id)
+    repository.clients[key] = replace(
+        neighbor,
+        assigned_tunnel_ipv4="10.0.5.6/32",
+        assigned_tunnel_ipv6="fd42:42:42:5::6/128",
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ()
+    assert desired.infra_v6 == ()
+    assert "10.0.5.6" not in desired.infra_v4
+    assert "fd42:42:42:5::6" not in desired.infra_v6
+    assert [(row.address_v4, row.address_v6) for row in desired.rows] == [
+        ("10.0.5.6", "fd42:42:42:5::6")
+    ]
+    assert desired.skipped_rows == 0
+
+
+def test_desired_policy_rejects_wrong_family_region_cidr_for_infra():
+    # A swapped pair: each field holds a syntactically valid network of the
+    # other family, inside that family's aggregate.
+    repository = make_repository()
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4="fd42:42:42:5::/64",
+        tunnel_network_v6="10.0.5.0/24",
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ()
+    assert desired.infra_v6 == ()
+
+
+@pytest.mark.parametrize("value", ["", None, 12345, ["10.0.5.0/24"], {"cidr": "10.0.5.0/24"}])
+def test_desired_policy_rejects_non_string_region_cidr_for_infra(value):
+    # Firestore can hold any type; an absent or non-string network must fail
+    # closed rather than raise out of the pass.
+    repository = make_repository()
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4=value,  # type: ignore[arg-type]
+        tunnel_network_v6=value,  # type: ignore[arg-type]
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ()
+    assert desired.infra_v6 == ()
+
+
 def test_desired_policy_rejects_infra_address_outside_tunnel_aggregate():
     repository = make_repository()
     # A garbage region CIDR must never put a public address in cg_infra.
