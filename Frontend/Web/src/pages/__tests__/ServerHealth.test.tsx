@@ -1697,6 +1697,82 @@ describe("ServerHealth", () => {
         expect((screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked).toBe(false);
     });
 
+    it("rolls a toggle back when the mesh write throws synchronously instead of rejecting", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        getAllRegionDocs.mockResolvedValue([region("us-sanjose-1", "San Jose", false, 1)]);
+        getMeshDocs.mockResolvedValue(new Map());
+        // Not a rejected promise: setRegionMeshEnabled throws before it ever
+        // returns one. Started outside the toggle's try, that escapes the
+        // handler entirely - no rollback, no banner, and the region stays
+        // pinned in togglingRegionIds for the rest of the session.
+        setRegionMeshEnabled.mockImplementationOnce(() => {
+            throw new Error("firestore unavailable");
+        });
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        fireEvent.click(checkbox);
+
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
+        ).toBe(false));
+        expect(await screen.findByText("Unable to update San Jose.")).toBeTruthy();
+        const settled = screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        expect(settled.disabled).toBe(false);
+        expect(settled.getAttribute("aria-busy")).toBe("false");
+        // The write never reached the registry, so nothing is left blocking a sync.
+        expect((screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("drops a region disabled while the barrier waits from the post-barrier sync targets", async () => {
+        const { getAllRegionDocs, getMeshDocs, setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
+        const { runRegionsSync } = require("../../helpers/APIHelper");
+        const { default: ServerHealth } = require("../ServerHealth");
+        const write = deferred<void>();
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2),
+        ]);
+        getMeshDocs.mockResolvedValue(new Map());
+
+        render(<ServerHealth />);
+        const checkbox = await screen.findByLabelText("Mesh enabled for San Jose") as HTMLInputElement;
+        setRegionMeshEnabled.mockReturnValueOnce(write.promise);
+        fireEvent.click(checkbox);
+        await waitFor(() => expect(setRegionMeshEnabled).toHaveBeenCalledWith("us-sanjose-1", true));
+
+        mockLocation = { pathname: "/server-health", state: { runSync: true } };
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        await waitFor(() => expect(
+            (screen.getByLabelText("Refresh") as HTMLButtonElement).disabled
+        ).toBe(false));
+        expect(runRegionsSync).not.toHaveBeenCalled();
+
+        // The mirror of the newly-enabled case: Chicago is disabled fleet-side
+        // while the barrier waits, so the confirm-time membership is stale in
+        // the other direction and syncing it would target a region the fan-out
+        // must no longer touch.
+        getAllRegionDocs.mockResolvedValue([
+            region("us-sanjose-1", "San Jose", false, 1),
+            region("us-chicago-1", "Chicago", false, 2, false),
+        ]);
+        fireEvent.click(screen.getByLabelText("Refresh"));
+        await waitFor(() => expect(
+            (screen.getByLabelText("Mesh enabled for Chicago") as HTMLInputElement).disabled
+        ).toBe(true));
+
+        await act(async () => {
+            write.resolve();
+            await write.promise;
+        });
+
+        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(
+            ["us-sanjose-1"],
+            "firebase-token",
+        ));
+    });
+
     it("reads as queued only once a sync is confirmed behind the barrier, not while a write is merely outstanding", async () => {
         const { setRegionMeshEnabled } = require("../../helpers/firebaseDbHelper");
         const { runRegionsSync } = require("../../helpers/APIHelper");

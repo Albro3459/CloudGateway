@@ -7,26 +7,36 @@ repo-conforming fix, not merely the smallest edit.
 
 ## Scope and decisions
 
-All 11 findings below are **resolved** on this branch, landed across two fix waves after
-the review closed. Wave 1 (`fe99255`) hardened account-slot allocation and migration.
-Wave 2 (`037b467`, `712c694`, `c1a2de9`, `79ba1ad`) closed the remaining Apple, API, and
-web findings. The separate real-host nftables verification gate (final section of this
-doc) is **not** one of the 11 code findings and remains pending — it requires a live
-canary host and cannot be closed by a code change.
+All 11 findings below are **resolved** on this branch, landed across five fix waves after
+the review closed:
+
+| Wave | Findings | Commits |
+| --- | --- | --- |
+| 1 | 1, 9, 10 — account-slot allocation and backfill migration | `fe99255` |
+| 2 | 2, 3 — Apple mapper trap and Server Health session isolation | `037b467` |
+| 3 | 4, 5 — WireGuard resolver bound and partial-failure model | `712c694`, `66eb5f6` |
+| 4 | 6, 7 — Web sign-in settlement and Sync All write barrier | `c1a2de9`, `79ba1ad`, `2f74eb3` |
+| 5 | 8, 11 — policy CIDR fail-closed and its regression coverage | `712c694`, `a718a2b` |
+
+`712c694` spans Waves 3 and 5 because the same commit carried the WireGuard and
+`policy_sync` changes; Waves 3, 4, and 5 each landed a later hardening commit
+(`66eb5f6`, `2f74eb3`, `a718a2b`) after the first pass. The separate real-host nftables
+verification gate (final section of this doc) is **not** one of the 11 code findings and
+remains pending — it requires a live canary host and cannot be closed by a code change.
 
 | Finding | Severity | Decision | Status |
 | --- | --- | --- | --- |
 | 1. Account-slot reuse | P1 | Make the counter authoritative, fail closed when it cannot prove history, and make the migration respect it | Resolved (`fe99255`) |
 | 2. Swift integer trap | P1 | Use `Int(exactly:)` at the shared mesh conversion boundary | Resolved (`037b467`) |
 | 3. Apple cross-session data leak | P1 | Clear all account-scoped state on identity/authorization changes and generation-guard async work | Resolved (`037b467`) |
-| 4. DNS resolver thread leak | P2 | Use one bounded resolver worker with non-queueing admission control | Resolved (`712c694`) |
-| 5. Route error masks peer error | P2 | Capture both failures, preserve the first failure, and always emit partial progress | Resolved (`712c694`) |
-| 6. Cross-tab login race | P2 | Validate completion against Firebase's current user and the current manual-attempt token | Resolved (`c1a2de9`) |
-| 7. Sync races mesh toggle | P2 | Put a write barrier in front of every Sync All entry point | Resolved (`c1a2de9`, `79ba1ad`) |
+| 4. DNS resolver thread leak | P2 | Use one bounded resolver worker with non-queueing admission control | Resolved (`712c694`, `66eb5f6`) |
+| 5. Route error masks peer error | P2 | Capture both failures, preserve the first failure, and always emit partial progress | Resolved (`712c694`, `66eb5f6`) |
+| 6. Cross-tab login race | P2 | Validate completion against Firebase's current user and the current manual-attempt token | Resolved (`c1a2de9`, `2f74eb3`) |
+| 7. Sync races mesh toggle | P2 | Put a write barrier in front of every Sync All entry point | Resolved (`c1a2de9`, `79ba1ad`, `2f74eb3`) |
 | 8. Degenerate CIDR enters `cg_infra` | P2 | Reject unsupported prefixes and require the derived address to remain inside both networks | Resolved (`712c694`) |
 | 9. Missing slot-reuse regression test | P2 | Test a valid counter above the live maximum with pending assignments | Resolved (`fe99255`) |
 | 10. Missing 400-write guard tests | P2 | Test 400/401 at both enforcement points, including the counter write | Resolved (`fe99255`) |
-| 11. Missing degenerate-CIDR tests | P3 | Cover `/31`, `/32`, `/127`, and `/128` at the policy boundary | Resolved (`712c694`) |
+| 11. Missing degenerate-CIDR tests | P3 | Cover `/31`, `/32`, `/127`, and `/128` at the policy boundary | Resolved (`712c694`, `a718a2b`) |
 
 Three principles apply across the fixes:
 
@@ -230,9 +240,14 @@ async work cannot restore cleared data.
 
 ## Finding 4 — hung DNS resolution leaks API worker threads (P2)
 
-**Status: Resolved (`712c694`).** The residual gap noted below (a permanently blocked
-libc call can still occupy the one bounded worker) was accepted as out of scope for this
-finding, not left unresolved by oversight.
+**Status: Resolved (`712c694`, `66eb5f6`).** `712c694` replaced the per-call executor
+with the bounded process-wide one; `66eb5f6` closed the remaining escape hatch by making
+`mesh_peer_drifted` treat *any* `Exception` from the resolver (not only `OSError`) as
+unresolved, so a resolver that raises its own type mid-pass can no longer skip the
+remaining reconciliation and the partial-progress event. `BaseException` still propagates.
+The residual gap noted below (a permanently blocked libc call can still occupy the one
+bounded worker) was accepted as out of scope for this finding, not left unresolved by
+oversight.
 
 ### Root cause
 
@@ -263,6 +278,17 @@ worker and delay interpreter shutdown. Eliminating that residual entirely would 
 killable resolver subprocess or a new cancellable DNS dependency; that larger operational change
 is not needed to close the unbounded-growth finding.
 
+**Accepted residual (identified during final review, not a defect).** CPython's
+`Future.set_result` calls `notify_all()` before `_invoke_callbacks()`, so a caller can
+occasionally return from `future.result()` a moment before the done-callback releases the
+gate. A lookup issued inside that window is refused admission and reads as unresolved even
+though no resolver is actually stuck. It was measured at roughly 0-0.3% of calls only under
+artificial scheduler pressure (`sys.setswitchinterval(1e-6)`). The failure direction is safe:
+unresolved yields an empty desired-address set, so `mesh_peer_drifted` returns `True` and the
+peer is re-applied by the same idempotent `wg set` in that pass. Closing it would mean
+releasing the gate from the caller, which is exactly the behavior this finding removed.
+Accepted as-is.
+
 ### Files
 
 - `Backend/API/src/wireguard.py`
@@ -284,7 +310,12 @@ stuck.
 
 ## Finding 5 — route reconciliation hides an earlier peer failure (P2)
 
-**Status: Resolved (`712c694`).** The residual gap noted below (zero route changes may be
+**Status: Resolved (`712c694`, `66eb5f6`).** `712c694` folded route reconciliation into
+the partial-failure model. `66eb5f6` extended the same model to the two remaining phases
+that could still raise straight out of `sync_peers` and skip `PEER_SYNC_PARTIAL` — client
+peer apply and the revoked-peer removal sweep — and added the `client_apply_failed`,
+`peer_removal_failed`, and `mesh_apply_failed` counters plus the `CLIENT_PEER_APPLY_FAILED`
+and `PEER_REMOVAL_FAILED` records. The residual gap noted below (zero route changes may be
 reported when the route helper throws after partial progress) was accepted as an
 observability enhancement outside this finding's correctness scope, not left unresolved
 by oversight.
@@ -306,6 +337,13 @@ Integrate route reconciliation into the same partial-failure model:
 4. Emit `PEER_SYNC_PARTIAL` exactly once for every failed pass, with the peer counters already
    available and a structured `route_reconciliation_failed` indicator. Log the second failure as
    a separate structured error without peer keys, addresses, or other prohibited metadata.
+
+   Final review confirmed the new records carry an interface and counters only. The one
+   hostname-bearing field, `endpoint_host` on `ENDPOINT_RESOLVE_FAILED` (and on the
+   pre-existing `MESH_PEER_APPLY_FAILED`), is a region's own admin-configured
+   `wg.<regionId>.<origin>` endpoint - region infrastructure, not a client identifier or a
+   user's DNS query - and matches the convention already established in this file. Reviewed
+   and kept deliberately.
 5. Raise the primary error after logging. Exception chaining may supplement the structured log
    if the top-level logger renders it reliably, but it must not be the only record of the second
    failure.
@@ -339,7 +377,13 @@ diagnosable.
 
 ## Finding 6 — cross-tab auth race strands a successful login (P2)
 
-**Status: Resolved (`c1a2de9`).**
+**Status: Resolved (`c1a2de9`, `2f74eb3`).** `c1a2de9` made Firebase's current user plus
+the attempt token the completion authority. `2f74eb3` closed the follow-on gap that
+created: an observer event arriving mid-attempt was being dropped, so a cross-tab account
+that the attempt then refused had nobody left to provision it. Such an event is now held
+in `deferredObserver` and handed back when the attempt retires, and a retiring attempt
+suppresses its own error banner when a still-current deferred account is about to take
+over.
 
 ### Root cause
 
@@ -396,8 +440,10 @@ real later identity change still cancels it.
 
 ## Finding 7 — Sync All can run before mesh-membership writes are durable (P2)
 
-**Status: Resolved (`c1a2de9`, `79ba1ad`).** The follow-up commit moved the mesh write
+**Status: Resolved (`c1a2de9`, `79ba1ad`, `2f74eb3`).** `79ba1ad` moved the mesh write
 inside the toggle handler's `try` so a synchronous throw still rolls back the barrier.
+`2f74eb3` added the `syncQueued` state so a confirmed run that is waiting on the barrier
+is announced as queued rather than being indistinguishable from "you cannot sync yet".
 
 ### Root cause
 
@@ -436,10 +482,19 @@ Put a durable-write barrier in front of every Sync All entry point:
 - Two concurrent toggles remain blocked until both settle.
 - A failed toggle aborts the pending sync intent and rolls back before another sync can be
   confirmed.
+- A `setRegionMeshEnabled` that throws *synchronously* (rather than returning a rejected
+  promise) still rolls the optimistic value back, banners, clears the toggling flag, and leaves
+  the registry empty - the regression `79ba1ad` fixed. Added during final review as
+  `rolls a toggle back when the mesh write throws synchronously instead of rejecting`;
+  verified to fail against the pre-`79ba1ad` handler.
 - A same-user observer callback cannot erase the promise barrier.
 - An A-to-B auth change while waiting aborts A's sync intent.
 - The Home/pending path uses the same barrier.
-- Final sync IDs include a newly enabled region and exclude a newly disabled one.
+- Final sync IDs include a newly enabled region and exclude a newly disabled one. The
+  exclude direction was added during final review as
+  `drops a region disabled while the barrier waits from the post-barrier sync targets`;
+  verified to fail if the run computes targets from the pre-barrier `enabledRegions` closure
+  instead of `regionsRef.current`.
 - Run `./scripts/test.sh web`.
 
 ### Completion condition
@@ -587,7 +642,10 @@ Any off-by-one change, especially omission of the counter write, fails the test 
 
 ## Finding 11 — no policy tests for degenerate region networks (P3)
 
-**Status: Resolved (`712c694`).**
+**Status: Resolved (`712c694`, `a718a2b`).** `712c694` added the parametrized
+unsupported-prefix rejections and the `/24`/`/64` control; `a718a2b` added the explicit
+Finding 8 scenario (a `/32` region whose derived address is a live client's address, which
+must stay an ordinary slot row), plus wrong-family and non-string region CIDR cases.
 
 ### Root cause
 
@@ -665,12 +723,13 @@ exact tested build—not client identifiers, keys, addresses, configs, tokens, o
 1. Run the nftables canary verification before any live ACL rollout. **Still pending —
    the only unresolved item in this document.**
 2. ~~Fix Findings 1, 9, and 10 together; they share the allocator/migration invariant.~~
-   Done in `fe99255`.
-3. ~~Fix Apple P1 Findings 2 and 3.~~ Done in `037b467`.
-4. ~~Fix API P2 Findings 4 and 5.~~ Done in `712c694`.
-5. ~~Fix Web P2 Findings 6 and 7.~~ Done in `c1a2de9` (barrier rollback fix in `79ba1ad`).
-6. ~~Fix Findings 8 and 11 together; the same policy edit and matrix close both.~~ Done in
-   `712c694`.
+   Wave 1, done in `fe99255`.
+3. ~~Fix Apple P1 Findings 2 and 3.~~ Wave 2, done in `037b467`.
+4. ~~Fix API P2 Findings 4 and 5.~~ Wave 3, done in `712c694` and hardened in `66eb5f6`.
+5. ~~Fix Web P2 Findings 6 and 7.~~ Wave 4, done in `c1a2de9` (barrier rollback fix in
+   `79ba1ad`, deferred-observer handoff and queued-sync state in `2f74eb3`).
+6. ~~Fix Findings 8 and 11 together; the same policy edit and matrix close both.~~ Wave 5,
+   done in `712c694` with the Finding 8 scenario pinned in `a718a2b`.
 7. Run `./scripts/test.sh api release web apple`, then run the full test entry point if the
    targeted suite is clean.
 
