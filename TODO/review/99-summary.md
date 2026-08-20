@@ -34,6 +34,13 @@ All ten chunk passes are complete, each with its own `## Findings` and
 This document deduplicates and severity-ranks every finding across all ten docs. It adds
 no new findings of its own.
 
+**Post-review update:** all 11 findings in the table below are now resolved — see
+`100-findings-solutions.md` for the per-finding status and implementing commits (Wave 1:
+`fe99255`; Wave 2: `037b467`, `712c694`, `c1a2de9`, `79ba1ad`). The section 5 real-host
+nftables verification gate is explicitly **not** one of the 11 findings and remains
+pending; it is unaffected by any of the code fixes and still requires a live canary host
+before ACL is deployed to a serving region.
+
 ## 2. Verdict
 
 Neither PR has a P0. That is the headline good news, and it is earned: reviewers traced
@@ -94,19 +101,19 @@ one P2 + one P1 + one P2 into one P1 row, which is why the row P1 count (3) equa
 raw P1 count: the two ACL-B/X-1 P2s disappear into the merged row, and ACL-E's raw P1
 becomes that row's severity.)
 
-| Severity | Finding | Chunk | Source doc | `path:line` |
-| --- | --- | --- | --- | --- |
-| P1 | Hard-deleted `Users` docs are invisible to a live scan, letting a deleted account's slot be reissued — reachable via runtime counter-recovery *or* the migration script's primary path, and traced through to a real (if narrow) cross-account nftables authorization on a stale host. See dedup notes. | ACL-B / ACL-E / X-1 | `21-acl-api.md`, `24-acl-migration.md`, `30-cross-cutting.md` | `Backend/API/src/firebase.py:1089-1126`, `Backend/API/src/repository.py:343-404`, `Backend/API/src/firebase.py:381-401`, `releases/access-control-lists/backfill_account_slots.py:180-189`, `Backend/API/src/policy_sync.py:88-182`, `Infrastructure/OCI/host/bootstrap.sh:169-195` |
-| P1 | `Int(Double)` conversion trap in the mesh Firestore mapper crashes on a boundary value (`2^63`) — same bug class already fixed in the sibling policy mapper, not applied here | SS-C | `12-ss-apple.md` | `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayAppCore/CloudGatewayFirestoreMeshMapper.swift:128-132` |
-| P1 | `CloudGatewayServerHealthViewModel` is a session-long singleton with no reset on sign-out/account-swap, so a shared device can leak one admin's sync log (emails, client names, public keys, tunnel IPs) to the next admin who signs in | SS-C | `12-ss-apple.md` | `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayAppCore/CloudGatewayServerHealthViewModel.swift` (no reset method); composition at `Frontend/Apple/iOS/CloudGateway/CloudGatewayIOSCompositionRoot.swift:64`; dismiss-only gap at `Frontend/Apple/iOS/CloudGateway/ContentView.swift:92-112` |
-| P2 | Hung DNS resolution during mesh drift-check leaks worker threads in the long-lived API process (unbounded `ThreadPoolExecutor` growth) | SS-A | `10-ss-api.md` | `Backend/API/src/wireguard.py:723-746` (`_resolve_endpoint_addresses`), reached via `wireguard.py:973-993`/`502-503` from `sync_peers` (`wireguard.py:462`), exposed via `routes.py:664` |
-| P2 | Route-reconciliation failure bypasses the partial-progress log and can silently discard an earlier mesh-peer apply error | SS-A | `10-ss-api.md` | `Backend/API/src/wireguard.py:474-500` (`sync_peers`), `wireguard.py:529-605` (`_reconcile_mesh_routes`/`_reconcile_routes_for_family`) |
-| P2 | Cross-tab auth race can strand a completed sign-in on the Login page (a concurrent same-origin-tab auth event overwrites shared state mid-attempt) | SS-B | `11-ss-web.md` | `Frontend/Web/src/pages/Login.tsx:205-206`, `231-232`, `259-260`, `299-315` |
-| P2 | "Sync All Regions" is not gated on an in-flight mesh-membership toggle, so a sync can fan out before a just-toggled region's Firestore write is durable, silently skipping that region for the pass | SS-B | `11-ss-web.md` | `Frontend/Web/src/pages/ServerHealth.tsx:520-534` (button gate) vs. `:302-347` (`handleToggleMesh`), `:152`/`:549`/`:573` (`togglingRegionIds`) |
-| P2 | `_infra_address` can add an unrelated live client address to `cg_infra` for a degenerate (`/32`) region tunnel CIDR, granting it infra/admin-level nftables reachability | ACL-A | `20-acl-policy.md` | `Backend/API/src/policy_sync.py:53-74` (`_infra_address`) |
-| P2 | Backfill migration's test suite has no case combining a valid counter above the live max with a pending new assignment — the one case that would have caught the merged P1 slot-reuse defect | ACL-E | `24-acl-migration.md` | `releases/access-control-lists/test_backfill_account_slots.py:191-200` (`test_valid_counter_at_or_below_max_is_advanced_never_reused`) |
-| P2 | No test coverage for the migration's 400-write transaction guard (boundary and refusal paths both untested) | ACL-E | `24-acl-migration.md` | `releases/access-control-lists/backfill_account_slots.py:552-556` (`_apply_within_transaction`), `:670-679` (`main()` pre-check); no reference in `releases/access-control-lists/test_backfill_account_slots.py` |
-| P3 | No test coverage for a degenerate (`/31`/`/32`) region tunnel CIDR in `desired_policy`'s infra derivation — the gap that lets the ACL-A P2 above regress silently even after a fix | ACL-A | `20-acl-policy.md` | `Backend/API/tests/test_policy_sync.py:275-345` |
+| Severity | Finding | Chunk | Source doc | `path:line` | Status |
+| --- | --- | --- | --- | --- | --- |
+| P1 | Hard-deleted `Users` docs are invisible to a live scan, letting a deleted account's slot be reissued — reachable via runtime counter-recovery *or* the migration script's primary path, and traced through to a real (if narrow) cross-account nftables authorization on a stale host. See dedup notes. | ACL-B / ACL-E / X-1 | `21-acl-api.md`, `24-acl-migration.md`, `30-cross-cutting.md` | `Backend/API/src/firebase.py:1089-1126`, `Backend/API/src/repository.py:343-404`, `Backend/API/src/firebase.py:381-401`, `releases/access-control-lists/backfill_account_slots.py:180-189`, `Backend/API/src/policy_sync.py:88-182`, `Infrastructure/OCI/host/bootstrap.sh:169-195` | Resolved (`fe99255`) |
+| P1 | `Int(Double)` conversion trap in the mesh Firestore mapper crashes on a boundary value (`2^63`) — same bug class already fixed in the sibling policy mapper, not applied here | SS-C | `12-ss-apple.md` | `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayAppCore/CloudGatewayFirestoreMeshMapper.swift:128-132` | Resolved (`037b467`) |
+| P1 | `CloudGatewayServerHealthViewModel` is a session-long singleton with no reset on sign-out/account-swap, so a shared device can leak one admin's sync log (emails, client names, public keys, tunnel IPs) to the next admin who signs in | SS-C | `12-ss-apple.md` | `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayAppCore/CloudGatewayServerHealthViewModel.swift` (no reset method); composition at `Frontend/Apple/iOS/CloudGateway/CloudGatewayIOSCompositionRoot.swift:64`; dismiss-only gap at `Frontend/Apple/iOS/CloudGateway/ContentView.swift:92-112` | Resolved (`037b467`) |
+| P2 | Hung DNS resolution during mesh drift-check leaks worker threads in the long-lived API process (unbounded `ThreadPoolExecutor` growth) | SS-A | `10-ss-api.md` | `Backend/API/src/wireguard.py:723-746` (`_resolve_endpoint_addresses`), reached via `wireguard.py:973-993`/`502-503` from `sync_peers` (`wireguard.py:462`), exposed via `routes.py:664` | Resolved (`712c694`) |
+| P2 | Route-reconciliation failure bypasses the partial-progress log and can silently discard an earlier mesh-peer apply error | SS-A | `10-ss-api.md` | `Backend/API/src/wireguard.py:474-500` (`sync_peers`), `wireguard.py:529-605` (`_reconcile_mesh_routes`/`_reconcile_routes_for_family`) | Resolved (`712c694`) |
+| P2 | Cross-tab auth race can strand a completed sign-in on the Login page (a concurrent same-origin-tab auth event overwrites shared state mid-attempt) | SS-B | `11-ss-web.md` | `Frontend/Web/src/pages/Login.tsx:205-206`, `231-232`, `259-260`, `299-315` | Resolved (`c1a2de9`) |
+| P2 | "Sync All Regions" is not gated on an in-flight mesh-membership toggle, so a sync can fan out before a just-toggled region's Firestore write is durable, silently skipping that region for the pass | SS-B | `11-ss-web.md` | `Frontend/Web/src/pages/ServerHealth.tsx:520-534` (button gate) vs. `:302-347` (`handleToggleMesh`), `:152`/`:549`/`:573` (`togglingRegionIds`) | Resolved (`c1a2de9`, `79ba1ad`) |
+| P2 | `_infra_address` can add an unrelated live client address to `cg_infra` for a degenerate (`/32`) region tunnel CIDR, granting it infra/admin-level nftables reachability | ACL-A | `20-acl-policy.md` | `Backend/API/src/policy_sync.py:53-74` (`_infra_address`) | Resolved (`712c694`) |
+| P2 | Backfill migration's test suite has no case combining a valid counter above the live max with a pending new assignment — the one case that would have caught the merged P1 slot-reuse defect | ACL-E | `24-acl-migration.md` | `releases/access-control-lists/test_backfill_account_slots.py:191-200` (`test_valid_counter_at_or_below_max_is_advanced_never_reused`) | Resolved (`fe99255`) |
+| P2 | No test coverage for the migration's 400-write transaction guard (boundary and refusal paths both untested) | ACL-E | `24-acl-migration.md` | `releases/access-control-lists/backfill_account_slots.py:552-556` (`_apply_within_transaction`), `:670-679` (`main()` pre-check); no reference in `releases/access-control-lists/test_backfill_account_slots.py` | Resolved (`fe99255`) |
+| P3 | No test coverage for a degenerate (`/31`/`/32`) region tunnel CIDR in `desired_policy`'s infra derivation — the gap that lets the ACL-A P2 above regress silently even after a fix | ACL-A | `20-acl-policy.md` | `Backend/API/tests/test_policy_sync.py:275-345` | Resolved (`712c694`) |
 
 ## 4. Deduplication notes
 
@@ -253,25 +260,30 @@ represented in the table in section 3 rather than summarized again here.
 
 ## 7. Suggested fix order
 
-Highest-value first, grouped by what blocks what:
+Highest-value first, grouped by what blocks what. **Update: items 2–5 (all 11 findings)
+are now resolved** — see `100-findings-solutions.md` for the per-finding status and
+implementing commits. **Item 1, the real-host nft verification, remains pending** and is
+unaffected by the code fixes below; it still must be run before ACL deploys to a live
+region.
 
 1. **Real-host nft verification** (section 5). Not a code fix, but do this before
    anything else ships to a live region — it is the one item nothing else on this list
    substitutes for, and every fix below assumes the filter behaves as its source
-   describes.
+   describes. **Still pending.**
 2. **Fix the merged P1 slot-reuse defect class** (section 4). Stop deriving the new-slot
    floor from a live `Users` scan that can't see hard deletes, in both places: the
    runtime recovery path (`repository.py:343-404`) and the migration's primary path
    (`backfill_account_slots.py:180-189`). This is one root-cause fix with two call sites,
    and it also closes the X-1 host-filter consequence without any separate mitigation.
    Add the two ACL-E test-coverage rows (section 3, the valid-counter-above-max case and
-   the 400-write boundary case) alongside the fix so the fix is pinned.
+   the 400-write boundary case) alongside the fix so the fix is pinned. **Resolved
+   (`fe99255`).**
 3. **Fix the two SS-C Apple P1s** (section 3). Both are narrow in blast radius
    (admin-only Server Health surface) but concrete: apply the same `Int(exactly:)` fix
    already used in the sibling policy mapper to `CloudGatewayFirestoreMeshMapper`, and
    give `CloudGatewayServerHealthViewModel` a reset/clear path wired into the existing
    identity-change handling, mirroring the pattern it replaced
-   (`CloudGatewayViewModel.clearRemoteState()`).
+   (`CloudGatewayViewModel.clearRemoteState()`). **Resolved (`037b467`).**
 4. **Work down the P2 backlog** at normal priority — none of it blocks a deploy on its
    own: the SS-A DNS-thread-leak and route-reconciliation-error-swallowing bugs (both
    narrow-path, both in the already-deployed mesh code), the SS-B cross-tab login race
@@ -279,6 +291,7 @@ Highest-value first, grouped by what blocks what:
    the ACL-A `_infra_address` degenerate-CIDR gap (real defense-in-depth, but only
    reachable via direct Firestore manipulation since `validate_local_tunnel_settings`
    already rejects any non-`/24`/`/64` region CIDR through the normal registration path).
+   **Resolved (`712c694`, `c1a2de9`, `79ba1ad`).**
 5. **The one P3** (ACL-A's missing degenerate-CIDR test case) — pick up alongside item 4
    whenever `_infra_address` is touched for its own fix, since the same test case pins
-   both.
+   both. **Resolved (`712c694`).**

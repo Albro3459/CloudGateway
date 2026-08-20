@@ -7,19 +7,26 @@ repo-conforming fix, not merely the smallest edit.
 
 ## Scope and decisions
 
-| Finding | Severity | Decision |
-| --- | --- | --- |
-| 1. Account-slot reuse | P1 | Make the counter authoritative, fail closed when it cannot prove history, and make the migration respect it |
-| 2. Swift integer trap | P1 | Use `Int(exactly:)` at the shared mesh conversion boundary |
-| 3. Apple cross-session data leak | P1 | Clear all account-scoped state on identity/authorization changes and generation-guard async work |
-| 4. DNS resolver thread leak | P2 | Use one bounded resolver worker with non-queueing admission control |
-| 5. Route error masks peer error | P2 | Capture both failures, preserve the first failure, and always emit partial progress |
-| 6. Cross-tab login race | P2 | Validate completion against Firebase's current user and the current manual-attempt token |
-| 7. Sync races mesh toggle | P2 | Put a write barrier in front of every Sync All entry point |
-| 8. Degenerate CIDR enters `cg_infra` | P2 | Reject unsupported prefixes and require the derived address to remain inside both networks |
-| 9. Missing slot-reuse regression test | P2 | Test a valid counter above the live maximum with pending assignments |
-| 10. Missing 400-write guard tests | P2 | Test 400/401 at both enforcement points, including the counter write |
-| 11. Missing degenerate-CIDR tests | P3 | Cover `/31`, `/32`, `/127`, and `/128` at the policy boundary |
+All 11 findings below are **resolved** on this branch, landed across two fix waves after
+the review closed. Wave 1 (`fe99255`) hardened account-slot allocation and migration.
+Wave 2 (`037b467`, `712c694`, `c1a2de9`, `79ba1ad`) closed the remaining Apple, API, and
+web findings. The separate real-host nftables verification gate (final section of this
+doc) is **not** one of the 11 code findings and remains pending — it requires a live
+canary host and cannot be closed by a code change.
+
+| Finding | Severity | Decision | Status |
+| --- | --- | --- | --- |
+| 1. Account-slot reuse | P1 | Make the counter authoritative, fail closed when it cannot prove history, and make the migration respect it | Resolved (`fe99255`) |
+| 2. Swift integer trap | P1 | Use `Int(exactly:)` at the shared mesh conversion boundary | Resolved (`037b467`) |
+| 3. Apple cross-session data leak | P1 | Clear all account-scoped state on identity/authorization changes and generation-guard async work | Resolved (`037b467`) |
+| 4. DNS resolver thread leak | P2 | Use one bounded resolver worker with non-queueing admission control | Resolved (`712c694`) |
+| 5. Route error masks peer error | P2 | Capture both failures, preserve the first failure, and always emit partial progress | Resolved (`712c694`) |
+| 6. Cross-tab login race | P2 | Validate completion against Firebase's current user and the current manual-attempt token | Resolved (`c1a2de9`) |
+| 7. Sync races mesh toggle | P2 | Put a write barrier in front of every Sync All entry point | Resolved (`c1a2de9`, `79ba1ad`) |
+| 8. Degenerate CIDR enters `cg_infra` | P2 | Reject unsupported prefixes and require the derived address to remain inside both networks | Resolved (`712c694`) |
+| 9. Missing slot-reuse regression test | P2 | Test a valid counter above the live maximum with pending assignments | Resolved (`fe99255`) |
+| 10. Missing 400-write guard tests | P2 | Test 400/401 at both enforcement points, including the counter write | Resolved (`fe99255`) |
+| 11. Missing degenerate-CIDR tests | P3 | Cover `/31`, `/32`, `/127`, and `/128` at the policy boundary | Resolved (`712c694`) |
 
 Three principles apply across the fixes:
 
@@ -30,6 +37,8 @@ Three principles apply across the fixes:
    observable and a later idempotent pass repairs the state.
 
 ## Finding 1 — hard-deleted accounts can have their slot reissued (P1)
+
+**Status: Resolved (`fe99255`).**
 
 ### Root cause
 
@@ -116,6 +125,8 @@ slot below a valid `nextSlot`.
 
 ## Finding 2 — `Int(Double)` boundary trap in the mesh mapper (P1)
 
+**Status: Resolved (`037b467`).**
+
 ### Root cause
 
 `CloudGatewayFirestoreMeshMapper.integer(_:)` checks a `Double` against
@@ -157,6 +168,8 @@ Do not clamp corrupt values. Existing callers should retain their current invali
 Every mesh `Double`-to-`Int` conversion is exact and non-trapping.
 
 ## Finding 3 — Server Health state leaks across Apple sessions (P1)
+
+**Status: Resolved (`037b467`).**
 
 ### Root cause
 
@@ -217,6 +230,10 @@ async work cannot restore cleared data.
 
 ## Finding 4 — hung DNS resolution leaks API worker threads (P2)
 
+**Status: Resolved (`712c694`).** The residual gap noted below (a permanently blocked
+libc call can still occupy the one bounded worker) was accepted as out of scope for this
+finding, not left unresolved by oversight.
+
 ### Root cause
 
 `_resolve_endpoint_addresses()` creates a new single-worker `ThreadPoolExecutor` for every
@@ -267,6 +284,11 @@ stuck.
 
 ## Finding 5 — route reconciliation hides an earlier peer failure (P2)
 
+**Status: Resolved (`712c694`).** The residual gap noted below (zero route changes may be
+reported when the route helper throws after partial progress) was accepted as an
+observability enhancement outside this finding's correctness scope, not left unresolved
+by oversight.
+
 ### Root cause
 
 `sync_peers()` accumulates the first mesh-peer apply error so it can continue converging, but it
@@ -316,6 +338,8 @@ No failure bypasses the partial-progress event, and two failures in one pass rem
 diagnosable.
 
 ## Finding 6 — cross-tab auth race strands a successful login (P2)
+
+**Status: Resolved (`c1a2de9`).**
 
 ### Root cause
 
@@ -372,6 +396,9 @@ real later identity change still cancels it.
 
 ## Finding 7 — Sync All can run before mesh-membership writes are durable (P2)
 
+**Status: Resolved (`c1a2de9`, `79ba1ad`).** The follow-up commit moved the mesh write
+inside the toggle handler's `try` so a synchronous throw still rolls back the barrier.
+
 ### Root cause
 
 `handleToggleMesh` updates `regions` optimistically before `setRegionMeshEnabled` resolves.
@@ -422,6 +449,8 @@ unresolved.
 
 ## Finding 8 — a degenerate region CIDR can promote an unrelated client to `cg_infra` (P2)
 
+**Status: Resolved (`712c694`).**
+
 ### Root cause
 
 `policy_sync.py::_infra_address` computes `network.network_address + 1` and checks only the fleet
@@ -469,6 +498,8 @@ network and the fleet aggregate.
 
 ## Finding 9 — migration lacks the valid-counter-above-live-max regression (P2)
 
+**Status: Resolved (`fe99255`).**
+
 ### Root cause
 
 The existing test named for counter advancement has no unassigned user. It never asks
@@ -510,6 +541,8 @@ blocks instead of silently advancing from incomplete live history.
 The exact ordering that caused migration slot reuse is permanently represented in tests.
 
 ## Finding 10 — migration's 400-write safety guard is untested (P2)
+
+**Status: Resolved (`fe99255`).**
 
 ### Root cause
 
@@ -554,6 +587,8 @@ Any off-by-one change, especially omission of the counter write, fails the test 
 
 ## Finding 11 — no policy tests for degenerate region networks (P3)
 
+**Status: Resolved (`712c694`).**
+
 ### Root cause
 
 Existing policy tests cover malformed and out-of-aggregate values using normal `/24` and `/64`
@@ -589,7 +624,9 @@ Tests pin the full malformed/unsupported CIDR boundary that protects `cg_infra`.
 
 ## Separate required pre-deploy gate — real-host nftables verification
 
-This is not a twelfth source-code finding. Static review and the official nftables manual support
+**Status: Pending.** This is not a twelfth source-code finding, and it is not closed by
+any of the 11 resolved findings above — it requires a live canary host and cannot be
+verified by source review or a unit/integration test suite. Static review and the official nftables manual support
 the intended semantics: lower priority numbers run first, an `accept` can continue into later base
 chains, and a `drop` terminates ruleset evaluation. Static evidence cannot prove the exact target
 kernel, nftables, and iptables compatibility combination.
@@ -625,12 +662,15 @@ exact tested build—not client identifiers, keys, addresses, configs, tokens, o
 
 ## Recommended implementation order
 
-1. Run the nftables canary verification before any live ACL rollout.
-2. Fix Findings 1, 9, and 10 together; they share the allocator/migration invariant.
-3. Fix Apple P1 Findings 2 and 3.
-4. Fix API P2 Findings 4 and 5.
-5. Fix Web P2 Findings 6 and 7.
-6. Fix Findings 8 and 11 together; the same policy edit and matrix close both.
+1. Run the nftables canary verification before any live ACL rollout. **Still pending —
+   the only unresolved item in this document.**
+2. ~~Fix Findings 1, 9, and 10 together; they share the allocator/migration invariant.~~
+   Done in `fe99255`.
+3. ~~Fix Apple P1 Findings 2 and 3.~~ Done in `037b467`.
+4. ~~Fix API P2 Findings 4 and 5.~~ Done in `712c694`.
+5. ~~Fix Web P2 Findings 6 and 7.~~ Done in `c1a2de9` (barrier rollback fix in `79ba1ad`).
+6. ~~Fix Findings 8 and 11 together; the same policy edit and matrix close both.~~ Done in
+   `712c694`.
 7. Run `./scripts/test.sh api release web apple`, then run the full test entry point if the
    targeted suite is clean.
 
