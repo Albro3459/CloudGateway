@@ -8,7 +8,7 @@ Because of that, drift repair is one command on the regional host:
 sudo cloudgateway-sync-peers
 ```
 
-It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. A pass that fails partway still reports what it changed, in a `peer_sync_partial` line carrying the same counters. There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot and on demand from the admin dashboard's **Sync All Regions** action.
+It logs structured JSON (`peer_sync_started` / `peer_sync_completed` with client and mesh added/updated/removed counts) and exits nonzero on failure. A pass that fails partway still reports what it changed, in a single `peer_sync_partial` line carrying the same counters plus a per-phase failure count (see [Partial Failures](#partial-failures)). There is no periodic re-sync: `cloudgateway-sync-peers.service` runs at boot and on demand from the admin dashboard's **Sync All Regions** action.
 
 ## What the Sync Does
 
@@ -23,12 +23,13 @@ One-directional, Firebase to server. After a pass, the live peer set equals exac
 | A sibling region is mesh-enabled and complete/non-overlapping | Mesh peer is applied (re-applied every pass; idempotent, re-resolves the endpoint hostname); endpoint/port/AllowedIPs/keepalive drift is reported as an update |
 | A sibling region is missing mesh config, or its subnet overlaps another mesh candidate | Mesh peer is skipped (`skipped-incomplete` / `skipped-overlap`); this is a configuration failure, not pending work; no peer or route is applied for it |
 | A mesh candidate's endpoint hostname fails to resolve (`wg set peer ... endpoint` resolves it and exits nonzero) | Only that candidate fails: it is not counted as applied, the other candidates are still applied, and the pass exits nonzero after logging `mesh_peer_apply_failed`. Client peer removal runs first, so a revoked user's peer is still removed. A candidate that failed but is still live with exactly its desired ranges keeps its route (it is still carrying traffic); one that never applied, or whose live ranges differ, gets none |
+| A client peer apply, or the removal of a peer Firebase does not know, fails (`wg set` exits nonzero) | Only that peer fails: the remaining clients, the removal sweep, the mesh phase, and the route sweep all still converge, and the pass exits nonzero afterwards. A failed mutation is never counted as a change |
 | A mesh candidate collides with this host's own tunnel network or another candidate, or two candidates share a public key | The whole candidate set is rejected before anything is applied - cryptokey routing is exclusive, so applying either would silently steal ranges from a peer that already owns them. `desired_mesh_peers` filters all three upstream, so a live host reaches this only if that guard is bypassed |
 | This region's own `meshEnabled` is off | Any previously-applied mesh peers and routes are torn down (rollback) |
 
 The sync never creates client docs from server state, and there is no per-peer route deletion path for mesh peers. An unknown server peer is either leftover drift or tampering; both deserve removal.
 
-A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete. `cloudgateway-sync-peers` (boot and post-registration) waits for that lock; `POST /api/admin/sync` takes it non-blocking and answers `409 SYNC_IN_PROGRESS` instead of queueing, so admin retries cannot pile up on the host. Every `wg`/`ip` call and the endpoint DNS lookup are individually time-bounded so a wedged call cannot pin the lock. `getaddrinfo` cannot itself be cancelled, so the caller's bound only frees the caller: lookups run on one process-wide resolver worker behind a non-queueing gate, and while a lookup is stuck every further lookup returns unresolved immediately (forcing a re-apply of that mesh peer next pass) instead of stacking up threads.
+A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete. `cloudgateway-sync-peers` (boot and post-registration) waits for that lock; `POST /api/admin/sync` takes it non-blocking and answers `409 SYNC_IN_PROGRESS` instead of queueing, so admin retries cannot pile up on the host. Every `wg`/`ip` call and the endpoint DNS lookup are individually time-bounded so a wedged call cannot pin the lock. `getaddrinfo` cannot itself be cancelled, so the caller's bound only frees the caller: lookups run on one process-wide resolver worker behind a non-queueing gate, and while a lookup is stuck every further lookup returns unresolved immediately (forcing a re-apply of that mesh peer next pass) instead of stacking up threads. An unexpected resolver error is read the same way - unresolved, logged as `endpoint_resolve_failed` with the exception type but never its message - because the lookup happens mid-pass, after peers have already been mutated, and must not escape past the rest of the reconciliation.
 
 ## Mesh Route Reconciliation
 
@@ -38,7 +39,28 @@ Mesh peers need routes, not just `wg set` allowed-ips: `wg-quick` only auto-inst
 * Skipped unconditionally: this region's own on-link tunnel network, and any route with `proto kernel`.
 * Everything else in scope that isn't a currently-desired mesh CIDR is deleted. A deleted route whose CIDR doesn't belong to any current region doc is logged as `mesh_route_reclaimed` (WARNING) - the operator should treat that as a signal a region doc was deleted or rewritten out from under a live route.
 * Desired mesh CIDRs are always `ip route replace`d (idempotent), matching the always-re-apply behavior for mesh peers.
-* A route command failure is part of the same partial-failure model as the mesh peer apply phase: the pass still emits one `peer_sync_partial` line (with `routeReconciliationFailed: true`) plus a `mesh_route_reconcile_failed` line, and an earlier mesh-peer failure stays the error the pass exits with. A route-only failure is that error itself. Both repair on the next successful pass.
+* A route command failure is part of the same partial-failure model as every other phase (see [Partial Failures](#partial-failures)): the pass still emits one `peer_sync_partial` line (with `routeReconciliationFailed: true`) plus a `mesh_route_reconcile_failed` line, and an earlier failure stays the error the pass exits with. A route-only failure is that error itself. Both repair on the next successful pass.
+
+## Partial Failures
+
+Every phase of a pass is independent - each client peer, each unknown-peer removal, each mesh
+candidate, and each route command applies on its own - so one failure never strands the rest of
+the pass mid-convergence:
+
+* The first `WireGuardApplyFailedError` is kept as the primary error and re-raised only after
+  every remaining phase has run. That is the error the pass exits with, so a later failure can
+  never replace or hide it.
+* A failed mutation is never counted as a change: the peer or route is not in its desired shape,
+  so reporting it would claim progress the next pass has to undo.
+* Later failures stay independently diagnosable through their own structured lines -
+  `client_peer_apply_failed`, `peer_removal_failed`, `mesh_peer_apply_failed`,
+  `mesh_route_reconcile_failed`. The client-peer and removal lines carry an interface and a count
+  only: a client peer key or tunnel address there would tie an account to this host's logs.
+* Exactly one `peer_sync_partial` line is emitted per partially failed pass, carrying what did
+  land plus `clientApplyFailed`, `peerRemovalFailed`, `meshApplyFailed`, and
+  `routeReconciliationFailed`.
+* There is no rollback. Every phase is idempotent, so recovery is simply the next pass; the tests
+  cover convergence after a pass that failed in all four phases at once.
 
 ## The One Firebase Write
 

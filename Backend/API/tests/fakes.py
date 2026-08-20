@@ -97,6 +97,8 @@ class FakeWireGuardCommandRunner:
         *,
         fail_set_count: int = 0,
         fail_set_endpoint_hosts: set[str] | None = None,
+        fail_set_peer_keys: set[str] | None = None,
+        fail_remove_peer_keys: set[str] | None = None,
         fail_show_count: int = 0,
         fail_route_replace_versions: set[int] | None = None,
         fail_route_delete_versions: set[int] | None = None,
@@ -112,6 +114,10 @@ class FakeWireGuardCommandRunner:
         # Endpoint hostnames whose `wg set ... endpoint` always fails, as wg does when
         # it cannot resolve the hostname itself.
         self.fail_set_endpoint_hosts = fail_set_endpoint_hosts or set()
+        # Peer keys whose apply (or removal) always fails, so a pass can fail one
+        # peer while the others still apply.
+        self.fail_set_peer_keys = fail_set_peer_keys or set()
+        self.fail_remove_peer_keys = fail_remove_peer_keys or set()
         self.fail_show_count = fail_show_count
         self.fail_route_replace_versions = fail_route_replace_versions or set()
         self.fail_route_delete_versions = fail_route_delete_versions or set()
@@ -176,7 +182,10 @@ class FakeWireGuardCommandRunner:
                 if endpoint.rsplit(":", 1)[0].strip("[]") in self.fail_set_endpoint_hosts:
                     raise subprocess.CalledProcessError(1, argv, stderr="Name or service not known")
             public_key = argv[4]
-            if len(argv) == 6 and argv[5] == "remove":
+            removing = len(argv) == 6 and argv[5] == "remove"
+            if public_key in (self.fail_remove_peer_keys if removing else self.fail_set_peer_keys):
+                raise subprocess.CalledProcessError(1, argv, stderr=self.failure_stderr)
+            if removing:
                 self.peers.pop(public_key, None)
                 self.peer_endpoints.pop(public_key, None)
                 self.peer_keepalives.pop(public_key, None)
@@ -948,12 +957,16 @@ class FakeWireGuardManager(WireGuardManager):
         # Mirrors LocalWireGuardManager: unknown-peer removal runs before the mesh
         # apply phase so an unreachable mesh endpoint cannot block it.
         mesh_changes: list[MeshPeerChange] = []
+        apply_error: WireGuardApplyFailedError | None = mesh_error
         for public_key in set(self.peers) | set(self.mesh_peers):
             if public_key in desired or public_key in mesh_by_key or public_key in protected_keys:
                 continue
             if public_key in self.mesh_peers and self.fail_mesh_remove_count:
                 self.fail_mesh_remove_count -= 1
-                raise WireGuardApplyFailedError("Simulated mesh peer removal failure.")
+                # Mirrors LocalWireGuardManager: the peer stays live, no change is
+                # recorded, and the rest of the pass still converges.
+                apply_error = apply_error or WireGuardApplyFailedError("Simulated mesh peer removal failure.")
+                continue
             self.peers.pop(public_key, None)
             self.mesh_peers.pop(public_key, None)
             self.mesh_endpoint_addresses.pop(public_key, None)
@@ -965,7 +978,6 @@ class FakeWireGuardManager(WireGuardManager):
 
         applied_mesh: list[MeshPeer] = []
         routed_mesh: list[MeshPeer] = []
-        apply_error: WireGuardApplyFailedError | None = mesh_error
         for public_key, peer in mesh_by_key.items():
             self.mesh_apply_calls += 1
             was_live = public_key in self.mesh_peers or public_key in self.peers
@@ -978,8 +990,7 @@ class FakeWireGuardManager(WireGuardManager):
                     {peer.allowed_network_v4, peer.allowed_network_v6}
                 ):
                     routed_mesh.append(peer)
-                if apply_error is None:
-                    apply_error = WireGuardApplyFailedError("Simulated mesh peer apply failure.")
+                apply_error = apply_error or WireGuardApplyFailedError("Simulated mesh peer apply failure.")
                 continue
             applied_mesh.append(peer)
             routed_mesh.append(peer)
@@ -1012,7 +1023,13 @@ class FakeWireGuardManager(WireGuardManager):
                     )
                 )
 
-        route_changes = self._reconcile_routes(routed_mesh, known_mesh_networks)
+        # Mirrors LocalWireGuardManager: a route failure never replaces an earlier
+        # peer failure, and never skips the reconciliation that follows it.
+        route_changes: list[RouteChange] = []
+        try:
+            route_changes = self._reconcile_routes(routed_mesh, known_mesh_networks)
+        except WireGuardApplyFailedError as exc:
+            apply_error = apply_error or exc
         if apply_error is not None:
             raise apply_error
 

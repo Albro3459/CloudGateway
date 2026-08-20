@@ -911,6 +911,148 @@ def test_peer_only_failure_reports_no_route_reconciliation_failure(tmp_path, cap
     assert "mesh_route_reconcile_failed" not in caplog.text
 
 
+def test_client_apply_failure_keeps_the_earlier_change_and_finishes_the_pass(tmp_path, caplog):
+    # A failed client apply used to raise out of sync_peers immediately, so the
+    # removal sweep, the mesh phase, the route sweep, and PEER_SYNC_PARTIAL never
+    # ran for that pass.
+    runner = FakeWireGuardCommandRunner(fail_set_peer_keys={FAKE_PUBLIC_KEY_2})
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = "10.0.0.9/32,fd42:42:42::9/128"
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer()
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError) as excinfo:
+            manager.sync_peers(
+                {
+                    FAKE_PUBLIC_KEY: (TUNNEL_V4, TUNNEL_V6),
+                    FAKE_PUBLIC_KEY_2: ("10.0.0.4/32", "fd42:42:42::4/128"),
+                },
+                mesh=[peer],
+            )
+
+    assert str(excinfo.value) == "WireGuard peer apply failed."
+    # The healthy client landed, the stale peer was still swept, and the mesh peer
+    # and its routes still converged behind the failure.
+    assert runner.peers == {
+        FAKE_PUBLIC_KEY: f"{TUNNEL_V4},{TUNNEL_V6}",
+        FAKE_MESH_PUBLIC_KEY: "10.0.1.0/24,fd42:42:42:1::/64",
+    }
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["added"] == 1
+    assert partial[0].event_fields["removed"] == 1
+    assert partial[0].event_fields["meshApplied"] == 1
+    assert partial[0].event_fields["clientApplyFailed"] == 1
+    assert "client_peer_apply_failed" in caplog.text
+    # The failed peer is never counted as applied and never named in the logs.
+    assert FAKE_PUBLIC_KEY_2 not in caplog.text
+    assert "10.0.0.4" not in caplog.text
+
+
+def test_removal_failure_after_partial_progress_still_reconciles_the_rest(tmp_path, caplog):
+    runner = FakeWireGuardCommandRunner(fail_remove_peer_keys={FAKE_UNKNOWN_PUBLIC_KEY})
+    runner.peers[FAKE_PUBLIC_KEY_2] = "10.0.0.9/32,fd42:42:42::9/128"
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = "10.0.0.8/32,fd42:42:42::8/128"
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer()
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError) as excinfo:
+            manager.sync_peers({FAKE_PUBLIC_KEY: (TUNNEL_V4, TUNNEL_V6)}, mesh=[peer])
+
+    assert str(excinfo.value) == "WireGuard peer removal failed."
+    # The peer whose removal failed is still live, so it is not reported removed -
+    # the next pass sees it again and retries.
+    assert FAKE_UNKNOWN_PUBLIC_KEY in runner.peers
+    assert FAKE_PUBLIC_KEY_2 not in runner.peers
+    assert FAKE_PUBLIC_KEY in runner.peers
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["added"] == 1
+    assert partial[0].event_fields["removed"] == 1
+    assert partial[0].event_fields["meshApplied"] == 1
+    assert partial[0].event_fields["peerRemovalFailed"] == 1
+    assert "peer_removal_failed" in caplog.text
+    assert FAKE_UNKNOWN_PUBLIC_KEY not in caplog.text
+
+
+def make_multi_phase_failure_case(tmp_path):
+    # One pass that fails in all four phases: client apply, removal sweep, mesh
+    # apply, and route reconciliation.
+    runner = FakeWireGuardCommandRunner(
+        fail_set_peer_keys={FAKE_PUBLIC_KEY},
+        fail_remove_peer_keys={FAKE_UNKNOWN_PUBLIC_KEY},
+        fail_set_endpoint_hosts={"wg.us-broken-1.example.com"},
+        fail_route_replace_versions={6},
+    )
+    runner.peers[FAKE_UNKNOWN_PUBLIC_KEY] = "10.0.0.9/32,fd42:42:42::9/128"
+    manager = make_manager(tmp_path, runner)
+    broken = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+    healthy = make_mesh_peer(
+        public_key=FAKE_MESH_PUBLIC_KEY_2,
+        endpoint_host="wg.us-other-2.example.com",
+        allowed_network_v4="10.0.2.0/24",
+        allowed_network_v6="fd42:42:42:2::/64",
+    )
+    return runner, manager, [broken, healthy]
+
+
+def test_first_failure_stays_primary_across_every_failing_phase(tmp_path, caplog):
+    runner, manager, mesh = make_multi_phase_failure_case(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError) as excinfo:
+            manager.sync_peers({FAKE_PUBLIC_KEY: (TUNNEL_V4, TUNNEL_V6)}, mesh=mesh)
+
+    # The client apply fails first, so it stays primary even though three later
+    # phases failed too - and each of those is still separately observable.
+    assert str(excinfo.value) == "WireGuard peer apply failed."
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    fields = partial[0].event_fields
+    assert fields["clientApplyFailed"] == 1
+    assert fields["peerRemovalFailed"] == 1
+    assert fields["meshApplyFailed"] == 1
+    assert fields["routeReconciliationFailed"] is True
+    # The healthy mesh candidate still applied behind all of it.
+    assert fields["meshApplied"] == 1
+    assert runner.peers[FAKE_MESH_PUBLIC_KEY_2] == "10.0.2.0/24,fd42:42:42:2::/64"
+
+
+def test_multi_phase_failure_converges_on_the_next_healthy_pass(tmp_path, caplog):
+    runner, manager, mesh = make_multi_phase_failure_case(tmp_path)
+    desired = {FAKE_PUBLIC_KEY: (TUNNEL_V4, TUNNEL_V6)}
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers(desired, mesh=mesh)
+
+    runner.fail_set_peer_keys.clear()
+    runner.fail_remove_peer_keys.clear()
+    runner.fail_set_endpoint_hosts.clear()
+    runner.fail_route_replace_versions.clear()
+    caplog.clear()
+
+    # Nothing is rolled back and nothing is retried in place: the same idempotent
+    # pass run again converges every phase that failed.
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        result = manager.sync_peers(desired, mesh=mesh)
+
+    assert (result.added, result.removed) == (1, 1)
+    assert result.mesh_applied == 2
+    assert runner.peers == {
+        FAKE_PUBLIC_KEY: f"{TUNNEL_V4},{TUNNEL_V6}",
+        FAKE_MESH_PUBLIC_KEY: "10.0.1.0/24,fd42:42:42:1::/64",
+        FAKE_MESH_PUBLIC_KEY_2: "10.0.2.0/24,fd42:42:42:2::/64",
+    }
+    assert runner.routes[4] == {"10.0.1.0/24": "static", "10.0.2.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static", "fd42:42:42:2::/64": "static"}
+    assert [record for record in caplog.records if record.message == "peer_sync_partial"] == []
+
+
 def test_both_failures_converge_on_a_later_healthy_pass(tmp_path):
     runner = FakeWireGuardCommandRunner(
         fail_set_endpoint_hosts={"wg.us-broken-1.example.com"},
@@ -1019,6 +1161,46 @@ def test_endpoint_resolution_reports_a_resolver_error_as_unresolved(monkeypatch)
     assert _resolve_endpoint_addresses("wg.example.com") == ()
 
 
+def test_unexpected_resolver_error_reads_as_drift_instead_of_escaping_the_pass(tmp_path, caplog):
+    # The resolver runs mid-pass, after peers have already been mutated. Only
+    # OSError was handled, so anything else (a stdlib UnicodeError, an injected
+    # resolver raising its own type) escaped past the remaining reconciliation and
+    # the partial-progress event.
+    def exploding(_host):
+        raise RuntimeError("resolver internals leaked into the message")
+
+    runner = FakeWireGuardCommandRunner()
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.1.0/24,fd42:42:42:1::/64"
+    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "198.51.100.10:51820"
+    manager = make_manager(tmp_path, runner, endpoint_resolver=exploding)
+    peer = make_mesh_peer()
+
+    with caplog.at_level(logging.ERROR, logger="src.wireguard"):
+        result = manager.sync_peers({}, mesh=[peer])
+
+    # Unresolved reads as drifted: the peer is re-applied and reported updated.
+    assert result.mesh_applied == 1
+    assert result.mesh_updated == 1
+    failures = [record for record in caplog.records if record.message == "endpoint_resolve_failed"]
+    assert len(failures) == 1
+    assert failures[0].event_fields["errorType"] == "RuntimeError"
+    # The type is recorded, never the message a resolver put lookup data into.
+    assert "resolver internals leaked" not in caplog.text
+
+
+def test_resolver_base_exception_is_never_swallowed(tmp_path):
+    def cancelled(_host):
+        raise KeyboardInterrupt()
+
+    runner = FakeWireGuardCommandRunner()
+    runner.peers[FAKE_MESH_PUBLIC_KEY] = "10.0.1.0/24,fd42:42:42:1::/64"
+    runner.peer_endpoints[FAKE_MESH_PUBLIC_KEY] = "198.51.100.10:51820"
+    manager = make_manager(tmp_path, runner, endpoint_resolver=cancelled)
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.sync_peers({}, mesh=[make_mesh_peer()])
+
+
 def test_stuck_resolver_occupies_one_worker_and_queues_no_further_lookups(monkeypatch):
     # A running getaddrinfo cannot be cancelled and shutdown(wait=False) only
     # frees resources once it finishes, so the caller's timeout is not the
@@ -1036,12 +1218,19 @@ def test_stuck_resolver_occupies_one_worker_and_queues_no_further_lookups(monkey
     monkeypatch.setattr(socket, "getaddrinfo", blocking)
     try:
         assert _resolve_endpoint_addresses("wg.example.com") == ()
+        # Raised well past the refusal path's real cost: a lookup that queued or
+        # waited on the wedged worker would now cost seconds, not microseconds.
+        monkeypatch.setattr(wireguard, "ENDPOINT_RESOLVE_TIMEOUT_SECONDS", 2.0)
+        started = time.monotonic()
         # Every later lookup is refused at the gate instead of queueing another
         # future behind the wedged one.
         for _ in range(5):
             assert _resolve_endpoint_addresses("wg.example.com") == ()
+        assert time.monotonic() - started < 1.0
         assert len(calls) == 1
-        assert len([thread for thread in threading.enumerate() if thread.name.startswith("wg-resolve")]) <= 1
+        # Queue depth is the whole point of the gate and only observable here.
+        assert wireguard._RESOLVER_EXECUTOR._work_queue.qsize() == 0
+        assert len([thread for thread in threading.enumerate() if thread.name.startswith("wg-resolve")]) == 1
     finally:
         blocked.set()
 
@@ -1056,3 +1245,6 @@ def test_stuck_resolver_occupies_one_worker_and_queues_no_further_lookups(monkey
             time.sleep(0.01)
 
     assert resolved == ("203.0.113.11",)
+    # Nothing was parked behind the wedge: a queued future would have run the
+    # blocking resolver once it was released and shown up as a second call.
+    assert len(calls) == 1

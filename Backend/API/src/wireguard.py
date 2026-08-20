@@ -395,16 +395,45 @@ class LocalWireGuardManager(WireGuardManager):
 
         current = self.peer_snapshots()
 
+        # Every phase below is independent: one client peer, one removal, one mesh
+        # candidate, or one route is applied on its own, so a single failure must
+        # not strand the rest of the pass mid-convergence. The first failure is kept
+        # as the primary error and re-raised once every phase has run, which keeps
+        # the pass reporting failure while still converging what it safely can.
+        apply_error: WireGuardApplyFailedError | None = mesh_error
+        client_failures = 0
+        removal_failures = 0
+
         changes: list[PeerChange] = []
         for public_key, (tunnel_ipv4, tunnel_ipv6) in validated_clients.items():
             if public_key in mesh_by_key:
                 continue
-            if public_key not in current:
+            live = current.get(public_key)
+            if live is not None and live.allowed_ips == frozenset({tunnel_ipv4, tunnel_ipv6}):
+                continue
+            action = PEER_ADDED if live is None else PEER_UPDATED
+            try:
                 self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
-                changes.append(PeerChange(public_key, PEER_ADDED, tunnel_ipv4, tunnel_ipv6))
-            elif current[public_key].allowed_ips != frozenset({tunnel_ipv4, tunnel_ipv6}):
-                self.add_peer(public_key=public_key, tunnel_ipv4=tunnel_ipv4, tunnel_ipv6=tunnel_ipv6)
-                changes.append(PeerChange(public_key, PEER_UPDATED, tunnel_ipv4, tunnel_ipv6))
+            except WireGuardApplyFailedError as exc:
+                # No change is recorded: the peer is not on the interface in the
+                # desired shape, so counting it would report progress that the
+                # next pass would have to undo.
+                client_failures += 1
+                apply_error = apply_error or exc
+                continue
+            changes.append(PeerChange(public_key, action, tunnel_ipv4, tunnel_ipv6))
+
+        if client_failures:
+            # Counters only. A client peer key or tunnel address here would tie an
+            # account to this host's logs, so the failure is recorded by count and
+            # interface alone.
+            log_event(
+                logger,
+                Event.CLIENT_PEER_APPLY_FAILED,
+                level=logging.ERROR,
+                interface=self.interface,
+                failed=client_failures,
+            )
 
         # Removal runs before the mesh apply phase: a mesh endpoint that fails to
         # resolve must not keep a revoked client's peer on the interface, and sync is
@@ -413,11 +442,29 @@ class LocalWireGuardManager(WireGuardManager):
         for public_key in current:
             if public_key in validated_clients or public_key in mesh_by_key or public_key in protected_keys:
                 continue
-            self._remove_peer_command(_validate_key(public_key, "peer public key"))
+            try:
+                self._remove_peer_command(_validate_key(public_key, "peer public key"))
+            except WireGuardApplyFailedError as exc:
+                # A peer that is still live must not be reported as removed; the
+                # next pass sees it again and retries.
+                removal_failures += 1
+                apply_error = apply_error or exc
+                continue
             if public_key in known_keys:
                 mesh_changes.append(MeshPeerChange(public_key=public_key, action=PEER_REMOVED))
             else:
                 changes.append(PeerChange(public_key, PEER_REMOVED))
+
+        if removal_failures:
+            # Same constraint as above: the sweep removes revoked client peers, so
+            # the key stays out of the log.
+            log_event(
+                logger,
+                Event.PEER_REMOVAL_FAILED,
+                level=logging.ERROR,
+                interface=self.interface,
+                failed=removal_failures,
+            )
 
         # Each candidate is isolated: `wg set peer ... endpoint <host>:<port>` resolves
         # the hostname itself, so one broken DNS record must not stop the other peers
@@ -430,7 +477,7 @@ class LocalWireGuardManager(WireGuardManager):
         # down would break a working peer until the next successful pass. A candidate
         # that never applied still gets no route.
         routed_mesh: list[MeshPeer] = []
-        apply_error: WireGuardApplyFailedError | None = mesh_error
+        mesh_failures = 0
         for public_key, peer in mesh_by_key.items():
             live = current.get(public_key)
             try:
@@ -448,8 +495,8 @@ class LocalWireGuardManager(WireGuardManager):
                     {peer.allowed_network_v4, peer.allowed_network_v6}
                 ):
                     routed_mesh.append(peer)
-                if apply_error is None:
-                    apply_error = exc
+                mesh_failures += 1
+                apply_error = apply_error or exc
                 continue
             applied_mesh.append(peer)
             routed_mesh.append(peer)
@@ -522,6 +569,9 @@ class LocalWireGuardManager(WireGuardManager):
                 mesh_removed=result.mesh_removed,
                 routes_added=result.routes_added,
                 routes_removed=result.routes_removed,
+                client_apply_failed=client_failures,
+                peer_removal_failed=removal_failures,
+                mesh_apply_failed=mesh_failures,
                 route_reconciliation_failed=route_error is not None,
             )
             raise apply_error
@@ -1021,7 +1071,23 @@ def mesh_peer_drifted(
     keepalive matches. Shared with the fake so both model drift identically."""
     try:
         desired_addresses = frozenset(endpoint_resolver(peer.endpoint_host))
-    except OSError:
+    except Exception as exc:
+        # This runs mid-sync, after peers have already been mutated. An unexpected
+        # resolver failure (a stdlib UnicodeError on a hostile hostname, an
+        # injected resolver raising something of its own) must not escape past the
+        # remaining reconciliation and the partial-progress event - it reads as
+        # unresolved, which only marks this peer drifted and re-applies it next
+        # pass. BaseException still propagates: an interpreter shutdown or a
+        # cancelled worker is not drift. The endpoint host is region
+        # infrastructure, not client metadata, and the exception type is recorded
+        # without its message so a resolver cannot log lookup data.
+        log_event(
+            logger,
+            Event.ENDPOINT_RESOLVE_FAILED,
+            level=logging.ERROR,
+            endpoint_host=peer.endpoint_host,
+            error_type=type(exc).__name__,
+        )
         desired_addresses = frozenset()
     endpoint_current = (
         bool(live.endpoint_addresses & desired_addresses)
