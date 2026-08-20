@@ -376,10 +376,11 @@ const ServerHealth: React.FC = () => {
             && toggleRevisionsRef.current.get(region.regionId) === revision
         );
 
-        const write = setRegionMeshEnabled(region.regionId, next);
-        trackMeshWrite(region.regionId, write);
-
         try {
+            // Started inside the try so a synchronous throw still rolls the
+            // optimistic value back and clears the toggling flag.
+            const write = setRegionMeshEnabled(region.regionId, next);
+            trackMeshWrite(region.regionId, write);
             await write;
             if (!isCurrentToggle()) return;
             await loadServerHealthData({ regionId: region.regionId, revision });
