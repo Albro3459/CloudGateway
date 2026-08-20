@@ -222,12 +222,18 @@ cross-referenced from `docs/service-operations.md`.
 security boundary failure). A missing or invalid `Counters/accountSlots.nextSlot`
 reset to `1`, so a second account could be issued a slot already in use and the
 filter would treat two tenants as one. *Closed:* `repository.next_account_slot()`
-never resets once any slot exists - a valid counter is advanced past the maximum
-valid assigned slot, an absent or malformed counter is re-derived only when every
-assigned slot is itself valid and unique, and an exhausted counter always raises
-rather than recovering downward. `firebase._allocate_account_slot()` reads the
-whole `Users` collection inside the allocating transaction, so recovery cannot
-race an allocation. `valid_account_slot()` is the single source of truth for the
+treats `Counters/accountSlots.nextSlot` as the sole allocation authority. Only a
+valid counter allocates, and only when it is above every valid assigned slot;
+missing, malformed, regressed (at or below a live slot), and exhausted counters
+all raise `AccountSlotUnavailableError` instead of being re-derived.
+`firebase._allocate_account_slot()` reads the whole `Users` collection inside the
+allocating transaction, but only to disprove a regressed counter - never to
+reconstruct one, since account deletion hard-deletes `Users/{uid}` and a deleted
+account's slot then exists nowhere in live data (review finding 1). Seeding the
+counter is a one-time pre-activation step in
+`releases/access-control-lists/backfill_account_slots.py --seed-initial-counter`;
+after activation a lost counter is restored from backup, with provisioning failing
+closed until then. `valid_account_slot()` is the single source of truth for the
 type and range check across the package.
 
 **3. The sequence guard did not cover the process that runs at boot** (P1). The

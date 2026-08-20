@@ -162,9 +162,19 @@ from every policy map and loses same-account connectivity the moment enforcement
 fresh Firestore backup with `scripts/backup_firestore.py`, run
 `releases/access-control-lists/backfill_account_slots.py` in its default dry-run mode, review the
 aggregate counts, run it again with `--apply`, then rerun the dry-run and confirm it reports a
-no-op. This must complete before any region is rebuilt with the ACL enforced. See
+no-op. This must complete before any region is rebuilt with the ACL enforced. The very first run
+also has to create `Counters/accountSlots`, which requires the explicit `--seed-initial-counter`
+flag; that flag is a one-time pre-activation seed only. See
 [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
 script's flags, credentials handling, and failure modes.
+
+**If the account-slot counter is ever lost or lowered:** `Counters/accountSlots.nextSlot` is the
+authoritative allocation watermark and the only record that a hard-deleted account ever held a
+slot. Provisioning and lazy slot allocation fail closed (`ACCOUNT_SLOT_UNAVAILABLE`, HTTP 500)
+until it is restored from a Firestore backup - never re-derive it from the live `Users`
+collection, and never re-run the migration's seeding flag to "repair" it, since either would
+re-issue a deleted account's slot. See "Counter lifecycle" in
+[releases/access-control-lists/README.md](../releases/access-control-lists/README.md).
 
 **Reading the Server Health policy display (Web and iOS):** per enabled region, row count, comprehensive IPv4/
 IPv6 policy hashes (`mapHashV4`/`mapHashV6`, covering every authorization-bearing live object -

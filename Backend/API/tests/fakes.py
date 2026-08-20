@@ -265,13 +265,14 @@ class FakeRepository(FirebaseRepository):
         self.mesh_status: dict[str, tuple[bool, tuple[MeshPeerState, ...]]] = {}
         self.write_mesh_status_error: Exception | None = None
         self.list_clients_by_public_key_error: Exception | None = None
-        # Mirrors Counters/accountSlots: uid -> allocated slot, plus the raw
-        # counter value the real Firestore doc would hold. Slot 0 is reserved,
-        # so allocation starts at 1 (see repository.MIN_ACCOUNT_SLOT). None
-        # models a deleted/missing counter doc; tests may also set this to an
-        # out-of-range int to model a corrupted counter, exercising
-        # repository.next_account_slot's fail-closed recovery path end to end
-        # (see TODO/account-scoped-acl.md finding 2).
+        # Mirrors Users/{uid}.accountSlot (uid -> allocated slot) plus the raw
+        # Counters/accountSlots.nextSlot value the real doc would hold. Slot 0
+        # is reserved, so a seeded fleet starts at 1 (see
+        # repository.MIN_ACCOUNT_SLOT). None models a deleted/missing counter
+        # doc; tests may also set this to an out-of-range int to model a
+        # corrupted counter, both of which now fail closed end to end (see
+        # repository.next_account_slot and TODO/account-scoped-acl.md
+        # finding 2).
         self.account_slots: dict[str, int] = {}
         self.account_slot_counter: int | None = 1
         # Last policy status written per region, keyed by region_id.
@@ -404,8 +405,11 @@ class FakeRepository(FirebaseRepository):
                     raise DuplicateEmailError()
                 if existing.uid in self.disabled_auth_uids:
                     self.enable_auth_user(existing.uid)
-                self.roles[existing.uid] = Role.USER
+                # Slot first, role second: the real provisioning transaction
+                # commits both or neither, so a failed allocation must not
+                # leave a rostered account behind.
                 existing = self._with_account_slot(existing)
+                self.roles[existing.uid] = Role.USER
                 return CreateUserResult(user=existing, already_existed=True)
             self.created_user_count += 1
             uid = f"created-user-{self.created_user_count}"
@@ -413,7 +417,8 @@ class FakeRepository(FirebaseRepository):
                 self.created_user_count += 1
                 uid = f"created-user-{self.created_user_count}"
             user = UserDoc(uid=uid, email=email, created_at=utc_now())
-            self.users[uid] = user
+            # _with_account_slot writes self.users itself, and raises before
+            # any mutation when the counter cannot allocate.
             user = self._with_account_slot(user)
             self.roles[uid] = Role.USER
             return CreateUserResult(user=user)
@@ -437,6 +442,10 @@ class FakeRepository(FirebaseRepository):
         self.roles.pop(uid, None)
         self.per_region_client_limits.pop(uid, None)
         self.users.pop(uid, None)
+        # Production stores the slot on Users/{uid} only, so hard-deleting that
+        # document takes the slot out of every live scan with it - the reason
+        # the counter, not a live scan, is the allocation authority.
+        self.account_slots.pop(uid, None)
         for key, client in list(self.clients.items()):
             if client.owner_uid == uid:
                 del self.clients[key]
@@ -489,6 +498,16 @@ class FakeRepository(FirebaseRepository):
                 owner_allocated_count=owner_allocated_count,
                 per_region_client_limit=self._effective_per_region_client_limit(owner_uid),
             )
+            # Lazy allocation covers accounts provisioned before this feature.
+            # Mirrors the real transaction's ordering: the slot is allocated
+            # before anything is mutated, so a failed allocation leaves no
+            # user, slot, client, or advanced tunnel index behind.
+            owner = self.users.get(owner_uid) or UserDoc(
+                uid=owner_uid,
+                email=owner_email or "",
+                created_at=utc_now(),
+            )
+            self._with_account_slot(owner)
             next_index = next_tunnel_index(
                 stored_index=region.tunnel_index_v4,
                 used_indices=used_tunnel_indices(
@@ -509,16 +528,6 @@ class FakeRepository(FirebaseRepository):
                 client_id = new_client_id()
 
             now = utc_now()
-            # Lazy allocation covers accounts provisioned before this feature.
-            owner = self.users.setdefault(
-                owner_uid,
-                UserDoc(
-                    uid=owner_uid,
-                    email=owner_email or "",
-                    created_at=now,
-                ),
-            )
-            self._with_account_slot(owner)
             client = ClientDoc(
                 client_id=client_id,
                 owner_uid=owner_uid,
@@ -736,10 +745,11 @@ class FakeRepository(FirebaseRepository):
         return client
 
     def _allocate_account_slot(self) -> int:
-        # Mirrors firebase.py's transactional counter allocation: read the
-        # live assigned slots before deriving the next value, so a deleted or
-        # corrupted account_slot_counter recovers safely instead of reissuing
-        # an already-assigned slot (see repository.next_account_slot).
+        # Mirrors firebase.py's transactional counter allocation: the stored
+        # counter is the only allocation authority, and the live assigned
+        # slots are read alongside it purely to disprove a regressed counter.
+        # A deleted or corrupted counter raises AccountSlotUnavailableError
+        # instead of being re-derived (see repository.next_account_slot).
         slot = next_account_slot(
             stored_next_slot=self.account_slot_counter,
             assigned_slots=list(self.account_slots.values()),

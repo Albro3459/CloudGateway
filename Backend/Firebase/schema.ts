@@ -156,7 +156,13 @@ export type FirebaseClientDoc = {
 };
 
 // Document id is always "accountSlots". Admin-SDK-only allocator for
-// accountSlot; nextSlot only ever increments, never reused.
+// accountSlot; nextSlot only ever increments, never reused. It is the
+// authoritative allocation watermark - always strictly above every slot ever
+// issued - and the only record that a hard-deleted account held one, since
+// Users/{uid} is hard-deleted with its accountSlot. Never lower or delete it:
+// allocation fails closed (ACCOUNT_SLOT_UNAVAILABLE) until it is restored,
+// and re-deriving it from live Users would re-issue a deleted account's slot.
+// See releases/access-control-lists/README.md, "Counter lifecycle".
 export type FirebaseCounterDoc = {
     nextSlot: number;
     updatedAt: FirestoreTimestamp;

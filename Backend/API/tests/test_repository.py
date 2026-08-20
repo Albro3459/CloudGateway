@@ -5,6 +5,7 @@ import pytest
 
 from src.enums import ClientStatus, MeshPeerStatus, Role
 from src.errors import (
+    AccountSlotUnavailableError,
     AdminRequiredError,
     CapacityReachedError,
     ClientNotFoundError,
@@ -215,10 +216,12 @@ def test_tunnel_addresses_for_index_matches_hosts_output_form():
     )
 
 
-def test_next_account_slot_defaults_to_minimum_when_missing_or_invalid_and_no_assigned_slots():
-    assert next_account_slot(stored_next_slot=None, assigned_slots=[]) == 1
-    assert next_account_slot(stored_next_slot=0, assigned_slots=[]) == 1
-    assert next_account_slot(stored_next_slot=-3, assigned_slots=[]) == 1
+def test_next_account_slot_fails_closed_when_missing_or_invalid_even_with_no_assigned_slots():
+    # The counter is the only allocation history there is; see
+    # test_account_slots.py for the full matrix.
+    for stored in (None, 0, -3):
+        with pytest.raises(AccountSlotUnavailableError):
+            next_account_slot(stored_next_slot=stored, assigned_slots=[])
 
 
 def test_next_account_slot_returns_stored_value_when_above_every_assigned_slot():

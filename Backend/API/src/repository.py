@@ -343,63 +343,46 @@ def valid_account_slot(value: object) -> int | None:
 def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[object]) -> int:
     """Next value to allocate from Counters/accountSlots.nextSlot.
 
-    Fails closed instead of ever resetting to MIN_ACCOUNT_SLOT once a slot has
-    been handed out (see TODO/account-scoped-acl.md finding 2: a lost
-    or corrupted counter must never re-issue an already-assigned slot, or two
-    accounts collide onto one nftables tenant). `stored_next_slot` and every
-    value in `assigned_slots` are raw, unclassified Firestore reads - this
-    function does all malformed-value handling so callers never have to.
+    Counters/accountSlots.nextSlot is the *authoritative* allocation watermark:
+    it is monotonically increasing and always strictly above every slot ever
+    issued. A live scan of Users cannot reconstruct that history, because
+    account deletion hard-deletes Users/{uid} along with its accountSlot (see
+    firebase.hard_delete_account_documents), so a slot issued to a deleted
+    account is unrepresented in live data. Deriving a counter from live users
+    would therefore re-issue it and merge two accounts onto one nftables
+    tenant (TODO/account-scoped-acl.md finding 2, review finding 1).
+
+    So this allocator only ever trusts the stored counter, and fails closed
+    with AccountSlotUnavailableError in every other case. `stored_next_slot`
+    and every value in `assigned_slots` are raw, unclassified Firestore reads -
+    this function does all malformed-value handling so callers never have to.
 
     stored_next_slot is classified as:
-      * valid   - a real int (never bool) in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT.
-      * exhausted - a real int above MAX_ACCOUNT_SLOT. Always raises: an
-        exhausted counter must never recover downward, which is the reset
-        hazard this function exists to prevent, in a subtler form.
-      * absent/malformed - doc missing, field missing, non-int, bool, or
-        below MIN_ACCOUNT_SLOT. Enters the recovery path below.
+      * valid - a real int (never bool) in MIN_ACCOUNT_SLOT..MAX_ACCOUNT_SLOT.
+        Allocated as-is, provided it is above every valid assigned slot.
+      * regressed - valid, but at or below a slot that is currently assigned.
+        Live data proves the counter moved backward (a stale restore or a hand
+        edit), so it cannot prove the next candidate is unused. Raises.
+      * exhausted - a real int above MAX_ACCOUNT_SLOT. Raises: an exhausted
+        counter must never recover downward.
+      * absent/malformed - doc missing, field missing, non-int, bool, or below
+        MIN_ACCOUNT_SLOT. Raises: allocation history is unknowable from here.
+        Recovering the counter is a deliberate operator repair, not something
+        runtime can infer; see releases/access-control-lists/README.md.
+
+    `assigned_slots` is only ever used to *disprove* a counter, never to derive
+    one. A malformed or duplicated slot on some other user document does not
+    block allocation: a candidate above every *valid* assigned slot cannot
+    collide on the wire, since Wave 2 excludes non-conforming rows from the
+    policy map.
     """
-    if isinstance(stored_next_slot, int) and not isinstance(stored_next_slot, bool) and stored_next_slot > MAX_ACCOUNT_SLOT:
+    candidate = valid_account_slot(stored_next_slot)
+    if candidate is None:
+        # Absent, malformed, or exhausted (above MAX_ACCOUNT_SLOT).
         raise AccountSlotUnavailableError()
 
-    valid_stored = valid_account_slot(stored_next_slot)
-    if valid_stored is not None:
-        # Valid-counter path. A malformed or duplicated slot on some *other*
-        # user document does not block allocation: the candidate derived here
-        # is provably above every *valid* assigned slot, and Wave 2 excludes
-        # non-conforming rows from the policy map, so no on-wire collision is
-        # possible. Contrast with the recovery path below, which derives the
-        # counter from this data and therefore must be able to trust it.
-        valid_assigned = [slot for value in assigned_slots if (slot := valid_account_slot(value)) is not None]
-        candidate = valid_stored
-        if valid_assigned and candidate <= max(valid_assigned):
-            # A counter that would hand out an already-assigned slot is
-            # inconsistent and must never be used as-is.
-            candidate = max(valid_assigned) + 1
-        assigned_for_check = valid_assigned
-    else:
-        # Recovery path: the counter is absent or malformed. This is the only
-        # place a counter may be re-derived, and only "when safe" - every
-        # assigned slot must itself be a valid, unique int, or the live data
-        # cannot be trusted enough to derive a counter from.
-        validated: list[int] = []
-        seen: set[int] = set()
-        for value in assigned_slots:
-            slot = valid_account_slot(value)
-            if slot is None or slot in seen:
-                raise AccountSlotUnavailableError()
-            seen.add(slot)
-            validated.append(slot)
-
-        # Zero assigned slots fleet-wide is a genuine first allocation, not a
-        # reset, so seeding at MIN_ACCOUNT_SLOT is permitted here.
-        candidate = MIN_ACCOUNT_SLOT if not validated else max(validated) + 1
-        assigned_for_check = validated
-
-    if candidate > MAX_ACCOUNT_SLOT:
-        raise AccountSlotUnavailableError()
-    if candidate in assigned_for_check:
-        # Defensive: every path above is constructed to make this
-        # unreachable.
+    valid_assigned = [slot for value in assigned_slots if (slot := valid_account_slot(value)) is not None]
+    if valid_assigned and candidate <= max(valid_assigned):
         raise AccountSlotUnavailableError()
     return candidate
 

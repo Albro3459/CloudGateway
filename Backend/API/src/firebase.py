@@ -572,6 +572,12 @@ class FirestoreRepository(FirebaseRepository):
                 per_region_client_limit=per_region_client_limit,
             )
 
+            # _new_client_ref reads, so it has to run before the slot
+            # allocation below queues the counter write: the SDK raises
+            # ReadAfterWriteError for any read issued once a transaction holds
+            # a pending write.
+            client_id, client_ref = _new_client_ref(db, transaction, region_id)
+
             # Lazy allocation covers accounts provisioned before this feature:
             # the read must happen here, before any write in this transaction.
             existing_slot = _optional_safe_int((user_snapshot.to_dict() or {}).get("accountSlot")) if user_snapshot.exists else None
@@ -597,7 +603,6 @@ class FirestoreRepository(FirebaseRepository):
                 ipv6_cidr=self._settings.wg_tunnel_ipv6_cidr,
             )
 
-            client_id, client_ref = _new_client_ref(db, transaction, region_id)
             now = utc_now()
             user_data = _user_write_data(
                 uid=owner_uid,
@@ -1098,15 +1103,22 @@ def _allocate_account_slot(
     already read counter_snapshot (Firestore transactions require every read
     before any write) and must not have written anything yet.
 
-    Reads the full Users collection inside the transaction so a lost or
-    corrupted counter can be recovered from the live assigned slots instead of
-    resetting to slot 1 and colliding with an existing account (see
-    TODO/account-scoped-acl.md finding 2). The fleet is tiny
-    (region_capacity_limit 20, single-digit accounts today), so a full
-    collection read on this rare allocation path is acceptable. exclude_uid is
-    the uid being provisioned: both callers only reach this function when that
-    uid does not already carry a slot, so it never contributes a valid entry
-    here anyway - excluding it is defensive, not load-bearing.
+    The counter is the sole allocation authority: next_account_slot raises
+    AccountSlotUnavailableError for a missing, malformed, regressed, or
+    exhausted counter rather than re-deriving one, because a hard-deleted
+    account's slot survives nowhere in live data (see that function and
+    hard_delete_account_documents). The counter read, the caller's user/client
+    write, and the increment below all sit in one transaction, so a Firestore
+    retry re-reads the counter and recomputes the candidate from scratch.
+
+    The full Users collection is read inside the same transaction only to
+    *disprove* a counter that live data shows has regressed; it never derives
+    one. The fleet is tiny (region_capacity_limit 20, single-digit accounts
+    today), so a full collection read on this rare allocation path is
+    acceptable. exclude_uid is the uid being provisioned: both callers only
+    reach this function when that uid does not already carry a slot, so it
+    never contributes a valid entry here anyway - excluding it is defensive,
+    not load-bearing.
     """
     stored_next_slot = (counter_snapshot.to_dict() or {}).get("nextSlot") if counter_snapshot.exists else None
     assigned_slots: list[object] = []
@@ -1117,7 +1129,7 @@ def _allocate_account_slot(
         slot_value = (snapshot.to_dict() or {}).get("accountSlot")
         # An explicit null is "no slot", not a malformed one: _user_write_data
         # omits the field rather than writing None, and a null can never reach
-        # the wire, so it must not fail the recovery path closed.
+        # the wire, so it must not count as an assigned slot.
         if slot_value is not None:
             assigned_slots.append(slot_value)
 

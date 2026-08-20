@@ -94,6 +94,9 @@ class FakeDb:
             "Counters": FakeCollectionRef("Counters", counters_docs),
         }
         self._instances = instances or []
+        # Every write this script can make goes through a transaction, so an
+        # empty list here is proof that a refusal wrote nothing.
+        self.transactions: list["FakeTransaction"] = []
 
     def collection(self, name: str) -> FakeCollectionRef:
         return self._collections[name]
@@ -101,6 +104,11 @@ class FakeDb:
     def collection_group(self, name: str) -> FakeCollectionGroupRef:
         assert name == "Instances"
         return FakeCollectionGroupRef(self._instances)
+
+    def transaction(self) -> "FakeTransaction":
+        transaction = FakeTransaction()
+        self.transactions.append(transaction)
+        return transaction
 
 
 class FakeTransaction:
@@ -118,16 +126,20 @@ def _six_provisioned_uids() -> dict[str, dict[str, Any]]:
     return {f"uid-{c}": {"uid": f"uid-{c}", "roleId": "user"} for c in "abcdef"}
 
 
-def _apply_via_fake(db: FakeDb, preflight_plan: Any) -> tuple[Any, FakeTransaction]:
+def _apply_via_fake(
+    db: FakeDb, preflight_plan: Any, *, allow_initial_seed: bool = False
+) -> tuple[Any, FakeTransaction]:
     transaction = FakeTransaction()
-    applied_plan = backfill._apply_within_transaction(transaction, db, preflight_plan, _FAKE_TIMESTAMP)
+    applied_plan = backfill._apply_within_transaction(
+        transaction, db, preflight_plan, _FAKE_TIMESTAMP, allow_initial_seed=allow_initial_seed
+    )
     return applied_plan, transaction
 
 
 class ComputePlanTests(unittest.TestCase):
-    def test_first_migration_from_zero_slots_and_no_counter(self) -> None:
+    def test_initial_pre_activation_seed_from_zero_slots_and_no_counter(self) -> None:
         provisioned = {f"uid-{c}" for c in "abcdef"}
-        plan = backfill.compute_plan(provisioned, {}, None)
+        plan = backfill.compute_plan(provisioned, {}, None, allow_initial_seed=True)
 
         self.assertTrue(plan.ok)
         self.assertEqual(plan.provisioned_count, 6)
@@ -162,7 +174,7 @@ class ComputePlanTests(unittest.TestCase):
     def test_partial_prior_assignment_fills_gaps_above_existing_max(self) -> None:
         provisioned = {f"uid-{c}" for c in "abcdef"}
         user_slots = {"uid-a": 3, "uid-b": 1}
-        plan = backfill.compute_plan(provisioned, user_slots, None)
+        plan = backfill.compute_plan(provisioned, user_slots, None, allow_initial_seed=True)
 
         self.assertTrue(plan.ok)
         self.assertEqual(plan.already_assigned_count, 2)
@@ -170,34 +182,123 @@ class ComputePlanTests(unittest.TestCase):
         self.assertEqual(plan.assignments, {"uid-c": 4, "uid-d": 5, "uid-e": 6, "uid-f": 7})
         self.assertEqual(plan.counter_after, 8)
 
-    def test_counter_corruption_variants_are_superseded_not_blocking(self) -> None:
+    # --- Counter lifecycle: seeding vs. post-activation corruption -------
+
+    def test_counter_corruption_variants_are_seeded_only_with_the_explicit_flag(self) -> None:
         provisioned = {"uid-a"}
         user_slots = {"uid-a": 5}
         for bad_counter in (0, -1, "7", True, 3.5, backfill.MAX_ACCOUNT_SLOT + 1):
             with self.subTest(bad_counter=bad_counter):
-                plan = backfill.compute_plan(provisioned, user_slots, bad_counter)
+                plan = backfill.compute_plan(provisioned, user_slots, bad_counter, allow_initial_seed=True)
                 self.assertTrue(plan.ok)
                 self.assertEqual(plan.counter_state, "malformed")
                 self.assertIsNone(plan.counter_before)
                 self.assertEqual(plan.counter_after, 6)
                 self.assertEqual(plan.failures, backfill.PlanFailures())
 
-    def test_missing_counter_is_superseded_not_blocking(self) -> None:
-        plan = backfill.compute_plan({"uid-a"}, {"uid-a": 5}, None)
+    def test_malformed_counter_without_the_seed_flag_blocks_with_zero_writes(self) -> None:
+        # After activation, a malformed counter is counter loss: the slots of
+        # hard-deleted accounts are unrepresented in live Users, so the live
+        # scan cannot rebuild the watermark.
+        provisioned = {"uid-a", "uid-b"}
+        user_slots = {"uid-a": 5}
+        for bad_counter in (0, -1, "7", True, 3.5, backfill.MAX_ACCOUNT_SLOT + 1):
+            with self.subTest(bad_counter=bad_counter):
+                plan = backfill.compute_plan(provisioned, user_slots, bad_counter)
+                self.assertFalse(plan.ok)
+                self.assertEqual(plan.counter_state, "malformed")
+                self.assertEqual(plan.failures.counter_unseeded, 1)
+                self.assertEqual(plan.assignments, {})
+                self.assertIsNone(plan.counter_after)
+
+    def test_missing_counter_without_the_seed_flag_blocks_with_zero_writes(self) -> None:
+        plan = backfill.compute_plan({"uid-a", "uid-b"}, {"uid-a": 5}, None)
+
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.counter_state, "missing")
+        self.assertEqual(plan.failures.counter_unseeded, 1)
+        self.assertEqual(plan.assignments, {})
+        self.assertIsNone(plan.counter_after)
+
+        db = FakeDb({"uid-a": {}, "uid-b": {}}, {"uid-a": {"accountSlot": 5}}, None)
+        transaction = FakeTransaction()
+        with self.assertRaises(backfill.MigrationAbortedError):
+            backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
+        self.assertEqual(transaction.writes, [])
+
+    def test_missing_counter_with_the_seed_flag_is_derived_from_the_live_scan(self) -> None:
+        plan = backfill.compute_plan({"uid-a"}, {"uid-a": 5}, None, allow_initial_seed=True)
         self.assertTrue(plan.ok)
         self.assertEqual(plan.counter_state, "missing")
         self.assertEqual(plan.counter_after, 6)
 
-    def test_valid_counter_at_or_below_max_is_advanced_never_reused(self) -> None:
-        provisioned = {"uid-a", "uid-b"}
+    def test_valid_counter_at_or_below_the_live_max_blocks_as_regressed(self) -> None:
+        # A counter that a live slot has already reached moved backward. It
+        # can no longer prove which slots were issued, and advancing it from
+        # the live max would silently re-issue anything in the gap - the same
+        # decision repository.next_account_slot makes at runtime.
+        provisioned = {"uid-a", "uid-b", "uid-c"}
         user_slots = {"uid-a": 1, "uid-b": 2}
         for stale_counter in (1, 2):
             with self.subTest(stale_counter=stale_counter):
                 plan = backfill.compute_plan(provisioned, user_slots, stale_counter)
-                self.assertTrue(plan.ok)
+                self.assertFalse(plan.ok)
                 self.assertEqual(plan.counter_state, "valid")
                 self.assertEqual(plan.counter_before, stale_counter)
-                self.assertEqual(plan.counter_after, 3)
+                self.assertEqual(plan.failures.counter_regressed, 1)
+                self.assertEqual(plan.assignments, {})
+                self.assertIsNone(plan.counter_after)
+
+    def test_regressed_counter_is_not_overridable_by_the_seed_flag(self) -> None:
+        plan = backfill.compute_plan({"uid-a", "uid-b"}, {"uid-a": 5}, 5, allow_initial_seed=True)
+
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.failures.counter_regressed, 1)
+        self.assertEqual(plan.assignments, {})
+
+    # --- Finding 1/9: a valid counter is the allocation floor ------------
+
+    def test_valid_counter_above_live_max_is_the_floor_for_a_new_assignment(self) -> None:
+        # The exact ordering that let the migration re-issue a hard-deleted
+        # account's slot: slots 2..9 are absent from live Users only because
+        # their accounts were deleted, and the counter is the sole record of
+        # them. Numbering from the live max would hand uid-b slot 2.
+        plan = backfill.compute_plan({"uid-a", "uid-b"}, {"uid-a": 1}, 10)
+
+        self.assertTrue(plan.ok)
+        self.assertEqual(plan.counter_state, "valid")
+        self.assertEqual(plan.counter_before, 10)
+        self.assertEqual(plan.assignments, {"uid-b": 10})
+        self.assertEqual(plan.counter_after, 11)
+
+    def test_valid_counter_above_live_max_with_multiple_pending_users(self) -> None:
+        plan = backfill.compute_plan({"uid-a", "uid-b", "uid-c", "uid-d"}, {"uid-a": 1}, 10)
+
+        self.assertTrue(plan.ok)
+        # Deterministic ascending-by-uid ordering, starting at the counter.
+        self.assertEqual(plan.assignments, {"uid-b": 10, "uid-c": 11, "uid-d": 12})
+        self.assertEqual(plan.counter_after, 13)
+
+    def test_gap_left_by_a_deleted_account_is_never_reused(self) -> None:
+        # Live max is 3; slots 4 and 5 belonged to accounts that were hard
+        # deleted, so only the counter (6) still knows they were issued.
+        plan = backfill.compute_plan({"uid-b", "uid-c", "uid-d"}, {"uid-b": 3}, 6)
+
+        self.assertTrue(plan.ok)
+        self.assertEqual(plan.assignments, {"uid-c": 6, "uid-d": 7})
+        self.assertNotIn(4, plan.assignments.values())
+        self.assertNotIn(5, plan.assignments.values())
+        self.assertEqual(plan.counter_after, 8)
+
+    def test_counter_exactly_one_above_the_live_max_is_the_healthy_boundary(self) -> None:
+        # The steady state: every runtime allocation stores slot + 1. The
+        # counter and the live max agree, and numbering continues from both.
+        plan = backfill.compute_plan({"uid-a", "uid-b", "uid-c"}, {"uid-a": 1, "uid-b": 2}, 3)
+
+        self.assertTrue(plan.ok)
+        self.assertEqual(plan.failures, backfill.PlanFailures())
+        self.assertEqual(plan.assignments, {"uid-c": 3})
+        self.assertEqual(plan.counter_after, 4)
 
     def test_valid_counter_strictly_above_max_is_left_unchanged(self) -> None:
         plan = backfill.compute_plan({"uid-a"}, {"uid-a": 1}, 10)
@@ -208,7 +309,7 @@ class ComputePlanTests(unittest.TestCase):
     def test_duplicate_slots_across_two_uids_block_with_zero_writes(self) -> None:
         provisioned = {"uid-a", "uid-b"}
         user_slots = {"uid-a": 4, "uid-b": 4}
-        plan = backfill.compute_plan(provisioned, user_slots, None)
+        plan = backfill.compute_plan(provisioned, user_slots, 5)
 
         self.assertFalse(plan.ok)
         self.assertEqual(plan.failures.duplicate_slot, 2)
@@ -219,7 +320,7 @@ class ComputePlanTests(unittest.TestCase):
         db = FakeDb(
             {"uid-a": {}, "uid-b": {}},
             {"uid-a": {"accountSlot": 4}, "uid-b": {"accountSlot": 4}},
-            None,
+            {"nextSlot": 5},
         )
         with self.assertRaises(backfill.MigrationAbortedError):
             backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
@@ -229,7 +330,7 @@ class ComputePlanTests(unittest.TestCase):
         provisioned = {"uid-a", "uid-b"}
         for bad_value in (0, -3, "7", True, 4.5, backfill.MAX_ACCOUNT_SLOT + 1):
             with self.subTest(bad_value=bad_value):
-                plan = backfill.compute_plan(provisioned, {"uid-a": bad_value}, None)
+                plan = backfill.compute_plan(provisioned, {"uid-a": bad_value}, 1)
                 self.assertFalse(plan.ok)
                 self.assertEqual(plan.failures.malformed_slot, 1)
                 self.assertEqual(plan.assignments, {})
@@ -237,7 +338,7 @@ class ComputePlanTests(unittest.TestCase):
     def test_slot_on_non_provisioned_uid_blocks(self) -> None:
         provisioned = {"uid-a"}
         user_slots = {"uid-a": 1, "uid-orphan": 2}
-        plan = backfill.compute_plan(provisioned, user_slots, None)
+        plan = backfill.compute_plan(provisioned, user_slots, 3)
 
         self.assertFalse(plan.ok)
         self.assertEqual(plan.failures.orphaned_slot, 1)
@@ -246,7 +347,18 @@ class ComputePlanTests(unittest.TestCase):
     def test_overflow_blocks_with_zero_writes(self) -> None:
         provisioned = {"uid-a", "uid-b"}
         user_slots = {"uid-a": backfill.MAX_ACCOUNT_SLOT}
-        plan = backfill.compute_plan(provisioned, user_slots, None)
+        plan = backfill.compute_plan(provisioned, user_slots, None, allow_initial_seed=True)
+
+        self.assertFalse(plan.ok)
+        self.assertEqual(plan.failures.overflow, 1)
+        self.assertEqual(plan.assignments, {})
+        self.assertIsNone(plan.counter_after)
+
+    def test_exhaustion_at_the_counter_floor_blocks_with_zero_writes(self) -> None:
+        # The counter itself is at the last slot: one account can still be
+        # assigned in principle, but the second exhausts the space, so the
+        # whole plan is refused rather than partially applied.
+        plan = backfill.compute_plan({"uid-a", "uid-b", "uid-c"}, {"uid-a": 1}, backfill.MAX_ACCOUNT_SLOT)
 
         self.assertFalse(plan.ok)
         self.assertEqual(plan.failures.overflow, 1)
@@ -258,7 +370,7 @@ class ApplyTransactionTests(unittest.TestCase):
     def test_transaction_retry_produces_identical_writes(self) -> None:
         provisioned = _six_provisioned_uids()
         users = {"uid-a": {"accountSlot": 3}}
-        db = FakeDb(provisioned, users, None)
+        db = FakeDb(provisioned, users, {"nextSlot": 4})
         provisioned_uids, user_slots, raw_next_slot = backfill._read_state(db)
         preflight_plan = backfill.compute_plan(provisioned_uids, user_slots, raw_next_slot)
 
@@ -269,14 +381,30 @@ class ApplyTransactionTests(unittest.TestCase):
         self.assertTrue(transaction1.writes)
 
     def test_invariant_change_during_transaction_aborts_with_zero_writes(self) -> None:
-        preflight_db = FakeDb(_six_provisioned_uids(), {}, None)
+        preflight_db = FakeDb(_six_provisioned_uids(), {}, {"nextSlot": 1})
         provisioned_uids, user_slots, raw_next_slot = backfill._read_state(preflight_db)
         preflight_plan = backfill.compute_plan(provisioned_uids, user_slots, raw_next_slot)
 
-        # A concurrent write landed between preflight and apply: uid-a already
-        # has a slot now, so the in-transaction recompute disagrees with the
-        # preflight plan.
-        changed_db = FakeDb(_six_provisioned_uids(), {"uid-a": {"accountSlot": 1}}, None)
+        # A concurrent allocation landed between preflight and apply: uid-a
+        # already has a slot and the counter moved with it, so the
+        # in-transaction recompute disagrees with the preflight plan.
+        changed_db = FakeDb(_six_provisioned_uids(), {"uid-a": {"accountSlot": 1}}, {"nextSlot": 2})
+        transaction = FakeTransaction()
+
+        with self.assertRaises(backfill.MigrationAbortedError):
+            backfill._apply_within_transaction(transaction, changed_db, preflight_plan, _FAKE_TIMESTAMP)
+
+        self.assertEqual(transaction.writes, [])
+
+    def test_counter_moving_alone_between_preflight_and_apply_aborts(self) -> None:
+        # Only the counter changed underneath the run - the assignments the
+        # preflight planned would now sit below the counter.
+        preflight_db = FakeDb({"uid-a": {}, "uid-b": {}}, {"uid-a": {"accountSlot": 1}}, {"nextSlot": 2})
+        provisioned_uids, user_slots, raw_next_slot = backfill._read_state(preflight_db)
+        preflight_plan = backfill.compute_plan(provisioned_uids, user_slots, raw_next_slot)
+        self.assertEqual(preflight_plan.assignments, {"uid-b": 2})
+
+        changed_db = FakeDb({"uid-a": {}, "uid-b": {}}, {"uid-a": {"accountSlot": 1}}, {"nextSlot": 9})
         transaction = FakeTransaction()
 
         with self.assertRaises(backfill.MigrationAbortedError):
@@ -285,7 +413,7 @@ class ApplyTransactionTests(unittest.TestCase):
         self.assertEqual(transaction.writes, [])
 
     def test_apply_writes_merge_true_and_only_account_slot_field(self) -> None:
-        db = FakeDb({"uid-a": {}}, {}, None)
+        db = FakeDb({"uid-a": {}}, {}, {"nextSlot": 1})
         provisioned_uids, user_slots, raw_next_slot = backfill._read_state(db)
         preflight_plan = backfill.compute_plan(provisioned_uids, user_slots, raw_next_slot)
 
@@ -304,6 +432,104 @@ class ApplyTransactionTests(unittest.TestCase):
         self.assertEqual(counter_doc_id, "accountSlots")
         self.assertEqual(counter_data, {"nextSlot": 2, "updatedAt": _FAKE_TIMESTAMP})
         self.assertTrue(counter_merge)
+
+
+# --- The 400-write transaction guard ------------------------------------
+#
+# The guard is the mechanism that keeps this single-transaction migration
+# from ever running "halfway" (README, "The 400-write guard"). The counter
+# update is itself one write, and omitting it is the easy off-by-one, so the
+# matrix below pins both sides of the boundary with and without it, at both
+# enforcement points: _apply_within_transaction and main().
+
+
+def _uids(count: int, prefix: str = "uid-fake-") -> list[str]:
+    # Zero-padded so the migration's ascending-by-uid ordering is the same as
+    # numeric ordering, keeping expected slot values easy to reason about.
+    return [f"{prefix}{index:04d}" for index in range(count)]
+
+
+def _db_needing_assignments(count: int) -> FakeDb:
+    """A fleet where `count` provisioned accounts need a new slot and the
+    counter is valid at 1, so the plan is exactly `count` user writes plus
+    one counter write."""
+    return FakeDb({uid: {"roleId": "user"} for uid in _uids(count)}, {}, {"nextSlot": 1})
+
+
+def _plan_with_writes(assignment_count: int, *, counter_write: bool) -> Any:
+    """A Plan carrying an exact write shape, including the counter-write-free
+    shape that compute_plan cannot produce on its own (every new assignment
+    advances the counter). Used to drive the guard directly."""
+    assignments = {uid: index + 1 for index, uid in enumerate(_uids(assignment_count))}
+    return backfill.Plan(
+        ok=True,
+        failures=backfill.PlanFailures(),
+        provisioned_count=assignment_count,
+        already_assigned_count=0,
+        assignments=assignments,
+        unassigned_after=0,
+        counter_state="valid",
+        counter_before=1,
+        counter_after=assignment_count + 1 if counter_write else None,
+    )
+
+
+_WRITE_LIMIT_MATRIX = (
+    # (assignment writes, counter write, total, allowed)
+    (399, True, 400, True),
+    (400, False, 400, True),
+    (400, True, 401, False),
+    (401, False, 401, False),
+)
+
+
+class TransactionWriteGuardTests(unittest.TestCase):
+    def test_write_count_includes_the_counter_write(self) -> None:
+        for assignments, counter_write, total, _allowed in _WRITE_LIMIT_MATRIX:
+            with self.subTest(assignments=assignments, counter_write=counter_write):
+                plan = _plan_with_writes(assignments, counter_write=counter_write)
+                self.assertEqual(backfill.plan_write_count(plan), total)
+
+    def test_limit_is_the_documented_safety_margin_below_the_firestore_maximum(self) -> None:
+        self.assertEqual(backfill.MAX_TRANSACTION_WRITES, 400)
+
+    def test_transaction_allows_exactly_the_limit_and_refuses_one_over(self) -> None:
+        # Reachable through real state: N assignments always drag the counter
+        # write along, so 399 + counter = 400 and 400 + counter = 401.
+        for provisioned_count, allowed in ((399, True), (400, False)):
+            with self.subTest(provisioned_count=provisioned_count):
+                db = _db_needing_assignments(provisioned_count)
+                provisioned_uids, user_slots, raw_next_slot = backfill._read_state(db)
+                plan = backfill.compute_plan(provisioned_uids, user_slots, raw_next_slot)
+                self.assertEqual(backfill.plan_write_count(plan), provisioned_count + 1)
+
+                transaction = FakeTransaction()
+                if allowed:
+                    backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
+                    self.assertEqual(len(transaction.writes), backfill.MAX_TRANSACTION_WRITES)
+                else:
+                    with self.assertRaises(backfill.MigrationAbortedError):
+                        backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
+                    self.assertEqual(transaction.writes, [])
+
+    def test_transaction_boundary_without_a_counter_write(self) -> None:
+        # The counter-write-free shape of the same boundary: 400 assignment
+        # writes alone are allowed, 401 are not.
+        for assignments, allowed in ((400, True), (401, False)):
+            with self.subTest(assignments=assignments):
+                plan = _plan_with_writes(assignments, counter_write=False)
+                db = _db_needing_assignments(1)
+                transaction = FakeTransaction()
+
+                with mock.patch.object(backfill, "compute_plan", return_value=plan):
+                    if allowed:
+                        backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
+                        self.assertEqual(len(transaction.writes), assignments)
+                        self.assertEqual([w for w in transaction.writes if w[0] == "Counters"], [])
+                    else:
+                        with self.assertRaises(backfill.MigrationAbortedError):
+                            backfill._apply_within_transaction(transaction, db, plan, _FAKE_TIMESTAMP)
+                        self.assertEqual(transaction.writes, [])
 
 
 def _empty_row_result() -> Any:
@@ -329,7 +555,7 @@ class AggregateOutputTests(unittest.TestCase):
 
     def test_report_is_aggregate_counts_for_a_successful_plan(self) -> None:
         provisioned = {f"uid-{c}" for c in "abcdef"}
-        plan = backfill.compute_plan(provisioned, {}, None)
+        plan = backfill.compute_plan(provisioned, {}, None, allow_initial_seed=True)
         report = backfill.format_report(plan, _empty_row_result(), mode="dry-run")
 
         self.assertIn("mode: dry-run", report)
@@ -624,19 +850,21 @@ class ReadPolicyRowsTests(unittest.TestCase):
         self.assertEqual(malformed_document_count, 0)
 
 
-class MainGatingTests(unittest.TestCase):
-    def _run_main(self, db: Any, extra_args: list[str]) -> tuple[int, str, str]:
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch.object(backfill, "_get_firestore_client", return_value=db):
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = backfill.main(["--credentials", "/tmp/fake-creds.json", *extra_args])
-        return code, stdout.getvalue(), stderr.getvalue()
+def _run_main(db: Any, extra_args: list[str]) -> tuple[int, str, str]:
+    """main() against a FakeDb, capturing (exit code, stdout, stderr)."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with mock.patch.object(backfill, "_get_firestore_client", return_value=db):
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = backfill.main(["--credentials", "/tmp/fake-creds.json", *extra_args])
+    return code, stdout.getvalue(), stderr.getvalue()
 
+
+class MainGatingTests(unittest.TestCase):
     def _bad_row_db(self) -> Any:
         return FakeDb(
             _six_provisioned_uids(),
             {},
-            None,
+            {"nextSlot": 1},
             instances=[
                 (
                     "inst-1",
@@ -652,7 +880,7 @@ class MainGatingTests(unittest.TestCase):
         )
 
     def test_row_preflight_failure_blocks_dry_run_with_exit_code_1(self) -> None:
-        code, stdout, stderr = self._run_main(self._bad_row_db(), [])
+        code, stdout, stderr = _run_main(self._bad_row_db(), [])
 
         self.assertEqual(code, 1)
         self.assertIn("policy row failures - invalid owner: 1", stdout)
@@ -660,7 +888,7 @@ class MainGatingTests(unittest.TestCase):
 
     def test_row_preflight_failure_blocks_apply_with_exit_code_1(self) -> None:
         with mock.patch.object(backfill, "_run_apply") as run_apply:
-            code, stdout, stderr = self._run_main(self._bad_row_db(), ["--apply"])
+            code, stdout, stderr = _run_main(self._bad_row_db(), ["--apply"])
 
         self.assertEqual(code, 1)
         self.assertIn("policy row failures - invalid owner: 1", stdout)
@@ -685,12 +913,103 @@ class MainGatingTests(unittest.TestCase):
                 )
             ],
         )
-        code, stdout, _stderr = self._run_main(db, [])
+        code, stdout, _stderr = _run_main(db, [])
 
         self.assertEqual(code, 0)
         self.assertIn("policy row preflight: ok", stdout)
         self.assertIn("policy rows checked: 1", stdout)
         self.assertIn("policy rows valid: 1", stdout)
+
+    def test_missing_counter_blocks_the_dry_run_without_the_seed_flag(self) -> None:
+        db = FakeDb({"uid-a": {}}, {"uid-a": {"accountSlot": 4}}, None)
+
+        code, stdout, stderr = _run_main(db, [])
+
+        self.assertEqual(code, 1)
+        self.assertIn("validation failures - counter unseeded: 1", stdout)
+        self.assertIn("newly assigned: 0", stdout)
+        self.assertIn("counter after: (unchanged)", stdout)
+        self.assertIn("README", stderr)
+        self.assertEqual(db.transactions, [])
+
+    def test_seed_initial_counter_flag_allows_the_one_time_seed(self) -> None:
+        db = FakeDb({"uid-a": {}}, {"uid-a": {"accountSlot": 4}}, None)
+
+        code, stdout, _stderr = _run_main(db, ["--seed-initial-counter"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("validation failures - counter unseeded: 0", stdout)
+        self.assertIn("counter after: 5", stdout)
+
+    def test_regressed_counter_blocks_apply_even_with_the_seed_flag(self) -> None:
+        db = FakeDb({"uid-a": {}, "uid-b": {}}, {"uid-a": {"accountSlot": 4}}, {"nextSlot": 4})
+
+        with mock.patch.object(backfill, "_run_apply") as run_apply:
+            code, stdout, stderr = _run_main(db, ["--apply", "--seed-initial-counter"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("validation failures - counter regressed: 1", stdout)
+        self.assertIn("README", stderr)
+        run_apply.assert_not_called()
+        self.assertEqual(db.transactions, [])
+
+
+class MainWriteGuardTests(unittest.TestCase):
+    """main()'s pre-check must refuse the same boundary the in-transaction
+    check does, before any Firestore transaction is opened."""
+
+    def _assert_refused(self, db: Any, run_apply: Any, code: int, stdout: str, stderr: str) -> None:
+        self.assertEqual(code, 1)
+        run_apply.assert_not_called()
+        self.assertEqual(db.transactions, [])
+        self.assertIn("safety margin", stderr)
+        output = stdout + stderr
+        for uid in _uids(3) + ["uid-a", "uid-b"]:
+            self.assertNotIn(uid, output)
+
+    def test_pre_check_allows_exactly_the_limit_and_refuses_one_over(self) -> None:
+        for provisioned_count, allowed in ((399, True), (400, False)):
+            with self.subTest(provisioned_count=provisioned_count):
+                db = _db_needing_assignments(provisioned_count)
+                with mock.patch.object(backfill, "_run_apply") as run_apply:
+                    run_apply.side_effect = lambda _db, plan, **_kwargs: plan
+                    code, stdout, stderr = _run_main(db, ["--apply"])
+
+                if allowed:
+                    self.assertEqual(code, 0)
+                    run_apply.assert_called_once()
+                    self.assertIn(f"newly assigned: {provisioned_count}", stdout)
+                else:
+                    self._assert_refused(db, run_apply, code, stdout, stderr)
+                    self.assertIn("401 writes", stderr)
+
+    def test_pre_check_boundary_without_a_counter_write(self) -> None:
+        for assignments, allowed in ((400, True), (401, False)):
+            with self.subTest(assignments=assignments):
+                plan = _plan_with_writes(assignments, counter_write=False)
+                db = _db_needing_assignments(1)
+                with mock.patch.object(backfill, "compute_plan", return_value=plan):
+                    with mock.patch.object(backfill, "_run_apply") as run_apply:
+                        run_apply.side_effect = lambda _db, plan, **_kwargs: plan
+                        code, stdout, stderr = _run_main(db, ["--apply"])
+
+                if allowed:
+                    self.assertEqual(code, 0)
+                    run_apply.assert_called_once()
+                else:
+                    self._assert_refused(db, run_apply, code, stdout, stderr)
+                    self.assertIn("401 writes", stderr)
+
+    def test_pre_check_refuses_before_any_transaction_in_dry_run_too(self) -> None:
+        db = _db_needing_assignments(400)
+
+        with mock.patch.object(backfill, "_run_apply") as run_apply:
+            code, _stdout, stderr = _run_main(db, [])
+
+        self.assertEqual(code, 1)
+        run_apply.assert_not_called()
+        self.assertEqual(db.transactions, [])
+        self.assertIn("safety margin", stderr)
 
 
 class MirroredConstantsTests(unittest.TestCase):

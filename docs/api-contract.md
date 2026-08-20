@@ -438,7 +438,7 @@ All controlled failures return this shape:
 - Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
   `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
   `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `SYNC_IN_PROGRESS`, `WIREGUARD_APPLY_FAILED`,
-  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`.
+  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`.
 - HTTP status mapping:
   - `401`: auth failures (`AUTH_REQUIRED`).
   - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`).
@@ -448,8 +448,19 @@ All controlled failures return this shape:
   - `409`: duplicate email, disabled account, capacity/limit failures, and a sync already running
     on the region (`DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`,
     `SYNC_IN_PROGRESS`).
-  - `500`: host mutation failures, missing/malformed role defaults, and unexpected failures
-    (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `INTERNAL_ERROR`).
+  - `500`: host mutation failures, missing/malformed role defaults, an unusable account-slot
+    counter, and unexpected failures (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
+    `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`).
+- `ACCOUNT_SLOT_UNAVAILABLE` is returned by `POST /users` and `POST /clients` when an account
+  needs a new account slot and `Counters/accountSlots.nextSlot` cannot supply one: the counter
+  document is missing, malformed, exhausted, or has regressed to at or below a slot a live account
+  already holds. Allocation fails closed rather than deriving a slot from the live `Users`
+  collection, which would re-issue a hard-deleted account's slot. Nothing is written when it is
+  raised - no user, slot, client, tunnel index, or counter - so the request is safe to retry once
+  an operator restores the counter. It is an operational condition, not a client error: see
+  "Counter lifecycle" in
+  [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) and the
+  counter-loss runbook in [docs/service-operations.md](service-operations.md).
 
 ## Enums
 

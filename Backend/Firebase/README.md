@@ -40,6 +40,13 @@ hosts key the client-to-client isolation filter on instead of the uid - see
 [docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 It is allocated once, in a transaction, from `Counters/accountSlots`, the sole allocator document
 (document id always `accountSlots`); no client, including admins, may read or write it directly.
+`nextSlot` is the authoritative allocation watermark: always strictly above every slot ever issued,
+Admin-SDK-only, and never lowered or deleted. Deleting a user hard-deletes `Users/{uid}` and its
+slot with it, so the counter is the only remaining record that the slot was issued - a lost or
+lowered counter fails allocation closed (`ACCOUNT_SLOT_UNAVAILABLE`) and must be restored from a
+backup rather than recomputed from live users. See
+[releases/access-control-lists/README.md](../../releases/access-control-lists/README.md), "Counter
+lifecycle".
 
 Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
 only, written by each region's host via the Admin SDK after a policy reconcile pass, describing

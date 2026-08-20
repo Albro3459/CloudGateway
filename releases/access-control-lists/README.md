@@ -15,9 +15,12 @@ review findings before any region enforces the nftables ACL
   already exists, naive allocation would hand out a slot that's already in
   use, and the nftables policy would then treat two different accounts as one
   tenant. This migration establishes the counter strictly above every
-  existing valid slot before the stricter runtime invariant (owned by a
-  separate change to `Backend/API/src/repository.py` /
-  `Backend/API/src/firebase.py`) takes effect.
+  existing valid slot before the stricter runtime invariant
+  (`Backend/API/src/repository.py next_account_slot` /
+  `Backend/API/src/firebase.py _allocate_account_slot`) takes effect. That
+  runtime allocator now treats the counter as the *only* allocation
+  authority and fails closed when it is missing, malformed, or regressed -
+  read "Counter lifecycle" below before running this script.
 
 It also carries the **Wave 2 fleet-wide policy-row preflight**
 (`TODO/account-scoped-acl.md`, "Wave 2 - policy input normalization and
@@ -47,6 +50,51 @@ What it does cover:
   sits strictly above every slot already assigned, anywhere - including
   slots on non-provisioned ("orphaned") `Users` documents, since those still
   occupy slot space on the wire.
+
+## Counter lifecycle
+
+`Counters/accountSlots.nextSlot` is the **authoritative, monotonically
+increasing allocation watermark**: it is always strictly greater than every
+slot ever issued, and it only ever moves up.
+
+A live scan of `Users` is *not* an equivalent record. Deleting an account
+hard-deletes `Users/{uid}`, and the slot lives nowhere else, so a slot issued
+to a deleted account is invisible to any live scan. Rebuilding the counter
+from live users would therefore hand a deleted account's slot to a new one,
+and the nftables ACL would treat the new account as the old tenant for as
+long as any stale mapping survives.
+
+That gives this script two distinct modes, and they must not be confused:
+
+* **Initial pre-activation seed** (`--seed-initial-counter`). The one-time
+  run, before any region enforces the ACL, that creates the counter above
+  every slot the live fleet already holds. Deriving the counter from live
+  users is only sound here, and only while it is still true that no account
+  that ever held a slot has been deleted. This flag is the operator's
+  explicit assertion of that precondition; the script cannot verify it.
+* **Post-activation counter loss or corruption.** Once slots are being
+  allocated, a missing or malformed counter is *lost history*, not something
+  to recompute. The script blocks with `counter unseeded` and the runtime
+  allocator returns `ACCOUNT_SLOT_UNAVAILABLE` (HTTP 500) rather than
+  guessing. Recover by restoring `Counters/accountSlots` from the backup
+  taken before the incident, or - if no backup covers it - by deliberately
+  setting `nextSlot` above every slot that could ever have been issued, using
+  whatever record of past allocation exists (backups, exports). Never pass
+  `--seed-initial-counter` to "fix" this: it re-derives from live users and
+  can re-issue a deleted account's slot. Provisioning stays blocked, and
+  therefore safe, until the counter is repaired.
+
+A valid counter that has moved *backward* - one at or below a slot some live
+account already holds - blocks with `counter regressed` and is not
+overridable by any flag. It proves the counter no longer reflects what was
+issued (a stale restore, or a hand edit), and advancing it from the live
+maximum would silently re-issue every slot in between. Resolve it the same
+way as counter loss: restore the counter, or set it above every slot that
+could have been issued.
+
+Given a valid counter, new slots in this migration start at
+`max(highest live slot + 1, nextSlot)`. A gap below a valid counter is
+historical allocation, never free capacity.
 
 ## Prerequisites
 
@@ -91,16 +139,26 @@ credentials path, its contents, or any other path-derived value.
    validation failures and zero policy-row preflight failures. If any
    category is nonzero, stop - see "Validation failures" and "Fleet-wide
    policy-row preflight" below.
-3. **Apply:**
+
+   If the counter document does not exist yet (`counter before: missing`) the
+   dry-run blocks with `counter unseeded: 1`. That is expected on the very
+   first, pre-activation run: re-run the dry-run with
+   `--seed-initial-counter` once you have confirmed the precondition in
+   "Counter lifecycle" above, and keep that flag for the apply step. It is
+   not the right response to a counter that went missing after allocation
+   started.
+3. **Apply** (add `--seed-initial-counter` only if step 2 required it):
 
    ```sh
    python3 releases/access-control-lists/backfill_account_slots.py \
      --credentials /path/to/service-account.json --apply
    ```
 
-4. **Rerun the dry-run** and require it to report zero newly-assigned slots
-   and an unchanged counter (a no-op). If it isn't a no-op, do not proceed -
-   investigate before enabling enforcement on any region.
+4. **Rerun the dry-run** *without* `--seed-initial-counter` and require it to
+   report zero newly-assigned slots and an unchanged counter (a no-op). The
+   flag is no longer needed once the counter exists, and dropping it proves
+   the counter is now valid and above every live slot. If it isn't a no-op,
+   do not proceed - investigate before enabling enforcement on any region.
 
 ## Output
 
@@ -136,11 +194,20 @@ refuses to write anything at all, in both dry-run and `--apply`.
   wire, so it blocks the migration. Confirm whether the account should be
   provisioned (add a `UserRoles` document) or whether the stray slot should
   be cleared.
-* **Overflow** - an account needs a new slot but the highest assigned slot
-  is already at (or would exceed) `2**32 - 1` when adding the required
-  count of new assignments. This should not happen in practice at current
-  fleet scale; if it does, it needs design attention before this migration
-  can proceed.
+* **Overflow** - an account needs a new slot but the allocation floor (the
+  counter, or the highest assigned slot when seeding) is already at, or
+  would exceed, `2**32 - 1` when adding the required count of new
+  assignments. This should not happen in practice at current fleet scale; if
+  it does, it needs design attention before this migration can proceed.
+* **Counter unseeded** - `Counters/accountSlots.nextSlot` is missing or
+  malformed and `--seed-initial-counter` was not passed. See "Counter
+  lifecycle" above: this is either the expected first pre-activation run
+  (re-run with the flag) or post-activation counter loss (restore the
+  counter; do not pass the flag).
+* **Counter regressed** - a valid `nextSlot` sits at or below a slot a live
+  account already holds, so the counter has moved backward and can no longer
+  prove which slots were issued. Not overridable by any flag; see "Counter
+  lifecycle" above.
 
 After remediating, rerun the dry-run from scratch - the validation categories
 above are recomputed fresh each run.
@@ -204,10 +271,13 @@ validation categories, these are recomputed fresh each run and never mutate
 Firestore transactions cap out at 500 document writes. This script uses one
 transaction for the whole migration (see "How apply works" below) and
 refuses to run if the plan would need more than 400 writes (counting the
-counter document). If you ever see this refusal, split the migration into
-multiple runs during a controlled maintenance window rather than raising the
-limit - a single all-or-nothing transaction is what keeps the migration
-impossible to apply "halfway."
+counter document). Both enforcement points - the CLI pre-check before any
+transaction is opened, and the check inside the transaction before its first
+write - use the same `plan_write_count()`, so they cannot disagree about the
+boundary. If you ever see this refusal, split the migration into multiple
+runs during a controlled maintenance window rather than raising the limit - a
+single all-or-nothing transaction is what keeps the migration impossible to
+apply "halfway."
 
 ## How apply works
 
@@ -229,7 +299,10 @@ Slots are never reused, by design (`TODO/account-scoped-acl.md`). That means
 the safe way to recover from any bad partial state is **not** to hand-edit
 `Users.accountSlot` or `Counters/accountSlots.nextSlot` to "undo" an
 assignment - a hand edit that clears or lowers a slot risks a later
-allocation reusing it.
+allocation reusing it. Lowering or deleting `nextSlot` is the worst case:
+it is the only record that a hard-deleted account's slot was ever issued,
+it is writable by the Admin SDK only, and provisioning fails closed until it
+is restored (see "Counter lifecycle" above).
 
 If something goes wrong:
 

@@ -14,6 +14,14 @@ feature ships would otherwise never get a slot, and (2) the Counters/
 accountSlots counter document needs to exist and sit strictly above every
 already-assigned slot before runtime allocation can safely fail closed.
 
+Gap (2) is a one-time *pre-activation seed*, not a repair tool. Once slots
+are being allocated, Counters/accountSlots.nextSlot is the only record that a
+hard-deleted account ever held a slot, so a live Users scan can no longer
+reconstruct it. Deriving the counter from live users therefore requires the
+explicit --seed-initial-counter flag, and a valid counter that has regressed
+below a live slot blocks outright; see compute_plan and the README's "Counter
+lifecycle" section.
+
 This script is standalone by design: it does NOT import from Backend/API. It
 duplicates constants that must stay in sync with the source of truth:
 
@@ -101,10 +109,24 @@ class PlanFailures:
     duplicate_slot: int = 0
     orphaned_slot: int = 0
     overflow: int = 0
+    # The counter is missing/malformed and --seed-initial-counter was not
+    # passed. Deriving it from live users is only safe as a one-time
+    # pre-activation seed; see compute_plan and the README.
+    counter_unseeded: int = 0
+    # A valid counter sits at or below a live assigned slot, so it has moved
+    # backward and can no longer prove which slots were issued.
+    counter_regressed: int = 0
 
     @property
     def blocking(self) -> bool:
-        return bool(self.malformed_slot or self.duplicate_slot or self.orphaned_slot or self.overflow)
+        return bool(
+            self.malformed_slot
+            or self.duplicate_slot
+            or self.orphaned_slot
+            or self.overflow
+            or self.counter_unseeded
+            or self.counter_regressed
+        )
 
 
 @dataclass(frozen=True)
@@ -128,6 +150,8 @@ def compute_plan(
     provisioned_uids: Iterable[str],
     user_slots: Mapping[str, Any],
     raw_next_slot: Any,
+    *,
+    allow_initial_seed: bool = False,
 ) -> Plan:
     """Pure planning function - no I/O.
 
@@ -137,6 +161,24 @@ def compute_plan(
         malformed ones). Absent entries mean "no slot recorded".
     raw_next_slot: raw Counters/accountSlots.nextSlot value, or None if the
         counter document/field doesn't exist.
+    allow_initial_seed: the operator's explicit --seed-initial-counter
+        assertion that this run is the one-time pre-activation seed and no
+        slot has ever been issued to an account that is no longer live. Only
+        then may a missing/malformed counter be derived from the live scan.
+
+    Counter lifecycle (see the README's "Counter lifecycle" section):
+
+      * valid counter - authoritative. New slots start at
+        max(max_live_slot + 1, counter_before): a gap below a valid counter is
+        historical allocation (a hard-deleted account's slot lives on nowhere
+        else) and must never be reused.
+      * valid counter at or below a live slot - `counter_regressed`. It moved
+        backward, so it can no longer prove what was issued; advancing it from
+        the live max would silently re-issue any slot in between. Blocks.
+      * missing/malformed counter - only derivable from live users during the
+        initial pre-activation seed, hence `allow_initial_seed`. Otherwise
+        `counter_unseeded` blocks: after activation this is counter loss, a
+        restore-from-backup situation, not a recompute.
     """
     provisioned = set(provisioned_uids)
 
@@ -179,17 +221,6 @@ def compute_plan(
     # occupies slot space, so new assignments must start above all of them.
     base = max(all_valid_slots) if all_valid_slots else 0
 
-    overflow = 0
-    assignments: dict[str, int] = {}
-    for offset, uid in enumerate(missing_uids, start=1):
-        candidate = base + offset
-        if candidate > MAX_ACCOUNT_SLOT:
-            overflow += 1
-        else:
-            assignments[uid] = candidate
-
-    highest_after = max(assignments.values()) if assignments else base
-
     counter_is_valid = _is_valid_slot(raw_next_slot)
     if raw_next_slot is None:
         counter_state = "missing"
@@ -199,11 +230,33 @@ def compute_plan(
         counter_state = "malformed"
     counter_before = raw_next_slot if counter_is_valid else None
 
+    counter_regressed = 1 if counter_before is not None and counter_before <= base else 0
+    counter_unseeded = 1 if counter_before is None and not allow_initial_seed else 0
+
+    # The counter is the authoritative watermark, so it - not the live max -
+    # is the floor for new slots. The max() is belt-and-braces: a valid
+    # counter at or below `base` is already refused as regressed above, so
+    # counter_before always wins when it is present.
+    first_candidate = max(base + 1, counter_before) if counter_before is not None else base + 1
+
+    overflow = 0
+    assignments: dict[str, int] = {}
+    for offset, uid in enumerate(missing_uids):
+        candidate = first_candidate + offset
+        if candidate > MAX_ACCOUNT_SLOT:
+            overflow += 1
+        else:
+            assignments[uid] = candidate
+
+    highest_after = max(assignments.values()) if assignments else base
+
     failures = PlanFailures(
         malformed_slot=malformed_slot,
         duplicate_slot=duplicate_slot,
         orphaned_slot=orphaned_slot,
         overflow=overflow,
+        counter_unseeded=counter_unseeded,
+        counter_regressed=counter_regressed,
     )
     ok = not failures.blocking
 
@@ -232,6 +285,15 @@ def compute_plan(
     )
 
 
+def plan_write_count(plan: Plan) -> int:
+    """Documents this plan writes inside the single apply transaction: one per
+    newly assigned Users/{uid}, plus the Counters/accountSlots write when the
+    counter moves. The one place this is counted - main()'s pre-check and
+    _apply_within_transaction's in-transaction check must never disagree about
+    the boundary, and omitting the counter write is the easy off-by-one."""
+    return len(plan.assignments) + (1 if plan.counter_after is not None else 0)
+
+
 def format_report(plan: Plan, row_result: "RowPreflightResult", mode: str) -> str:
     """Aggregate-only report text. Never includes a uid, email, address, key,
     token, or configuration - only fixed labels and counts/slot numbers."""
@@ -249,6 +311,8 @@ def format_report(plan: Plan, row_result: "RowPreflightResult", mode: str) -> st
         f"validation failures - duplicate slot: {plan.failures.duplicate_slot}",
         f"validation failures - orphaned slot: {plan.failures.orphaned_slot}",
         f"validation failures - overflow: {plan.failures.overflow}",
+        f"validation failures - counter unseeded: {plan.failures.counter_unseeded}",
+        f"validation failures - counter regressed: {plan.failures.counter_regressed}",
         f"policy row preflight: {'ok' if row_result.ok else 'blocked'}",
         f"policy rows checked: {row_result.rows_checked}",
         f"policy rows valid: {row_result.rows_valid}",
@@ -529,6 +593,8 @@ def _apply_within_transaction(
     db: Any,
     preflight_plan: Plan,
     server_timestamp: Any,
+    *,
+    allow_initial_seed: bool = False,
 ) -> Plan:
     """Re-read state inside the transaction, recompute the plan, and compare
     it to the preflight plan before writing anything. Safe to invoke
@@ -540,7 +606,7 @@ def _apply_within_transaction(
     _run_apply().
     """
     provisioned_uids, user_slots, raw_next_slot = _read_state(db, transaction)
-    plan = compute_plan(provisioned_uids, user_slots, raw_next_slot)
+    plan = compute_plan(provisioned_uids, user_slots, raw_next_slot, allow_initial_seed=allow_initial_seed)
 
     if plan != preflight_plan:
         raise MigrationAbortedError(
@@ -549,8 +615,7 @@ def _apply_within_transaction(
     if not plan.ok:
         raise MigrationAbortedError("Validation failed inside the transaction; aborting with zero writes.")
 
-    write_count = len(plan.assignments) + (1 if plan.counter_after is not None else 0)
-    if write_count > MAX_TRANSACTION_WRITES:
+    if plan_write_count(plan) > MAX_TRANSACTION_WRITES:
         raise MigrationAbortedError(
             "Plan write count exceeds the safety margin; aborting with zero writes."
         )
@@ -570,7 +635,7 @@ def _apply_within_transaction(
     return plan
 
 
-def _run_apply(db: Any, preflight_plan: Plan) -> Plan:
+def _run_apply(db: Any, preflight_plan: Plan, *, allow_initial_seed: bool = False) -> Plan:
     """Real-SDK apply path: wraps _apply_within_transaction in an actual
     Firestore transaction. Lazily imported so the module (and the test
     module that loads it) never requires firebase_admin/google-cloud-
@@ -579,7 +644,13 @@ def _run_apply(db: Any, preflight_plan: Plan) -> Plan:
 
     @transactional
     def _txn(transaction: Any) -> Plan:
-        return _apply_within_transaction(transaction, db, preflight_plan, SERVER_TIMESTAMP)
+        return _apply_within_transaction(
+            transaction,
+            db,
+            preflight_plan,
+            SERVER_TIMESTAMP,
+            allow_initial_seed=allow_initial_seed,
+        )
 
     return _txn(db.transaction())
 
@@ -619,6 +690,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Write the computed plan. Without this flag, only reports what would happen.",
     )
+    parser.add_argument(
+        "--seed-initial-counter",
+        action="store_true",
+        help="One-time pre-activation seed only: allow a missing or malformed "
+        "Counters/accountSlots.nextSlot to be derived from the live Users scan. "
+        "Only valid when no account slot has ever been issued to an account that "
+        "is no longer live. After activation, a lost counter must be restored "
+        "from backup instead - see the README's counter lifecycle section.",
+    )
     args = parser.parse_args(argv)
 
     credentials_path = _resolve_credentials_path(args.credentials)
@@ -642,7 +722,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Failed to read Firestore state: {type(exc).__name__}", file=sys.stderr)
         return 2
 
-    plan = compute_plan(provisioned_uids, user_slots, raw_next_slot)
+    plan = compute_plan(
+        provisioned_uids, user_slots, raw_next_slot, allow_initial_seed=args.seed_initial_counter
+    )
 
     try:
         raw_rows, malformed_document_count = _read_policy_rows(db)
@@ -667,7 +749,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    write_count = len(plan.assignments) + (1 if plan.counter_after is not None else 0)
+    write_count = plan_write_count(plan)
     if write_count > MAX_TRANSACTION_WRITES:
         print(format_report(plan, row_result, mode=mode))
         print(
@@ -683,7 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        applied_plan = _run_apply(db, plan)
+        applied_plan = _run_apply(db, plan, allow_initial_seed=args.seed_initial_counter)
     except MigrationAbortedError as exc:
         # MigrationAbortedError text is aggregate-only by construction (see the
         # class docstring), so it is safe to surface verbatim.

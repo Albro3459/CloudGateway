@@ -128,7 +128,7 @@ class AccountSlotUnavailableError(ApiError):
     code = ErrorCode.ACCOUNT_SLOT_UNAVAILABLE
     default_message = (
         "Account slot allocation is unavailable. The account-scoped ACL slot counter is "
-        "missing, corrupt, or exhausted and requires operator intervention."
+        "missing, corrupt, regressed, or exhausted and requires operator intervention."
     )
 
 
