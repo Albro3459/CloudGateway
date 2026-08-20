@@ -53,9 +53,18 @@ def bare_tunnel_address(value: object, version: int) -> str | None:
 def _infra_address(cidr: object, version: int) -> str | None:
     """The region's interface address: network address + 1 of its tunnel CIDR
     (see TODO/account-scoped-acl.md, "Filter design" - cg_infra). Malformed,
-    wrong-family, or out-of-aggregate CIDRs are skipped, matching
-    desired_mesh_peers's tolerance - a garbage region CIDR must never put a
-    public address in cg_infra."""
+    wrong-family, unsupported-prefix, or out-of-aggregate CIDRs are skipped,
+    matching desired_mesh_peers's tolerance - a garbage region CIDR must never
+    put a public address in cg_infra.
+
+    cg_infra bypasses the account-slot boundary, so this is an authorization
+    boundary in its own right and enforces the region-network contract even
+    though registration already validates it: only the supported /24 and /64
+    widths are accepted, and the derived address must stay inside both the
+    region network and the fleet aggregate. Without the width check a stored
+    "10.0.5.5/32" would yield 10.0.5.6 - outside its own network, inside the
+    aggregate, and possibly a real client's address.
+    """
     if not isinstance(cidr, str) or not cidr:
         return None
     try:
@@ -64,12 +73,14 @@ def _infra_address(cidr: object, version: int) -> str | None:
         return None
     if network.version != version:
         return None
+    if network.prefixlen != (24 if version == 4 else 64):
+        return None
     try:
         address = network.network_address + 1
     except ValueError:
         return None
     aggregate = _TUNNEL_AGGREGATE_V4 if version == 4 else _TUNNEL_AGGREGATE_V6
-    if address not in aggregate:
+    if address not in network or address not in aggregate:
         return None
     return str(address)
 

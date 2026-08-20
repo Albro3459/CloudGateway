@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,10 @@ PERSISTENT_KEEPALIVE_SECONDS = 25
 # retry budget.
 COMMAND_TIMEOUT_SECONDS = 20.0
 ENDPOINT_RESOLVE_TIMEOUT_SECONDS = 5.0
+# One resolver worker per process, and a semaphore that admits exactly one
+# lookup at a time without queueing - see _resolve_endpoint_addresses.
+_RESOLVER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wg-resolve")
+_RESOLVER_GATE = threading.BoundedSemaphore(1)
 _INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_=+.-]{1,15}$")
 _HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -471,13 +476,36 @@ class LocalWireGuardManager(WireGuardManager):
                     )
                 )
 
-        route_changes = self._reconcile_mesh_routes(routed_mesh, known_mesh_networks)
+        # Route reconciliation is part of the same partial-failure model as the
+        # mesh apply phase above: letting it throw straight out would skip
+        # PEER_SYNC_PARTIAL and replace an earlier peer failure at the caller
+        # boundary, hiding it entirely. The first failure stays primary; a
+        # route-only failure becomes primary itself.
+        route_changes: list[RouteChange] = []
+        route_error: WireGuardApplyFailedError | None = None
+        try:
+            route_changes = self._reconcile_mesh_routes(routed_mesh, known_mesh_networks)
+        except WireGuardApplyFailedError as exc:
+            route_error = exc
+
         result = PeerSyncResult(
             changes=tuple(changes),
             mesh_changes=tuple(mesh_changes),
             mesh_applied_peers=tuple(applied_mesh),
             route_changes=tuple(route_changes),
         )
+        if route_error is not None:
+            # The raised error can only carry one failure, so the route failure
+            # gets its own structured record - otherwise a peer failure raised
+            # as primary would be the only thing the caller ever sees. Interface
+            # only; no peer keys, addresses, or route CIDRs.
+            log_event(
+                logger,
+                Event.MESH_ROUTE_RECONCILE_FAILED,
+                level=logging.ERROR,
+                interface=self.interface,
+            )
+        apply_error = apply_error or route_error
         if apply_error is not None:
             # The caller only sees the exception, so the changes that did land -
             # notably client peers removed before the mesh phase - would otherwise
@@ -494,6 +522,7 @@ class LocalWireGuardManager(WireGuardManager):
                 mesh_removed=result.mesh_removed,
                 routes_added=result.routes_added,
                 routes_removed=result.routes_removed,
+                route_reconciliation_failed=route_error is not None,
             )
             raise apply_error
 
@@ -721,19 +750,31 @@ def _parse_optional_int(value: str) -> int | None:
 
 
 def _resolve_endpoint_addresses(host: str) -> Sequence[str]:
-    # getaddrinfo takes no timeout, so it runs in a worker thread that is
-    # abandoned (never joined) once the bound expires: this call happens under the
-    # sync lock and must not wait out the resolver's own retry budget. A timed-out
-    # lookup reads as unresolved, which only forces a re-apply of that mesh peer.
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wg-resolve")
+    # getaddrinfo takes no timeout, so it runs in a worker thread and the caller
+    # gives up on the bound: this call happens under the sync lock and must not
+    # wait out the resolver's own retry budget. A timed-out lookup reads as
+    # unresolved, which only forces a re-apply of that mesh peer.
+    #
+    # A running future cannot be cancelled and shutdown(wait=False) only frees
+    # resources once pending work finishes, so the caller's timeout is not the
+    # resolver's timeout: a per-call executor left one live thread behind per
+    # stuck lookup, and repeated syncs grew that without bound. One process-wide
+    # single-worker executor plus non-queueing admission control caps the damage
+    # at one occupied worker and zero queued lookups. The gate is released from
+    # the future's completion callback, not when the caller stops waiting, so a
+    # wedged libc call keeps admission closed until it actually returns.
+    if not _RESOLVER_GATE.acquire(blocking=False):
+        return ()
     try:
-        future = executor.submit(socket.getaddrinfo, host, None, type=socket.SOCK_DGRAM)
-        try:
-            addresses = future.result(timeout=ENDPOINT_RESOLVE_TIMEOUT_SECONDS)
-        except (OSError, FutureTimeoutError):
-            return ()
-    finally:
-        executor.shutdown(wait=False)
+        future = _RESOLVER_EXECUTOR.submit(socket.getaddrinfo, host, None, type=socket.SOCK_DGRAM)
+    except BaseException:
+        _RESOLVER_GATE.release()
+        raise
+    future.add_done_callback(lambda _future: _RESOLVER_GATE.release())
+    try:
+        addresses = future.result(timeout=ENDPOINT_RESOLVE_TIMEOUT_SECONDS)
+    except (OSError, FutureTimeoutError):
+        return ()
     normalized: set[str] = set()
     for entry in addresses:
         address = entry[4][0]

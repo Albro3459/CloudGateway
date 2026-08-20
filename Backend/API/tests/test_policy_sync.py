@@ -328,6 +328,51 @@ def test_desired_policy_dedupes_infra_addresses_across_regions():
     assert desired.infra_v6 == ("fd42:42:42::1",)
 
 
+@pytest.mark.parametrize(
+    "network_v4, network_v6",
+    [
+        ("10.0.5.0/31", "fd42:42:42:5::/127"),
+        ("10.0.5.5/32", "fd42:42:42:5::5/128"),
+        ("10.0.5.0/32", "fd42:42:42:5::/128"),
+        ("10.0.0.0/16", "fd42:42:42::/48"),
+    ],
+)
+def test_desired_policy_rejects_unsupported_region_prefixes_for_infra(network_v4, network_v6):
+    # Defense in depth: registration validates the /24 + /64 region contract,
+    # but cg_infra bypasses the account-slot boundary, so desired_policy must
+    # stay safe for a Firestore document that predates or bypassed it. A /32
+    # like 10.0.5.5 derives 10.0.5.6 - inside the aggregate, outside its own
+    # network, and possibly a real client's address - so containment alone is
+    # not enough; the supported width is enforced too.
+    repository = make_repository()
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4=network_v4,
+        tunnel_network_v6=network_v6,
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ()
+    assert desired.infra_v6 == ()
+
+
+def test_desired_policy_accepts_the_supported_region_prefix_widths():
+    # The control for the parametrized rejections above: the exact /24 and /64
+    # widths still emit network-address-plus-one.
+    repository = make_repository()
+    repository.regions[REGION_ID] = replace(
+        enabled_region(),
+        tunnel_network_v4="10.0.9.0/24",
+        tunnel_network_v6="fd42:42:42:9::/64",
+    )
+
+    desired = desired_policy(repository)
+
+    assert desired.infra_v4 == ("10.0.9.1",)
+    assert desired.infra_v6 == ("fd42:42:42:9::1",)
+
+
 def test_desired_policy_rejects_infra_address_outside_tunnel_aggregate():
     repository = make_repository()
     # A garbage region CIDR must never put a public address in cg_infra.

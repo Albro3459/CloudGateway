@@ -1,10 +1,19 @@
 import logging
+import socket
+import threading
+import time
 
 import pytest
 
+from src import wireguard
 from src.enums import OperationResult
 from src.errors import SyncInProgressError, WireGuardApplyFailedError
-from src.wireguard import LocalWireGuardManager, MeshPeer, _parse_dump_snapshots
+from src.wireguard import (
+    LocalWireGuardManager,
+    MeshPeer,
+    _parse_dump_snapshots,
+    _resolve_endpoint_addresses,
+)
 
 from .fakes import (
     FAKE_MESH_PUBLIC_KEY,
@@ -842,6 +851,87 @@ def test_mesh_peer_removal_failure_during_rollback_converges_next_sync(tmp_path)
     assert runner.routes == {4: {}, 6: {}}
 
 
+def test_peer_failure_stays_primary_when_route_reconciliation_also_fails(tmp_path, caplog):
+    # Two failures in one pass: the route throw used to exit before
+    # PEER_SYNC_PARTIAL and replace the earlier peer failure at the caller
+    # boundary, so the peer failure disappeared entirely.
+    runner = FakeWireGuardCommandRunner(
+        fail_set_endpoint_hosts={"wg.us-broken-1.example.com"},
+        fail_route_replace_versions={6},
+    )
+    manager = make_manager(tmp_path, runner)
+    broken = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+    healthy = make_mesh_peer(
+        public_key=FAKE_MESH_PUBLIC_KEY_2,
+        endpoint_host="wg.us-other-2.example.com",
+        allowed_network_v4="10.0.2.0/24",
+        allowed_network_v6="fd42:42:42:2::/64",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+            manager.sync_peers({}, mesh=[broken, healthy])
+
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["meshApplied"] == 1
+    assert partial[0].event_fields["routeReconciliationFailed"] is True
+    # The route failure is not the raised error, so it needs its own record.
+    assert "mesh_route_reconcile_failed" in caplog.text
+
+
+def test_route_only_failure_is_primary_and_still_emits_the_partial_event(tmp_path, caplog):
+    runner = FakeWireGuardCommandRunner(fail_route_replace_versions={6})
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer()
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError, match="route apply failed"):
+            manager.sync_peers({}, mesh=[peer])
+
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["meshApplied"] == 1
+    assert partial[0].event_fields["routeReconciliationFailed"] is True
+    assert "mesh_route_reconcile_failed" in caplog.text
+
+
+def test_peer_only_failure_reports_no_route_reconciliation_failure(tmp_path, caplog):
+    runner = FakeWireGuardCommandRunner(fail_set_endpoint_hosts={"wg.us-broken-1.example.com"})
+    manager = make_manager(tmp_path, runner)
+    peer = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+
+    with caplog.at_level(logging.WARNING, logger="src.wireguard"):
+        with pytest.raises(WireGuardApplyFailedError, match="mesh peer apply failed"):
+            manager.sync_peers({}, mesh=[peer])
+
+    partial = [record for record in caplog.records if record.message == "peer_sync_partial"]
+    assert len(partial) == 1
+    assert partial[0].event_fields["routeReconciliationFailed"] is False
+    assert "mesh_route_reconcile_failed" not in caplog.text
+
+
+def test_both_failures_converge_on_a_later_healthy_pass(tmp_path):
+    runner = FakeWireGuardCommandRunner(
+        fail_set_endpoint_hosts={"wg.us-broken-1.example.com"},
+        fail_route_replace_versions={6},
+    )
+    manager = make_manager(tmp_path, runner)
+    broken = make_mesh_peer(endpoint_host="wg.us-broken-1.example.com")
+
+    with pytest.raises(WireGuardApplyFailedError):
+        manager.sync_peers({}, mesh=[broken])
+
+    runner.fail_set_endpoint_hosts.clear()
+    runner.fail_route_replace_versions.clear()
+    result = manager.sync_peers({}, mesh=[broken])
+
+    assert result.mesh_applied == 1
+    assert result.routes_added == 2
+    assert runner.routes[4] == {"10.0.1.0/24": "static"}
+    assert runner.routes[6] == {"fd42:42:42:1::/64": "static"}
+
+
 def test_route_add_failure_after_peer_mutation_repairs_on_next_sync(tmp_path):
     runner = FakeWireGuardCommandRunner(fail_route_replace_versions={6})
     manager = make_manager(tmp_path, runner)
@@ -889,3 +979,80 @@ def test_route_removal_failure_preserves_partial_state_until_next_rollback_sync(
     assert result.routes_removed == expected_removed
     assert runner.peers == {}
     assert runner.routes == {4: {}, 6: {}}
+
+
+# --- Endpoint resolution ----------------------------------------------------
+
+
+def _addrinfo(address):
+    # (family, type, proto, canonname, sockaddr); only sockaddr[0] is read.
+    return (socket.AF_INET, socket.SOCK_DGRAM, 0, "", (address, 0))
+
+
+def test_endpoint_resolution_normalizes_addresses_and_skips_unusable_entries(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            _addrinfo("203.0.113.10"),
+            _addrinfo("2001:0db8:0000::1"),
+            _addrinfo("Wg.Example.COM."),
+            _addrinfo(None),  # non-str sockaddr address: skipped, never crashes
+            _addrinfo("203.0.113.10"),  # duplicate collapses
+        ],
+    )
+
+    # Sorted for a stable comparison against the live peer snapshot.
+    assert _resolve_endpoint_addresses("wg.example.com") == (
+        "2001:db8::1",
+        "203.0.113.10",
+        "wg.example.com",
+    )
+
+
+def test_endpoint_resolution_reports_a_resolver_error_as_unresolved(monkeypatch):
+    def failing(*args, **kwargs):
+        raise OSError("resolver unavailable")
+
+    monkeypatch.setattr(socket, "getaddrinfo", failing)
+
+    assert _resolve_endpoint_addresses("wg.example.com") == ()
+
+
+def test_stuck_resolver_occupies_one_worker_and_queues_no_further_lookups(monkeypatch):
+    # A running getaddrinfo cannot be cancelled and shutdown(wait=False) only
+    # frees resources once it finishes, so the caller's timeout is not the
+    # resolver's timeout. Admission control - not a per-call executor - is what
+    # keeps repeated syncs from growing resolver threads without bound.
+    monkeypatch.setattr(wireguard, "ENDPOINT_RESOLVE_TIMEOUT_SECONDS", 0.05)
+    blocked = threading.Event()
+    calls = []
+
+    def blocking(*args, **kwargs):
+        calls.append(args)
+        blocked.wait(30)
+        return [_addrinfo("203.0.113.10")]
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocking)
+    try:
+        assert _resolve_endpoint_addresses("wg.example.com") == ()
+        # Every later lookup is refused at the gate instead of queueing another
+        # future behind the wedged one.
+        for _ in range(5):
+            assert _resolve_endpoint_addresses("wg.example.com") == ()
+        assert len(calls) == 1
+        assert len([thread for thread in threading.enumerate() if thread.name.startswith("wg-resolve")]) <= 1
+    finally:
+        blocked.set()
+
+    # Admission reopens only once the wedged call actually returns, not when the
+    # caller stopped waiting for it.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [_addrinfo("203.0.113.11")])
+    deadline = time.monotonic() + 10
+    resolved = ()
+    while not resolved and time.monotonic() < deadline:
+        resolved = _resolve_endpoint_addresses("wg.example.com")
+        if not resolved:
+            time.sleep(0.01)
+
+    assert resolved == ("203.0.113.11",)

@@ -28,7 +28,7 @@ One-directional, Firebase to server. After a pass, the live peer set equals exac
 
 The sync never creates client docs from server state, and there is no per-peer route deletion path for mesh peers. An unknown server peer is either leftover drift or tampering; both deserve removal.
 
-A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete. `cloudgateway-sync-peers` (boot and post-registration) waits for that lock; `POST /api/admin/sync` takes it non-blocking and answers `409 SYNC_IN_PROGRESS` instead of queueing, so admin retries cannot pile up on the host. Every `wg`/`ip` call and the endpoint DNS lookup are individually time-bounded so a wedged call cannot pin the lock.
+A missing region doc or an empty client list is a successful empty sync (the live peer set is cleared). The sync takes the same `/run/cloudgateway-wireguard.lock` flock as the API, so it cannot interleave with an in-flight create/delete. `cloudgateway-sync-peers` (boot and post-registration) waits for that lock; `POST /api/admin/sync` takes it non-blocking and answers `409 SYNC_IN_PROGRESS` instead of queueing, so admin retries cannot pile up on the host. Every `wg`/`ip` call and the endpoint DNS lookup are individually time-bounded so a wedged call cannot pin the lock. `getaddrinfo` cannot itself be cancelled, so the caller's bound only frees the caller: lookups run on one process-wide resolver worker behind a non-queueing gate, and while a lookup is stuck every further lookup returns unresolved immediately (forcing a re-apply of that mesh peer next pass) instead of stacking up threads.
 
 ## Mesh Route Reconciliation
 
@@ -38,6 +38,7 @@ Mesh peers need routes, not just `wg set` allowed-ips: `wg-quick` only auto-inst
 * Skipped unconditionally: this region's own on-link tunnel network, and any route with `proto kernel`.
 * Everything else in scope that isn't a currently-desired mesh CIDR is deleted. A deleted route whose CIDR doesn't belong to any current region doc is logged as `mesh_route_reclaimed` (WARNING) - the operator should treat that as a signal a region doc was deleted or rewritten out from under a live route.
 * Desired mesh CIDRs are always `ip route replace`d (idempotent), matching the always-re-apply behavior for mesh peers.
+* A route command failure is part of the same partial-failure model as the mesh peer apply phase: the pass still emits one `peer_sync_partial` line (with `routeReconciliationFailed: true`) plus a `mesh_route_reconcile_failed` line, and an earlier mesh-peer failure stays the error the pass exits with. A route-only failure is that error itself. Both repair on the next successful pass.
 
 ## The One Firebase Write
 
