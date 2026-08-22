@@ -158,12 +158,13 @@ rows on the same pass, since both reconciles read the same non-active Firestore 
 separate repair path and no retry loop for this case; it is the accepted risk recorded in
 [access-control-list.md](access-control-list.md).
 
-**Open verification item:** nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
+Live-host verification of nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
 across the pre-existing `iptables`/`ip6tables` `FORWARD` chains), the `cg_forward` chain's
-`priority -10` actually running ahead of those chains, and the `ip daddr @cg_tunnel4 ip daddr .
-meta mark != @cg_pairs4` concatenated-set comparison syntax have **not been verified on a real
-host**. This is a required check before rollout - see the checklist in
-[access-control-list.md](access-control-list.md).
+`priority -10` running ahead of those chains, and the `ip daddr @cg_tunnel4 ip daddr . meta mark
+!= @cg_pairs4` concatenated-set comparison is recorded in
+[acl-live-verification.md](acl-live-verification.md). The release checklist there records the
+nft semantics and reachability blockers as closed; rerun that verification when the ruleset,
+kernel/nftables version, or fleet shape changes.
 
 ## Diagnosing Before/After
 
