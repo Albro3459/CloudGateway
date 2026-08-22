@@ -74,7 +74,7 @@ def test_counter_missing_raises_even_with_zero_assigned_slots():
     # An empty fleet is indistinguishable from a fleet whose accounts were all
     # deleted, so seeding at MIN_ACCOUNT_SLOT here could re-issue slot 1.
     # Seeding is an explicit operator action; see
-    # releases/access-control-lists/README.md.
+    # docs/access-control-list.md, "Account slot allocation".
     with pytest.raises(AccountSlotUnavailableError):
         next_account_slot(stored_next_slot=None, assigned_slots=[])
 

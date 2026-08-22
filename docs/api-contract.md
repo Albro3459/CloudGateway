@@ -458,8 +458,7 @@ All controlled failures return this shape:
   collection, which would re-issue a hard-deleted account's slot. Nothing is written when it is
   raised - no user, slot, client, tunnel index, or counter - so the request is safe to retry once
   an operator restores the counter. It is an operational condition, not a client error: see
-  "Counter lifecycle" in
-  [releases/access-control-lists/README.md](../releases/access-control-lists/README.md) and the
+  "Account slot allocation" in [access-control-list.md](access-control-list.md) and the
   counter-loss runbook in [docs/service-operations.md](service-operations.md).
 
 ## Enums

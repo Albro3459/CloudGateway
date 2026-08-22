@@ -162,7 +162,7 @@ export type FirebaseClientDoc = {
 // Users/{uid} is hard-deleted with its accountSlot. Never lower or delete it:
 // allocation fails closed (ACCOUNT_SLOT_UNAVAILABLE) until it is restored,
 // and re-deriving it from live Users would re-issue a deleted account's slot.
-// See releases/access-control-lists/README.md, "Counter lifecycle".
+// See docs/access-control-list.md, "Account slot allocation".
 export type FirebaseCounterDoc = {
     nextSlot: number;
     updatedAt: FirestoreTimestamp;

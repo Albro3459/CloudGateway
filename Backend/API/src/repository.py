@@ -368,7 +368,8 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
       * absent/malformed - doc missing, field missing, non-int, bool, or below
         MIN_ACCOUNT_SLOT. Raises: allocation history is unknowable from here.
         Recovering the counter is a deliberate operator repair, not something
-        runtime can infer; see releases/access-control-lists/README.md.
+        runtime can infer; see docs/service-operations.md, "If the
+        account-slot counter is ever lost or lowered".
 
     `assigned_slots` is only ever used to *disprove* a counter, never to derive
     one. A malformed or duplicated slot on some other user document does not

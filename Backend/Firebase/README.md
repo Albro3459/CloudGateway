@@ -45,8 +45,7 @@ Admin-SDK-only, and never lowered or deleted. Deleting a user hard-deletes `User
 slot with it, so the counter is the only remaining record that the slot was issued - a lost or
 lowered counter fails allocation closed (`ACCOUNT_SLOT_UNAVAILABLE`) and must be restored from a
 backup rather than recomputed from live users. See
-[releases/access-control-lists/README.md](../../releases/access-control-lists/README.md), "Counter
-lifecycle".
+[docs/access-control-list.md](../../docs/access-control-list.md), "Account slot allocation".
 
 Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
 only, written by each region's host via the Admin SDK after a policy reconcile pass, describing

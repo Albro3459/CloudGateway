@@ -241,9 +241,9 @@ The allocating transaction reads the whole `Users` collection, but only to dispr
 counter - never to reconstruct one. Account deletion hard-deletes `Users/{uid}` along with its
 `accountSlot`, so a deleted account's slot exists nowhere in live data; re-deriving a counter
 from live users would re-issue it and merge two accounts onto one nftables tenant. Seeding the
-counter is a one-time pre-activation step
-(`releases/access-control-lists/backfill_account_slots.py --seed-initial-counter`); after
-activation a lost counter is restored from backup, with provisioning failing closed until then.
+counter was a one-time pre-activation step, run once by the release-scoped backfill migration
+before enforcement; after activation a lost counter is restored from backup, with provisioning
+failing closed until then.
 `valid_account_slot()` is the single source of truth for the type and range check across the
 package.
 
@@ -495,17 +495,21 @@ The only supported rollout is destroying and rebuilding every region through
 rollout window with partial fleet enforcement; the ACL is not active until the last region
 finishes.
 
-### Legacy account migration
+### Legacy account migration (completed)
 
 Every provisioned account needs `Users/{uid}.accountSlot` before any region enforces: an account
 with no slot is skipped by `desired_policy()`, drops out of every map, and loses its own
-same-account connectivity the moment enforcement begins.
-`releases/access-control-lists/backfill_account_slots.py` assigns slots to every provisioned
-legacy account and seeds the counter strictly above every slot assigned anywhere, including
-orphaned `Users` documents. It is dry-run by default, transactional, aborts if live state changes
-between preflight and apply, reports aggregate counts only, and is a no-op on re-run. Its
-fleet-wide preflight applies the same row-validation rules as a release gate, so known-bad data
-blocks the rollout instead of silently dropping rows on the first host that enforces.
+same-account connectivity the moment enforcement begins. A release-scoped backfill migration
+assigned slots to every legacy account, seeded the counter strictly above every slot assigned
+anywhere (including orphaned `Users` documents), and gated the rollout behind a fleet-wide
+preflight applying the same row-validation rules, so known-bad data blocked the rollout instead
+of silently dropping rows on the first host that enforces. It ran before the fleet was rebuilt
+with enforcement on and has been removed; the script and its runbook are in git history at
+`releases/access-control-lists/`.
+
+Provisioning has allocated a slot per account since, so this is only relevant again if a Firestore
+restore ever reintroduces accounts that predate slots - in which case recover the script from git
+history rather than re-deriving the counter from live users.
 
 ## Accepted Risks and Out of Scope
 

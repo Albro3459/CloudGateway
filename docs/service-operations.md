@@ -160,25 +160,23 @@ server (SSH proxy jump support), but not other accounts' clients.
 * A client reaching its own region's server (DNS, API) - that traffic is `INPUT`, not `FORWARD`.
 * Mesh server-to-server links between regions.
 
-**Legacy account-slot migration (one-time, before enforcement):** every provisioned account needs
+**Legacy account-slot migration (completed, one-time):** every provisioned account needs
 `Users/{uid}.accountSlot` before any region enforces the ACL - an account with no slot is absent
-from every policy map and loses same-account connectivity the moment enforcement is on. Take a
-fresh Firestore backup with `scripts/backup_firestore.py`, run
-`releases/access-control-lists/backfill_account_slots.py` in its default dry-run mode, review the
-aggregate counts, run it again with `--apply`, then rerun the dry-run and confirm it reports a
-no-op. This must complete before any region is rebuilt with the ACL enforced. The very first run
-also has to create `Counters/accountSlots`, which requires the explicit `--seed-initial-counter`
-flag; that flag is a one-time pre-activation seed only. See
-[releases/access-control-lists/README.md](../releases/access-control-lists/README.md) for the
-script's flags, credentials handling, and failure modes.
+from every policy map and loses same-account connectivity the moment enforcement is on. The
+release-scoped backfill ran against a fresh Firestore backup before the fleet was rebuilt with
+enforcement on, and seeded `Counters/accountSlots` in the same pass. Provisioning has allocated a
+slot per account since, so there is nothing to run here; the script and its runbook are in git
+history at `releases/access-control-lists/`.
 
 **If the account-slot counter is ever lost or lowered:** `Counters/accountSlots.nextSlot` is the
 authoritative allocation watermark and the only record that a hard-deleted account ever held a
 slot. Provisioning and lazy slot allocation fail closed (`ACCOUNT_SLOT_UNAVAILABLE`, HTTP 500)
 until it is restored from a Firestore backup - never re-derive it from the live `Users`
 collection, and never re-run the migration's seeding flag to "repair" it, since either would
-re-issue a deleted account's slot. See "Counter lifecycle" in
-[releases/access-control-lists/README.md](../releases/access-control-lists/README.md).
+re-issue a deleted account's slot. A counter that has moved *backward* - at or below a slot a live
+account already holds - is the same class of failure and is not overridable: restore it, or set it
+above every slot that could ever have been issued, using whatever record of past allocation exists.
+See "Account slot allocation" in [access-control-list.md](access-control-list.md).
 
 **Reading the Server Health policy display (Web and iOS):** per enabled region, row count, comprehensive IPv4/
 IPv6 policy hashes (`mapHashV4`/`mapHashV6`, covering every authorization-bearing live object -

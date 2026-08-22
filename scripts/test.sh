@@ -6,10 +6,9 @@
 #   ./scripts/test.sh            # run everything (apple unsigned)
 #   ./scripts/test.sh --signed   # run everything with a signed apple build
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh release    # release-scoped migration packages only
 #   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
 #   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
-#   ./scripts/test.sh web infra  # any combination of: api release web infra apple firebase
+#   ./scripts/test.sh web infra  # any combination of: api web infra apple firebase
 #
 # One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
@@ -79,14 +78,6 @@ test_api() {
   # target. vulture reads its config from pyproject.toml when run from here.
   run_check "API dead code (vulture)" ./.venv/bin/vulture
   run_check "API pytest" ./.venv/bin/python -m pytest
-}
-
-test_release() {
-  cd "$ROOT" || return 1
-
-  run_pyright "Account slot migration pyright" releases/access-control-lists/backfill_account_slots.py releases/access-control-lists/test_backfill_account_slots.py
-  run_check "Account slot migration compile" python3 -m py_compile releases/access-control-lists/backfill_account_slots.py releases/access-control-lists/test_backfill_account_slots.py
-  run_check "Account slot migration tests" python3 -m unittest releases/access-control-lists/test_backfill_account_slots.py
 }
 
 test_web() {
@@ -322,19 +313,18 @@ done
 if [[ ${#targets[@]} -eq 0 ]]; then
   # apple runs last (slowest) and unsigned by default; pass --signed for a signed
   # apple build. Non-macOS/CI runners should pass explicit targets instead.
-  targets=(api release web infra firebase apple)
+  targets=(api web infra firebase apple)
 fi
 
 for target in "${targets[@]}"; do
   case "$target" in
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
-    release) run_step "Release migration tests (pyright + unittest + compile)" test_release ;;
     web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
     apple) run_step "Apple tests + no-device iOS build" test_apple ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     firebase) run_step "Firestore rules tests (emulator)" test_firebase ;;
     *)
-      echo "Unknown target: $target (expected: api, release, web, apple, infra, firebase; optional flag: --signed)" >&2
+      echo "Unknown target: $target (expected: api, web, apple, infra, firebase; optional flag: --signed)" >&2
       exit 2
       ;;
   esac
