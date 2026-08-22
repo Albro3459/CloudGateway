@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "aggregate_v4": "10.0.0.0/16",
+  "aggregate_v6": "fd42:42:42::/48",
+  "regions": [
+    {
+      "region_id": "us-sanjose-1",
+      "wg_network_v4": "10.0.0.0/24",
+      "wg_network_v6": "fd42:42:42::/64",
+      "status": "active"
+    },
+    {
+      "region_id": "us-chicago-1",
+      "wg_network_v4": "10.0.1.0/24",
+      "wg_network_v6": "fd42:42:42:1::/64",
+      "status": "active"
+    }
+  ]
+}

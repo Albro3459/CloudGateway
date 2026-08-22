@@ -33,6 +33,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TFDIR="$ROOT/Infrastructure/OCI/terraform"
 API_VERSION_FILE="$ROOT/Backend/API/src/version.py"
 PREFLIGHT="$ROOT/scripts/terraform-preflight.py"
+REGISTRY="$TFDIR/subnet-registry.json"
 RAW_ACTION=""      # empty when no action is given (bare `./scripts/terraform.sh <region>`)
 ACTION="apply"
 REGIONS=("$@")
@@ -78,6 +79,20 @@ for region in "${REGIONS[@]}"; do
   VARFILES+=("$TFDIR/${region_id}.terraform.tfvars")
 done
 
+for i in "${!REGION_IDS[@]}"; do
+  for j in "${!REGION_IDS[@]}"; do
+    if [[ "$i" -lt "$j" && "${REGION_IDS[$i]}" == "${REGION_IDS[$j]}" ]]; then
+      echo "Duplicate region argument: ${REGION_IDS[$i]}" >&2
+      exit 2
+    fi
+  done
+done
+
+if [[ ! -f "$REGISTRY" ]]; then
+  echo "Missing authoritative subnet registry: $REGISTRY" >&2
+  exit 1
+fi
+
 varfile_error=0
 for i in "${!REGION_IDS[@]}"; do
   if [[ ! -f "${VARFILES[$i]}" ]]; then
@@ -95,6 +110,11 @@ done
 
 cleanup_apply_planfiles() {
   local tempfile
+
+  # The trap is armed before the first mktemp, so an early failure fires this with
+  # TEMPFILES still empty; expanding an empty array under `set -u` is an
+  # unbound-variable error on macOS's stock bash 3.2.
+  [[ ${#TEMPFILES[@]} -eq 0 ]] && return 0
 
   for tempfile in "${TEMPFILES[@]}"; do
     [[ -n "$tempfile" ]] && rm -f "$tempfile"
@@ -199,11 +219,21 @@ select_region_workspace() {
   echo "==> workspace: $(terraform workspace show)  var-file: $(basename "$varfile")"
 }
 
+# require_active is required (not optional) so the call site states its intent: destroy - the
+# only caller - passes "false" because README.md tells operators to leave a decommissioned
+# region's allocation reserved and it must still be destroyable. plan and apply run the
+# preflight script directly, with the allocation required to be active.
+# The branch runs the full command twice instead of appending to an array: expanding an empty
+# array under `set -u` is an unbound-variable error on macOS's stock bash 3.2.
 preflight_region() {
-  local region_id="$1" varfile="$2"
+  local region_id="$1" varfile="$2" require_active="$3"
 
   select_region_workspace "$region_id" "$varfile"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile"
+  if [[ "$require_active" == "false" ]]; then
+    python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --no-require-active
+  else
+    python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY"
+  fi
 }
 
 plan_region() {
@@ -215,19 +245,28 @@ plan_region() {
   TEMPFILES+=("$planfile" "$planjson")
   terraform plan -input=false -var-file="$varfile" -out="$planfile" >/dev/null
   terraform show -json "$planfile" > "$planjson"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
   terraform show -no-color "$planfile"
 }
 
 save_apply_plan() {
-  local region_id="$1" varfile="$2" tag="$3" planfile="$4" planjson
+  local region_id="$1" varfile="$2" tag="$3" planfile="$4" planjson="$5"
 
   select_region_workspace "$region_id" "$varfile"
   terraform plan -input=false -var-file="$varfile" -var="source_ref=${tag}" -out="$planfile"
-  planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
-  TEMPFILES+=("$planjson")
   terraform show -json "$planfile" > "$planjson"
-  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --plan-json "$planjson"
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson"
+}
+
+save_destroy_plan() {
+  local region_id="$1" varfile="$2" planfile="$3" planjson="$4"
+
+  select_region_workspace "$region_id" "$varfile"
+  terraform plan -destroy -input=false -var-file="$varfile" -out="$planfile"
+  terraform show -json "$planfile" > "$planjson"
+  # --no-require-active: a reserved allocation (the state README.md tells operators to leave a
+  # decommissioned region in) must still be destroyable.
+  python3 "$PREFLIGHT" --region-id "$region_id" --var-file "$varfile" --registry "$REGISTRY" --plan-json "$planjson" --no-require-active
 }
 
 cd "$TFDIR"
@@ -247,11 +286,14 @@ case "$ACTION" in
     prepare_next_deploy_tag
     trap cleanup_apply_planfiles EXIT
 
+    # Build and validate every plan before any tag, source_ref, or Terraform apply
+    # mutation.
     for i in "${!REGION_IDS[@]}"; do
       planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan.XXXXXX")"
+      planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-plan-json.XXXXXX")"
       APPLY_PLANFILES+=("$planfile")
-      TEMPFILES+=("$planfile")
-      save_apply_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$DEPLOY_TAG" "$planfile"
+      TEMPFILES+=("$planfile" "$planjson")
+      save_apply_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$DEPLOY_TAG" "$planfile" "$planjson"
     done
 
     # Bare `./scripts/terraform.sh <region> [<region> ...]` shows final plans and confirms
@@ -275,8 +317,13 @@ case "$ACTION" in
     done
     ;;
   destroy)
+    trap cleanup_apply_planfiles EXIT
     for i in "${!REGION_IDS[@]}"; do
-      preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}"
+      preflight_region "${REGION_IDS[$i]}" "${VARFILES[$i]}" false
+      planfile="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan.XXXXXX")"
+      planjson="$(mktemp "${TMPDIR:-/tmp}/cloudgateway-terraform-destroy-plan-json.XXXXXX")"
+      TEMPFILES+=("$planfile" "$planjson")
+      save_destroy_plan "${REGION_IDS[$i]}" "${VARFILES[$i]}" "$planfile" "$planjson"
     done
 
     for i in "${!REGION_IDS[@]}"; do

@@ -6,24 +6,37 @@ interface OciRegionsStore {
   ociRegions: Region[] | null;
   loading: boolean;
   error: string | null;
-  fetchOciRegions: (token: string) => Promise<void>;
+  fetchOciRegions: (token: string, fetchGeneration: number) => Promise<void>;
   clearOciRegions: () => void;
 }
 
-let activeFetch: Promise<void> | null = null;
+type ActiveFetch = {
+  token: string;
+  generation: number;
+  promise: Promise<void>;
+};
 
-export const fetchOciRegions = async (token: string, force = false) : Promise<void> => {
+let activeFetch: ActiveFetch | null = null;
+let loadedToken: string | null = null;
+let generation = 0;
+
+export const fetchOciRegions = (token: string, force = false) : Promise<void> => {
   const store = useOciRegionsStore.getState();
-  if (activeFetch) return activeFetch;
-  if (!force && (store.loading || store.ociRegions?.length)) return;
-  
-  activeFetch = store.fetchOciRegions(token);
-
-  try {
-    await activeFetch;
-  } finally {
-    activeFetch = null;
+  if (activeFetch?.token === token) return activeFetch.promise;
+  if (!force && !activeFetch && loadedToken === token && (store.loading || store.ociRegions?.length)) {
+    return Promise.resolve();
   }
+
+  const fetchGeneration = generation + 1;
+  generation = fetchGeneration;
+  const promise = store.fetchOciRegions(token, fetchGeneration).finally(() => {
+    if (activeFetch?.token === token && activeFetch.generation === fetchGeneration) {
+      activeFetch = null;
+    }
+  });
+  activeFetch = { token, generation: fetchGeneration, promise };
+
+  return promise;
 };
 
 export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
@@ -31,7 +44,7 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
   loading: false,
   error: null,
 
-  fetchOciRegions: async (token: string) => {
+  fetchOciRegions: async (token: string, fetchGeneration: number) => {
     set({ loading: true, error: null });
 
     try {
@@ -70,13 +83,21 @@ export const useOciRegionsStore = create<OciRegionsStore>((set) => ({
         }),
       );
 
-      set({ ociRegions: regionsWithCapacity, loading: false });
+      if (generation === fetchGeneration) {
+        loadedToken = token;
+        set({ ociRegions: regionsWithCapacity, loading: false });
+      }
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : 'Regions fetch failed', loading: false });
+      if (generation === fetchGeneration) {
+        set({ error: error instanceof Error ? error.message : 'Regions fetch failed', loading: false });
+      }
     }
   },
 
   clearOciRegions: () => {
+    generation += 1;
+    activeFetch = null;
+    loadedToken = null;
     set({ ociRegions: null, error: null, loading: false });
   },
 }));

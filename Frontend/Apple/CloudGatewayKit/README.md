@@ -69,6 +69,14 @@ Current shared app responsibilities:
   health/status refresh and the cancellable five-second presentation loop.
   Native views only start and cancel that operation from their platform
   lifecycle.
+* `CloudGatewayServerHealthViewModel` owns mesh membership/link state and
+  account-scoped ACL client-isolation state, with an independent Policy
+  load-failure flag so a Policy read failure can never blank fresh Mesh
+  state. `CloudGatewayMeshStatus` and `CloudGatewayPolicyStatus` own the pure
+  derivations, ported from and kept in lockstep with the web helpers.
+  `CloudGatewayFirestoreMeshMapper` and `CloudGatewayFirestorePolicyMapper`
+  own Firebase-free document mapping; each platform's repository converts
+  `Timestamp` to `Date` before calling them.
 
 AppCore tests use protocol-backed doubles. They require no Firebase project,
 credentials, network access, app host, packet extension, or UI target.

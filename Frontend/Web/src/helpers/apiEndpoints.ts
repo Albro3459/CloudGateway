@@ -72,7 +72,7 @@ export type ApiRegionOption = {
 
 const getFirstEnabledRegionId = (regions: ApiRegionOption[] | null | undefined) => {
     const sortedRegions = [...(regions || [])]
-        .filter(region => region.enabled !== false && region.regionId)
+        .filter(region => region.enabled === true && region.regionId)
         .sort((a, b) => {
             const displayOrderA = typeof a.displayOrder === "number" ? a.displayOrder : 1000;
             const displayOrderB = typeof b.displayOrder === "number" ? b.displayOrder : 1000;

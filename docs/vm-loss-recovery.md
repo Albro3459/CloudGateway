@@ -15,15 +15,31 @@ before Terraform can safely manage the region again.
 
 ## Standard Recovery (server key retained)
 
-1. Optionally set `Regions/{regionId}.enabled` to `false` to pause new client work during the rebuild.
-2. Rebuild the host with `./scripts/terraform.sh <region> apply` per [docs/regional-deployment.md](regional-deployment.md) (the plan will show the instance being replaced). Use the same `wg_server_private_key` and a `source_ref` matching what should run.
-3. Let Terraform update the **grey-cloud** `wg.<regionId>.<origin>` A record to the new public IPv4, and the proxied API record if the IP changed. Touch Cloudflare manually only when reconciling/importing resources before rerunning Terraform.
-4. Update `Regions/{regionId}.wireguardEndpointIpv4` (and `wireguardEndpointIpv6` if used) to the new IP. `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs are unchanged.
-5. Confirm the boot peer sync succeeded: `systemctl status cloudgateway-sync-peers` (or run `sudo cloudgateway-sync-peers`). The live peer set is rebuilt from the region's `active` client docs.
-6. Validate `/api/health` through Cloudflare, then re-enable the region if it was disabled.
-7. Tell affected users to toggle their WireGuard tunnel off and on (clients resolve the endpoint DNS at tunnel-up). No config changes are needed.
+A lost host is self-healing when rebuilt with the same
+`wg_server_private_key`, tunnel subnets, and endpoint hostname. The normal
+self-healing sequence is:
 
-Capacity stays correct because it is derived from Firebase client docs, which did not change.
+1. Rebuild the host with `./scripts/terraform.sh <region> apply` per
+   [docs/regional-deployment.md](regional-deployment.md), using a `source_ref`
+   matching what should run.
+2. Let Terraform update the **grey-cloud** `wg.<regionId>.<origin>` A record to
+   the new public IPv4, and the proxied API record if the IP changed. Touch
+   Cloudflare manually only when reconciling/importing resources before rerunning
+   Terraform.
+3. Registration updates `Regions/{regionId}` with the current endpoint metadata;
+   `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs remain
+   unchanged.
+4. Confirm boot peer sync succeeded with `systemctl status
+   cloudgateway-sync-peers` (or run `sudo cloudgateway-sync-peers`). Firebase is
+   the source of truth and the live peer set is rebuilt from it.
+5. Validate `/api/health` through Cloudflare and inspect `wg show wg0` for peers
+   and handshakes. WireGuard endpoint roaming updates remote mesh peers after
+   the rebuilt host connects.
+6. Tell affected users to toggle their WireGuard tunnel off and on so clients
+   re-resolve the endpoint DNS. No config changes are needed.
+
+A Mesh status document records the last reconciliation snapshot and does not prove
+a live WireGuard handshake; use `wg show wg0` on the host for that check.
 
 ## Key-Loss Recovery (server key rotated or compromised)
 

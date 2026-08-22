@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const mockNavigate = jest.fn();
 
@@ -57,13 +57,18 @@ jest.mock("../../stores/ociRegionsStore", () => {
         displayOrder: 1,
     };
 
+    const clearOciRegions = jest.fn();
+
     return {
         fetchOciRegions: jest.fn().mockResolvedValue(undefined),
-        useOciRegionsStore: jest.fn(() => ({
-            ociRegions: [region],
-            loading: false,
-            error: null,
-        })),
+        useOciRegionsStore: Object.assign(
+            jest.fn(() => ({
+                ociRegions: [region],
+                loading: false,
+                error: null,
+            })),
+            { getState: () => ({ clearOciRegions }) },
+        ),
     };
 });
 
@@ -450,20 +455,54 @@ describe("Home admin tools", () => {
             expect.arrayContaining([expect.objectContaining({ regionId: "us-sanjose-1" })]),
         ));
         expect(await screen.findByText("new@example.com now has CloudGateway access.")).toBeTruthy();
+        // The grant is done, so a cleared email field would read as a second
+        // invite still waiting to be sent.
+        expect(screen.queryByLabelText("Email")).toBeNull();
+        expect(screen.queryByRole("button", { name: "Grant Access" })).toBeNull();
+        expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
     });
 
-    it("selects every enabled region when the sync modal opens", async () => {
+    it("renders the Server Health nav affordance for admins", async () => {
+        const { default: Home } = require("../Home");
+
+        render(<Home />);
+
+        expect(await screen.findByRole("button", { name: "Server Health" })).toBeTruthy();
+    });
+
+    it("omits the Server Health nav affordance for non-admins", async () => {
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        getUserRole.mockResolvedValue("user");
+
+        render(<Home />);
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalled());
+        // Wait until the role has actually resolved, so this can't pass just
+        // because the admin affordance has not rendered yet.
+        await act(async () => { await Promise.resolve(); });
+
+        expect(screen.queryByRole("button", { name: "Grant User Access" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Server Health" })).toBeNull();
+    });
+
+    it("lists every enabled region in the sync modal and hands off to Server Health on confirm", async () => {
         const { runRegionsSync } = require("../../helpers/APIHelper");
         const { default: Home } = require("../Home");
 
         render(<Home />);
-        fireEvent.click(await screen.findByRole("button", { name: "Sync Region Clients" }));
-        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Sync All Regions" }));
 
-        await waitFor(() => expect(runRegionsSync).toHaveBeenCalledWith(
-            ["us-sanjose-1", "us-ashburn-1"],
-            "firebase-token",
-        ));
+        const modal = screen.getByRole("dialog", { name: "Sync All Regions" });
+        expect(within(modal).getByText("San Jose")).toBeTruthy();
+        expect(within(modal).getByText("Ashburn")).toBeTruthy();
+
+        fireEvent.click(within(modal).getByRole("button", { name: "Sync 2 regions" }));
+
+        // Home hands off to Server Health via navigation state rather than
+        // running the fan-out itself, so the sync race doesn't survive a route change.
+        expect(mockNavigate).toHaveBeenCalledWith("/server-health", { state: { runSync: true } });
+        expect(runRegionsSync).not.toHaveBeenCalled();
     });
 });
 
@@ -625,6 +664,284 @@ describe("Home account linking", () => {
         fireEvent.click(screen.getByRole("button", { name: /Link Apple/ }));
 
         expect(await screen.findByText("That sign-in method is already used by another CloudGateway account. Sign in with that account directly or contact support.")).toBeTruthy();
+    });
+});
+
+describe("Home auth transitions", () => {
+    const userA = {
+        uid: "user-a",
+        email: "a@example.com",
+        getIdToken: jest.fn().mockResolvedValue("token-a"),
+        reload: jest.fn().mockResolvedValue(undefined),
+        providerData: [{ providerId: "google.com" }],
+    };
+    const userB = {
+        uid: "user-b",
+        email: "b@example.com",
+        getIdToken: jest.fn().mockResolvedValue("token-b"),
+        reload: jest.fn().mockResolvedValue(undefined),
+        providerData: [{ providerId: "google.com" }],
+    };
+    const vpnA = {
+        userID: "user-a",
+        ownerUid: "user-a",
+        ownerEmail: "a@example.com",
+        clientId: "client-a",
+        clientName: "A client",
+        region: "us-sanjose-1",
+        regionId: "us-sanjose-1",
+        status: "active",
+        wireguardConfig: "[Interface]\\nPrivateKey = a",
+    };
+    const vpnB = {
+        userID: "user-b",
+        ownerUid: "user-b",
+        ownerEmail: "b@example.com",
+        clientId: "client-b",
+        clientName: "B client",
+        region: "us-sanjose-1",
+        regionId: "us-sanjose-1",
+        status: "active",
+        wireguardConfig: "[Interface]\\nPrivateKey = b",
+    };
+
+    let testAuth: { currentUser: unknown };
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        userA.getIdToken.mockResolvedValue("token-a");
+        userA.reload.mockResolvedValue(undefined);
+        userA.providerData = [{ providerId: "google.com" }];
+        userB.getIdToken.mockResolvedValue("token-b");
+        userB.reload.mockResolvedValue(undefined);
+        userB.providerData = [{ providerId: "google.com" }];
+        const { auth, onAuthStateChanged } = require("../../firebase");
+        const { getUserRole } = require("../../helpers/usersHelper");
+        const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
+
+        auth.currentUser = userA;
+        testAuth = auth;
+        onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
+            authCallback = callback;
+            return () => undefined;
+        });
+        getUserRole.mockResolvedValue("user");
+        fetchOciRegions.mockResolvedValue(undefined);
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{ displayName: "San Jose", regionId: "us-sanjose-1", enabled: true, displayOrder: 1 }],
+            loading: false,
+            error: null,
+        }));
+    });
+
+    let authCallback: ((user: unknown) => void) | undefined;
+
+    it("clears the OCI regions store on an observer-driven sign-out", async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+        getUsersVPNs.mockResolvedValue([]);
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userA));
+
+        testAuth.currentUser = null;
+        await act(async () => { authCallback?.(null); });
+
+        // Both sign-out paths must tear the previous account's region list down.
+        expect(useOciRegionsStore.getState().clearOciRegions).toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
+    });
+
+    it("logs out from the account menu before the auth observer's first callback", async () => {
+        const { logout } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+
+        // auth.currentUser is already restored from persistence but the
+        // observer has not fired, so no session can be resolved yet.
+        render(<Home />);
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Logout" }));
+
+        await waitFor(() => expect(logout).toHaveBeenCalled());
+    });
+
+    it("does not apply a stale VPN response after switching users", async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        let resolveA!: (entries: unknown[]) => void;
+        let resolveB!: (entries: unknown[]) => void;
+        const pendingA = new Promise<unknown[]>(resolve => { resolveA = resolve; });
+        const pendingB = new Promise<unknown[]>(resolve => { resolveB = resolve; });
+
+        getUsersVPNs.mockImplementation((user: { uid: string }) => (
+            user.uid === userA.uid ? pendingA : pendingB
+        ));
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userA));
+
+        testAuth.currentUser = userB;
+        act(() => authCallback?.(userB));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userB));
+
+        await act(async () => {
+            resolveA([vpnA]);
+            await pendingA;
+        });
+        expect(screen.queryByText("A client")).toBeNull();
+        expect(screen.queryByRole("button", { name: "Show QR code for A client" })).toBeNull();
+
+        await act(async () => {
+            resolveB([vpnB]);
+            await pendingB;
+        });
+        expect(await screen.findByText("B client")).toBeTruthy();
+        expect(screen.queryByText("A client")).toBeNull();
+    });
+
+    it("clears an open config modal when the authenticated user changes", async () => {
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        let resolveB!: (entries: unknown[]) => void;
+        const pendingB = new Promise<unknown[]>(resolve => { resolveB = resolve; });
+
+        getUsersVPNs.mockImplementation((user: { uid: string }) => (
+            user.uid === userA.uid ? Promise.resolve([vpnA]) : pendingB
+        ));
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        fireEvent.click(await screen.findByRole("button", { name: "Show QR code for A client" }));
+        expect(screen.getByRole("dialog", { name: "VPN QR Code" }).textContent).toContain("A client");
+
+        testAuth.currentUser = userB;
+        act(() => authCallback?.(userB));
+        expect(screen.queryByRole("dialog", { name: "VPN QR Code" })).toBeNull();
+        expect(screen.queryByText("A client")).toBeNull();
+
+        await act(async () => {
+            resolveB([vpnB]);
+            await pendingB;
+        });
+        expect(await screen.findByText("B client")).toBeTruthy();
+    });
+
+    it("does not apply a stale create-client result after switching users", async () => {
+        const { createClient } = require("../../helpers/APIHelper");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { fetchOciRegions, useOciRegionsStore } = require("../../stores/ociRegionsStore");
+        const { default: Home } = require("../Home");
+        let resolveCreate!: (value: unknown) => void;
+        const pendingCreate = new Promise<unknown>(resolve => { resolveCreate = resolve; });
+
+        createClient.mockReturnValue(pendingCreate);
+        getUsersVPNs.mockResolvedValue([]);
+        useOciRegionsStore.mockImplementation(() => ({
+            ociRegions: [{
+                displayName: "San Jose",
+                regionId: "us-sanjose-1",
+                enabled: true,
+                displayOrder: 1,
+                capacity: { status: "known", limit: 20, allocated: 8 },
+            }],
+            loading: false,
+            error: null,
+        }));
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        fireEvent.change(await screen.findByLabelText("Client display name"), {
+            target: { value: "Stale client" },
+        });
+        await waitFor(() => expect(fetchOciRegions).toHaveBeenCalledWith("token-a", true));
+        await waitFor(() => expect((screen.getByRole("button", { name: "Create Client" }) as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(screen.getByRole("button", { name: "Create Client" }));
+        await waitFor(() => expect(createClient).toHaveBeenCalledWith(
+            { regionId: "us-sanjose-1", clientName: "Stale client" },
+            "token-a",
+        ));
+
+        testAuth.currentUser = userB;
+        act(() => authCallback?.(userB));
+
+        await act(async () => {
+            resolveCreate({
+                success: true,
+                data: { clientName: "Stale client" },
+            });
+            await pendingCreate;
+        });
+
+        expect(screen.queryByText("Stale client was created in San Jose.")).toBeNull();
+        expect(getUsersVPNs.mock.calls.filter(([user]: [{ uid: string }]) => user.uid === userA.uid)).toHaveLength(1);
+    });
+
+    it("does not reload or show a stale provider-link banner after switching users", async () => {
+        userA.providerData = [{ providerId: "password" }];
+        const { linkWithPopup, googleProvider } = require("../../firebase");
+        const { getUsersVPNs } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        let resolveLink!: () => void;
+        const pendingLink = new Promise<void>(resolve => { resolveLink = resolve; });
+
+        linkWithPopup.mockReturnValue(pendingLink);
+        getUsersVPNs.mockResolvedValue([]);
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userA));
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Link another sign-in method" }));
+        fireEvent.click(screen.getByRole("button", { name: /Link Google/ }));
+        await waitFor(() => expect(linkWithPopup).toHaveBeenCalledWith(userA, googleProvider));
+
+        testAuth.currentUser = userB;
+        act(() => authCallback?.(userB));
+
+        await act(async () => {
+            resolveLink();
+            await pendingLink;
+        });
+
+        expect(userA.reload).not.toHaveBeenCalled();
+        expect(screen.queryByText("Google was linked to your account.")).toBeNull();
+    });
+
+    it("does not delete or logout after a stale delete-account reauth resolves", async () => {
+        userA.providerData = [{ providerId: "google.com" }];
+        const { reauthenticateWithPopup, googleProvider } = require("../../firebase");
+        const { deleteAccount } = require("../../helpers/APIHelper");
+        const { getUsersVPNs, logout } = require("../../helpers/firebaseDbHelper");
+        const { default: Home } = require("../Home");
+        let resolveReauth!: () => void;
+        const pendingReauth = new Promise<void>(resolve => { resolveReauth = resolve; });
+
+        reauthenticateWithPopup.mockReturnValue(pendingReauth);
+        getUsersVPNs.mockResolvedValue([]);
+        deleteAccount.mockResolvedValue({ success: true });
+
+        render(<Home />);
+        act(() => authCallback?.(userA));
+        await waitFor(() => expect(getUsersVPNs).toHaveBeenCalledWith(userA));
+        fireEvent.click(screen.getByRole("button", { name: "Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete Account" }));
+        fireEvent.click(screen.getByRole("button", { name: "Delete Account" }));
+        await waitFor(() => expect(reauthenticateWithPopup).toHaveBeenCalledWith(userA, googleProvider));
+
+        testAuth.currentUser = userB;
+        act(() => authCallback?.(userB));
+
+        await act(async () => {
+            resolveReauth();
+            await pendingReauth;
+        });
+
+        expect(userA.getIdToken).not.toHaveBeenCalledWith(true);
+        expect(deleteAccount).not.toHaveBeenCalled();
+        expect(logout).not.toHaveBeenCalled();
     });
 });
 

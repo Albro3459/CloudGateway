@@ -258,6 +258,9 @@ test_infra() {
   run_pyright "Terraform preflight pyright" scripts/terraform-preflight.py scripts/test_terraform_preflight.py
   run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
   run_check "Terraform  preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
+  run_pyright "Terraform wrapper pyright" scripts/test_terraform_wrapper.py
+  run_check "Terraform wrapper compile" python3 -m py_compile scripts/test_terraform_wrapper.py
+  run_check "Terraform wrapper tests" python3 -m unittest scripts/test_terraform_wrapper.py
 
   run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
@@ -280,14 +283,23 @@ run_step() {
   echo "============================================================"
   # Run directly (not in a subshell) so the step's run_check failures land in
   # FAILURES. Each target cd's to its own dir first, so a leaked cwd is fine.
-  # Judge the target by whether it added any failures.
+  # Judge the target by both its return status and any failures it recorded.
   local before=${#FAILURES[@]}
-  "$@"
+  local status=0
+  "$@" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    if [[ ${#FAILURES[@]} -eq $before ]]; then
+      FAILURES+=("$name")
+    fi
+    echo "FAILED: $name" >&2
+    return "$status"
+  fi
   if [[ ${#FAILURES[@]} -gt $before ]]; then
     echo "FAILED: $name" >&2
-  else
-    echo "OK: $name"
+    return 1
   fi
+  echo "OK: $name"
+  return 0
 }
 
 targets=()

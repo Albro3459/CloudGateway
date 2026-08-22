@@ -1,5 +1,5 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any, cast
 
@@ -20,9 +20,13 @@ from .errors import (
 )
 from .repository import (
     ALLOCATED_CLIENT_STATUSES,
+    AccountCleanupTally,
     ClientDoc,
     CreateUserResult,
     FirebaseRepository,
+    MeshPeerState,
+    PolicyClientEntry,
+    PolicyStatus,
     RegionDoc,
     RegionRegistration,
     RoleDefaultDoc,
@@ -30,15 +34,19 @@ from .repository import (
     UserRoleDoc,
     assert_capacity_available,
     assert_user_limit_available,
-    assign_tunnel_ips,
     clean_client_name,
     ensure_delete_allowed,
     ensure_local_region,
     ensure_region_enabled,
     new_client_id,
+    next_account_slot,
+    next_tunnel_index,
     region_display_order,
     require_region,
+    tunnel_addresses_for_index,
+    used_tunnel_indices,
     utc_now,
+    valid_account_slot,
 )
 from .settings import Settings
 
@@ -126,34 +134,47 @@ class FirestoreRepository(FirebaseRepository):
     def list_enabled_regions(self) -> list[RegionDoc]:
         snapshots = self._db().collection("Regions").where(filter=FieldFilter("enabled", "==", True)).get()
         regions = [_region_from_snapshot(snapshot, snapshot.id) for snapshot in snapshots]
-        return sorted((region for region in regions if region is not None and region.enabled), key=region_display_order)
+        return sorted((region for region in regions if region is not None and region.enabled is True), key=region_display_order)
 
-    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool) -> RegionDoc:
+    def list_regions(self) -> list[RegionDoc]:
+        snapshots = self._db().collection("Regions").get()
+        regions = [_region_from_snapshot(snapshot, snapshot.id) for snapshot in snapshots]
+        return sorted((region for region in regions if region is not None), key=region_display_order)
+
+    def upsert_region(self, registration: RegionRegistration, *, set_enabled: bool | None) -> RegionDoc:
         db = self._db()
         transactional = _transactional()
         ref = db.collection("Regions").document(registration.region_id)
 
         @transactional
         def _apply(transaction) -> None:
-            transaction.set(
-                ref,
-                {
-                    "regionId": registration.region_id,
-                    "displayName": registration.display_name,
-                    "enabled": set_enabled,
-                    "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
-                    "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
-                    "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
-                    "wireguardPort": registration.wireguard_port,
-                    "wireguardDnsIpv4": registration.wireguard_dns_ipv4,
-                    "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
-                    "wireguardPublicKey": registration.wireguard_public_key,
-                    "capacityLimit": registration.capacity_limit,
-                    "displayOrder": registration.display_order,
-                    "updatedAt": _server_timestamp(),
-                },
-                merge=True,
-            )
+            # Firestore transactions require all reads before any write; this read
+            # decides whether meshEnabled needs seeding (create-only, operator-owned
+            # afterward) and whether enabled has to be seeded false.
+            exists = _sync_snapshot(ref.get(transaction=transaction)).exists
+            data: dict[str, Any] = {
+                "regionId": registration.region_id,
+                "displayName": registration.display_name,
+                "wireguardEndpointIpv4": registration.wireguard_endpoint_ipv4,
+                "wireguardEndpointIpv6": registration.wireguard_endpoint_ipv6,
+                "wireguardEndpointHostname": registration.wireguard_endpoint_hostname,
+                "wireguardPort": registration.wireguard_port,
+                "wireguardDnsIpv4": registration.wireguard_dns_ipv4,
+                "wireguardDnsIpv6": registration.wireguard_dns_ipv6,
+                "wireguardPublicKey": registration.wireguard_public_key,
+                "capacityLimit": registration.capacity_limit,
+                "displayOrder": registration.display_order,
+                "tunnelNetworkV4": registration.tunnel_network_v4,
+                "tunnelNetworkV6": registration.tunnel_network_v6,
+                "updatedAt": _server_timestamp(),
+            }
+            if set_enabled is not None:
+                data["enabled"] = set_enabled
+            elif not exists:
+                data["enabled"] = False
+            if not exists:
+                data["meshEnabled"] = False
+            transaction.set(ref, data, merge=True)
 
         try:
             _apply(db.transaction())
@@ -164,6 +185,41 @@ class FirestoreRepository(FirebaseRepository):
         if region is None:
             raise FirebaseWriteFailedError()
         return region
+
+    def write_mesh_status(self, *, region_id: str, mesh_enabled: bool, peers: Sequence[MeshPeerState]) -> None:
+        # Full replacement (not merge): peers that fell out of the desired set must
+        # disappear from the doc rather than lingering as stale entries.
+        applied_at = _server_timestamp()
+        peers_data = {}
+        for peer in peers:
+            peer_data: dict[str, Any] = {
+                "status": peer.status.value,
+                "appliedAt": applied_at,
+            }
+            if peer.endpoint_hostname:
+                peer_data["endpointHostname"] = peer.endpoint_hostname
+            if peer.endpoint_port is not None:
+                peer_data["endpointPort"] = peer.endpoint_port
+            if peer.public_key:
+                peer_data["publicKey"] = peer.public_key
+            if peer.allowed_network_v4:
+                peer_data["allowedNetworkV4"] = peer.allowed_network_v4
+            if peer.allowed_network_v6:
+                peer_data["allowedNetworkV6"] = peer.allowed_network_v6
+            if peer.reason_code:
+                peer_data["reasonCode"] = peer.reason_code
+            peers_data[peer.region_id] = peer_data
+        try:
+            self._db().collection("Mesh").document(region_id).set(
+                {
+                    "regionId": region_id,
+                    "meshEnabled": mesh_enabled,
+                    "updatedAt": _server_timestamp(),
+                    "peers": peers_data,
+                }
+            )
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
 
     def get_client(self, *, owner_uid: str, region_id: str, client_id: str) -> ClientDoc | None:
         doc = _sync_snapshot(_client_ref(self._db(), region_id, client_id).get())
@@ -344,6 +400,51 @@ class FirestoreRepository(FirebaseRepository):
         except Exception as exc:
             raise FirebaseWriteFailedError() from exc
 
+    def mark_account_clients_inactive(self, uid: str) -> AccountCleanupTally:
+        # Deliberately not ensure_local_region-gated (see
+        # repository.FirebaseRepository.mark_account_clients_inactive): the
+        # only cross-region client write in the API, so it can fence a client
+        # whose host is unreachable.
+        db = self._db()
+        try:
+            snapshots = (
+                db.collection_group("Instances")
+                .where(filter=FieldFilter("ownerUid", "==", uid))
+                .stream()
+            )
+            clients_by_region: dict[str, int] = {}
+            pending: list[tuple[BaseDocumentReference, str]] = []
+            for raw_snapshot in snapshots:
+                snapshot = _sync_snapshot(raw_snapshot)
+                data = snapshot.to_dict() or {}
+                region_id = _instance_region_id(snapshot, data)
+                clients_by_region[region_id] = clients_by_region.get(region_id, 0) + 1
+                if _client_needs_non_active_fence(data, snapshot.id):
+                    pending.append((snapshot.reference, region_id))
+
+            marked_by_region: dict[str, int] = {}
+            for _ref, region_id in pending:
+                marked_by_region[region_id] = marked_by_region.get(region_id, 0) + 1
+
+            for index in range(0, len(pending), 500):
+                batch = db.batch()
+                for ref, _region_id in pending[index : index + 500]:
+                    batch.update(
+                        ref,
+                        {
+                            "status": ClientStatus.REMOVED.value,
+                            "updatedAt": _server_timestamp(),
+                            "removedAt": _server_timestamp(),
+                            "wireguardConfig": None,
+                            "lastErrorCode": None,
+                            "lastErrorMessage": None,
+                        },
+                    )
+                batch.commit()
+            return AccountCleanupTally(clients_by_region=clients_by_region, marked_by_region=marked_by_region)
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
+
     def _get_existing_auth_user(self, *, email: str) -> Any:
         from firebase_admin import auth
 
@@ -395,11 +496,22 @@ class FirestoreRepository(FirebaseRepository):
         def provision(transaction):
             user_ref = db.collection("Users").document(uid)
             user_role_ref = db.collection("UserRoles").document(uid)
+            counter_ref = _account_slot_ref(db)
 
             user_role_snapshot = _sync_snapshot(user_role_ref.get(transaction=transaction))
             user_snapshot = _sync_snapshot(user_ref.get(transaction=transaction))
             if user_role_snapshot.exists:
                 raise DuplicateEmailError()
+
+            # Allocation is once per account, never reused: only pull a new
+            # slot when the (possibly pre-existing) user doc doesn't already
+            # carry one - e.g. a prior provisioning attempt that created the
+            # Users doc but failed before UserRoles.
+            existing_slot = _optional_safe_int((user_snapshot.to_dict() or {}).get("accountSlot")) if user_snapshot.exists else None
+            new_slot = existing_slot
+            if new_slot is None:
+                counter_snapshot = _sync_snapshot(counter_ref.get(transaction=transaction))
+                new_slot = _allocate_account_slot(transaction, db, counter_ref, counter_snapshot, exclude_uid=uid)
 
             transaction.set(
                 user_ref,
@@ -407,6 +519,7 @@ class FirestoreRepository(FirebaseRepository):
                     uid=uid,
                     email=email,
                     exists=user_snapshot.exists,
+                    account_slot=None if existing_slot is not None else new_slot,
                 ),
                 merge=True,
             )
@@ -438,6 +551,7 @@ class FirestoreRepository(FirebaseRepository):
             user_role_ref = db.collection("UserRoles").document(owner_uid)
             user_ref = db.collection("Users").document(owner_uid)
             region_ref = db.collection("Regions").document(region_id)
+            counter_ref = _account_slot_ref(db)
 
             user_role = _require_user_role(_sync_snapshot(user_role_ref.get(transaction=transaction)), owner_uid)
             role_default = _require_role_default(
@@ -458,21 +572,43 @@ class FirestoreRepository(FirebaseRepository):
                 per_region_client_limit=per_region_client_limit,
             )
 
-            used_ipv4 = {client.assigned_tunnel_ipv4 for client in allocated_clients}
-            used_ipv6 = {client.assigned_tunnel_ipv6 for client in allocated_clients}
-            assigned_ipv4, assigned_ipv6 = assign_tunnel_ips(
+            # _new_client_ref reads, so it has to run before the slot
+            # allocation below queues the counter write: the SDK raises
+            # ReadAfterWriteError for any read issued once a transaction holds
+            # a pending write.
+            client_id, client_ref = _new_client_ref(db, transaction, region_id)
+
+            # Lazy allocation covers accounts provisioned before this feature:
+            # the read must happen here, before any write in this transaction.
+            existing_slot = _optional_safe_int((user_snapshot.to_dict() or {}).get("accountSlot")) if user_snapshot.exists else None
+            new_account_slot = existing_slot
+            if new_account_slot is None:
+                counter_snapshot = _sync_snapshot(counter_ref.get(transaction=transaction))
+                new_account_slot = _allocate_account_slot(
+                    transaction, db, counter_ref, counter_snapshot, exclude_uid=owner_uid
+                )
+
+            next_index = next_tunnel_index(
+                stored_index=region.tunnel_index_v4,
+                used_indices=used_tunnel_indices(
+                    allocated_clients,
+                    ipv4_cidr=self._settings.wg_tunnel_ipv4_cidr,
+                    ipv6_cidr=self._settings.wg_tunnel_ipv6_cidr,
+                ),
+                ipv4_cidr=self._settings.wg_tunnel_ipv4_cidr,
+            )
+            assigned_ipv4, assigned_ipv6 = tunnel_addresses_for_index(
+                index=next_index,
                 ipv4_cidr=self._settings.wg_tunnel_ipv4_cidr,
                 ipv6_cidr=self._settings.wg_tunnel_ipv6_cidr,
-                used_ipv4=used_ipv4,
-                used_ipv6=used_ipv6,
             )
 
-            client_id, client_ref = _new_client_ref(db, transaction, region_id)
             now = utc_now()
             user_data = _user_write_data(
                 uid=owner_uid,
                 email=owner_email,
                 exists=user_snapshot.exists,
+                account_slot=None if existing_slot is not None else new_account_slot,
             )
             client_data = _client_write_data(
                 client_id=client_id,
@@ -486,6 +622,9 @@ class FirestoreRepository(FirebaseRepository):
 
             transaction.set(user_ref, user_data, merge=True)
             transaction.set(client_ref, client_data)
+            # merge=True, and never touches updatedAt: this is an allocator
+            # counter advance, not a metadata change to the region doc.
+            transaction.set(region_ref, {"tunnelIndexV4": next_index, "tunnelIndexV6": next_index}, merge=True)
             return _client_from_data(client_data, client_id, now=now)
 
         return reserve(db.transaction())
@@ -606,6 +745,75 @@ class FirestoreRepository(FirebaseRepository):
             )
 
         return delete(db.transaction())
+
+    def list_policy_clients(self) -> list[PolicyClientEntry]:
+        # Fleet-wide, unfiltered: status filtering happens here in Python so
+        # this needs no new composite index (see repository.PolicyClientEntry).
+        snapshots = self._db().collection_group("Instances").stream()
+        entries: list[PolicyClientEntry] = []
+        for raw_snapshot in snapshots:
+            snapshot = _sync_snapshot(raw_snapshot)
+            try:
+                client = _client_from_data(snapshot.to_dict() or {}, snapshot.id)
+            except ValueError:
+                continue
+            if client.status != ClientStatus.ACTIVE or not client.client_public_key:
+                continue
+            entries.append(
+                PolicyClientEntry(
+                    owner_uid=client.owner_uid,
+                    region_id=client.region_id,
+                    assigned_tunnel_ipv4=client.assigned_tunnel_ipv4,
+                    assigned_tunnel_ipv6=client.assigned_tunnel_ipv6,
+                )
+            )
+        return entries
+
+    def list_account_slots(self) -> dict[str, int]:
+        snapshots = self._db().collection("Users").stream()
+        slots: dict[str, int] = {}
+        for raw_snapshot in snapshots:
+            snapshot = _sync_snapshot(raw_snapshot)
+            slot = valid_account_slot((snapshot.to_dict() or {}).get("accountSlot"))
+            if slot is not None:
+                slots[snapshot.id] = slot
+        return slots
+
+    def list_admin_uids(self) -> set[str]:
+        snapshots = (
+            self._db()
+            .collection("UserRoles")
+            .where(filter=FieldFilter("roleId", "==", Role.ADMIN.value))
+            .stream()
+        )
+        return {_sync_snapshot(snapshot).id for snapshot in snapshots}
+
+    def get_account_slot(self, uid: str) -> int | None:
+        doc = _sync_snapshot(self._db().collection("Users").document(uid).get())
+        if not doc.exists:
+            return None
+        return valid_account_slot((doc.to_dict() or {}).get("accountSlot"))
+
+    def write_policy_status(self, status: PolicyStatus) -> None:
+        # Full replacement (not merge), mirroring write_mesh_status: a status
+        # doc must describe exactly what the last reconcile pass applied.
+        # appliedSequence (Wave 3) and dataVintage (Wave 2) are gone from this
+        # document, not merely nulled - see docs/access-control-list.md,
+        # "Settled Decisions - Status and dashboard": ordering is enforced by
+        # the host flock, not a counter, and staleness is read from hash
+        # agreement plus updatedAt, not a vintage field.
+        try:
+            self._db().collection("Policy").document(status.region_id).set(
+                {
+                    "regionId": status.region_id,
+                    "mapHashV4": status.map_hash_v4,
+                    "mapHashV6": status.map_hash_v6,
+                    "rowCount": status.row_count,
+                    "updatedAt": _server_timestamp(),
+                }
+            )
+        except Exception as exc:
+            raise FirebaseWriteFailedError() from exc
 
     def _mark_client_terminal(
         self,
@@ -759,22 +967,37 @@ def _region_from_snapshot(snapshot: DocumentSnapshot, region_id: str) -> RegionD
 
 
 def _region_from_data(data: dict[str, Any], region_id: str) -> RegionDoc:
+    raw_port = data.get("wireguardPort")
+    wireguard_port = raw_port if isinstance(raw_port, int) and not isinstance(raw_port, bool) else None
     return RegionDoc(
         region_id=data.get("regionId") or region_id,
         display_name=data.get("displayName") or region_id,
-        enabled=bool(data.get("enabled")),
+        enabled=data.get("enabled") is True,
         wireguard_endpoint_ipv4=data.get("wireguardEndpointIpv4") or "",
         wireguard_endpoint_ipv6=data.get("wireguardEndpointIpv6"),
-        wireguard_port=int(data.get("wireguardPort") or 51820),
+        wireguard_port=wireguard_port,
         wireguard_dns_ipv4=data.get("wireguardDnsIpv4") or "",
         wireguard_dns_ipv6=data.get("wireguardDnsIpv6") or "",
         wireguard_public_key=data.get("wireguardPublicKey") or "",
-        capacity_limit=int(data.get("capacityLimit") or 0),
+        capacity_limit=_safe_int(data.get("capacityLimit"), default=0),
         wireguard_endpoint_hostname=data.get("wireguardEndpointHostname") or "",
-        display_order=data.get("displayOrder"),
+        display_order=_optional_safe_int(data.get("displayOrder")),
         health_status=data.get("healthStatus"),
         updated_at=data.get("updatedAt"),
+        tunnel_network_v4=data.get("tunnelNetworkV4") or "",
+        tunnel_network_v6=data.get("tunnelNetworkV6") or "",
+        mesh_enabled=data.get("meshEnabled") is True,
+        tunnel_index_v4=_optional_safe_int(data.get("tunnelIndexV4")),
+        tunnel_index_v6=_optional_safe_int(data.get("tunnelIndexV6")),
     )
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _optional_safe_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _user_from_data(data: dict[str, Any], uid: str) -> UserDoc:
@@ -783,6 +1006,7 @@ def _user_from_data(data: dict[str, Any], uid: str) -> UserDoc:
         email=data.get("email") or "",
         created_at=data.get("createdAt"),
         disabled=bool(data.get("disabled", False)),
+        account_slot=_optional_safe_int(data.get("accountSlot")),
     )
 
 
@@ -818,7 +1042,38 @@ def _client_from_data(data: dict[str, Any], client_id: str, *, now=None) -> Clie
     )
 
 
-def _user_write_data(*, uid: str, email: str | None, exists: bool) -> dict[str, Any]:
+def _instance_region_id(snapshot: DocumentSnapshot, data: dict[str, Any]) -> str:
+    """Region grouping comes from the document's own path
+    (Regions/{regionId}/Instances/{clientId}), not its regionId field (see
+    repository.FirebaseRepository.mark_account_clients_inactive), so a doc
+    whose field disagrees with its path is still counted and fenced under its
+    true region. Falls back to the regionId field only when the path is
+    unavailable."""
+    try:
+        region_id = snapshot.reference.parent.parent.id
+    except Exception:
+        region_id = None
+    if isinstance(region_id, str) and region_id:
+        return region_id
+    field = data.get("regionId")
+    return field if isinstance(field, str) else ""
+
+
+def _client_needs_non_active_fence(data: dict[str, Any], client_id: str) -> bool:
+    """True when a document must receive the account-deletion terminal write:
+    it is ACTIVE or CREATING (CREATING is fenced too, so a concurrent
+    mark_client_active cannot re-activate it), or its status cannot be
+    trusted at all - fail-closed, mirroring list_policy_clients/
+    _client_from_snapshot's handling of a malformed document. Already
+    removed/failed is skipped with no write so a retry stays idempotent."""
+    try:
+        client = _client_from_data(data, client_id)
+    except (TypeError, ValueError):
+        return True
+    return client.status in (ClientStatus.ACTIVE, ClientStatus.CREATING)
+
+
+def _user_write_data(*, uid: str, email: str | None, exists: bool, account_slot: int | None = None) -> dict[str, Any]:
     data: dict[str, Any] = {
         "uid": uid,
         "email": email or "",
@@ -826,7 +1081,62 @@ def _user_write_data(*, uid: str, email: str | None, exists: bool) -> dict[str, 
     if not exists:
         data["createdAt"] = _server_timestamp()
         data["disabled"] = False
+    # Omitted (not None-written) when there is nothing new to set, so a
+    # merge=True write never clears an existing accountSlot.
+    if account_slot is not None:
+        data["accountSlot"] = account_slot
     return data
+
+
+def _account_slot_ref(db):
+    return db.collection("Counters").document("accountSlots")
+
+
+def _allocate_account_slot(
+    transaction,
+    db,
+    counter_ref,
+    counter_snapshot: DocumentSnapshot,
+    *,
+    exclude_uid: str,
+) -> int:
+    """Transactional Counters/accountSlots.nextSlot allocation; caller must have
+    already read counter_snapshot (Firestore transactions require every read
+    before any write) and must not have written anything yet.
+
+    The counter is the sole allocation authority: next_account_slot raises
+    AccountSlotUnavailableError for a missing, malformed, regressed, or
+    exhausted counter rather than re-deriving one, because a hard-deleted
+    account's slot survives nowhere in live data (see that function and
+    hard_delete_account_documents). The counter read, the caller's user/client
+    write, and the increment below all sit in one transaction, so a Firestore
+    retry re-reads the counter and recomputes the candidate from scratch.
+
+    The full Users collection is read inside the same transaction only to
+    *disprove* a counter that live data shows has regressed; it never derives
+    one. The fleet is tiny (region_capacity_limit 20, single-digit accounts
+    today), so a full collection read on this rare allocation path is
+    acceptable. exclude_uid is the uid being provisioned: both callers only
+    reach this function when that uid does not already carry a slot, so it
+    never contributes a valid entry here anyway - excluding it is defensive,
+    not load-bearing.
+    """
+    stored_next_slot = (counter_snapshot.to_dict() or {}).get("nextSlot") if counter_snapshot.exists else None
+    assigned_slots: list[object] = []
+    for raw_snapshot in db.collection("Users").stream(transaction=transaction):
+        snapshot = _sync_snapshot(raw_snapshot)
+        if snapshot.id == exclude_uid:
+            continue
+        slot_value = (snapshot.to_dict() or {}).get("accountSlot")
+        # An explicit null is "no slot", not a malformed one: _user_write_data
+        # omits the field rather than writing None, and a null can never reach
+        # the wire, so it must not count as an assigned slot.
+        if slot_value is not None:
+            assigned_slots.append(slot_value)
+
+    slot = next_account_slot(stored_next_slot=stored_next_slot, assigned_slots=assigned_slots)
+    transaction.set(counter_ref, {"nextSlot": slot + 1, "updatedAt": _server_timestamp()}, merge=True)
+    return slot
 
 
 def _client_write_data(

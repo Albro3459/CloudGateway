@@ -31,6 +31,8 @@ struct CloudGatewayTheme {
     let edgeFaint = Color(hex: 0x1e2939)
 
     let success = Color(hex: 0x008236)
+    let successSoft = Color(hex: 0x052e16)
+    let successStrong = Color(hex: 0x86efac)
     let successSoftEdge = Color(hex: 0x0d542b)
 
     let warningSoft = Color(hex: 0x432004)
@@ -41,6 +43,7 @@ struct CloudGatewayTheme {
     let dangerButton = Color(hex: 0xc10007)
     let dangerButtonHover = Color(hex: 0x9f0712)
     let dangerContent = Color(hex: 0xff6467)
+    let dangerSoft = Color(hex: 0x450a0a)
     let dangerSoftEdge = Color(hex: 0x82181a)
 }
 

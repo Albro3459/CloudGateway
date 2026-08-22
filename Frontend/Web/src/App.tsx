@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import About from "./pages/About";
 import PasswordReset from "./pages/PasswordReset";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
+import ServerHealth from "./pages/ServerHealth";
 
 const App: React.FC = () => {
   return (
@@ -16,6 +17,7 @@ const App: React.FC = () => {
         <Route path="/auth" element={<PasswordReset />} />
         <Route path="/about" element={<About />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
+        <Route path="/server-health" element={<ServerHealth />} />
       </Routes>
     </Router>
   );

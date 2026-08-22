@@ -1,12 +1,15 @@
 import { User } from "firebase/auth";
 import { auth, signOut } from "../firebase";
-import { collection, collectionGroup, getDocs, getFirestore, query, where } from "firebase/firestore";
+import { collection, collectionGroup, doc, getDocs, getFirestore, query, updateDoc, where } from "firebase/firestore";
 import { NavigateFunction } from "react-router-dom";
 
 import { getUserRole } from "./usersHelper";
 import { normalizeVPNStatus, VPNStatus } from "./vpnStatus";
 import { dateOrNull, stringOrNull } from "./coerce";
 import { useOciRegionsStore } from "../stores/ociRegionsStore";
+import { MeshDoc, MeshDocsById, parseMeshDocument } from "./meshHelper";
+import { PolicyDoc, PolicyDocsById, parsePolicyDocument } from "./policyHelper";
+import { parseRegionDocument, Region } from "./regionsHelper";
 
 export const logout = async (navigate: NavigateFunction) => {
     useOciRegionsStore.getState().clearOciRegions();
@@ -161,3 +164,57 @@ const getAdminVPNs = async (): Promise<VPNClientData[]> => {
         return [];
     }
 }
+
+// Server Health reads region docs directly from Firestore (not the API's
+// /regions summary) because it needs mesh-only fields the API never returns:
+// tunnelNetworkV4/V6 and meshEnabled.
+export const getAllRegionDocs = async (): Promise<Region[]> => {
+    const db = getFirestore();
+    const snapshot = await getDocs(collection(db, "Regions"));
+    const regions: Region[] = [];
+
+    snapshot.forEach((regionDoc) => {
+        const region = parseRegionDocument(regionDoc.id, regionDoc.data());
+        if (region) {
+            regions.push(region);
+        }
+    });
+
+    return regions;
+};
+
+// Mesh/* is the durable, last-applied state written by each region's host
+// after a sync pass; admin-readable, client-unwritable per firestore.rules.
+export const getMeshDocs = async (): Promise<MeshDocsById> => {
+    const db = getFirestore();
+    const snapshot = await getDocs(collection(db, "Mesh"));
+    const meshDocs: MeshDocsById = new Map<string, MeshDoc | null>();
+
+    snapshot.forEach((meshDoc) => {
+        meshDocs.set(meshDoc.id, parseMeshDocument(meshDoc.id, meshDoc.data()));
+    });
+
+    return meshDocs;
+};
+
+// Policy/* is observability-only account-scoped ACL status, written by each
+// region's host via the Admin SDK after a policy reconcile pass; admin
+// readable, client-unwritable per firestore.rules, mirroring Mesh/{regionId}.
+export const getPolicyDocs = async (): Promise<PolicyDocsById> => {
+    const db = getFirestore();
+    const snapshot = await getDocs(collection(db, "Policy"));
+    const policyDocs: PolicyDocsById = new Map<string, PolicyDoc | null>();
+
+    snapshot.forEach((policyDoc) => {
+        policyDocs.set(policyDoc.id, parsePolicyDocument(policyDoc.id, policyDoc.data()));
+    });
+
+    return policyDocs;
+};
+
+// The only client write to a region doc: firestore.rules restricts admins to
+// this single key, so toggling membership never touches host-owned fields.
+export const setRegionMeshEnabled = async (regionId: string, meshEnabled: boolean): Promise<void> => {
+    const db = getFirestore();
+    await updateDoc(doc(db, "Regions", regionId), { meshEnabled });
+};

@@ -1,12 +1,16 @@
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
 from src.enums import ClientStatus, Role
 from src.models import (
+    AdminSyncResponse,
     CreateClientRequest,
     CreateClientResponse,
     CreateUserRequest,
     CreateUserResponse,
+    DeleteClientRequest,
     DeleteClientResponse,
 )
 
@@ -74,6 +78,53 @@ def test_delete_response_serializes_camel_case():
         "regionId": "us-test-1",
         "status": "removed",
     }
+
+
+def test_delete_client_request_account_cleanup_defaults_false_and_accepts_camel_case():
+    default_request = DeleteClientRequest(user_id="uid", region_id="us-test-1")
+    assert default_request.account_cleanup is False
+
+    cleanup_request = DeleteClientRequest.model_validate(
+        {"userId": "uid", "regionId": "us-test-1", "accountCleanup": True}
+    )
+    assert cleanup_request.account_cleanup is True
+
+
+def test_admin_sync_response_requires_current_mesh_updated_field():
+    with pytest.raises(ValidationError):
+        AdminSyncResponse.model_validate({"regionId": "us-test-1"})
+
+
+def test_admin_sync_response_exposes_mesh_route_counts():
+    response = AdminSyncResponse(
+        region_id="us-test-1",
+        synced_at=datetime.now(timezone.utc),
+        added=0,
+        updated=0,
+        removed=0,
+        no_changes=True,
+        log="log",
+        mesh_updated=0,
+        mesh_enabled=True,
+        mesh_applied=1,
+        mesh_added=0,
+        mesh_removed=0,
+        mesh_skipped=0,
+        mesh_routes_added=2,
+        mesh_routes_removed=1,
+        mesh_status_written=True,
+        client_peers_degraded=0,
+        policy_applied=True,
+        mesh_peers=[],
+    )
+
+    assert response.mesh_routes_added == 2
+    assert response.mesh_routes_removed == 1
+    assert response.model_dump(by_alias=True)["meshRoutesAdded"] == 2
+    assert response.model_dump(by_alias=True)["meshRoutesRemoved"] == 1
+    # The dashboard's warning depends on false surviving serialization, and the
+    # route sets response_model_exclude_none.
+    assert response.model_dump(by_alias=True, exclude_none=True)["meshStatusWritten"] is True
 
 
 def test_user_models_serialize_camel_case():

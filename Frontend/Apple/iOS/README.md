@@ -48,10 +48,21 @@ DELETE https://<regionId>.gocloudlaunch.com/api/clients/{clientId}
 POST   https://<regionId>.gocloudlaunch.com/api/admin/sync
 ```
 
-`POST /admin/sync` is shown only for admins. The UI displays the sync counts
-and can show/share the full peer audit log. Treat that log as admin-only
-operational data: it can include user emails, client names, client IDs, public
-keys, tunnel IPs, statuses, and removed-peer details.
+`POST /admin/sync` backs the admin-only Server Health page, which replaces the
+old per-region sync button. The page fans out one sync request per enabled
+region, reads mesh membership and link status directly from Firestore
+`Regions/*` and `Mesh/*` (the API's `/regions` summary carries no mesh
+fields), and writes only the single `meshEnabled` field back to a region
+document. It also reads `Policy/*` - observability-only account-scoped ACL
+status written by each region's host via the Admin SDK, which the app never
+writes - and renders a per-region client-isolation panel: row counts and
+comprehensive IPv4/IPv6 policy hashes only, never uids, emails, client names,
+addresses, or keys. A `Policy` read failure is isolated to its own
+read-failure card; it cannot blank the mesh status or be mistaken for "no
+region has synced." The UI displays per-region sync counts and can show/share
+the full peer audit log via `ShareLink`, never written to disk or logs. Treat
+that log as admin-only operational data: it can include user emails, client
+names, client IDs, public keys, and tunnel IPs.
 
 The app target directly links:
 

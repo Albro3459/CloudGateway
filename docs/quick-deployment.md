@@ -80,13 +80,23 @@ See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 `<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
 Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
 
-This deploys new VPN servers from your local branch. It validates every listed
-tfvars file has a `source_ref`, saves the final plan for each region, then bumps
-`Backend/API/src/version.py`, makes and pushes one `Deploy v<x>` commit and matching
-`deploy-v<x>` tag, writes that same tag to every listed region's `source_ref`,
-and applies each saved plan in sequence. The host downloads the pinned Caddy
-binary release and verifies it against `caddy_binary_sha256` during bootstrap.
-**This destroys and replaces the existing VPN server in each listed region.**
+**This destroys and replaces the existing VPN server in each listed region.** Every
+wrapper apply writes a fresh `source_ref` into user_data, and OCI does not allow
+changing `user_data` on a launched instance, so apply always destroys and recreates
+the OCI instance and changes its public IPv4. It validates the listed tfvars files,
+creates a deploy ref, and applies each region in sequence. The host downloads the
+pinned Caddy binary release and verifies it during bootstrap. A normal rebuild keeps
+the existing WireGuard key, tunnel subnets, and endpoint hostname; boot sync restores
+peers and clients only need to re-resolve the endpoint after the public IP changes.
+If a multi-region apply fails partway through, the script stops; regions already
+applied stay deployed.
+
+The account-scoped ACL release is a host-level change and can only be deployed by
+rebuilding every region through `./scripts/terraform.sh` from one deploy tag;
+`cloudgateway-install-api` is not a supported path for it and refuses an ACL-aware
+ref on a host without a live ACL table. During a sequential multi-region rebuild
+the fleet is only partially enforced - the ACL is not active until the last region
+finishes.
 
 Useful forms:
 
@@ -97,8 +107,7 @@ Useful forms:
 ./scripts/terraform.sh chicago destroy
 ```
 
-If a multi-region apply fails partway through, the script stops. Regions already
-applied stay deployed; fix the failed region and rerun.
+After the Terraform regions are deployed and ready, open the admin dashboard and run **Sync All Regions**.
 
 For the manual, by-hand fallback, see [regional-deployment.md](regional-deployment.md).
 

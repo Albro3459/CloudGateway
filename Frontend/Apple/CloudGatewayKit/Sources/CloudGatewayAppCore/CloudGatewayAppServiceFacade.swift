@@ -64,6 +64,10 @@ public protocol CloudGatewayClientRepository: AnyObject {
     func fetchUserRole(uid: String) async throws -> String?
     func fetchOwnedClients(uid: String) async throws -> [CloudGatewayClient]
     func fetchAllClients() async throws -> [CloudGatewayClient]
+    func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion]
+    func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc]
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc]
+    func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws
 }
 
 public protocol CloudGatewayControlPlaneServicing: AnyObject, Sendable {
@@ -82,7 +86,7 @@ public protocol CloudGatewayControlPlaneServicing: AnyObject, Sendable {
         idToken: String
     ) async throws -> CloudGatewayDeleteClientResponse
     func deleteAccount(idToken: String) async throws -> CloudGatewayDeleteAccountResponse
-    func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse
+    func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome]
     func grantAccess(
         email: String,
         regionId: String,
@@ -288,8 +292,8 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
         try await controlPlane.deleteAccount(idToken: idToken)
     }
 
-    public func syncRegion(regionId: String, idToken: String) async throws -> CloudGatewayRegionSyncResponse {
-        try await controlPlane.syncRegion(regionId: regionId, idToken: idToken)
+    public func syncRegions(regionIds: [String], idToken: String) async -> [CloudGatewayRegionSyncOutcome] {
+        await controlPlane.syncRegions(regionIds: regionIds, idToken: idToken)
     }
 
     public func grantAccess(
@@ -298,6 +302,22 @@ public final class CloudGatewayAppServiceFacade: CloudGatewayServicing {
         idToken: String
     ) async throws -> CloudGatewayGrantAccessResponse {
         try await controlPlane.grantAccess(email: email, regionId: regionId, idToken: idToken)
+    }
+
+    public func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion] {
+        try await repository.fetchMeshRegions()
+    }
+
+    public func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] {
+        try await repository.fetchMeshDocs()
+    }
+
+    public func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        try await repository.fetchPolicyDocs()
+    }
+
+    public func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
+        try await repository.setRegionMeshEnabled(regionId: regionId, enabled: enabled)
     }
 }
 

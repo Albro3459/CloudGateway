@@ -77,7 +77,7 @@ log "==> Step 1/13: Installing required packages"
 wait_for_apt
 apt-get update
 wait_for_apt
-apt-get install -y wireguard iptables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
+apt-get install -y wireguard iptables nftables fail2ban unbound dns-root-data python3-venv python3-pip ca-certificates curl gettext-base
 systemctl stop unbound || true
 systemctl stop adguardhome || true
 
@@ -143,6 +143,57 @@ SYSCTL
 sysctl --system
 
 log "==> Step 6/13: Writing WireGuard configuration"
+# Account-scoped ACL base ruleset. The boundary enforced here is the account
+# slot carried in the packet mark, not the address itself: cg_slot4/6 map a
+# client's tunnel address to its account slot, and forward traffic is dropped
+# unless the destination is paired with the source's slot in cg_pairs4/6. All
+# sets/maps below start empty, and an empty cg_slot/cg_pairs means no
+# client-to-client traffic at all — that is the correct boot state, since the
+# rules are installed by PostUp and only populated by the first policy pull
+# from Firestore. So the failure mode of an unreachable Firestore is
+# "peer-to-peer is down", never "VPN is down". cg_tunnel4/6 are the mesh
+# aggregates (mirrors MESH_AGGREGATE_V4/MESH_AGGREGATE_V6 in
+# Backend/API/src/wireguard.py) and are what make that empty-map state fail
+# closed: any destination inside the tunnel aggregate that isn't in
+# cg_pairs4/6 is dropped, so an empty map denies rather than falling through
+# to accept. The chain runs at priority -10, ahead of the existing iptables
+# FORWARD accepts installed below, and a drop verdict is terminal across
+# tables, so those rules did not need renumbering. This assumes no other
+# subsystem uses the packet mark and that no `ip rule fwmark` exists; the API
+# only ever replaces element contents of these objects, never the table or
+# chain itself, and never touches cg_tunnel4/cg_tunnel6.
+# The table/chain names, every object name and kind (set vs map), the
+# cg_tunnel4/6 aggregates, and both rule families below are checked offline
+# against the API renderer by Backend/API/tests/test_bootstrap_contract.py -
+# a rename or type change on either side must be made on both.
+cat > /etc/cloudgateway/cloudgateway.nft <<NFTCONF
+table inet cloudgateway {
+	set cg_tunnel4 { type ipv4_addr; flags interval; elements = { 10.0.0.0/16 } }
+	set cg_tunnel6 { type ipv6_addr; flags interval; elements = { fd42:42:42::/48 } }
+	set cg_infra4 { type ipv4_addr; }
+	set cg_infra6 { type ipv6_addr; }
+	set cg_admin4 { type ipv4_addr; }
+	set cg_admin6 { type ipv6_addr; }
+	map cg_slot4 { type ipv4_addr : mark; }
+	map cg_slot6 { type ipv6_addr : mark; }
+	set cg_pairs4 { typeof ip daddr . meta mark; }
+	set cg_pairs6 { typeof ip6 daddr . meta mark; }
+	chain cg_forward {
+		type filter hook forward priority -10; policy accept;
+		ct state established,related accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip saddr @cg_infra4 ip daddr @cg_admin4 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip saddr @cg_admin4 ip daddr @cg_infra4 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 saddr @cg_infra6 ip6 daddr @cg_admin6 accept
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 saddr @cg_admin6 ip6 daddr @cg_infra6 accept
+		meta mark set ip saddr map @cg_slot4
+		meta mark set ip6 saddr map @cg_slot6
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip daddr @cg_tunnel4 ip daddr . meta mark != @cg_pairs4 drop
+		iifname "$WG_INTERFACE" oifname "$WG_INTERFACE" ip6 daddr @cg_tunnel6 ip6 daddr . meta mark != @cg_pairs6 drop
+	}
+}
+NFTCONF
+chmod 644 /etc/cloudgateway/cloudgateway.nft
+
 # Interface-only config. Peers are never written to this or any other file:
 # Firebase is the single source of truth and cloudgateway-sync-peers rebuilds
 # the live peer set from it on every boot.
@@ -155,6 +206,10 @@ ListenPort = $WG_LISTEN_PORT
 PrivateKey = $(cat /etc/cloudgateway/wireguard-server.key)
 
 # PostUp
+# Account-scoped ACL table, loaded first: rules start empty (see
+# /etc/cloudgateway/cloudgateway.nft) so client-to-client traffic is denied
+# until the first policy pull populates cg_slot/cg_pairs.
+PostUp = nft -f /etc/cloudgateway/cloudgateway.nft
 # IPv4
 # Do not let VPN clients reach OCI instance metadata. user_data should not be accessible secrets
 PostUp = iptables -I FORWARD 1 -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
@@ -177,6 +232,9 @@ PostUp = ip6tables -I INPUT 4 -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p udp --dp
 PostUp = ip6tables -I INPUT 5 -i $WG_INTERFACE -d $WG_DNS_ADDRESS_V6 -p tcp --dport 53 -j ACCEPT
 
 # PostDown
+# `|| true`: the table may already be absent (e.g. PostUp never ran), and
+# teardown of the rest of the interface must not fail on that.
+PostDown = nft delete table inet cloudgateway || true
 # IPv4
 PostDown = iptables -D FORWARD -i $WG_INTERFACE -d 169.254.169.254/32 -j DROP
 PostDown = iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT
@@ -497,6 +555,60 @@ if [[ ! -f "$WORK_DIR/Backend/API/pyproject.toml" ]]; then
   exit 1
 fi
 
+# Account-scoped ACL rollout gate. This release enforces client-to-client
+# isolation with an nftables table loaded by wg0's PostUp, which only runs
+# when the interface transitions from down to up. An API-only upgrade onto a
+# host that never had that table would run policy code against nothing: nft
+# calls fail, those failures are swallowed, and cross-account forwarding
+# stays wide open while the API keeps serving as if nothing were wrong. The
+# only supported rollout for this release is destroying and rebuilding every
+# region from one deploy tag with ./scripts/terraform.sh. Detect an
+# ACL-aware source tree by the presence of a file that only exists on that
+# branch, then confirm the live host actually has the ACL loaded before
+# touching anything.
+if [[ -f "$WORK_DIR/Backend/API/src/policy.py" ]]; then
+  if [[ "${CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE:-}" == "1" ]]; then
+    echo "WARNING: CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1 is set." >&2
+    echo "WARNING: Skipping the account-scoped ACL rollout gate. This is unsupported" >&2
+    echo "WARNING: outside a genuine emergency and leaves the account boundary" >&2
+    echo "WARNING: unenforced if the live host has no ACL loaded." >&2
+  else
+    # Capture status explicitly: this script runs under set -euo pipefail, and
+    # letting a failing nft call abort here would exit with the pipefail
+    # message instead of the operator-facing explanation below.
+    NFT_STATUS=0
+    NFT_OUTPUT="$(nft list table inet cloudgateway 2>&1)" || NFT_STATUS=$?
+    ACL_LIVE=0
+    if [[ "$NFT_STATUS" -eq 0 ]] \
+        && grep -q 'chain cg_forward' <<<"$NFT_OUTPUT" \
+        && grep -q 'map cg_slot4' <<<"$NFT_OUTPUT" \
+        && grep -q 'map cg_slot6' <<<"$NFT_OUTPUT"; then
+      ACL_LIVE=1
+    fi
+
+    if [[ "$ACL_LIVE" -ne 1 ]]; then
+      echo "ERROR: This ref carries the account-scoped ACL (Backend/API/src/policy.py)," >&2
+      echo "ERROR: but this host has no live 'inet cloudgateway' nftables table with the" >&2
+      echo "ERROR: cg_forward chain and cg_slot4/cg_slot6 maps." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: cloudgateway-install-api is not a supported upgrade path for this" >&2
+      echo "ERROR: release. Running the new API against a host with no ACL loaded would" >&2
+      echo "ERROR: execute policy code with nothing to enforce it: nft calls fail, those" >&2
+      echo "ERROR: failures are swallowed, and cross-account forwarding stays completely" >&2
+      echo "ERROR: unrestricted while the API keeps serving as if nothing were wrong." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: Re-running bootstrap on this host is NOT a migration: 'systemctl" >&2
+      echo "ERROR: enable --now wg-quick@wg0' does not rerun PostUp on an interface that" >&2
+      echo "ERROR: is already active, so the ACL table would still never get loaded." >&2
+      echo "ERROR:" >&2
+      echo "ERROR: The only supported rollout is destroying and rebuilding this region" >&2
+      echo "ERROR: through ./scripts/terraform.sh from the same deploy tag as every" >&2
+      echo "ERROR: other region." >&2
+      exit 1
+    fi
+  fi
+fi
+
 cp -R "$WORK_DIR/Backend/API/." /opt/cloudgateway/api/
 /opt/cloudgateway/api/.venv/bin/pip install /opt/cloudgateway/api
 systemctl restart cloudgateway-api
@@ -571,7 +683,11 @@ log "Verifying prebuilt Caddy binary"
 printf '%s  %s\n' "$CADDY_BINARY_SHA256" "$CADDY_BINARY_TMP" | sha256sum -c -
 install -m 755 "$CADDY_BINARY_TMP" /usr/local/bin/caddy
 
-if ! /usr/local/bin/caddy list-modules | grep -Fq 'http.handlers.rate_limit'; then
+# Read the module list into a variable first: piping straight into `grep -q`
+# closes the pipe on the first match, and Caddy dies of SIGPIPE (141) before it
+# finishes writing. Under `pipefail` that races into a false "module missing".
+CADDY_MODULES="$(/usr/local/bin/caddy list-modules)"
+if ! grep -Fq 'http.handlers.rate_limit' <<<"$CADDY_MODULES"; then
   echo "Prebuilt Caddy binary does not include http.handlers.rate_limit" >&2
   exit 1
 fi
@@ -779,13 +895,44 @@ log "==> Registering region in Firestore"
 # long-running services use), not the shell. This keeps a single env-file format
 # and avoids shell metacharacter pitfalls in quoted values. --wait propagates
 # the register exit code; --collect cleans up the transient unit.
-if systemd-run --quiet --pipe --wait --collect \
+# Exit status is captured (not consumed by `if`) because registration distinguishes
+# 0 = registered and edge ready, 2 = registered but the Cloudflare path failed, anything
+# else = registration failed.
+REGISTER_STATUS=0
+systemd-run --quiet --pipe --wait --collect \
   --property=WorkingDirectory=/opt/cloudgateway/api \
   --property=EnvironmentFile=/etc/cloudgateway/api.env \
-  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region; then
+  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region || REGISTER_STATUS=$?
+
+if [[ "$REGISTER_STATUS" -eq 0 ]]; then
   log "Region registered"
+elif [[ "$REGISTER_STATUS" -eq 2 ]]; then
+  log "WARN: region registered but the Cloudflare edge check failed; check DNS / Origin cert / Authenticated Origin Pulls / firewall, then re-run 'cloudgateway-register-region'" >&2
 else
   log "WARN: region registration failed; re-run 'cloudgateway-register-region' once Firebase is reachable" >&2
+fi
+
+# Second sync pass, now that this region's own doc (tunnel CIDRs, pubkey, endpoint) exists in
+# Firestore. The early sync above only restores client peers; this pass also picks up mesh
+# peers for already-known mesh-enabled regions, so the last-deployed region bridges immediately
+# instead of waiting for the next boot or an operator-triggered sync. Non-fatal, same as the
+# early pass: a brand-new region with nothing to sync yet is a successful empty sync.
+#
+# Skipped unless registration reported a ready edge: a region doc that is still disabled has
+# an empty desired peer set, so this pass would remove every client peer on the interface.
+#
+# Result is logged here (after the earlier status dump at Step 13) so the bootstrap log's last
+# word on peer sync reflects this pass, not the first one. The unit is Type=oneshot with
+# Restart=on-failure/RestartSec=30; if the first pass above is still auto-restarting, this
+# `systemctl start` waits for that pending job before returning, adding up to ~30s here. That
+# wait is accepted: it is what makes the status print below trustworthy instead of racing a
+# restart that is still in flight.
+if [[ "$REGISTER_STATUS" -eq 0 ]]; then
+  systemctl start cloudgateway-sync-peers || true
+  log "==> Post-registration peer sync result:"
+  systemctl --no-pager --full status cloudgateway-sync-peers || true
+else
+  log "Skipping the post-registration peer sync because registration did not report a ready region" >&2
 fi
 
 log "WireGuard public key:"

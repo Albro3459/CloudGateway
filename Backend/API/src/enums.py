@@ -19,6 +19,29 @@ class OperationResult(str, Enum):
     NOOP = "noop"
 
 
+class MeshPeerStatus(str, Enum):
+    APPLIED = "applied"
+    SKIPPED_OVERLAP = "skipped-overlap"
+    SKIPPED_INCOMPLETE = "skipped-incomplete"
+
+
+class MeshPeerReasonCode(str, Enum):
+    MISSING_PUBLIC_KEY = "missing-public-key"
+    INVALID_PUBLIC_KEY = "invalid-public-key"
+    MISSING_ENDPOINT_HOSTNAME = "missing-endpoint-hostname"
+    INVALID_ENDPOINT_HOSTNAME = "invalid-endpoint-hostname"
+    INVALID_ENDPOINT_PORT = "invalid-endpoint-port"
+    MISSING_NETWORK_V4 = "missing-network-v4"
+    INVALID_NETWORK_V4 = "invalid-network-v4"
+    MISSING_NETWORK_V6 = "missing-network-v6"
+    INVALID_NETWORK_V6 = "invalid-network-v6"
+    OUTSIDE_AGGREGATE = "outside-aggregate"
+    DUPLICATE_PUBLIC_KEY = "duplicate-public-key"
+    LOCAL_NETWORK_INVALID = "local-network-invalid"
+    OVERLAP_LOCAL = "overlap-local"
+    OVERLAP_CANDIDATE = "overlap-candidate"
+
+
 class ErrorCode(str, Enum):
     AUTH_REQUIRED = "AUTH_REQUIRED"
     ADMIN_REQUIRED = "ADMIN_REQUIRED"
@@ -31,9 +54,12 @@ class ErrorCode(str, Enum):
     CLIENT_NOT_FOUND = "CLIENT_NOT_FOUND"
     DUPLICATE_EMAIL = "DUPLICATE_EMAIL"
     ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
+    SYNC_IN_PROGRESS = "SYNC_IN_PROGRESS"
     WIREGUARD_APPLY_FAILED = "WIREGUARD_APPLY_FAILED"
+    POLICY_APPLY_FAILED = "POLICY_APPLY_FAILED"
     FIREBASE_WRITE_FAILED = "FIREBASE_WRITE_FAILED"
     ROLE_DEFAULT_MISSING = "ROLE_DEFAULT_MISSING"
+    ACCOUNT_SLOT_UNAVAILABLE = "ACCOUNT_SLOT_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -61,8 +87,28 @@ class Event(str, Enum):
     PEER_SYNC_STARTED = "peer_sync_started"
     PEER_SYNC_COMPLETED = "peer_sync_completed"
     PEER_SYNC_FAILED = "peer_sync_failed"
+    PEER_SYNC_PARTIAL = "peer_sync_partial"
+    PEER_SYNC_ENRICHMENT_FAILED = "peer_sync_enrichment_failed"
     REGION_REGISTER_STARTED = "region_register_started"
     REGION_REGISTER_COMPLETED = "region_register_completed"
     REGION_REGISTER_FAILED = "region_register_failed"
     REGION_DEPLOYMENT_EMAIL_COMPLETED = "region_deployment_email_completed"
     REGION_DEPLOYMENT_EMAIL_FAILED = "region_deployment_email_failed"
+    CLIENT_PEER_APPLY_FAILED = "client_peer_apply_failed"
+    PEER_REMOVAL_FAILED = "peer_removal_failed"
+    ENDPOINT_RESOLVE_FAILED = "endpoint_resolve_failed"
+    MESH_PEER_SKIPPED = "mesh_peer_skipped"
+    MESH_PEER_APPLY_FAILED = "mesh_peer_apply_failed"
+    MESH_ROUTE_RECLAIMED = "mesh_route_reclaimed"
+    MESH_ROUTE_RECONCILE_FAILED = "mesh_route_reconcile_failed"
+    MESH_STATUS_WRITE_FAILED = "mesh_status_write_failed"
+    MESH_LOCAL_NETWORK_INVALID = "mesh_local_network_invalid"
+    CLIENT_PEER_DEGRADED = "client_peer_degraded"
+    POLICY_REFRESH_STARTED = "policy_refresh_started"
+    POLICY_REFRESH_COMPLETED = "policy_refresh_completed"
+    POLICY_REFRESH_FAILED = "policy_refresh_failed"
+    POLICY_ROW_APPLY_FAILED = "policy_row_apply_failed"
+    POLICY_ROW_LOCK_BUSY = "policy_row_lock_busy"
+    POLICY_STATUS_WRITE_FAILED = "policy_status_write_failed"
+    POLICY_POKE_FAILED = "policy_poke_failed"
+    POLICY_ROWS_SKIPPED = "policy_rows_skipped"
