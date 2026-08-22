@@ -329,7 +329,7 @@ def test_delete_account_removes_peer_and_hard_deletes_all_owned_docs(client, rep
     assert repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=removed.client_id) is None
     assert repository.get_client(owner_uid="user-2", region_id=REGION_ID, client_id=other_user_client.client_id) is not None
     # The non-active fence ran exactly once, before the hard delete (see
-    # TODO/account-scoped-acl.md Wave 4).
+    # docs/access-control-list.md, "Account Deletion").
     assert repository.mark_account_clients_inactive_calls == 1
 
 
@@ -503,7 +503,8 @@ def test_remove_account_peers_rejects_a_malformed_region_id_before_calling_out(m
 
 def test_delete_account_sends_exactly_one_refresh_per_other_region(client, repository, wireguard, monkeypatch):
     # DELETE /account sends exactly one synchronous /sync/refresh wave to
-    # every other enabled region (see TODO/account-scoped-acl.md Wave 4) and
+    # every other enabled region (see docs/access-control-list.md,
+    # "Account Deletion") and
     # no other cross-region call - the account has only a local client here,
     # so no remote per-client delete call is expected either.
     seed_region(repository)

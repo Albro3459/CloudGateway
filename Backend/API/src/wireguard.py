@@ -45,7 +45,7 @@ _HOSTNAME_PATTERN = re.compile(
 )
 
 # Documentation-only aggregates covering every region's tunnel subnet (see
-# TODO/shared-subnet-mesh.md). Nothing routes them as a whole; they exist so the
+# docs/shared-subnet-mesh.md). Nothing routes them as a whole; they exist so the
 # mesh route sweep has a safe scope to operate within.
 MESH_AGGREGATE_V4 = "10.0.0.0/16"
 MESH_AGGREGATE_V6 = "fd42:42:42::/48"
@@ -994,7 +994,7 @@ def validate_mesh_peers(
     Shared by LocalWireGuardManager and the test fake so the fake cannot pass a
     peer set the real host would reject. Cryptokey routing is exclusive, so a
     range colliding with the local tunnel network or with another candidate -
-    and a duplicate public key, which TODO/shared-subnet-mesh.md requires be
+    and a duplicate public key, which docs/shared-subnet-mesh.md requires be
     rejected - silently steals the ranges of whoever applied first.
 
     A rejection drops the candidate instead of aborting the caller's pass, the

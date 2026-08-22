@@ -8,7 +8,7 @@ import Foundation
 /// cg_slot, cg_pairs), not only the slot map, so they describe what a region's host actually read
 /// back from live nftables after applying, not what it intended to apply. They must be trusted
 /// as-is: there is no "expected" value to validate against, only agreement across the fleet. See
-/// `TODO/account-scoped-acl.md` ("Wave 5 - complete live hashes and Web status").
+/// `docs/access-control-list.md` ("Dashboard Status").
 ///
 /// `[String: CloudGatewayPolicyDoc]` plays the role of the web's `Map<regionId, PolicyDoc | null>`:
 /// an absent key here is the TS `null` case (a region that has never completed a reconcile pass).

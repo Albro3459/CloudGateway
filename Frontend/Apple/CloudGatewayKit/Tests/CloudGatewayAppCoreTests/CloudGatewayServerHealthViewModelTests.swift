@@ -4,7 +4,7 @@ import XCTest
 // Admin gating (redirecting non-admins / signed-out users away from the page)
 // lives in the iOS view layer (ContentView dismisses the cover when the role
 // stops being admin), not in this view model - see the iOS Server Health
-// section in TODO/shared-subnet-mesh.md. What belongs here is the identity
+// section in docs/shared-subnet-mesh.md. What belongs here is the identity
 // guard: an async step must not publish results for a user who is no longer
 // current, which these tests cover directly (sign-out mid-toggle,
 // mid-sync-fan-out).

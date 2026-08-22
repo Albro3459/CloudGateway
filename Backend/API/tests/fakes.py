@@ -280,8 +280,8 @@ class FakeRepository(FirebaseRepository):
         # repository.MIN_ACCOUNT_SLOT). None models a deleted/missing counter
         # doc; tests may also set this to an out-of-range int to model a
         # corrupted counter, both of which now fail closed end to end (see
-        # repository.next_account_slot and TODO/account-scoped-acl.md
-        # finding 2).
+        # repository.next_account_slot and docs/access-control-list.md,
+        # "Account slot allocation").
         self.account_slots: dict[str, int] = {}
         self.account_slot_counter: int | None = 1
         # Last policy status written per region, keyed by region_id.

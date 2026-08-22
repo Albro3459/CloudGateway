@@ -65,9 +65,9 @@ RECENT_AUTH_WINDOW = timedelta(minutes=5)
 # cross-region server-to-server calls must present a non-bot UA to reach origin.
 REGIONAL_API_USER_AGENT = "CloudGateway-API/1.0"
 # Fire-and-forget: the poke must never hold up the client's own request, and a
-# dropped poke is explicitly accepted (see TODO/account-scoped-acl.md,
-# "Accepted risks"), so the timeout stays short rather than matching the
-# 10s used for a delete that the caller is actually waiting on.
+# dropped poke is explicitly accepted (see docs/access-control-list.md,
+# "Accepted Risks and Out of Scope"), so the timeout stays short rather than
+# matching the 10s used for a delete that the caller is actually waiting on.
 POLICY_POKE_TIMEOUT_SECONDS = 5
 # A region ID becomes the leftmost label of a regional API hostname, so it is
 # constrained to the OCI region-id charset before any URL interpolation.
@@ -459,7 +459,7 @@ def delete_account(
         _ensure_recent_auth(user)
         _ensure_account_delete_allowed(repository, user.uid)
 
-        # Ordering (see TODO/account-scoped-acl.md "Account deletion" and
+        # Ordering (see docs/access-control-list.md "Account Deletion" and
         # review finding 8 - account deletion must not accidentally issue the
         # per-client pokes the design otherwise rejects):
         #
@@ -499,9 +499,10 @@ def delete_account(
         # step 4 fails outright - UserRoles/{uid} is gone by then.
         #
         # Preserved, accepted risk (see review finding 8 and
-        # TODO/account-scoped-acl.md): a region that never answers in step 1
-        # or step 3 keeps an orphaned peer and a stale policy row until its
-        # next boot or a manual cloudgateway-sync-peers. It cannot restore the
+        # docs/access-control-list.md, "Accepted Risks and Out of Scope"): a
+        # region that never answers in step 1 or step 3 keeps an orphaned peer
+        # and a stale policy row until its next boot or a manual
+        # cloudgateway-sync-peers. It cannot restore the
         # account, because this account's Firestore client rows are already
         # non-active by the time step 2 returns - no pull anywhere can
         # resurrect them.
@@ -627,7 +628,7 @@ def refresh_policy(
     # _delete_remote_client does. Depth-1 coalescing bounds the *pending
     # backlog* to one queued follow-up pass; it does not bound the total
     # number of sequential refreshes a caller can trigger over time (see
-    # TODO/account-scoped-acl.md, "API surface"). No body, no detail in the
+    # docs/access-control-list.md, "API Surface"). No body, no detail in the
     # response - never region health, counts, or error information - so
     # enqueue and return immediately.
     del user
@@ -1085,8 +1086,9 @@ def _poke_other_regions(request: Request, *, token: str, request_id: str) -> Non
 
 def _refresh_other_regions_once(request: Request, *, token: str, request_id: str) -> int:
     """Exactly one refresh wave for DELETE /account (see
-    TODO/account-scoped-acl.md Wave 4): runs synchronously inside the
-    request, not as a BackgroundTask, because the hard delete must not start
+    docs/access-control-list.md, "Account Deletion"): runs synchronously
+    inside the request, not as a BackgroundTask, because the hard delete
+    must not start
     until every other enabled region has accepted the refresh or been
     recorded as failed. Called while UserRoles/{uid} and this token are both
     still valid; /sync/refresh enqueues and returns 202, so an accepted
@@ -1121,9 +1123,10 @@ def _poke_regional_policy_refresh(*, region_id: str, token: str, api_hostname: s
             pass
         return True
     except Exception as exc:
-        # Every error is swallowed by design (see TODO/account-scoped-acl.md,
-        # "Accepted risks": a dropped poke just leaves the region stale until
-        # the next fleet-wide event or an admin Sync All). Region id only -
+        # Every error is swallowed by design (see docs/access-control-list.md,
+        # "Accepted Risks and Out of Scope": a dropped poke just leaves the
+        # region stale until the next fleet-wide event or an admin Sync All).
+        # Region id only -
         # never the token, uid, or the response body.
         log_event(
             logger,

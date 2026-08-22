@@ -70,7 +70,7 @@ The sync's contract is otherwise one-directional and read-only against Firebase.
 
 The client-to-client isolation filter (`Backend/API/src/policy.py`, base ruleset in
 `/etc/cloudgateway/cloudgateway.nft`, installed by `bootstrap.sh` `PostUp` - see
-[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)) has its own one-directional
+[access-control-list.md](access-control-list.md)) has its own one-directional
 Firebase-to-host reconcile, `reconcile_policy()`, separate from the peer/mesh sync above.
 `reconcile_policy()` itself is one function, not a process, and has no systemd unit or CLI entry
 point of its own - but at boot it runs as part of the `cloudgateway-sync-peers` CLI process (a
@@ -156,14 +156,14 @@ the "client-classified peer Firebase does not know"/"doc is removed but a matchi
 rows in the drift table above, and its policy reconcile drops the stale `cg_slot4/6`/`cg_pairs4/6`
 rows on the same pass, since both reconciles read the same non-active Firestore state. There is no
 separate repair path and no retry loop for this case; it is the accepted risk recorded in
-[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md).
+[access-control-list.md](access-control-list.md).
 
 **Open verification item:** nft verdict precedence (a `drop` in `cg_forward` terminating evaluation
 across the pre-existing `iptables`/`ip6tables` `FORWARD` chains), the `cg_forward` chain's
 `priority -10` actually running ahead of those chains, and the `ip daddr @cg_tunnel4 ip daddr .
 meta mark != @cg_pairs4` concatenated-set comparison syntax have **not been verified on a real
 host**. This is a required check before rollout - see the checklist in
-[TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md).
+[access-control-list.md](access-control-list.md).
 
 ## Diagnosing Before/After
 

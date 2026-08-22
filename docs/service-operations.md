@@ -143,7 +143,7 @@ A stateless nftables filter (`inet cloudgateway` table, `cg_forward` chain, inst
 `PostUp` and populated by a policy reconcile pass) restricts client-to-client traffic on the
 tunnel to clients owned by the same CloudGateway account. See
 [docs/wireguard-drift-repair.md](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile) for
-how the reconcile pass works and [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md) for
+how the reconcile pass works and [access-control-list.md](access-control-list.md) for
 the design. This is a host-level change with a mandatory full-region rollout gate - it ships only
 by rebuilding every region through `./scripts/terraform.sh` from one deploy tag, and the fleet is
 only partially enforced until the last region finishes; see

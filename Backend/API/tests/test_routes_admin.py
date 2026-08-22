@@ -283,7 +283,7 @@ def test_admin_sync_reports_skipped_overlap_candidates_pairwise_and_never_leaks_
 
 def test_admin_sync_also_reconciles_the_policy_map(client, repository, wireguard, policy):
     # Sync All is the repair path for a dropped poke (see
-    # TODO/account-scoped-acl.md, "Refresh model"), so it must reconcile the
+    # docs/access-control-list.md, "Refresh Model"), so it must reconcile the
     # account-scoped ACL map too, without changing AdminSyncResponse's shape.
     seed_region(repository)
     create_active_client(repository, wireguard)
@@ -371,7 +371,7 @@ def test_sync_refresh_rejects_unauthenticated(client, repository, policy):
 
 def test_sync_refresh_returns_no_detail(client, repository, policy):
     # No body, no region health, no counts, no error information - only a
-    # bare 202 (see TODO/account-scoped-acl.md, "API surface").
+    # bare 202 (see docs/access-control-list.md, "API Surface").
     seed_region(repository)
 
     response = client.post("/sync/refresh", headers=auth_header("user-token"))

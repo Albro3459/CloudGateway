@@ -15,8 +15,8 @@ from .errors import PolicyApplyFailedError, SyncInProgressError
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
-# Fixed object names installed empty by PostUp (see TODO/account-scoped-acl.md,
-# "Filter design"). This module never creates or deletes the table/chain, and
+# Fixed object names installed empty by PostUp (see docs/access-control-list.md,
+# "Filter Design"). This module never creates or deletes the table/chain, and
 # apply_map/add_client_row never write cg_tunnel4/6 (the static mesh
 # aggregates installed by bootstrap.sh) - but read_map does read them back,
 # since they are still authorization-bearing for the comprehensive hash.
@@ -118,8 +118,8 @@ class LivePolicyMap:
 
     @property
     def row_count(self) -> int:
-        # The number of cg_slot4 rows, per TODO/account-scoped-acl.md Wave 5
-        # ("keep rowCount as the number of slot-map rows").
+        # The number of cg_slot4 rows, per docs/access-control-list.md
+        # ("Dashboard Status": rowCount is the number of slot-map rows).
         return len(self.v4.slots)
 
 

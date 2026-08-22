@@ -1,13 +1,25 @@
 # Account-Scoped ACL: Live-Host Verification
 
-The two open release blockers in [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)
-("Open release blockers"). Nothing here is covered by
-`Backend/API/tests/test_bootstrap_contract.py`, which parses `bootstrap.sh` text
-offline and never runs `nft`.
+How to prove the account-scoped ACL is actually enforcing on live hosts, plus the
+evidence record from the 2026-08-21 release verification. The boundary itself is
+documented in [access-control-list.md](access-control-list.md); this file is only
+about confirming it holds on real hardware.
 
-Run this only after the migration, the fleet deploy from one tag, and a green
-Sync All. Part A is read-only inspection on one host. Part B is the reachability
-matrix and needs live clients.
+None of this is covered by `Backend/API/tests/test_bootstrap_contract.py`, which
+parses `bootstrap.sh` text offline and never runs `nft`. Verdict precedence,
+chain priority against the other forward-hook chains, the concatenated-set mark
+comparison, and every reachability outcome are properties of a running kernel and
+have no static representation.
+
+**Re-run this when:** a new region joins the fleet, a host is rebuilt or its
+kernel/nftables version changes, the base ruleset in `bootstrap.sh` is edited, or
+the policy renderer/parser in `Backend/API/src/policy.py` changes. Part A alone
+is enough for a version or ruleset change; Part B matters when the fleet's shape
+changes.
+
+Run it after the fleet deploy from one tag and a green Sync All. Part A is
+read-only inspection on one host. Part B is the reachability matrix and needs
+live clients.
 
 Region facts used below (`Infrastructure/OCI/terraform/subnet-registry.json`):
 
@@ -191,7 +203,7 @@ different shape on this nft version is a real defect, not a cosmetic one.
 ### A6. Mark exclusivity
 
 The chain assumes nothing else uses the packet mark, and that no `ip rule fwmark`
-exists (`TODO/account-scoped-acl.md` "Filter design").
+exists (see "Filter design" in [access-control-list.md](access-control-list.md)).
 
 ```sh
 nft list ruleset | grep -in mark
@@ -313,7 +325,7 @@ assumed. Record the drop-counter delta for this case specifically.
 
 ### Recording results
 
-Fill in the checklist in `TODO/account-scoped-acl.md` and note here: nft version,
+Record here: nft version,
 the exact printed form of the two drop rules, the case-3 counter delta, and
 confirmation that the A8 revert diff was empty.
 

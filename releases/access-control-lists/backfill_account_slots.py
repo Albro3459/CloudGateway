@@ -2,7 +2,7 @@
 """Backfill Users/{uid}.accountSlot for legacy provisioned accounts and seed
 Counters/accountSlots.nextSlot.
 
-Context: TODO/account-scoped-acl.md ("Review remediation" -> Wave 1),
+Context: docs/access-control-list.md ("Legacy account migration"),
 closing findings 2 and 7.
 
 New-account provisioning (Backend/API/src/firebase.py
@@ -38,11 +38,11 @@ aggregate counts only - this script must never print a uid, email, client
 address, key, token, or configuration, even in error paths, since a Firestore
 exception's message/args can embed a document path.
 
-Wave 2 (TODO/account-scoped-acl.md, "Wave 2 - policy input normalization and
-collision handling") added a second, independent preflight: a fleet-wide
-policy-row check that applies the exact same strict rules Wave 2 applies at
-runtime in Backend/API/src/policy_sync.py desired_policy() (owner, slot,
-address, and collision validation) to every active, keyed Instances document,
+Wave 2 (docs/access-control-list.md, "Row validation and collisions") added a
+second, independent preflight: a fleet-wide policy-row check that applies the
+exact same strict rules Wave 2 applies at runtime in
+Backend/API/src/policy_sync.py desired_policy() (owner, slot, address, and
+collision validation) to every active, keyed Instances document,
 duplicated standalone for the same reason as the constants above. See
 compute_plan (account-slot backfill, Wave 1) and validate_policy_rows
 (policy-row preflight, Wave 2) below; both must pass before this script writes
@@ -364,10 +364,10 @@ def _read_state(db: Any, transaction: Any | None = None) -> tuple[set[str], dict
 
 # --- Wave 2: fleet-wide policy-row preflight ---
 #
-# TODO/account-scoped-acl.md, "Wave 2 - policy input normalization and
-# collision handling" requires this migration's live preflight to be "equally
-# strict" as the runtime rules Backend/API/src/policy_sync.py desired_policy()
-# applies when building the nftables ACL map. Everything below duplicates that
+# docs/access-control-list.md, "Row validation and collisions" requires this
+# migration's live preflight to be "equally strict" as the runtime rules
+# Backend/API/src/policy_sync.py desired_policy() applies when building the
+# nftables ACL map. Everything below duplicates that
 # algorithm (owner/slot/address validation, then address and slot collision
 # passes) standalone, since this script must not import from Backend/API.
 # Known-bad policy data must block the release before any host enforces it.

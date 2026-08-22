@@ -798,9 +798,10 @@ class FirestoreRepository(FirebaseRepository):
         # Full replacement (not merge), mirroring write_mesh_status: a status
         # doc must describe exactly what the last reconcile pass applied.
         # appliedSequence (Wave 3) and dataVintage (Wave 2) are gone from this
-        # document, not merely nulled - see TODO/account-scoped-acl.md Wave 5:
-        # ordering is enforced by the host flock, not a counter, and staleness
-        # is read from hash agreement plus updatedAt, not a vintage field.
+        # document, not merely nulled - see docs/access-control-list.md,
+        # "Settled Decisions - Status and dashboard": ordering is enforced by
+        # the host flock, not a counter, and staleness is read from hash
+        # agreement plus updatedAt, not a vintage field.
         try:
             self._db().collection("Policy").document(status.region_id).set(
                 {

@@ -1,9 +1,9 @@
 # Account-scoped ACL: legacy account-slot migration
 
 This is a one-time, release-scoped migration for the account-scoped client
-isolation feature (`TODO/account-scoped-acl.md`). It exists to close two
+isolation feature (`docs/access-control-list.md`). It exists to close two
 review findings before any region enforces the nftables ACL
-(`TODO/account-scoped-acl.md`, "Review remediation"):
+(`docs/access-control-list.md`, "Legacy account migration"):
 
 * **Finding 7** - existing accounts are never migrated to account slots.
   `desired_policy()` skips every client whose owner lacks
@@ -23,8 +23,7 @@ review findings before any region enforces the nftables ACL
   read "Counter lifecycle" below before running this script.
 
 It also carries the **Wave 2 fleet-wide policy-row preflight**
-(`TODO/account-scoped-acl.md`, "Wave 2 - policy input normalization and
-collision handling"): before any region enforces the nftables ACL, this
+(`docs/access-control-list.md`, "Row validation and collisions"): before any region enforces the nftables ACL, this
 script re-validates every active client's owner, account slot, and tunnel
 addresses against the exact same strict rules
 `Backend/API/src/policy_sync.py desired_policy()` applies at runtime, so
@@ -295,7 +294,8 @@ the `Counters/accountSlots` write sets only `nextSlot` and a server-side
 
 ## Rollback and recovery
 
-Slots are never reused, by design (`TODO/account-scoped-acl.md`). That means
+Slots are never reused, by design (`docs/access-control-list.md`,
+"Account slot allocation"). That means
 the safe way to recover from any bad partial state is **not** to hand-edit
 `Users.accountSlot` or `Counters/accountSlots.nextSlot` to "undo" an
 assignment - a hand edit that clears or lowers a slot risks a later
@@ -327,5 +327,5 @@ reload the nftables ACL rule set, so an API-only upgrade would leave the host
 running policy code with no table to enforce it and cross-account forwarding
 still unrestricted. That helper now refuses an ACL-aware ref on a host with no
 live ACL table, for exactly this reason. See
-`TODO/account-scoped-acl.md` ("Decisions after review" and "Validation and
-release order") for the full rollout sequence.
+`docs/access-control-list.md` ("Rollout gate" and "Host and Deploy
+Requirements") for the full rollout sequence.

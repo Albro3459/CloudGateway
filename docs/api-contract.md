@@ -414,7 +414,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
   this on every other region, fire-and-forget after the response, so a dropped poke never blocks or
   fails the caller's request. A dropped poke leaves the un-poked region's policy map stale until the
   next fleet-wide client event or an admin Sync All - this is an accepted risk, not a bug (see
-  [TODO/account-scoped-acl.md](../TODO/account-scoped-acl.md)). `DELETE /account` is different: it
+  [access-control-list.md](access-control-list.md)). `DELETE /account` is different: it
   calls this endpoint synchronously, inside the request, exactly once per other enabled region, as
   the deliberate last propagation step before its hard delete (see `DELETE /account` above); it
   does not also fire the fire-and-forget poke, and the per-client deletes it issues in

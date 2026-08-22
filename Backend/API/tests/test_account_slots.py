@@ -1,5 +1,5 @@
-"""Account-scoped ACL slot allocator integrity (TODO/account-scoped-acl.md
-finding 2, review finding 1): Counters/accountSlots.nextSlot is the sole
+"""Account-scoped ACL slot allocator integrity (docs/access-control-list.md,
+"Account slot allocation"): Counters/accountSlots.nextSlot is the sole
 allocation authority, and a lost, corrupted, or regressed counter must fail
 closed rather than re-issue a slot - re-issuing one would merge two accounts
 onto a single nftables tenant. A live Users scan cannot stand in for the

@@ -134,7 +134,7 @@ class PolicyClientEntry:
 
     No updated_at: a malformed timestamp must never be able to abort a
     policy pass, so the field never entered the policy path (see
-    TODO/account-scoped-acl.md Wave 2). ClientDoc.updated_at still exists for
+    docs/access-control-list.md, "Row validation and collisions"). ClientDoc.updated_at still exists for
     other features.
     """
 
@@ -158,8 +158,8 @@ class PolicyStatus:
 @dataclass(frozen=True)
 class AccountCleanupTally:
     """Result of mark_account_clients_inactive: the trusted, fleet-wide
-    non-active fence run by DELETE /account (see TODO/account-scoped-acl.md
-    Wave 4). Region grouping comes from each client document's own path
+    non-active fence run by DELETE /account (see docs/access-control-list.md,
+    "Account Deletion"). Region grouping comes from each client document's own path
     (Regions/{regionId}/Instances/{clientId}), not its regionId field, so a
     doc whose field disagrees with its path is still counted and fenced under
     its true region.
@@ -350,7 +350,7 @@ def next_account_slot(*, stored_next_slot: object, assigned_slots: Collection[ob
     firebase.hard_delete_account_documents), so a slot issued to a deleted
     account is unrepresented in live data. Deriving a counter from live users
     would therefore re-issue it and merge two accounts onto one nftables
-    tenant (TODO/account-scoped-acl.md finding 2, review finding 1).
+    tenant (docs/access-control-list.md, "Account slot allocation").
 
     So this allocator only ever trusts the stored counter, and fails closed
     with AccountSlotUnavailableError in every other case. `stored_next_slot`
@@ -562,8 +562,8 @@ class FirebaseRepository(ABC):
     def list_policy_clients(self) -> list[PolicyClientEntry]:
         """Return every ACTIVE, keyed client fleet-wide (account-scoped ACL map input).
 
-        Unfiltered across regions on purpose (see TODO/account-scoped-acl.md,
-        "Firestore model"): status filtering happens in the caller so this
+        Unfiltered across regions on purpose (see docs/access-control-list.md,
+        "Firestore Model"): status filtering happens in the caller so this
         needs no new composite index. A client with no live public key cannot
         source traffic and is excluded.
         """

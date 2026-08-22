@@ -17,7 +17,7 @@ from .test_routes_clients import auth_header, create_active_client, seed_region
 
 # Wave 4 (account deletion ordering) test matrix - see
 # .claude/subagents/LEDGER.md "Session 4 scope: Wave 4 only" (W4-0..W4-9) and
-# TODO/account-scoped-acl.md "Account deletion". The implementation lives in
+# docs/access-control-list.md "Account Deletion". The implementation lives in
 # src/routes.py (delete_account, delete_client, _remove_account_peers,
 # _refresh_other_regions_once) and src/repository.py/src/firebase.py
 # (mark_account_clients_inactive / AccountCleanupTally).

@@ -52,7 +52,7 @@ def bare_tunnel_address(value: object, version: int) -> str | None:
 
 def _infra_address(cidr: object, version: int) -> str | None:
     """The region's interface address: network address + 1 of its tunnel CIDR
-    (see TODO/account-scoped-acl.md, "Filter design" - cg_infra). Malformed,
+    (see docs/access-control-list.md, "Filter Design" - cg_infra). Malformed,
     wrong-family, unsupported-prefix, or out-of-aggregate CIDRs are skipped,
     matching desired_mesh_peers's tolerance - a garbage region CIDR must never
     put a public address in cg_infra.
@@ -272,7 +272,7 @@ def reconcile_policy(
 
 
 class PolicyCoordinator:
-    """Depth-1 coalescing (see TODO/account-scoped-acl.md, "Refresh model").
+    """Depth-1 coalescing (see docs/access-control-list.md, "Refresh Model").
     Cross-process ordering is enforced by policy.lock() itself inside
     reconcile_policy, not by anything here. One instance lives on app.state,
     shared by the /sync/refresh poke handler and admin Sync All.
@@ -315,8 +315,8 @@ class PolicyCoordinator:
         the unrated-limited POST /sync/refresh keep setting the pending bit,
         so under sustained arrivals this call waits through them. Accepted,
         not a bug - depth-1 bounds the pending backlog, never the total work
-        callers can trigger over time (see TODO/account-scoped-acl.md,
-        "Refresh model"). The outcome returned is always from a pass whose
+        callers can trigger over time (see docs/access-control-list.md,
+        "Refresh Model"). The outcome returned is always from a pass whose
         pull started after this call, so a longer wait only ever returns a
         fresher result.
 

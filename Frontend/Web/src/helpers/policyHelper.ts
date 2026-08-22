@@ -10,8 +10,7 @@
 // describe what a region's host actually read back from live nftables after
 // applying, not what it intended to apply. They must be trusted as-is: there
 // is no "expected" value to validate against, only agreement across the
-// fleet. See TODO/account-scoped-acl.md ("Wave 5 - complete live hashes and
-// Web status").
+// fleet. See docs/access-control-list.md ("Dashboard Status").
 
 import { dateOrNull, stringOrNull } from "./coerce";
 import { Region } from "./regionsHelper";

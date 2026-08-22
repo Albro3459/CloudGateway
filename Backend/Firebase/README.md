@@ -73,7 +73,7 @@ subcollection (`Regions/*/Instances`) that marks every one of the deleting accou
 documents non-active, regardless of whether that region's host is reachable. It is the only place
 any regional API writes into another region's `Instances` path, and it is reachable only from a
 recently authenticated self-delete - see [docs/api-contract.md](../../docs/api-contract.md) and
-[TODO/account-scoped-acl.md](../../TODO/account-scoped-acl.md).
+[docs/access-control-list.md](../../docs/access-control-list.md).
 
 Role documents are defaults keyed by role name:
 
