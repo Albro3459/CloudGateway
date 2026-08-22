@@ -11,7 +11,6 @@ import CloudGatewayKit
         .http(201, #"{"clientId":"client-1","regionId":"us-a","clientName":"Phone","status":"active","wireguardConfig":"config","assignedTunnelIpv4":"10.0.0.2","serverEndpointIpv4":"192.0.2.1","serverEndpointHostname":"wg.example.com"}"#),
         .http(200, #"{"userId":"user-1","clientId":"client-1","regionId":"us-a","status":"removed"}"#),
         .http(200, #"{"userId":"user-1","deletedClientCount":2}"#),
-        .http(200, #"{"regionId":"us-a","syncedAt":"2026-07-17T12:34:56Z","added":1,"updated":2,"removed":3,"noChanges":false,"log":"done"}"#),
         .http(200, #"{"email":"new@example.com","alreadyExisted":false}"#),
     ])
     let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
@@ -31,7 +30,6 @@ import CloudGatewayKit
         idToken: "token"
     )
     _ = try await client.deleteAccount(idToken: "token")
-    let sync = try await client.syncRegion(regionId: "us-a", idToken: "token")
     _ = try await client.grantAccess(
         email: "new@example.com",
         regionId: "us-a",
@@ -39,10 +37,9 @@ import CloudGatewayKit
     )
 
     #expect(created.clientName == "Phone")
-    #expect(sync.syncedAt == "2026-07-17T12:34:56Z")
 
     let requests = session.requests
-    #expect(requests.count == 8)
+    #expect(requests.count == 7)
     assertRequest(requests[0], method: "GET", url: "https://api.example.com/api/regions")
     #expect(requests[0].value(forHTTPHeaderField: "Authorization") == nil)
     #expect(requests[0].value(forHTTPHeaderField: "Content-Type") == nil)
@@ -80,12 +77,6 @@ import CloudGatewayKit
     )
     assertAuthenticatedJSONRequest(
         requests[6],
-        method: "POST",
-        url: "https://us-a.example.com/api/admin/sync",
-        body: ["regionId": "us-a"]
-    )
-    assertAuthenticatedJSONRequest(
-        requests[7],
         method: "POST",
         url: "https://us-a.example.com/api/users",
         body: ["email": "new@example.com"]
@@ -184,6 +175,131 @@ import CloudGatewayKit
     #expect(session.requests.isEmpty)
 }
 
+@Test func syncRegionsClassifies409SyncInProgressAsAlreadyRunning() async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(409, #"{"error":{"code":"SYNC_IN_PROGRESS","message":"sync already running","requestId":"req-1"}}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    let outcomes = await client.syncRegions(regionIds: ["us-a"], idToken: "token")
+
+    #expect(outcomes.count == 1)
+    #expect(outcomes[0].regionId == "us-a")
+    #expect(outcomes[0].result == .alreadyRunning)
+}
+
+@Test func syncRegionsFoldsANonJSONErrorBodyIntoAGenericMessage() async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(502, "<html><body>502 Bad Gateway</body></html>"),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    let outcomes = await client.syncRegions(regionIds: ["us-a"], idToken: "token")
+
+    guard case .failure(let message, let requestId, let isIncompatibleResponse) = outcomes[0].result else {
+        Issue.record("Expected a failure outcome")
+        return
+    }
+    #expect(!message.contains("<html>"))
+    #expect(!message.contains("Bad Gateway"))
+    #expect(message.contains("502"))
+    #expect(requestId == nil)
+    #expect(isIncompatibleResponse == false)
+}
+
+@Test func syncRegionsClassifiesAnIncompatible2xxShapeAsFailure() async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(200, #"{"regionId":"us-a"}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    let outcomes = await client.syncRegions(regionIds: ["us-a"], idToken: "token")
+
+    guard case .failure(let message, let requestId, let isIncompatibleResponse) = outcomes[0].result else {
+        Issue.record("Expected a failure outcome")
+        return
+    }
+    #expect(isIncompatibleResponse)
+    #expect(requestId == nil)
+    #expect(message.contains("us-a"))
+}
+
+@Test func syncRegionsClassifiesATransportErrorAsAGenericFailure() async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .failure(URLError(.networkConnectionLost)),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    let outcomes = await client.syncRegions(regionIds: ["us-a"], idToken: "token")
+
+    guard case .failure(let message, let requestId, let isIncompatibleResponse) = outcomes[0].result else {
+        Issue.record("Expected a failure outcome")
+        return
+    }
+    #expect(!message.isEmpty)
+    #expect(requestId == nil)
+    #expect(isIncompatibleResponse == false)
+}
+
+@Test func syncRegionsReordersMixedOutcomesToTheRequestedOrderAndKeepsMeshFields() async {
+    let successBody = #"{"regionId":"us-a","syncedAt":"2026-08-15T20:38:37.814426Z","added":2,"updated":1,"removed":0,"noChanges":false,"log":"sync log","meshUpdated":1,"meshEnabled":true,"meshApplied":1,"meshAdded":1,"meshRemoved":0,"meshSkipped":0,"meshRoutesAdded":2,"meshRoutesRemoved":0,"meshStatusWritten":true,"meshPeers":[{"regionId":"us-b","status":"applied","endpointHostname":"wg.us-b.example.com","endpointPort":51820,"allowedNetworkV4":"10.0.1.0/24","allowedNetworkV6":"fd42:42:42:1::/64"}]}"#
+    let session = RegionKeyedControlPlaneSession(stubsByHost: [
+        "us-a.example.com": .http(200, successBody),
+        "us-b.example.com": .http(409, #"{"error":{"code":"SYNC_IN_PROGRESS"}}"#),
+        "us-c.example.com": .http(500, #"{"error":{"code":"server_error","message":"boom"}}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    let outcomes = await client.syncRegions(regionIds: ["us-c", "us-a", "us-b"], idToken: "token")
+
+    #expect(outcomes.map(\.regionId) == ["us-c", "us-a", "us-b"])
+
+    guard case .failure(let cMessage, _, let cIncompatible) = outcomes[0].result else {
+        Issue.record("Expected us-c to fail")
+        return
+    }
+    #expect(cMessage == "boom")
+    #expect(cIncompatible == false)
+
+    guard case .success(let response) = outcomes[1].result else {
+        Issue.record("Expected us-a to succeed")
+        return
+    }
+    #expect(response.regionId == "us-a")
+    #expect(response.meshPeers.count == 1)
+    #expect(response.meshPeers[0].regionId == "us-b")
+    #expect(response.meshPeers[0].status == .applied)
+    #expect(response.meshPeers[0].endpointHostname == "wg.us-b.example.com")
+    #expect(response.meshPeers[0].endpointPort == 51820)
+    #expect(response.meshPeers[0].allowedNetworkV4 == "10.0.1.0/24")
+    #expect(response.meshPeers[0].allowedNetworkV6 == "fd42:42:42:1::/64")
+
+    #expect(outcomes[2].result == .alreadyRunning)
+
+    // One token is fetched before the fan-out and reused across every region, and each
+    // request carries the admin-sync timeout rather than the session's fast-fail default.
+    // Requests complete in arbitrary order, so assert over the set, not a sequence.
+    let requests = session.requests
+    #expect(requests.count == 3)
+    #expect(requests.allSatisfy { $0.timeoutInterval == CloudGatewayAPISession.adminSyncRequestTimeout })
+    #expect(Set(requests.compactMap { $0.value(forHTTPHeaderField: "Authorization") }) == ["Bearer token"])
+}
+
+@Test func syncRegionsSetsTheAdminSyncTimeoutButOtherEndpointsKeepTheSessionDefault() async throws {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(409, #"{"error":{"code":"SYNC_IN_PROGRESS"}}"#),
+        .http(200, #"{"userId":"user-1","email":"user@example.com","role":"admin"}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    _ = await client.syncRegions(regionIds: ["us-a"], idToken: "token")
+    _ = try await client.checkAccess(idToken: "token")
+
+    let requests = session.requests
+    #expect(requests[0].timeoutInterval == CloudGatewayAPISession.adminSyncRequestTimeout)
+    #expect(requests[1].timeoutInterval != CloudGatewayAPISession.adminSyncRequestTimeout)
+}
+
 private func region(_ id: String, order: Int) -> CloudGatewayRegion {
     CloudGatewayRegion(regionId: id, displayName: id, enabled: true, displayOrder: order)
 }
@@ -279,5 +395,48 @@ private final class RecordingControlPlaneSession: CloudGatewayControlPlaneSessio
         case .failure(let error):
             throw error
         }
+    }
+}
+
+/// Resolves a stub by request host rather than call order, so a `syncRegions` fan-out (which
+/// issues requests concurrently and may complete in any order) still gets a deterministic,
+/// per-region response.
+private final class RegionKeyedControlPlaneSession: CloudGatewayControlPlaneSession, @unchecked Sendable {
+    struct Stub {
+        let status: Int
+        let body: Data
+
+        static func http(_ status: Int, _ body: String) -> Stub {
+            Stub(status: status, body: Data(body.utf8))
+        }
+    }
+
+    private let lock = NSLock()
+    private let stubsByHost: [String: Stub]
+    private var capturedRequests: [URLRequest] = []
+
+    init(stubsByHost: [String: Stub]) {
+        self.stubsByHost = stubsByHost
+    }
+
+    var requests: [URLRequest] {
+        lock.withLock { capturedRequests }
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let stub: Stub? = lock.withLock {
+            capturedRequests.append(request)
+            return request.url?.host.flatMap { stubsByHost[$0] }
+        }
+        guard let stub else {
+            throw URLError(.resourceUnavailable)
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: stub.status,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (stub.body, response)
     }
 }

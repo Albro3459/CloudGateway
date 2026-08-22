@@ -40,6 +40,40 @@ final class CloudGatewayIOSFirestoreRepository: CloudGatewayClientRepository {
         clients(from: try await getDocuments(database.collectionGroup("Instances")))
     }
 
+    func fetchMeshRegions() async throws -> [CloudGatewayMeshRegion] {
+        let snapshot = try await getDocuments(database.collection("Regions"))
+        let regions = snapshot.documents.compactMap {
+            CloudGatewayFirestoreMeshMapper.meshRegion(documentId: $0.documentID, data: $0.data())
+        }
+        return sortedMeshRegions(regions)
+    }
+
+    func fetchMeshDocs() async throws -> [String: CloudGatewayMeshDoc] {
+        let snapshot = try await getDocuments(database.collection("Mesh"))
+        var docs: [String: CloudGatewayMeshDoc] = [:]
+        for document in snapshot.documents {
+            let data = convertingTimestamps(document.data())
+            docs[document.documentID] = CloudGatewayFirestoreMeshMapper.meshDoc(documentId: document.documentID, data: data)
+        }
+        return docs
+    }
+
+    // Policy/* is observability-only: written by the regional host via the Admin SDK
+    // per firestore.rules, and never written by this client.
+    func fetchPolicyDocs() async throws -> [String: CloudGatewayPolicyDoc] {
+        let snapshot = try await getDocuments(database.collection("Policy"))
+        var docs: [String: CloudGatewayPolicyDoc] = [:]
+        for document in snapshot.documents {
+            let data = convertingTimestamps(document.data())
+            docs[document.documentID] = CloudGatewayFirestorePolicyMapper.policyDoc(documentId: document.documentID, data: data)
+        }
+        return docs
+    }
+
+    func setRegionMeshEnabled(regionId: String, enabled: Bool) async throws {
+        try await updateDocument(database.collection("Regions").document(regionId), fields: ["meshEnabled": enabled])
+    }
+
     private func clients(from snapshot: QuerySnapshot) -> [CloudGatewayClient] {
         snapshot.documents.compactMap { document in
             var data = document.data()
@@ -51,6 +85,55 @@ final class CloudGatewayIOSFirestoreRepository: CloudGatewayClientRepository {
                 regionFallback: document.reference.parent.parent?.documentID,
                 data: data
             )
+        }
+    }
+
+    // Mirrors CloudGatewayConfigSelection.sortedRegions (display order, then
+    // display name, then region ID), which operates on the API-shaped
+    // CloudGatewayRegion and cannot be reused directly for mesh regions.
+    private func sortedMeshRegions(_ regions: [CloudGatewayMeshRegion]) -> [CloudGatewayMeshRegion] {
+        regions.sorted { lhs, rhs in
+            if lhs.displayOrder != rhs.displayOrder {
+                return lhs.displayOrder < rhs.displayOrder
+            }
+            let displayNameComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            if displayNameComparison != .orderedSame {
+                return displayNameComparison == .orderedAscending
+            }
+            return lhs.regionId.localizedCaseInsensitiveCompare(rhs.regionId) == .orderedAscending
+        }
+    }
+
+    // CloudGatewayFirestoreMeshMapper and CloudGatewayFirestorePolicyMapper live in
+    // CloudGatewayAppCore and cannot import FirebaseFirestore, so every Timestamp
+    // (top-level updatedAt, appliedAt nested inside each peers.{regionId} entry, and
+    // the Policy doc's updatedAt) must become a Date before it reaches the mapper.
+    private func convertingTimestamps(_ data: [String: Any]) -> [String: Any] {
+        data.mapValues { convertingTimestamps($0) }
+    }
+
+    private func convertingTimestamps(_ value: Any) -> Any {
+        if let timestamp = value as? Timestamp {
+            return timestamp.dateValue()
+        }
+        if let dict = value as? [String: Any] {
+            return dict.mapValues { convertingTimestamps($0) }
+        }
+        if let array = value as? [Any] {
+            return array.map { convertingTimestamps($0) }
+        }
+        return value
+    }
+
+    private func updateDocument(_ reference: DocumentReference, fields: [String: Any]) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            reference.updateData(fields) { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
         }
     }
 

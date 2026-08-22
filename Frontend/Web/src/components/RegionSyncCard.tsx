@@ -19,13 +19,32 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
     const title = displayName ? `${displayName} (${regionId})` : regionId;
 
     if (!result.success) {
+        if (result.failureType === "sync-in-progress") {
+            return (
+                <div className="rounded-lg border border-warning-soft-edge bg-card p-4 shadow-sm">
+                    <h3 className="font-semibold text-content">{title}</h3>
+                    <p className="mt-2 text-sm text-warning-strong">
+                        A sync is already running on this region - try again shortly.
+                    </p>
+                </div>
+            );
+        }
+
+        const incompatibleResponse = result.failureType === "incompatible-response";
         return (
             <div className="rounded-lg border border-danger bg-card p-4 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="font-semibold text-content">{title}</h3>
-                    <span className="rounded-md bg-danger px-2 py-1 text-sm text-white">Failed</span>
+                    <span className="rounded-md bg-danger px-2 py-1 text-sm text-white">
+                        {incompatibleResponse ? "Incompatible response" : "Failed"}
+                    </span>
                 </div>
                 <p className="mt-2 text-sm text-danger">{result.error}</p>
+                {incompatibleResponse && (
+                    <p className="mt-1 text-xs text-content-muted">
+                        The sync result was discarded because the regional API returned an unsupported shape.
+                    </p>
+                )}
                 {result.requestId && (
                     <p className="mt-1 text-xs text-content-muted">Request ID: {result.requestId}</p>
                 )}
@@ -33,13 +52,24 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
         );
     }
 
-    const { added, updated, removed, noChanges, log, syncedAt } = result.data;
+    const {
+        added, updated, removed, noChanges, log, syncedAt,
+        meshEnabled, meshApplied, meshAdded, meshUpdated, meshRemoved, meshSkipped, meshRoutesAdded, meshRoutesRemoved,
+        meshStatusWritten, meshPeers, policyApplied, policyStatusWritten,
+    } = result.data;
 
     return (
         <div className="rounded-lg border border-edge-subtle bg-card p-4 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-semibold text-content">{title}</h3>
-                <span className="text-xs text-content-muted">{new Date(syncedAt).toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                    <span className={`rounded-md px-2 py-1 text-xs ${
+                        meshEnabled ? "bg-success-soft text-success-strong" : "bg-inset text-content-muted"
+                    }`}>
+                        {meshEnabled ? "Mesh enabled" : "Mesh disabled"}
+                    </span>
+                    <span className="text-xs text-content-muted">{new Date(syncedAt).toLocaleString()}</span>
+                </div>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -48,8 +78,60 @@ export const RegionSyncCard: React.FC<RegionSyncCardProps> = ({ regionId, displa
                 <Count label="Removed" value={removed} />
             </div>
 
+            <div className="mt-2 flex flex-wrap gap-2">
+                <Count label="Mesh applied" value={meshApplied} />
+                <Count label="Mesh added" value={meshAdded} />
+                <Count label="Mesh updated" value={meshUpdated} />
+                <Count label="Mesh removed" value={meshRemoved} />
+                <Count label="Mesh skipped" value={meshSkipped} />
+                <Count label="Routes added" value={meshRoutesAdded} />
+                <Count label="Routes removed" value={meshRoutesRemoved} />
+            </div>
+
             {noChanges && (
                 <p className="mt-2 text-sm text-content-muted">No changes were required.</p>
+            )}
+
+            {meshStatusWritten === false && (
+                <p className="mt-2 text-sm text-warning-strong">
+                    This region reconciled successfully, but could not save its mesh status snapshot.
+                    The mesh link status shown above and on this page may be out of date until the next
+                    successful sync.
+                </p>
+            )}
+
+            {policyApplied === false && (
+                <p className="mt-2 text-sm text-warning-strong">
+                    Peer and mesh reconciliation succeeded, but this region&apos;s account-scoped
+                    client-isolation policy pass failed. The region keeps enforcing its previously
+                    applied policy map, and its published policy status is unchanged. Retry Sync All
+                    and check the host logs.
+                </p>
+            )}
+
+            {policyApplied === true && policyStatusWritten === false && (
+                <p className="mt-2 text-sm text-content-secondary">
+                    This region&apos;s policy map was applied, but its policy status snapshot could not
+                    be saved. The policy hashes shown on this page may be out of date until the next
+                    successful pass.
+                </p>
+            )}
+
+            {meshPeers.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                    {meshPeers.map((peer) => (
+                        <span
+                            key={peer.regionId}
+                            className={`rounded-md border px-2 py-1 text-xs ${
+                                peer.status === "applied"
+                                    ? "border-success-soft-edge bg-success-soft text-success-strong"
+                                    : "border-warning-soft-edge bg-warning-soft text-warning-strong"
+                            }`}
+                        >
+                            {peer.regionId}: {peer.status}{peer.reasonCode ? ` (${peer.reasonCode})` : ""}
+                        </span>
+                    ))}
+                </div>
             )}
 
             <div className="mt-3 flex flex-wrap gap-2">

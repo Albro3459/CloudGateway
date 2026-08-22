@@ -8,6 +8,7 @@ import Foundation
 @MainActor
 struct CloudGatewayIOSComposition {
     let viewModel: CloudGatewayViewModel
+    let serverHealthViewModel: CloudGatewayServerHealthViewModel
     let notificationAuthorizer: any CloudGatewayNotificationAuthorizing
 }
 
@@ -60,6 +61,7 @@ enum CloudGatewayIOSCompositionRoot {
         )
         return CloudGatewayIOSComposition(
             viewModel: viewModel,
+            serverHealthViewModel: CloudGatewayServerHealthViewModel(service: service),
             notificationAuthorizer: notificationAuthorizer
         )
     }

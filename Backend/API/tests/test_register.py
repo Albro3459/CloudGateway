@@ -1,10 +1,16 @@
+from dataclasses import replace
+
+import pytest
+
 import src.register as register
 from src.enums import Role
+from src.errors import WireGuardApplyFailedError
 from src.register import build_registration, notify_region_deployment, run_register
 from src.repository import RegionDoc, UserDoc
 from src.settings import Settings
+from src.sync import desired_peers
 
-from .fakes import FakeRepository
+from .fakes import FAKE_PUBLIC_KEY, FakeRepository
 
 REGION_ID = "us-test-1"
 
@@ -54,6 +60,43 @@ class RecordingDeploymentEmailSender:
         return "message-1"
 
 
+def test_build_registration_rejects_invalid_local_tunnel_invariants():
+    settings = _settings().model_copy(update={"wg_dns_ipv4": "10.0.0.2"})
+
+    with pytest.raises(WireGuardApplyFailedError):
+        build_registration(settings, "203.0.113.5")
+
+
+@pytest.mark.parametrize("wg_port", [0, 65536, True, False, "51820"])
+def test_build_registration_rejects_invalid_wireguard_port(wg_port):
+    settings = _settings().model_copy(update={"wg_port": wg_port})
+
+    with pytest.raises(WireGuardApplyFailedError, match="listen port"):
+        build_registration(settings, "203.0.113.5")
+
+
+def test_run_register_invalid_wireguard_port_preserves_existing_region():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    existing = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    settings = _settings().model_copy(update={"wg_port": 0})
+
+    with pytest.raises(WireGuardApplyFailedError, match="listen port"):
+        run_register(repository=repo, settings=settings, public_ipv4="198.51.100.9", ready=True)
+
+    assert repo.regions[REGION_ID] == existing
+
+
+def test_run_register_invalid_local_settings_preserves_existing_region():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    existing = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    settings = _settings().model_copy(update={"wg_dns_ipv4": "10.0.0.2"})
+
+    with pytest.raises(WireGuardApplyFailedError):
+        run_register(repository=repo, settings=settings, public_ipv4="198.51.100.9", ready=True)
+
+    assert repo.regions[REGION_ID] == existing
+
+
 def test_build_registration_maps_settings():
     reg = build_registration(_settings(), "203.0.113.5")
     assert reg.region_id == REGION_ID
@@ -63,6 +106,9 @@ def test_build_registration_maps_settings():
     assert reg.wireguard_endpoint_ipv4 == "203.0.113.5"
     assert reg.wireguard_public_key == "server-pub-key"
     assert reg.wireguard_endpoint_hostname == "wg.us-test-1.example.com"
+    # Tunnel CIDRs are host-owned and reported every deploy from settings.
+    assert reg.tunnel_network_v4 == "10.0.0.0/24"
+    assert reg.tunnel_network_v6 == "fd42:42:42::/64"
 
 
 def test_upsert_inserts_enabled_region_metadata():
@@ -70,14 +116,72 @@ def test_upsert_inserts_enabled_region_metadata():
     region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
     assert region.enabled is True
     assert region.wireguard_endpoint_ipv4 == "203.0.113.5"
+    assert region.tunnel_network_v4 == "10.0.0.0/24"
+    assert region.tunnel_network_v6 == "fd42:42:42::/64"
+    # meshEnabled is created false and is operator-owned from the dashboard afterward.
+    assert region.mesh_enabled is False
 
 
-def test_upsert_updates_region_metadata_and_follows_ready():
+def test_upsert_updates_region_metadata_without_disabling_a_serving_region():
+    # A transient edge failure on a redeploy must not flip a live region to disabled:
+    # desired_peers() drops every client peer of a disabled region.
     repo = FakeRepository(local_region_id=REGION_ID)
     run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
 
     region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
+    assert region.enabled is True
+    assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
+
+
+def test_upsert_leaves_a_new_region_disabled_when_not_ready():
+    repo = FakeRepository(local_region_id=REGION_ID)
+
+    region = run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=False)
+
     assert region.enabled is False
+
+
+def test_upsert_leaves_an_already_disabled_region_disabled_when_not_ready():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=False)
+
+    region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
+
+    assert region.enabled is False
+    assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
+
+
+def test_serving_region_keeps_client_peers_when_registration_is_not_ready():
+    # End-to-end shape of the outage this fix prevents: register (not ready) then the
+    # post-register sync pass must still see the client in the desired peer set.
+    repo = FakeRepository(local_region_id=REGION_ID)
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    client = repo.reserve_client(
+        owner_uid="user-1", owner_email="user@example.com", region_id=REGION_ID, client_name="Phone"
+    )
+    repo.mark_client_active(
+        owner_uid="user-1",
+        region_id=REGION_ID,
+        client_id=client.client_id,
+        client_public_key=FAKE_PUBLIC_KEY,
+        wireguard_config="[Interface]",
+    )
+
+    run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
+
+    assert desired_peers(repo, REGION_ID).peers == {
+        FAKE_PUBLIC_KEY: (client.assigned_tunnel_ipv4, client.assigned_tunnel_ipv6)
+    }
+
+
+def test_upsert_region_preserves_mesh_enabled_across_updates():
+    repo = FakeRepository(local_region_id=REGION_ID)
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    repo.regions[REGION_ID] = replace(repo.regions[REGION_ID], mesh_enabled=True)
+
+    # A later re-register (e.g. a redeploy) must not clobber the operator-owned flag.
+    region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=True)
+    assert region.mesh_enabled is True
     assert region.wireguard_endpoint_ipv4 == "198.51.100.9"
 
 
@@ -95,6 +199,7 @@ def test_notify_region_deployment_sends_to_admin_emails():
         settings=_settings(),
         region=region,
         public_ipv4="203.0.113.5",
+        ready=True,
         create_client=_fake_client_factory,
         send_email=sender,
     )
@@ -117,10 +222,36 @@ def test_notify_region_deployment_skips_disabled_region():
         settings=_settings(),
         region=region,
         public_ipv4="203.0.113.5",
+        ready=True,
         create_client=_fake_client_factory,
         send_email=sender,
     )
 
+    assert sent_count == 0
+    assert sender.calls == []
+
+
+def test_notify_region_deployment_skips_serving_region_whose_edge_check_failed():
+    # A rebuild of an already-serving region keeps enabled=true through a readiness
+    # failure, so enabled alone must not announce "VPN is live" over a broken edge.
+    repo = FakeRepository(local_region_id=REGION_ID)
+    repo.roles["admin-1"] = Role.ADMIN
+    repo.users["admin-1"] = UserDoc(uid="admin-1", email="admin@example.com")
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    region = run_register(repository=repo, settings=_settings(), public_ipv4="198.51.100.9", ready=False)
+    sender = RecordingDeploymentEmailSender()
+
+    sent_count = notify_region_deployment(
+        repository=repo,
+        settings=_settings(),
+        region=region,
+        public_ipv4="198.51.100.9",
+        ready=False,
+        create_client=_fake_client_factory,
+        send_email=sender,
+    )
+
+    assert region.enabled is True
     assert sent_count == 0
     assert sender.calls == []
 
@@ -138,6 +269,7 @@ def test_notify_region_deployment_logs_ses_failure_without_failing(caplog):
             settings=_settings(),
             region=region,
             public_ipv4="203.0.113.5",
+            ready=True,
             create_client=_fake_client_factory,
             send_email=sender,
         )
@@ -163,6 +295,7 @@ def test_notify_region_deployment_logs_client_build_failure_without_sending(capl
             settings=_settings(),
             region=region,
             public_ipv4="203.0.113.5",
+            ready=True,
             create_client=failing_factory,
             send_email=sender,
         )
@@ -186,6 +319,54 @@ def test_edge_ready(monkeypatch):
 
     monkeypatch.setattr(register, "health_ok", lambda url, *, region_id, timeout=5.0: False)
     assert register.edge_ready("us-test-1.example.com", region_id=REGION_ID, attempts=3, delay=0) is False
+
+
+def _patch_main(monkeypatch, repo: FakeRepository, *, ready: bool) -> None:
+    monkeypatch.setattr(register, "Settings", _settings)
+    monkeypatch.setattr(register, "discover_public_ipv4", lambda: "198.51.100.9")
+    monkeypatch.setattr(register, "edge_ready", lambda hostname, *, region_id: ready)
+    monkeypatch.setattr(register, "health_ok", lambda url, *, region_id, timeout=5.0: True)
+    monkeypatch.setattr("src.firebase.FirestoreRepository", lambda settings: repo)
+
+
+def test_main_reports_ready_registration_with_exit_code_zero(monkeypatch):
+    repo = FakeRepository(local_region_id=REGION_ID)
+    _patch_main(monkeypatch, repo, ready=True)
+
+    assert register.main() == register.EXIT_OK
+    assert repo.regions[REGION_ID].enabled is True
+
+
+def test_main_reports_not_ready_registration_distinguishably(monkeypatch):
+    # bootstrap.sh skips the post-registration sync pass on this exit code; the
+    # already-serving region keeps enabled=true so its client peers survive.
+    repo = FakeRepository(local_region_id=REGION_ID)
+    run_register(repository=repo, settings=_settings(), public_ipv4="203.0.113.5", ready=True)
+    _patch_main(monkeypatch, repo, ready=False)
+    notified: list[dict] = []
+
+    def record_notify(**kwargs) -> int:
+        notified.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(register, "notify_region_deployment", record_notify)
+
+    assert register.main() == register.EXIT_EDGE_NOT_READY
+    # The email gate sees the readiness result, not just the preserved enabled flag.
+    assert [call["ready"] for call in notified] == [False]
+    assert register.EXIT_EDGE_NOT_READY != register.EXIT_REGISTER_FAILED
+    assert repo.regions[REGION_ID].enabled is True
+    assert repo.regions[REGION_ID].wireguard_endpoint_ipv4 == "198.51.100.9"
+
+
+def test_main_returns_failure_exit_code_when_registration_raises(monkeypatch):
+    repo = FakeRepository(local_region_id=REGION_ID)
+    _patch_main(monkeypatch, repo, ready=True)
+    monkeypatch.setattr(
+        register, "discover_public_ipv4", lambda: (_ for _ in ()).throw(RuntimeError("no echo"))
+    )
+
+    assert register.main() == register.EXIT_REGISTER_FAILED
 
 
 def test_discover_public_ipv4(monkeypatch):

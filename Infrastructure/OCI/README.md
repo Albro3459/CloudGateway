@@ -12,9 +12,10 @@ Deployment is rare and manual. An operator prepares OCI networking, then deploys
 or rebuilds a region through `./scripts/terraform.sh <region> apply` following
 [docs/regional-deployment.md](../../docs/regional-deployment.md). The wrapper
 manages Terraform workspaces and regional DNS; unmanaged or duplicate regional
-DNS/VM resources must be reconciled or imported before rerunning. There is no
-Lambda orchestrator, no OCI Resource Manager flow, and no per-user stack
-deployment.
+DNS/VM resources must be reconciled or imported before rerunning. A normal host
+rebuild keeps the region's WireGuard key, tunnel subnets, and endpoint hostname,
+so boot sync restores the live peer set after deployment. There is no Lambda
+orchestrator, OCI Resource Manager flow, or per-user stack deployment.
 
 WireGuard peers are never created at deploy time and are never saved to `/etc/wireguard/wg0.conf` or any other host state file. Firebase is the single source of truth: the regional FastAPI control plane applies peers live with `wg set`, and `cloudgateway-sync-peers` rebuilds the live peer set from Firebase on every boot.
 
@@ -24,8 +25,15 @@ Cloud-init is a small stub: Terraform bakes only the per-region config and secre
 
 The fetched bootstrap installs and configures:
 
-* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` oneshot rebuilds the live peer set from Firebase at boot and retries until Firebase is reachable.
+* WireGuard bare metal with `/etc/wireguard/wg0.conf` written once with interface settings only (<b>never any `[Peer]` blocks</b>), started through `wg-quick@wg0`. The `cloudgateway-sync-peers.service` rebuilds the live peer set from Firebase at boot and after region registration.
 * IPv4/IPv6 forwarding, firewall/NAT rules, and WireGuard UDP `iptables`/`ip6tables` rate limits.
+* `nftables`, with an `inet cloudgateway` table enforcing account-scoped client-to-client
+  isolation: the table, sets, maps, and `cg_forward` chain are created empty by `wg-quick`'s
+  `PostUp` (loaded from `/etc/cloudgateway/cloudgateway.nft`, written by bootstrap) and deleted by
+  `PostDown`; contents are populated only by the API's policy reconcile pull from Firestore, never
+  by bootstrap or Terraform. This is additive to, not a replacement for, the existing `iptables`/
+  `ip6tables` rules above - see
+  [docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 * AdGuard Home DNS filtering for VPN clients, listening only on the tunnel DNS IPs and forwarding to local Unbound.
 * Unbound on `127.0.0.1:5335` as the AdGuard Home upstream: a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. DoT keeps the cloud provider from seeing the domains clients resolve; local validation means answer integrity does not depend on trusting the upstreams. Unbound never recurses, so it never queries authoritative servers over plaintext port 53.
 * Python runtime and the regional FastAPI app per [docs/deployment-handoff.md](../../docs/deployment-handoff.md):
@@ -66,6 +74,18 @@ Exactly one matching resource is safe only when it is already in the selected
 Terraform workspace state. More than one matching DNS record or VM is unsafe.
 Any unsafe region stops the whole deploy so the operator can manually reconcile
 resources or import the canonical resources into state before rerunning.
+
+### Cross-region tunnel subnets
+
+Each region's WireGuard tunnel subnet is recorded first in the tracked
+[`terraform/subnet-registry.json`](terraform/subnet-registry.json), the authoritative
+allocation inventory. Keep removed allocations as `reserved` so they are not reused.
+Local `<regionId>.terraform.tfvars` files are gitignored copies and their
+`wg_network_v4`/`wg_network_v6` values must match the registry entry exactly.
+
+Each region uses a unique `/24` IPv4 and `/64` IPv6 tunnel network within the registry
+aggregates. Terraform preflight validates the registry, matching tfvars, and selected
+region before deployment.
 
 AdGuard Home is installed from the pinned `adguard_home_version` Terraform input. The bootstrap writes its config directly: only the AdGuard DNS filter is enabled, the admin UI binds to `127.0.0.1:3000`, and query logs/statistics are disabled to preserve the VPN traffic logging boundary.
 

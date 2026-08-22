@@ -99,6 +99,22 @@ describe("apiEndpoints", () => {
         })).toBe("https://eu-frankfurt-1.gocloudlaunch.com/api/users");
     });
 
+    it("does not route user creation through malformed or missing enabled regions", async () => {
+        jest.resetModules();
+        process.env.REACT_APP_API_ORIGIN = "";
+        const { buildCreateUserApiEndpoint } = require("../apiEndpoints");
+
+        expect(() => buildCreateUserApiEndpoint([
+            { regionId: "missing" },
+            { regionId: "string", enabled: "true" as unknown as boolean },
+            { regionId: "number", enabled: 1 as unknown as boolean },
+            { regionId: "object", enabled: {} as unknown as boolean },
+        ], {
+            hostname: "gocloudlaunch.com",
+            host: "gocloudlaunch.com",
+        })).toThrow("No enabled regions are available for user creation");
+    });
+
     it("uses the apex host for access checks", async () => {
         jest.resetModules();
         process.env.REACT_APP_API_ORIGIN = "";

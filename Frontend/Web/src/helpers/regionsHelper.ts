@@ -1,4 +1,9 @@
 import { numberOrDefault, stringOrNull } from "./coerce";
+import { isValidMeshEndpointPort } from "./meshValidation";
+
+const numberOrNull = (value: unknown): number | null => (
+    isValidMeshEndpointPort(value) ? value : null
+);
 
 type RegionCapacity = {
     status: "known";
@@ -15,13 +20,18 @@ export type Region = {
     wireguardEndpointIpv4?: string | null;
     wireguardEndpointIpv6?: string | null;
     wireguardEndpointHostname?: string | null;
-    wireguardPort?: number;
+    // Nullable/missing-aware value used for mesh snapshot freshness. The
+    // application has no frontend consumer that needs to invent a default.
+    wireguardPort?: number | null;
     wireguardDnsIpv4?: string | null;
     wireguardDnsIpv6?: string | null;
     wireguardPublicKey?: string | null;
     displayOrder: number;
     healthStatus?: string | null;
     capacity?: RegionCapacity;
+    tunnelNetworkV4?: string | null;
+    tunnelNetworkV6?: string | null;
+    meshEnabled?: boolean;
 }
 
 export const parseRegionDocument = (regionId: string, data: Record<string, unknown>): Region | null => {
@@ -37,14 +47,23 @@ export const parseRegionDocument = (regionId: string, data: Record<string, unkno
         wireguardEndpointIpv4: stringOrNull(data.wireguardEndpointIpv4),
         wireguardEndpointIpv6: stringOrNull(data.wireguardEndpointIpv6),
         wireguardEndpointHostname: stringOrNull(data.wireguardEndpointHostname),
-        wireguardPort: numberOrDefault(data.wireguardPort, 51820),
+        wireguardPort: numberOrNull(data.wireguardPort),
         wireguardDnsIpv4: stringOrNull(data.wireguardDnsIpv4),
         wireguardDnsIpv6: stringOrNull(data.wireguardDnsIpv6),
         wireguardPublicKey: stringOrNull(data.wireguardPublicKey),
         displayOrder: numberOrDefault(data.displayOrder, 1000),
         healthStatus: stringOrNull(data.healthStatus),
+        tunnelNetworkV4: stringOrNull(data.tunnelNetworkV4),
+        tunnelNetworkV6: stringOrNull(data.tunnelNetworkV6),
+        meshEnabled: data.meshEnabled === true,
     };
 };
+
+// Only literal true `enabled` values are included in every enabled-region view:
+// the create-client picker, the sync fan-out, and the Server Health strip.
+export const getEnabledRegions = (regions: Region[] | null): Region[] => (
+    (regions || []).filter(region => region.enabled === true)
+);
 
 export const sortRegions = (regions: Region[]) => (
     [...regions].sort((a, b) => {

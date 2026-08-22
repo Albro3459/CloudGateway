@@ -5,16 +5,16 @@ import { Eye, EyeOff, KeyRound, Link, LogOut, RefreshCw, Trash2, UserCircle, Use
 import QRCode from "qrcode";
 import packageJson from "../../package.json";
 
-import { createAdminUser, createClient, deleteAccount, deleteClient, runRegionsSync } from "../helpers/APIHelper";
-import type { ApiHelperFailure, RegionSyncResult } from "../helpers/APIHelper";
+import { createAdminUser, createClient, deleteAccount, deleteClient } from "../helpers/APIHelper";
+import type { ApiHelperFailure } from "../helpers/APIHelper";
 import { appleProvider, auth, EmailAuthProvider, googleProvider, linkWithCredential, linkWithPopup, onAuthStateChanged, reauthenticateWithCredential, reauthenticateWithPopup } from "../firebase";
-import { getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, Region, resolveActiveRegionId } from "../helpers/regionsHelper";
+import { getEnabledRegions, getRegionCapacityLabel, getRegionName, isRegionAtCapacity, isRegionCapacityKnown, resolveActiveRegionId } from "../helpers/regionsHelper";
 import { getUserRole } from "../helpers/usersHelper";
 
 import { CopyableValue } from "../components/CopyableValue";
 import { NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { AppNav } from "../components/AppNav";
-import { RegionSyncCard } from "../components/RegionSyncCard";
+import { SyncRegionsConfirmModal } from "../components/SyncRegionsConfirmModal";
 import { VPNTable, VPNTableEntry } from "../components/VPNTable";
 import { getUsersVPNs, logout, VPNData } from "../helpers/firebaseDbHelper";
 import { User } from "firebase/auth";
@@ -36,9 +36,26 @@ const ALL_AUTH_PROVIDER_IDS = ["password", "apple.com", "google.com"] as const;
 
 type AuthProviderId = typeof ALL_AUTH_PROVIDER_IDS[number];
 
-const getEnabledRegions = (regions: Region[] | null) => (
-    (regions || []).filter(region => region.enabled !== false)
-);
+type CurrentSession<TInput> = {
+    authGeneration: number;
+    uid: string;
+    user: User;
+    token: string | null;
+    input: TInput;
+};
+
+type DeleteAccountInput = {
+    password: string;
+    providerIds: string[];
+};
+
+type LinkProviderInput = {
+    providerId: AuthProviderId;
+    email: string;
+    password: string;
+    currentPassword: string;
+    providerIds: string[];
+};
 
 const getProviderLabel = (providerId: AuthProviderId) => {
     if (providerId === "password") return "Email and password";
@@ -74,10 +91,6 @@ const Home: React.FC = () => {
     const [grantAccessError, setGrantAccessError] = useState<string | null>(null);
     const [grantAccessSuccess, setGrantAccessSuccess] = useState<string | null>(null);
     const [syncRegionsModalOpen, setSyncRegionsModalOpen] = useState(false);
-    const [selectedSyncRegionIds, setSelectedSyncRegionIds] = useState<Set<string>>(new Set());
-    const [syncingRegions, setSyncingRegions] = useState(false);
-    const [syncRegionResults, setSyncRegionResults] = useState<RegionSyncResult[] | null>(null);
-    const [syncRegionsError, setSyncRegionsError] = useState<string | null>(null);
 
     const { ociRegions, loading: regionsLoading, error: regionsError } = useOciRegionsStore();
     const enabledRegions = useMemo(() => getEnabledRegions(ociRegions), [ociRegions]);
@@ -106,16 +119,44 @@ const Home: React.FC = () => {
     const pullStartY = useRef<number | null>(null);
     const activePullPointerId = useRef<number | null>(null);
     const pullDistanceRef = useRef(0);
+    const authGenerationRef = useRef(0);
+    const authUidRef = useRef<string | null>(null);
+    const mountedRef = useRef(false);
+
+    const isCurrentAuth = useCallback((authGeneration: number, uid: string) => (
+        mountedRef.current
+        && authGenerationRef.current === authGeneration
+        && authUidRef.current === uid
+    ), []);
+
+    const getCurrentSession = useCallback(<TInput,>(
+        input: TInput,
+        options?: { requireToken?: boolean },
+    ): CurrentSession<TInput> | null => {
+        const user = auth.currentUser;
+        const uid = user?.uid;
+        const authGeneration = authGenerationRef.current;
+
+        if (!user || !uid || !isCurrentAuth(authGeneration, uid)) {
+            return null;
+        }
+        if (options?.requireToken && !jwtToken) {
+            return null;
+        }
+
+        return { authGeneration, uid, user, token: jwtToken, input };
+    }, [isCurrentAuth, jwtToken]);
+
+    const isCurrentSession = useCallback((session: CurrentSession<unknown>) => (
+        isCurrentAuth(session.authGeneration, session.uid)
+        && auth.currentUser === session.user
+    ), [isCurrentAuth]);
 
     const activeRegionName = selectedRegion
         ? getRegionName(selectedRegion.regionId, ociRegions)
         : "No region selected";
 
     const showRegionTabs = enabledRegions.length > 1;
-    const allSyncRegionsSelected = enabledRegions.length > 0 && selectedSyncRegionIds.size === enabledRegions.length;
-    const syncRegionDisplayNames = useMemo(() => (
-        new Map(enabledRegions.map(region => [region.regionId, region.displayName]))
-    ), [enabledRegions]);
 
     const activeRegionEntries = useMemo(() => {
         if (VPNTableEntries === null || !activeRegionId) return null;
@@ -127,8 +168,8 @@ const Home: React.FC = () => {
         setBanner({ type, message });
     };
 
-    const refreshLinkedProviderIds = () => {
-        setLinkedProviderIds(auth.currentUser?.providerData?.map(provider => provider.providerId) || []);
+    const refreshLinkedProviderIds = (user: User | null | undefined = auth.currentUser) => {
+        setLinkedProviderIds(user?.providerData?.map(provider => provider.providerId) || []);
     };
 
     const clearSelectedClients = () => {
@@ -158,38 +199,54 @@ const Home: React.FC = () => {
     const vpnFetchGen = useRef(0);
     const vpnAppliedGen = useRef(0);
 
-    const fillVPNs = useCallback(async (user: User) => {
+    const fillVPNs = useCallback(async (user: User, authGeneration: number, uid: string) => {
         const gen = ++vpnFetchGen.current;
-        setVPNTableEntries(null);
+        if (isCurrentAuth(authGeneration, uid)) {
+            setVPNTableEntries(null);
+        }
         try {
             const VPNs: VPNData[] = await getUsersVPNs(user);
-            if (gen <= vpnAppliedGen.current) return;
+            if (
+                gen <= vpnAppliedGen.current
+                || !isCurrentAuth(authGeneration, uid)
+            ) return;
             vpnAppliedGen.current = gen;
             setVPNTableEntries(filterVisibleVPNClients(VPNs, sessionRemovedClientKeys.current));
         } catch (error) {
-            if (gen <= vpnAppliedGen.current) return;
+            if (
+                gen <= vpnAppliedGen.current
+                || !isCurrentAuth(authGeneration, uid)
+            ) return;
             vpnAppliedGen.current = gen;
             showBanner("error", "Error loading VPN clients");
             console.error("Error loading VPN clients:", error);
             setVPNTableEntries([]);
         }
-    }, []);
+    }, [isCurrentAuth]);
 
     // Refreshes the table in place, without the loading skeleton or an error banner.
     const refreshVPNs = useCallback(async (user: User) => {
+        const authGeneration = authGenerationRef.current;
+        const uid = user.uid;
         const gen = ++vpnFetchGen.current;
         try {
             const VPNs: VPNData[] = await getUsersVPNs(user);
-            if (gen <= vpnAppliedGen.current) return;
+            if (
+                gen <= vpnAppliedGen.current
+                || !isCurrentAuth(authGeneration, uid)
+            ) return;
             vpnAppliedGen.current = gen;
             setVPNTableEntries(filterVisibleVPNClients(VPNs, sessionRemovedClientKeys.current));
         } catch (error) {
             console.error("Error refreshing VPN clients:", error);
         }
-    }, []);
+    }, [isCurrentAuth]);
 
     const refreshDashboard = useCallback(async () => {
-        if (!auth.currentUser || pullRefreshing) {
+        const user = auth.currentUser;
+        const authGeneration = authGenerationRef.current;
+        const uid = user?.uid;
+        if (!user || !uid || pullRefreshing || !isCurrentAuth(authGeneration, uid)) {
             resetPull();
             return;
         }
@@ -197,14 +254,16 @@ const Home: React.FC = () => {
         setPullRefreshing(true);
         try {
             await Promise.all([
-                refreshVPNs(auth.currentUser),
-                jwtToken ? fetchOciRegions(jwtToken, true) : Promise.resolve(),
+                refreshVPNs(user),
+                jwtToken && isCurrentAuth(authGeneration, uid)
+                    ? fetchOciRegions(jwtToken, true)
+                    : Promise.resolve(),
             ]);
         } finally {
-            setPullRefreshing(false);
+            if (isCurrentAuth(authGeneration, uid)) setPullRefreshing(false);
             resetPull();
         }
-    }, [jwtToken, pullRefreshing, refreshVPNs, resetPull]);
+    }, [isCurrentAuth, jwtToken, pullRefreshing, refreshVPNs, resetPull]);
 
     const handlePullStart = (event: React.PointerEvent<HTMLDivElement>) => {
         if (
@@ -279,11 +338,22 @@ const Home: React.FC = () => {
             return;
         }
 
+        const session = getCurrentSession({ email, enabledRegions }, { requireToken: true });
+        if (!session || !session.token) {
+            setGrantAccessError("Your session is not ready. Try again in a moment.");
+            return;
+        }
+
         setGrantingAccess(true);
         setGrantAccessError(null);
         setGrantAccessSuccess(null);
         try {
-            const result = await createAdminUser({ email }, jwtToken, enabledRegions);
+            const result = await createAdminUser(
+                { email: session.input.email },
+                session.token,
+                session.input.enabledRegions,
+            );
+            if (!isCurrentSession(session)) return;
             if (!result.success) {
                 setGrantAccessError(result.error || "Unable to grant access.");
                 return;
@@ -291,72 +361,31 @@ const Home: React.FC = () => {
 
             setGrantAccessEmail("");
             setGrantAccessSuccess(result.data.alreadyExisted
-                ? `${email} already has CloudGateway access.`
-                : `${email} now has CloudGateway access.`);
+                ? `${session.input.email} already has CloudGateway access.`
+                : `${session.input.email} now has CloudGateway access.`);
         } catch (error) {
+            if (!isCurrentSession(session)) return;
             console.error("Error granting user access:", error);
             setGrantAccessError("Unable to grant access.");
         } finally {
-            setGrantingAccess(false);
+            if (isCurrentSession(session)) setGrantingAccess(false);
         }
     };
 
     const openSyncRegionsModal = () => {
-        setSelectedSyncRegionIds(new Set(enabledRegions.map(region => region.regionId)));
-        setSyncRegionResults(null);
-        setSyncRegionsError(null);
         setSyncRegionsModalOpen(true);
     };
 
     const closeSyncRegionsModal = () => {
-        if (syncingRegions) return;
         setSyncRegionsModalOpen(false);
     };
 
-    const toggleSyncRegion = (regionId: string) => {
-        setSelectedSyncRegionIds(current => {
-            const next = new Set(current);
-            if (next.has(regionId)) {
-                next.delete(regionId);
-            } else {
-                next.add(regionId);
-            }
-            return next;
-        });
-    };
-
-    const toggleAllSyncRegions = () => {
-        setSelectedSyncRegionIds(current => (
-            current.size === enabledRegions.length
-                ? new Set()
-                : new Set(enabledRegions.map(region => region.regionId))
-        ));
-    };
-
-    const handleSyncRegions = async () => {
-        if (!jwtToken) {
-            setSyncRegionsError("Your session is not ready. Try again in a moment.");
-            return;
-        }
-        if (!selectedSyncRegionIds.size) {
-            setSyncRegionsError("Select at least one region to sync.");
-            return;
-        }
-
-        setSyncingRegions(true);
-        setSyncRegionsError(null);
-        setSyncRegionResults(null);
-        try {
-            setSyncRegionResults(await runRegionsSync([...selectedSyncRegionIds], jwtToken));
-            if (auth.currentUser) {
-                await refreshVPNs(auth.currentUser);
-            }
-        } catch (error) {
-            console.error("Error syncing regions:", error);
-            setSyncRegionsError("Unable to sync regions.");
-        } finally {
-            setSyncingRegions(false);
-        }
+    // Mesh changes are all-region, so confirming here never runs the sync
+    // itself - it hands off to Server Health (via navigation state) so the
+    // fan-out survives the route change instead of racing it.
+    const confirmSyncRegions = () => {
+        setSyncRegionsModalOpen(false);
+        navigate("/server-health", { state: { runSync: true } });
     };
 
     const closeDeleteAccountModal = () => {
@@ -392,15 +421,12 @@ const Home: React.FC = () => {
     const missingProviderIds = ALL_AUTH_PROVIDER_IDS.filter(providerId => !linkedProviderIds.includes(providerId));
     const canLinkAnotherProvider = missingProviderIds.length > 0;
 
-    const reauthenticateForAccountDeletion = async () => {
-        const user = auth.currentUser;
-        if (!user) {
-            throw new Error("No account is signed in");
-        }
+    const reauthenticateForAccountDeletion = async (session: CurrentSession<DeleteAccountInput>) => {
+        const { user } = session;
 
         // Reauth order per the standard: Apple, then Google, then email &
         // password last (for convenience when other providers are linked).
-        const providers = currentProviderIds();
+        const providers = session.input.providerIds;
         if (providers.includes("apple.com")) {
             await reauthenticateWithPopup(user, appleProvider);
             return;
@@ -413,10 +439,10 @@ const Home: React.FC = () => {
 
         if (providers.includes("password")) {
             const email = user.email;
-            if (!email || !deleteAccountPassword) {
+            if (!email || !session.input.password) {
                 throw new Error("Enter your password to delete your account");
             }
-            const credential = EmailAuthProvider.credential(email, deleteAccountPassword);
+            const credential = EmailAuthProvider.credential(email, session.input.password);
             await reauthenticateWithCredential(user, credential);
             return;
         }
@@ -425,8 +451,11 @@ const Home: React.FC = () => {
     };
 
     const handleDeleteAccount = async () => {
-        const user = auth.currentUser;
-        if (!user) {
+        const session = getCurrentSession({
+            password: deleteAccountPassword,
+            providerIds: currentProviderIds(),
+        });
+        if (!session) {
             setDeleteAccountError("No account is signed in.");
             return;
         }
@@ -434,22 +463,30 @@ const Home: React.FC = () => {
         setDeletingAccount(true);
         setDeleteAccountError(null);
         try {
-            await reauthenticateForAccountDeletion();
-            const token = await user.getIdToken(true);
+            await reauthenticateForAccountDeletion(session);
+            if (!isCurrentSession(session)) return;
+
+            const token = await session.user.getIdToken(true);
+            if (!isCurrentSession(session)) return;
+
             const response = await deleteAccount(token);
+            if (!isCurrentSession(session)) return;
             if (!response.success) {
                 setDeleteAccountError(response.error || "Unable to delete account.");
                 return;
             }
             closeDeleteAccountModal();
-            await logout(navigate);
+            if (isCurrentSession(session)) {
+                await logout(navigate);
+            }
         } catch (error) {
+            if (!isCurrentSession(session)) return;
             const code = getAuthErrorCode(error);
             if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
                 setDeleteAccountError(getDeleteAccountErrorMessage(error));
             }
         } finally {
-            setDeletingAccount(false);
+            if (isCurrentSession(session)) setDeletingAccount(false);
         }
     };
 
@@ -508,14 +545,11 @@ const Home: React.FC = () => {
             : null
     );
 
-    const reauthenticateForAccountLinking = async () => {
-        const user = auth.currentUser;
-        if (!user) {
-            throw new Error("No account is signed in");
-        }
+    const reauthenticateForAccountLinking = async (session: CurrentSession<LinkProviderInput>) => {
+        const { user } = session;
 
         // Reauth order per the standard: Apple, then Google, then password last.
-        const providers = currentProviderIds();
+        const providers = session.input.providerIds;
         if (providers.includes("apple.com")) {
             await reauthenticateWithPopup(user, appleProvider);
             return true;
@@ -528,12 +562,14 @@ const Home: React.FC = () => {
 
         if (providers.includes("password")) {
             const email = user.email;
-            if (!email || !linkCurrentPassword) {
-                setLinkRequiresPasswordReauth(true);
-                setLinkError("Enter your current password, then try again.");
+            if (!email || !session.input.currentPassword) {
+                if (isCurrentSession(session)) {
+                    setLinkRequiresPasswordReauth(true);
+                    setLinkError("Enter your current password, then try again.");
+                }
                 return false;
             }
-            const credential = EmailAuthProvider.credential(email, linkCurrentPassword);
+            const credential = EmailAuthProvider.credential(email, session.input.currentPassword);
             await reauthenticateWithCredential(user, credential);
             return true;
         }
@@ -541,28 +577,25 @@ const Home: React.FC = () => {
         throw new Error("Sign in again before linking another sign-in method");
     };
 
-    const linkProvider = async (providerId: AuthProviderId) => {
-        const user = auth.currentUser;
-        if (!user) {
-            throw new Error("No account is signed in");
-        }
+    const linkProvider = async (session: CurrentSession<LinkProviderInput>) => {
+        const { providerId, email, password } = session.input;
 
         if (providerId === "google.com") {
-            await linkWithPopup(user, googleProvider);
+            await linkWithPopup(session.user, googleProvider);
             return;
         }
 
         if (providerId === "apple.com") {
-            await linkWithPopup(user, appleProvider);
+            await linkWithPopup(session.user, appleProvider);
             return;
         }
 
-        if (!linkEmail.trim() || !linkPassword) {
+        if (!email.trim() || !password) {
             throw new Error("Enter an email address and password to link.");
         }
 
-        const credential = EmailAuthProvider.credential(linkEmail.trim(), linkPassword);
-        await linkWithCredential(user, credential);
+        const credential = EmailAuthProvider.credential(email.trim(), password);
+        await linkWithCredential(session.user, credential);
     };
 
     const handleLinkProvider = async (providerId: AuthProviderId, retried = false) => {
@@ -570,32 +603,51 @@ const Home: React.FC = () => {
             return;
         }
 
+        const session = getCurrentSession({
+            providerId,
+            email: linkEmail,
+            password: linkPassword,
+            currentPassword: linkCurrentPassword,
+            providerIds: currentProviderIds(),
+        });
+        if (!session) {
+            setLinkError("No account is signed in");
+            return;
+        }
+
         setLinkingProviderId(providerId);
         setLinkError(null);
         try {
             if (linkRequiresPasswordReauth) {
-                const reauthenticated = await reauthenticateForAccountLinking();
-                if (!reauthenticated) return;
+                const reauthenticated = await reauthenticateForAccountLinking(session);
+                if (!isCurrentSession(session) || !reauthenticated) return;
             }
 
-            await linkProvider(providerId);
-            await auth.currentUser?.reload();
-            refreshLinkedProviderIds();
+            await linkProvider(session);
+            if (!isCurrentSession(session)) return;
+
+            await session.user.reload();
+            if (!isCurrentSession(session)) return;
+
+            refreshLinkedProviderIds(session.user);
             closeLinkAccountModal();
             showBanner("success", `${getProviderLabel(providerId)} was linked to your account.`);
         } catch (error) {
+            if (!isCurrentSession(session)) return;
             const code = getAuthErrorCode(error);
             if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
                 return;
             }
             if (code === "auth/requires-recent-login" && !retried) {
                 try {
-                    const reauthenticated = await reauthenticateForAccountLinking();
+                    const reauthenticated = await reauthenticateForAccountLinking(session);
+                    if (!isCurrentSession(session)) return;
                     if (reauthenticated) {
                         setLinkingProviderId(null);
                         await handleLinkProvider(providerId, true);
                     }
                 } catch (reauthError) {
+                    if (!isCurrentSession(session)) return;
                     const reauthCode = getAuthErrorCode(reauthError);
                     if (reauthCode !== "auth/popup-closed-by-user" && reauthCode !== "auth/cancelled-popup-request") {
                         setLinkError(getLinkErrorMessage(reauthError));
@@ -605,11 +657,12 @@ const Home: React.FC = () => {
             }
             setLinkError(error instanceof Error && !code ? error.message : getLinkErrorMessage(error));
             if (code === "auth/provider-already-linked") {
-                await auth.currentUser?.reload();
-                refreshLinkedProviderIds();
+                await session.user.reload();
+                if (!isCurrentSession(session)) return;
+                refreshLinkedProviderIds(session.user);
             }
         } finally {
-            setLinkingProviderId(null);
+            if (isCurrentSession(session)) setLinkingProviderId(null);
         }
     };
 
@@ -644,36 +697,54 @@ const Home: React.FC = () => {
             return;
         }
 
+        const session = getCurrentSession({
+            regionId: activeRegionId,
+            clientName: trimmedClientName,
+            activeRegionName,
+        }, { requireToken: true });
+        if (!session || !session.token) {
+            showBanner("error", "You must be signed in to create a client");
+            return;
+        }
+
         setLoading(true);
         setBanner(null);
 
         try {
             const response = await createClient({
-                regionId: activeRegionId,
-                clientName: trimmedClientName,
-            }, jwtToken);
+                regionId: session.input.regionId,
+                clientName: session.input.clientName,
+            }, session.token);
+            if (!isCurrentSession(session)) return;
 
             if (!response.success) {
                 showBanner("error", response.error || "Unable to create client");
-                if (response.errorCode === "CAPACITY_REACHED" || response.errorCode === "LIMIT_REACHED") {
-                    await fetchOciRegions(jwtToken, true);
+                if (isCurrentSession(session) && (response.errorCode === "CAPACITY_REACHED" || response.errorCode === "LIMIT_REACHED")) {
+                    await fetchOciRegions(session.token, true);
                 }
-                await refreshVPNs(auth.currentUser);
+                if (isCurrentSession(session)) {
+                    await refreshVPNs(session.user);
+                }
                 return;
             }
 
             setClientName("");
-            showBanner("success", `${response.data.clientName || "Client"} was created in ${activeRegionName}.`);
-            await Promise.all([
-                refreshVPNs(auth.currentUser),
-                fetchOciRegions(jwtToken, true),
-            ]);
+            showBanner("success", `${response.data.clientName || "Client"} was created in ${session.input.activeRegionName}.`);
+            if (isCurrentSession(session)) {
+                await Promise.all([
+                    refreshVPNs(session.user),
+                    fetchOciRegions(session.token, true),
+                ]);
+            }
         } catch (error) {
+            if (!isCurrentSession(session)) return;
             showBanner("error", "Error creating client");
             console.error("Error creating client:", error);
-            await refreshVPNs(auth.currentUser);
+            if (isCurrentSession(session)) {
+                await refreshVPNs(session.user);
+            }
         } finally {
-            setLoading(false);
+            if (isCurrentSession(session)) setLoading(false);
         }
     };
 
@@ -714,24 +785,39 @@ const Home: React.FC = () => {
             return;
         }
 
+        const session = getCurrentSession({
+            activeRegionId,
+            activeRegionName,
+            selectedEntries,
+        }, { requireToken: true });
+        if (!session || !session.token) {
+            showBanner("error", "You must be signed in to remove clients");
+            return;
+        }
+        const token = session.token;
+
         setLoading(true);
         setBanner(null);
-        selectedEntries.forEach(entry => sessionRemovedClientKeys.current.add(getClientKey(entry)));
+        session.input.selectedEntries.forEach(entry => sessionRemovedClientKeys.current.add(getClientKey(entry)));
 
         try {
-            const results = await Promise.all(selectedEntries.map(entry => (
+            const results = await Promise.all(session.input.selectedEntries.map(entry => (
                 deleteClient(entry.clientId, {
                     userId: entry.ownerUid || entry.userID,
-                    regionId: activeRegionId,
-                }, jwtToken)
+                    regionId: session.input.activeRegionId,
+                }, token)
             )));
+            if (!isCurrentSession(session)) return;
             const failedResults = results.filter((result): result is ApiHelperFailure => !result.success);
 
             clearSelectedClients();
-            await Promise.all([
-                refreshVPNs(auth.currentUser),
-                fetchOciRegions(jwtToken, true),
-            ]);
+            if (isCurrentSession(session)) {
+                await Promise.all([
+                    refreshVPNs(session.user),
+                    fetchOciRegions(session.token, true),
+                ]);
+            }
+            if (!isCurrentSession(session)) return;
 
             if (failedResults.length) {
                 const firstFailure = failedResults[0];
@@ -739,12 +825,13 @@ const Home: React.FC = () => {
                 return;
             }
 
-            showBanner("success", `${selectedEntries.length} client${selectedEntries.length === 1 ? "" : "s"} removed from ${activeRegionName}.`);
+            showBanner("success", `${session.input.selectedEntries.length} client${session.input.selectedEntries.length === 1 ? "" : "s"} removed from ${session.input.activeRegionName}.`);
         } catch (error) {
+            if (!isCurrentSession(session)) return;
             showBanner("error", "Error removing clients");
             console.error("Error removing clients:", error);
         } finally {
-            setLoading(false);
+            if (isCurrentSession(session)) setLoading(false);
         }
     };
 
@@ -777,7 +864,6 @@ const Home: React.FC = () => {
     const configModalRef = useModalDialog<HTMLDivElement>(!!configData, closeConfigModal);
     const deleteAccountModalRef = useModalDialog<HTMLDivElement>(deleteAccountModalOpen, closeDeleteAccountModal);
     const grantAccessModalRef = useModalDialog<HTMLDivElement>(grantAccessModalOpen, closeGrantAccessModal);
-    const syncRegionsModalRef = useModalDialog<HTMLDivElement>(syncRegionsModalOpen, closeSyncRegionsModal);
 
     const handleDownloadConfig = (vpn: VPNTableEntry) => {
         if (!vpn.wireguardConfig) {
@@ -833,24 +919,79 @@ const Home: React.FC = () => {
     }, [loading, refreshVPNs]);
 
     useEffect(() => {
+        mountedRef.current = true;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
-            const fetchUserData = async () => {
-                if (user) {
-                    setLinkedProviderIds(user.providerData?.map(provider => provider.providerId) || []);
-                    void fillVPNs(user);
-                    const token: string | null = await user.getIdToken();
-                    setJwtToken(token);
-                    setRole(await getUserRole(user));
+            const authGeneration = ++authGenerationRef.current;
+            const uid = user?.uid || null;
+            authUidRef.current = uid;
+            ++vpnFetchGen.current;
+            vpnAppliedGen.current = vpnFetchGen.current;
+            sessionRemovedClientKeys.current.clear();
+            setLinkedProviderIds([]);
+            setJwtToken(null);
+            setRole(null);
+            setBanner(null);
+            setLoading(false);
+            setAccountMenuOpen(false);
+            setGrantAccessModalOpen(false);
+            setGrantAccessEmail("");
+            setGrantAccessError(null);
+            setGrantAccessSuccess(null);
+            setSyncRegionsModalOpen(false);
+            setDeleteAccountModalOpen(false);
+            setDeleteAccountPassword("");
+            setDeleteAccountError(null);
+            setLinkAccountModalOpen(false);
+            setLinkEmail("");
+            setLinkPassword("");
+            setLinkCurrentPassword("");
+            setLinkError(null);
+            setLinkRequiresPasswordReauth(false);
+            setLinkingProviderId(null);
+            setClientName("");
+            setVPNTableEntries(null);
+            setSelectedClientKeys(new Set());
+            setActiveRegionId("");
+            setConfigData(null);
+            setConfigCopied(false);
+            setActiveConfigClientName(null);
+            setActiveConfigEndpoint(null);
+            setActiveConfigTunnelIp(null);
+            setVpnRegion(null);
+            setPullDistance(0);
+            setPullRefreshing(false);
 
+            const isCurrent = () => (
+                !!uid && isCurrentAuth(authGeneration, uid)
+            );
+            const fetchUserData = async () => {
+                if (user && uid) {
+                    setLinkedProviderIds(user.providerData?.map(provider => provider.providerId) || []);
+                    void fillVPNs(user, authGeneration, uid);
+                    const token: string | null = await user.getIdToken();
+                    if (!isCurrent()) return;
+                    setJwtToken(token);
+                    const userRole = await getUserRole(user);
+                    if (!isCurrent()) return;
+                    setRole(userRole);
                     void fetchOciRegions(token, true);
-                } else {
-                    await logout(navigate);
+                } else if (!user && mountedRef.current && !auth.currentUser) {
+                    // Same teardown as the explicit logout path: the previous
+                    // account's region list must not survive the sign-out.
+                    useOciRegionsStore.getState().clearOciRegions();
+                    navigate("/", { replace: true });
                 }
             };
             void fetchUserData();
         });
-        return () => unsubscribe();
-    }, [navigate, fillVPNs]);
+        const generationAtCleanup = authGenerationRef;
+        return () => {
+            mountedRef.current = false;
+            ++generationAtCleanup.current;
+            authUidRef.current = null;
+            unsubscribe();
+        };
+    }, [navigate, fillVPNs, isCurrentAuth]);
 
     useEffect(() => {
         if (!enabledRegions.length) {
@@ -933,6 +1074,7 @@ const Home: React.FC = () => {
                 onRefresh={() => void refreshDashboard()}
                 refreshDisabled={loading || pullRefreshing}
                 refreshing={pullRefreshing}
+                serverHealthPath={role === "admin" ? "/server-health" : undefined}
             >
                 <div className="relative" ref={accountMenuRef}>
                     <button
@@ -952,8 +1094,14 @@ const Home: React.FC = () => {
                             <button
                                 type="button"
                                 onClick={async () => {
+                                    const session = getCurrentSession({ operation: "logout" });
                                     setAccountMenuOpen(false);
-                                    await logout(navigate);
+                                    // Before the auth observer's first callback there is no
+                                    // resolvable session yet, but a restored user is already
+                                    // signed in - logout must not be a dead button there.
+                                    if ((session && isCurrentSession(session)) || auth.currentUser) {
+                                        await logout(navigate);
+                                    }
                                 }}
                                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition hover:bg-inset"
                             >
@@ -1029,7 +1177,7 @@ const Home: React.FC = () => {
                             className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary p-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
                         >
                             <RefreshCw size={18} aria-hidden="true" />
-                            Sync Region Clients
+                            Sync All Regions
                         </button>
                         <button
                             type="button"
@@ -1211,18 +1359,22 @@ const Home: React.FC = () => {
                         )}
 
                         <form onSubmit={handleGrantAccess} className="mt-5">
-                            <label className="block text-sm font-medium text-content-secondary">
-                                Email
-                                <input
-                                    type="email"
-                                    value={grantAccessEmail}
-                                    onChange={(event) => setGrantAccessEmail(event.target.value)}
-                                    autoComplete="email"
-                                    placeholder="user@example.com"
-                                    disabled={grantingAccess}
-                                    className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
-                                />
-                            </label>
+                            {/* The grant already happened, so an empty email field
+                                would read as a second invite waiting to be sent. */}
+                            {!grantAccessSuccess && (
+                                <label className="block text-sm font-medium text-content-secondary">
+                                    Email
+                                    <input
+                                        type="email"
+                                        value={grantAccessEmail}
+                                        onChange={(event) => setGrantAccessEmail(event.target.value)}
+                                        autoComplete="email"
+                                        placeholder="user@example.com"
+                                        disabled={grantingAccess}
+                                        className="mt-1 w-full rounded-lg border border-edge bg-inset p-3 text-content focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus-soft"
+                                    />
+                                </label>
+                            )}
                             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
                                 <button
                                     type="button"
@@ -1247,117 +1399,12 @@ const Home: React.FC = () => {
                 </div>
             )}
 
-            {syncRegionsModalOpen && (
-                <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-                    onClick={closeSyncRegionsModal}
-                >
-                    <div
-                        ref={syncRegionsModalRef}
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="sync-regions-modal-title"
-                        tabIndex={-1}
-                        className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-edge-faint bg-card text-left shadow-lg focus:outline-none"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <div className="flex items-start justify-between gap-4 border-b border-edge-faint p-6">
-                            <div>
-                                <h3 id="sync-regions-modal-title" className="text-2xl font-semibold text-content">Sync Region Clients</h3>
-                                <p className="mt-2 text-sm text-content-muted">
-                                    Reconcile live WireGuard peers with the desired clients in each selected region.
-                                </p>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={closeSyncRegionsModal}
-                                disabled={syncingRegions}
-                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted transition hover:bg-inset hover:text-content disabled:cursor-not-allowed"
-                                aria-label="Close sync regions"
-                            >
-                                <X size={20} aria-hidden="true" />
-                            </button>
-                        </div>
-
-                        <div className="min-h-0 flex-1 overflow-y-auto p-6">
-                            {syncRegionsError && (
-                                <div className="mb-4 rounded-lg border border-danger-soft-edge bg-danger-soft px-4 py-3 text-sm text-danger-content">
-                                    {syncRegionsError}
-                                </div>
-                            )}
-
-                            <div className="rounded-lg border border-edge-subtle bg-inset p-4">
-                                <label className="flex cursor-pointer items-center gap-3 border-b border-edge-subtle pb-3 text-sm font-semibold text-content">
-                                    <input
-                                        type="checkbox"
-                                        checked={allSyncRegionsSelected}
-                                        onChange={toggleAllSyncRegions}
-                                        disabled={syncingRegions}
-                                        className="h-4 w-4 accent-primary"
-                                    />
-                                    Select all regions
-                                </label>
-                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                                    {enabledRegions.map(region => (
-                                        <label
-                                            key={region.regionId}
-                                            className="flex cursor-pointer items-start gap-3 rounded-lg border border-edge-faint bg-card p-3 text-sm text-content transition hover:border-primary-soft-edge"
-                                        >
-                                            <input
-                                                type="checkbox"
-                                                checked={selectedSyncRegionIds.has(region.regionId)}
-                                                onChange={() => toggleSyncRegion(region.regionId)}
-                                                disabled={syncingRegions}
-                                                className="mt-0.5 h-4 w-4 accent-primary"
-                                            />
-                                            <span className="min-w-0">
-                                                <span className="block font-medium">{region.displayName}</span>
-                                                <span className="block truncate text-xs text-content-muted">{region.regionId}</span>
-                                            </span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {syncRegionResults && (
-                                <div className="mt-5 space-y-3">
-                                    <h4 className="text-sm font-semibold text-content">Sync results</h4>
-                                    {syncRegionResults.map(({ regionId, result }) => (
-                                        <RegionSyncCard
-                                            key={regionId}
-                                            regionId={regionId}
-                                            displayName={syncRegionDisplayNames.get(regionId)}
-                                            result={result}
-                                        />
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="flex flex-col-reverse gap-3 border-t border-edge-faint bg-card p-4 sm:flex-row sm:justify-end sm:px-6">
-                            <button
-                                type="button"
-                                onClick={closeSyncRegionsModal}
-                                disabled={syncingRegions}
-                                className="rounded-lg bg-inset-strong px-5 py-3 text-sm font-semibold text-content-secondary transition hover:bg-inset-strong-hover disabled:cursor-not-allowed"
-                            >
-                                {syncRegionResults ? "Done" : "Cancel"}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => void handleSyncRegions()}
-                                disabled={syncingRegions || selectedSyncRegionIds.size === 0}
-                                className="flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-3 text-sm font-semibold text-white transition hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-disabled disabled:text-content-disabled"
-                            >
-                                <RefreshCw className={syncingRegions ? "animate-spin" : ""} size={17} aria-hidden="true" />
-                                {syncingRegions
-                                    ? "Syncing..."
-                                    : `Sync ${selectedSyncRegionIds.size} region${selectedSyncRegionIds.size === 1 ? "" : "s"}`}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <SyncRegionsConfirmModal
+                open={syncRegionsModalOpen}
+                regions={enabledRegions.map(region => ({ regionId: region.regionId, displayName: region.displayName }))}
+                onConfirm={confirmSyncRegions}
+                onClose={closeSyncRegionsModal}
+            />
 
             {linkAccountModalOpen && (
                 <div

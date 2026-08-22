@@ -1,12 +1,15 @@
 from dataclasses import replace
+from urllib.error import URLError
 
 import pytest
 
+import src.routes as routes
 from src.enums import ClientStatus
 from src.errors import FirebaseWriteFailedError
 from src.repository import RegionDoc
 
 from .conftest import REGION_ID
+from .fakes import FAKE_PUBLIC_KEY_2
 from .test_errors import assert_error_shape
 
 
@@ -45,7 +48,7 @@ def create_active_client(repository, wireguard, *, uid: str = "user-1"):
         owner_uid=uid,
         region_id=REGION_ID,
         client_id=client.client_id,
-        client_public_key="fake-public-existing",
+        client_public_key=FAKE_PUBLIC_KEY_2,
         wireguard_config="[Interface]\nPrivateKey = hidden",
     )
     wireguard.peers[active.client_public_key] = (active.assigned_tunnel_ipv4, active.assigned_tunnel_ipv6)
@@ -336,7 +339,7 @@ def test_delete_client_wireguard_failure_keeps_firebase_active(client, repositor
     assert_error_shape(response.json(), "WIREGUARD_APPLY_FAILED")
     stored = repository.get_client(owner_uid="user-1", region_id=REGION_ID, client_id=active.client_id)
     assert stored.status == ClientStatus.ACTIVE
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
     assert wireguard.remove_peer_calls == 1
 
 
@@ -353,7 +356,7 @@ def test_delete_client_normal_user_cannot_remove_another_users_client(client, re
 
     assert response.status_code == 403
     assert_error_shape(response.json(), "ADMIN_REQUIRED")
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
 
 
 def test_delete_client_admin_can_remove_any_users_client(client, repository, wireguard):
@@ -404,7 +407,7 @@ def test_delete_client_mismatched_document_fields_returns_not_found_before_peer_
 
     assert response.status_code == 404
     assert_error_shape(response.json(), "CLIENT_NOT_FOUND")
-    assert set(wireguard.peers) == {"fake-public-existing"}
+    assert set(wireguard.peers) == {FAKE_PUBLIC_KEY_2}
 
 
 def test_delete_client_uses_removed_status_even_if_document_was_already_removed(client, repository, wireguard):
@@ -421,3 +424,153 @@ def test_delete_client_uses_removed_status_even_if_document_was_already_removed(
 
     assert response.status_code == 200
     assert response.json()["status"] == "removed"
+
+
+def test_create_client_writes_inline_policy_row(client, repository, wireguard, policy):
+    seed_region(repository)
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert policy.add_row_calls == 1
+    row = next(iter(policy.rows.values()))
+    assert row.address_v4 == payload["assignedTunnelIpv4"].split("/")[0]
+    assert row.address_v6 == payload["assignedTunnelIpv6"].split("/")[0]
+    assert row.slot == repository.get_account_slot("user-1")
+    assert row.admin is False
+
+
+def test_create_client_inline_policy_row_runs_outside_the_wireguard_lock(client, repository, wireguard, policy):
+    # The inline row is written after create_client's wireguard.lock() block
+    # has already closed, so a slow policy pull can never stall add_peer.
+    seed_region(repository)
+    observed: dict[str, bool] = {}
+    original_add_client_row = policy.add_client_row
+
+    def spy(row):
+        observed["wireguard_locked"] = wireguard.locked
+        return original_add_client_row(row)
+
+    policy.add_client_row = spy
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert observed["wireguard_locked"] is False
+
+
+def test_create_client_admin_owner_writes_an_admin_policy_row(client, repository, wireguard, policy):
+    seed_region(repository)
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header("admin-token"),
+    )
+
+    assert response.status_code == 200
+    row = next(iter(policy.rows.values()))
+    assert row.admin is True
+
+
+def test_create_client_missing_account_slot_does_not_fail_create(client, repository, wireguard, policy):
+    seed_region(repository)
+    # Accounts provisioned before this feature could reach here with no slot
+    # yet; the inline row is skipped and the next reconcile fixes it.
+    repository.get_account_slot = lambda uid: None  # type: ignore[method-assign]
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.add_row_calls == 0
+
+
+def test_create_client_invalid_account_slot_does_not_fail_create(client, repository, wireguard, policy):
+    seed_region(repository)
+    # Defense in depth (see repository.valid_account_slot): even if a
+    # repository implementation ever returned an out-of-range slot, the
+    # route's own guard must still skip the inline row rather than write a
+    # bad mark to the wire.
+    repository.get_account_slot = lambda uid: 0  # type: ignore[method-assign]
+
+    response = client.post(
+        "/clients",
+        json={"regionId": REGION_ID, "clientName": "Phone"},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.add_row_calls == 0
+
+
+def test_create_client_inline_row_failure_does_not_fail_create(client, repository, wireguard, policy, caplog):
+    seed_region(repository)
+    policy.fail_add_row_count = 1
+
+    with caplog.at_level("WARNING", logger="src.routes"):
+        response = client.post(
+            "/clients",
+            json={"regionId": REGION_ID, "clientName": "Phone"},
+            headers=auth_header(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "active"
+    assert "policy_row_apply_failed" in caplog.text
+
+
+def test_create_client_poke_failure_never_affects_the_response(client, repository, wireguard, policy, monkeypatch, caplog):
+    seed_region(repository)
+    repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
+
+    def _raise(*args, **kwargs):
+        raise URLError("simulated unreachable region")
+
+    monkeypatch.setattr(routes, "urlopen", _raise)
+
+    with caplog.at_level("WARNING", logger="src.routes"):
+        response = client.post(
+            "/clients",
+            json={"regionId": REGION_ID, "clientName": "Phone"},
+            headers=auth_header(),
+        )
+
+    assert response.status_code == 200
+    assert "policy_poke_failed" in caplog.text
+
+
+def test_delete_client_reconciles_local_map_and_pokes_other_regions(client, repository, wireguard, policy, monkeypatch):
+    seed_region(repository)
+    repository.regions["us-other-1"] = replace(repository.regions[REGION_ID], region_id="us-other-1")
+    active = create_active_client(repository, wireguard)
+    poked = {"count": 0}
+
+    def _record(*args, **kwargs):
+        poked["count"] += 1
+        raise URLError("simulated unreachable region")
+
+    monkeypatch.setattr(routes, "urlopen", _record)
+
+    response = client.request(
+        "DELETE",
+        f"/clients/{active.client_id}",
+        json={"userId": "user-1", "regionId": REGION_ID},
+        headers=auth_header(),
+    )
+
+    assert response.status_code == 200
+    assert policy.apply_calls == 1  # local reconcile ran even though the poke failed
+    assert poked["count"] == 1

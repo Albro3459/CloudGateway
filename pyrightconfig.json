@@ -2,7 +2,8 @@
   "include": [
     "Backend/API/src",
     "Backend/API/tests",
-    "scripts"
+    "scripts",
+    "releases"
   ],
   "exclude": [
     "Backend/API/build",

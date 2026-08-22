@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowLeft, Home, Info, RefreshCw } from "lucide-react";
+import { Activity, ArrowLeft, Home, Info, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { ThemeToggle } from "./ThemeToggle";
@@ -12,6 +12,9 @@ type AppNavProps = {
     onRefresh?: () => void;
     refreshDisabled?: boolean;
     refreshing?: boolean;
+    // Admin-only link into the Server Health page; omit for non-admins so the
+    // affordance never renders rather than rendering disabled.
+    serverHealthPath?: string;
     children?: React.ReactNode;
 };
 
@@ -25,9 +28,22 @@ export const AppNav: React.FC<AppNavProps> = ({
     onRefresh,
     refreshDisabled = false,
     refreshing = false,
+    serverHealthPath,
     children,
 }) => {
     const navigate = useNavigate();
+
+    // On a direct entry or bookmark there is no in-app history entry, so
+    // navigate(-1) would leave CloudGateway entirely. React Router stamps its
+    // own index onto the history state, which is absent for the first entry.
+    const goBack = () => {
+        const historyIndex = (window.history.state as { idx?: number } | null)?.idx;
+        if (typeof historyIndex === "number" && historyIndex > 0) {
+            navigate(-1);
+            return;
+        }
+        navigate(homePath || "/");
+    };
 
     return (
         <nav className="fixed left-0 top-0 z-40 w-full border-b border-edge-faint bg-nav shadow-md">
@@ -43,7 +59,7 @@ export const AppNav: React.FC<AppNavProps> = ({
                     {back && (
                         <button
                             type="button"
-                            onClick={() => navigate(-1)}
+                            onClick={goBack}
                             className={navButtonClasses}
                             aria-label="Go back"
                             title="Go back"
@@ -72,6 +88,17 @@ export const AppNav: React.FC<AppNavProps> = ({
                             disabled={refreshDisabled}
                         >
                             <RefreshCw className={refreshing ? "animate-spin" : ""} size={19} aria-hidden="true" />
+                        </button>
+                    )}
+                    {serverHealthPath && (
+                        <button
+                            type="button"
+                            onClick={() => navigate(serverHealthPath)}
+                            className={navButtonClasses}
+                            aria-label="Server Health"
+                            title="Server Health"
+                        >
+                            <Activity size={19} aria-hidden="true" />
                         </button>
                     )}
                     <ThemeToggle />

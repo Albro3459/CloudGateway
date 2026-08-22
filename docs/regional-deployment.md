@@ -35,12 +35,17 @@ that var file's `oci_config_profile`. Deploy through `./scripts/terraform.sh`, w
 workspace and var file. A bare `terraform apply` would auto-load `terraform.tfvars` and
 share one state file, so a second region would plan to destroy the first.
 
-`./scripts/terraform.sh` also runs a regional preflight before every plan, apply, and
-destroy. It stops the entire deploy if Cloudflare has existing regional API/WireGuard records or OCI
-has a `CloudGatewayManaged=true` VM that is not already in the selected Terraform
-workspace state. It also stops on duplicates. The script reports the region and
-resource IDs; manually reconcile or import the canonical resources before
+`./scripts/terraform.sh` runs a regional preflight before every plan, apply, and destroy. It stops
+on unmanaged or duplicate regional resources; reconcile or import the canonical resources before
 rerunning.
+
+The tracked [subnet-registry.json](../Infrastructure/OCI/terraform/subnet-registry.json) is the
+authoritative inventory for regional WireGuard tunnel networks. Every local tfvars file must match
+its registry entry exactly.
+
+After deployment, verify registration, `/api/health`, `wg show wg0`, and the sync service. For mesh
+operations and host recovery, see [service-operations.md](service-operations.md) and
+[vm-loss-recovery.md](vm-loss-recovery.md).
 
 ```sh
 # One-time per region: copy the template and fill in real values (source ref, OCI OCIDs,
@@ -57,11 +62,11 @@ cp Infrastructure/OCI/terraform/terraform.tfvars.example Infrastructure/OCI/terr
 ```
 
 For `apply`, the script validates all requested var files and `source_ref` lines
-before side effects, saves every region's plan against the new deploy tag, creates
-and pushes one `Deploy v<x>` commit plus `deploy-v<x>` tag, writes that tag into
-every listed `source_ref`, then applies the saved plans one at a time. If one
-region fails, the script stops and already applied regions remain deployed; fix
-the failure and rerun.
+before side effects, saves every region's plan, performs the required preflight
+checks, and applies the saved plans one at a time. If one region fails, the script
+stops and already applied regions remain deployed; fix the failed region and rerun.
+After the regions are deployed and ready, run **Sync All Regions** from the admin
+dashboard.
 
 The matching OCI profile must exist in `~/.oci/config`, for example:
 
@@ -79,11 +84,13 @@ Record the instance's public IPv4. After cloud-init finishes, confirm on the hos
 * `wg0` is up: `sudo wg show wg0`
 * `/etc/wireguard/wg0.conf` has interface settings and no `[Peer]` blocks (peers are never written to it; Firebase is the single source of truth and `cloudgateway-sync-peers` rebuilds the live peer set at boot)
 * `cloudgateway-api.service` is active and listening only on `127.0.0.1`
-* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work)
+* `cloudgateway-sync-peers.service` succeeded (an empty region is a successful empty sync; it retries until Firebase credentials work). Bootstrap runs it twice: once early at boot (client peers only) and once more at the end, after `cloudgateway-register-region`, so this region can pick up mesh peers for already-known mesh-enabled regions immediately. The second pass is skipped when registration did not report a ready region (exit code `2`), because a still-disabled region doc has an empty desired peer set and that pass would remove every client peer.
 * Caddy is active on `80`/`443`
 * `/etc/cloudgateway/api.env` is mode `0600`, root-owned, and `CLOUDGATEWAY_REGION_ID` matches this region
 
 If bootstrap failed, check `/var/log/wireguard-bootstrap.log`. Bootstrap status lines include a UTC timestamp and elapsed seconds since the stub or fetched bootstrap started; Terraform apply wall time also includes OCI instance provisioning before cloud-init starts. Fetch failures (ref not pushed, no egress) and recovery steps are covered in [docs/github-deployment-setup.md](github-deployment-setup.md). API updates later use `sudo cloudgateway-install-api <ref>` - no redeploy needed.
+
+The account-scoped ACL release is host-level, not an API-only change: it depends on the `inet cloudgateway` nftables table that `PostUp` loads, and `PostUp` only runs when `wg0` transitions from down to up. `cloudgateway-install-api` refuses an ACL-aware ref when the live host has no loaded ACL table, so this release ships only by rebuilding every region through `./scripts/terraform.sh` from one deploy tag. During a sequential multi-region rebuild the fleet is only partially enforced; the ACL is not active until the last region finishes.
 
 ## 3. Cloudflare DNS (Terraform-managed) and one-time zone setup
 
@@ -105,10 +112,16 @@ WireGuard traffic does not go through Cloudflare. Only the API hostname is proxi
 
 One-time project setup: confirm any required Firestore indexes for the current schema exist (see [Backend/Firebase/indexes.md](../Backend/Firebase/indexes.md)).
 
-The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check leaves the region disabled and logs whether the local API was healthy (edge/firewall misconfig) or not (API failure). Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
+The host **self-registers** `Regions/{regionId}` at the end of bootstrap via `cloudgateway-register-region`: it discovers its public IPv4, reads the server WireGuard public key and endpoint config, upserts the region metadata doc, and sets `enabled: true` only once the full Cloudflare path validates (`https://<regionId>.<origin>/api/health` hairpins through the edge: proxy + AOP + firewall + Caddy). A failing edge check logs whether the local API was healthy (edge/firewall misconfig) or not (API failure) and exits `2`; it leaves the stored `enabled` value untouched, so a region that is already serving clients is never disabled by a transient edge problem and a region that has never come up stays disabled. Registration updates only the region document and must not overwrite or delete `Regions/{regionId}/Instances`. The region-doc field values come from the tfvars (`region_display_name`, `region_display_order`, `region_capacity_limit`) plus the host's own `/etc/cloudgateway/api.env`.
 
 If Firebase was unreachable at boot, re-run on the host: `sudo systemctl is-active cloudgateway-api` then
-`( set -a; source /etc/cloudgateway/api.env; set +a; /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region )`. The upsert is idempotent.
+run the registration command through systemd so its `EnvironmentFile` parser handles `api.env`:
+
+```sh
+sudo systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/opt/cloudgateway/api --property=EnvironmentFile=/etc/cloudgateway/api.env /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region
+```
+
+The upsert is idempotent.
 
 ## 5. Validate `/api/health` Through Cloudflare
 

@@ -9,7 +9,7 @@ from src.auth import AuthenticatedUser
 from src.enums import Role
 from src.settings import Settings
 
-from .fakes import FakeRepository, FakeTokenVerifier, FakeWireGuardManager
+from .fakes import FakePolicyManager, FakeRepository, FakeTokenVerifier, FakeWireGuardManager
 
 REGION_ID = "us-test-1"
 
@@ -61,7 +61,12 @@ def wireguard() -> FakeWireGuardManager:
 
 
 @pytest.fixture
-def client(settings, token_verifier, repository, wireguard) -> TestClient:
+def policy() -> FakePolicyManager:
+    return FakePolicyManager()
+
+
+@pytest.fixture
+def client(settings, token_verifier, repository, wireguard, policy) -> TestClient:
     repository.roles["user-1"] = Role.USER
     repository.roles["admin-1"] = Role.ADMIN
     app = create_app(
@@ -69,5 +74,6 @@ def client(settings, token_verifier, repository, wireguard) -> TestClient:
         token_verifier=token_verifier,
         repository=repository,
         wireguard=wireguard,
+        policy=policy,
     )
     return TestClient(app, raise_server_exceptions=False)

@@ -18,7 +18,40 @@ const Login: React.FC = () => {
     const [error, setError] = useState<React.ReactNode>();
     const [success, setSuccess] = useState<string | null>();
     const [signingIn, setSigningIn] = useState(false);
-    const manualSignInRef = useRef(false);
+    const mountedRef = useRef(false);
+    // Single source of truth for the manual-attempt/auth-observer coordination
+    // below. Invariants:
+    // - manualSignIn is true only while a handleLogin/Google/Apple attempt is
+    //   in flight, end to end (including the awaited navigateProvisionedUser).
+    // - manualAttempt is bumped once per attempt start; a captured attempt id
+    //   is "current" only while it still equals this value.
+    // - manualUserUid is null until the in-flight attempt's sign-in promise
+    //   resolves, then holds that attempt's uid for the rest of the attempt.
+    // - manualInvalidated is set once a competing auth-state change (the
+    //   observer once this attempt's uid is known, a mismatch against Firebase's
+    //   own current user at completion, or unmount) has invalidated the
+    //   in-flight attempt; once set it stays set for that attempt.
+    // - authGeneration is bumped on every onAuthStateChanged fire and once
+    //   more on effect cleanup/unmount, so a stale observer closure can detect
+    //   it has been superseded.
+    // - authUid mirrors the uid most recently reported by onAuthStateChanged
+    //   (null when signed out).
+    // - deferredObserver holds the most recent observer event that arrived
+    //   while an attempt was in flight, with the generation it was reported at.
+    //   Only the latest survives, so a sign-out (null user) cancels an earlier
+    //   deferred user rather than queueing behind it.
+    // This is one stable ref object whose fields are mutated in place; it is
+    // never replaced, so closures that captured the ref always observe the
+    // latest values through attemptStateRef.current.
+    const attemptStateRef = useRef({
+        manualSignIn: false,
+        manualAttempt: 0,
+        manualUserUid: null as string | null,
+        manualInvalidated: false,
+        authGeneration: 0,
+        authUid: null as string | null,
+        deferredObserver: null as { user: User | null; authGeneration: number } | null,
+    });
 
     const getAuthErrorCode = (err: unknown) => (
         err && typeof err === "object" && "code" in err
@@ -72,9 +105,14 @@ const Login: React.FC = () => {
         return "Unable to sign in with Google.";
     };
 
-    const navigateProvisionedUser = useCallback(async (user: User, showAccessError = false) => {
+    const navigateProvisionedUser = useCallback(async (
+        user: User,
+        showAccessError = false,
+        isCurrent: () => boolean = () => true,
+    ) => {
         try {
             const token = await user.getIdToken();
+            if (!isCurrent()) return;
 
             // Verify apex account access before any regional capacity call. The
             // capacity endpoints disable and revoke unprovisioned users, which
@@ -83,8 +121,11 @@ const Login: React.FC = () => {
             // still-valid token and returns the specific reason. Regions are
             // unused by the endpoint builder, so none are needed here.
             const access = await checkAccountAccess(token, null);
+            if (!isCurrent()) return;
             if (!access.success) {
+                if (!isCurrent()) return;
                 await signOut(auth);
+                if (!isCurrent()) return;
                 if (showAccessError) {
                     setError(
                         access.errorCode === "USER_NOT_PROVISIONED"
@@ -96,6 +137,7 @@ const Login: React.FC = () => {
             }
 
             await fetchOciRegions(token, true);
+            if (!isCurrent()) return;
             const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
 
             if (regionsError) {
@@ -103,33 +145,132 @@ const Login: React.FC = () => {
             }
 
             if (!ociRegions?.length) {
+                if (!isCurrent()) return;
                 await signOut(auth);
+                if (!isCurrent()) return;
                 if (showAccessError) {
                     setError(getNoRegionsMessage());
                 }
                 return;
             }
         } catch {
+            if (!isCurrent()) return;
             await signOut(auth);
+            if (!isCurrent()) return;
             if (showAccessError) {
                 setError("Unable to verify account access. Please try again.");
             }
             return;
         }
 
-        navigate("/home", { replace: true });
+        if (isCurrent()) navigate("/home", { replace: true });
     }, [navigate]);
+
+    // Observer-driven provisioning, shared by the live callback and by the
+    // deferred handoff below so both cancel on exactly the same conditions.
+    const provisionObservedUser = useCallback(async (user: User, authGeneration: number) => {
+        const isCurrentObserver = () => (
+            mountedRef.current
+            && attemptStateRef.current.authGeneration === authGeneration
+            && attemptStateRef.current.authUid === user.uid
+        );
+        if (!isCurrentObserver()) return;
+        setSigningIn(true);
+        try {
+            await navigateProvisionedUser(user, true, isCurrentObserver);
+        } finally {
+            if (isCurrentObserver()) setSigningIn(false);
+        }
+    }, [navigateProvisionedUser]);
+
+    // Starting an attempt supersedes every older one: a captured attempt id can
+    // never be current again once this runs.
+    const beginManualAttempt = () => {
+        const attempt = ++attemptStateRef.current.manualAttempt;
+        attemptStateRef.current.manualSignIn = true;
+        attemptStateRef.current.manualUserUid = null;
+        attemptStateRef.current.manualInvalidated = false;
+        return attempt;
+    };
+
+    // Firebase's own current user is the completion authority, never the
+    // observer's last snapshot. An unrelated cross-tab auth event can move
+    // authUid while this attempt's promise is still pending and then move back;
+    // rejecting on that snapshot stranded a sign-in whose user is now current,
+    // with no later observer callback left to navigate it.
+    const isCurrentManualAttempt = (attempt: number, uid: string) => (
+        mountedRef.current
+        && attemptStateRef.current.manualAttempt === attempt
+        && !attemptStateRef.current.manualInvalidated
+        && attemptStateRef.current.manualUserUid === uid
+        && auth.currentUser?.uid === uid
+    );
+
+    // The single completion path for password, Google, and Apple sign-in.
+    const completeManualAttempt = async (attempt: number, user: User) => {
+        // A superseded attempt owns none of the shared state below. Letting one
+        // write manualUserUid or set the sticky manualInvalidated would strand
+        // the newer attempt the same way a stale observer snapshot used to.
+        if (attemptStateRef.current.manualAttempt !== attempt) return;
+        attemptStateRef.current.manualUserUid = user.uid;
+        // A different current user at completion time is a real supersession,
+        // so the invalidation sticks even if Firebase later swings back.
+        if (auth.currentUser && auth.currentUser.uid !== user.uid) {
+            attemptStateRef.current.manualInvalidated = true;
+        }
+        await navigateProvisionedUser(user, true, () => isCurrentManualAttempt(attempt, user.uid));
+    };
+
+    // An observer event that arrives mid-attempt is deferred rather than acted
+    // on: the attempt owns the session, and provisioning both would race. This
+    // reports that event only while it is still the authoritative session, which
+    // is what decides both whether to resume it and whether the retiring
+    // attempt's own failure is still worth showing. Null means nothing takes
+    // over, so the attempt's outcome stands.
+    const authoritativeDeferredObserver = (attempt: number): { user: User; authGeneration: number } | null => {
+        const state = attemptStateRef.current;
+        const deferred = state.deferredObserver;
+        if (!deferred?.user || !mountedRef.current || state.manualAttempt !== attempt) return null;
+        // A newer observer event replaced this one, so it is a stale snapshot.
+        if (state.authGeneration !== deferred.authGeneration) return null;
+        // The attempt already provisioned this exact user; taking over would run
+        // the access checks and navigate a second time.
+        if (!state.manualInvalidated && state.manualUserUid === deferred.user.uid) return null;
+        if (auth.currentUser?.uid !== deferred.user.uid) return null;
+        return { user: deferred.user, authGeneration: deferred.authGeneration };
+    };
+
+    // If the attempt retires without having handled the deferred user - it
+    // failed, or it was refused because Firebase now reports that user as
+    // current - nobody else is left to provision the session that actually
+    // exists, and the page sits signed in on the login form.
+    const resumeDeferredObserver = (attempt: number) => {
+        const handoff = authoritativeDeferredObserver(attempt);
+        attemptStateRef.current.deferredObserver = null;
+        if (!handoff || attemptStateRef.current.manualSignIn) return;
+        void provisionObservedUser(handoff.user, handoff.authGeneration);
+    };
+
+    // The shared tail for password, Google, and Apple: retire the attempt and
+    // hand back any observer event it swallowed. A superseded attempt owns
+    // neither, so it does nothing here.
+    const finishManualAttempt = (attempt: number) => {
+        if (attemptStateRef.current.manualAttempt !== attempt) return;
+        attemptStateRef.current.manualSignIn = false;
+        if (mountedRef.current) setSigningIn(false);
+        resumeDeferredObserver(attempt);
+    };
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         try {
             if (!email.includes('@') || !email.includes('.')) {
-                setError("Not a valid email.");
+                if (mountedRef.current && attemptStateRef.current.manualAttempt === attempt) setError("Not a valid email.");
                 return;
             }
             if (!password.length) {
-                setError("Password is required.");
+                if (mountedRef.current && attemptStateRef.current.manualAttempt === attempt) setError("Password is required.");
                 return;
             }
 
@@ -137,52 +278,58 @@ const Login: React.FC = () => {
             setSuccess(null);
             setSigningIn(true);
             const result = await signInWithEmailAndPassword(auth, email, password);
-            await navigateProvisionedUser(result.user, true);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
-            setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
+            // A deferred account that is still Firebase's current user is about
+            // to provision and navigate, so this retired attempt's failure is
+            // not the outcome the operator ends up on.
+            if (mountedRef.current && attemptStateRef.current.manualAttempt === attempt && !authoritativeDeferredObserver(attempt)) {
+                setError(getAuthErrorCode(err) === "auth/user-disabled" ? getDisabledAccountMessage() : "Invalid email or password.");
+            }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            finishManualAttempt(attempt);
         }
     };
 
     const handleGoogleLogin = async () => {
         setError(null);
         setSuccess(null);
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         setSigningIn(true);
 
         try {
             const result = await signInWithGoogle();
-            await navigateProvisionedUser(result.user, true);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
+            if (attemptStateRef.current.manualAttempt !== attempt || !mountedRef.current) return;
+            if (authoritativeDeferredObserver(attempt)) return;
             const message = getGoogleSignInError(err);
             if (message) {
                 setError(message);
             }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            finishManualAttempt(attempt);
         }
     };
 
     const handleAppleLogin = async () => {
         setError(null);
         setSuccess(null);
-        manualSignInRef.current = true;
+        const attempt = beginManualAttempt();
         setSigningIn(true);
 
         try {
             const result = await signInWithApple();
-            await navigateProvisionedUser(result.user, true);
+            await completeManualAttempt(attempt, result.user);
         } catch (err) {
+            if (attemptStateRef.current.manualAttempt !== attempt || !mountedRef.current) return;
+            if (authoritativeDeferredObserver(attempt)) return;
             const message = getAppleSignInError(err);
             if (message) {
                 setError(message);
             }
         } finally {
-            manualSignInRef.current = false;
-            setSigningIn(false);
+            finishManualAttempt(attempt);
         }
     };
 
@@ -210,25 +357,37 @@ const Login: React.FC = () => {
     };
 
     useEffect(() => {
-        let cancelled = false;
+        mountedRef.current = true;
         const unsubscribe = onAuthStateChanged(auth, (user) => {
-            const fetchUserData = async () => {
-                if (user && !cancelled && !manualSignInRef.current) {
-                    setSigningIn(true);
-                    try {
-                        await navigateProvisionedUser(user, true);
-                    } finally {
-                        setSigningIn(false);
-                    }
-                }
-            };
-            fetchUserData();
+            const uid = user?.uid || null;
+            const authGeneration = ++attemptStateRef.current.authGeneration;
+            attemptStateRef.current.authUid = uid;
+            // Only checkable once the manual attempt knows its own uid. Before the
+            // sign-in promise resolves, an observer fire is indistinguishable from
+            // this attempt's own completion, so a competing switch in that window is
+            // caught instead when the promise resolves (see handleLogin).
+            if (attemptStateRef.current.manualSignIn && attemptStateRef.current.manualUserUid && uid !== attemptStateRef.current.manualUserUid) {
+                attemptStateRef.current.manualInvalidated = true;
+            }
+            if (attemptStateRef.current.manualSignIn) {
+                // Held, not dropped: the in-flight attempt owns the session, so
+                // this is handed back when the attempt retires without having
+                // provisioned this user (see resumeDeferredObserver).
+                attemptStateRef.current.deferredObserver = { user, authGeneration };
+                return;
+            }
+            if (user) void provisionObservedUser(user, authGeneration);
         });
+        const stateAtCleanup = attemptStateRef;
         return () => {
-            cancelled = true;
+            mountedRef.current = false;
+            ++stateAtCleanup.current.authGeneration;
+            // An attempt still awaiting its provider promise is superseded by
+            // unmount, not just hidden behind mountedRef.
+            stateAtCleanup.current.manualInvalidated = true;
             unsubscribe();
         };
-    }, [navigateProvisionedUser]);
+    }, [provisionObservedUser]);
 
     return (
         <div className="flex min-h-screen flex-col items-center justify-center bg-page px-4" aria-busy={signingIn}>

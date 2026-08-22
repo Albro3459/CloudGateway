@@ -11,6 +11,12 @@ import Foundation
 public enum CloudGatewayAPISession {
     public static let requestTimeout: TimeInterval = 10
 
+    /// A region sync pass has no server-side duration bound (only per-subprocess and
+    /// per-DNS-resolve limits inside it), so it routinely outlives `requestTimeout`. Admin sync
+    /// requests override `URLRequest.timeoutInterval` with this value instead of raising the
+    /// session default, which must stay fast for the full-tunnel dead-server case above.
+    public static let adminSyncRequestTimeout: TimeInterval = 45
+
     public static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = requestTimeout

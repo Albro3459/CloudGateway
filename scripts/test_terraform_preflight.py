@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _SPEC = importlib.util.spec_from_file_location(
     "terraform_preflight", Path(__file__).with_name("terraform-preflight.py")
@@ -147,6 +151,9 @@ class ReadTfvarsTests(unittest.TestCase):
                 "SECRETLINE\n"
                 "EOF\n"
                 'api_hostname = "us-x-1.example.com"\n'
+                "ssh_authorized_keys = [\n"
+                '  "ssh-rsa AAAA... user@host",\n'
+                "]\n"
             )
         )
         self.assertEqual(values["region"], "us-x-1")
@@ -154,6 +161,871 @@ class ReadTfvarsTests(unittest.TestCase):
         self.assertEqual(values["api_hostname"], "us-x-1.example.com")
         # Heredoc body is not captured as a value.
         self.assertEqual(values["wg_server_private_key"], "")
+
+    def test_duplicate_assignment_is_rejected(self):
+        with self.assertRaisesRegex(pf.TfvarsParseError, "duplicate assignment for 'region'"):
+            pf.read_tfvars(self._write('region = "us-x-1"\nregion = "us-y-1"\n'))
+
+    def test_unsupported_assignment_is_rejected(self):
+        with self.assertRaisesRegex(pf.TfvarsParseError, "unsupported or malformed"):
+            pf.read_tfvars(self._write("region = [\"us-x-1\"]\n"))
+
+    def test_unterminated_heredoc_is_rejected(self):
+        with self.assertRaisesRegex(pf.TfvarsParseError, "unterminated heredoc"):
+            pf.read_tfvars(self._write("secret = <<EOF\nprivate\n"))
+
+    def test_list_with_comments_and_blank_lines_is_accepted(self):
+        # HCL allows comments and blank lines inside a list, and `terraform fmt` preserves
+        # them; the parser only reads region_id and the six wg_* scalars, never a list, so
+        # list bodies are skipped unvalidated rather than rejected.
+        values = pf.read_tfvars(
+            self._write(
+                "ssh_authorized_keys = [\n"
+                "  # laptop\n"
+                '  "ssh-rsa AAAA... user@host",\n'
+                "\n"
+                "  # phone, added later\n"
+                '  "ssh-ed25519 AAAA... user@phone",\n'
+                "]\n"
+                'region_id = "us-x-1"\n'
+            )
+        )
+        self.assertEqual(values["ssh_authorized_keys"], "")
+        self.assertEqual(values["region_id"], "us-x-1")
+
+    def test_list_closing_bracket_with_trailing_comment_is_accepted(self):
+        values = pf.read_tfvars(
+            self._write('keys = [\n  "a",\n] # end of list\nregion_id = "us-x-1"\n')
+        )
+        self.assertEqual(values["region_id"], "us-x-1")
+
+    def test_unterminated_list_is_rejected(self):
+        with self.assertRaisesRegex(pf.TfvarsParseError, "unterminated list"):
+            pf.read_tfvars(self._write('keys = [\n  "a",\n'))
+
+
+def region_values(
+    network_v4="10.0.0.0/24",
+    address_v4="10.0.0.1/24",
+    dns_v4="10.0.0.1",
+    network_v6="fd42:42:42::/64",
+    address_v6="fd42:42:42::1/64",
+    dns_v6="fd42:42:42::1",
+):
+    return {
+        "wg_network_v4": network_v4,
+        "wg_address_v4": address_v4,
+        "wg_dns_address_v4": dns_v4,
+        "wg_network_v6": network_v6,
+        "wg_address_v6": address_v6,
+        "wg_dns_address_v6": dns_v6,
+    }
+
+
+class EvaluateSubnetPlanTests(unittest.TestCase):
+    def test_single_region_is_clean(self):
+        self.assertEqual(pf.evaluate_subnet_plan({"us-sanjose-1": region_values()}), [])
+
+    def test_multiple_non_overlapping_regions_are_clean(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+            "us-next-1": region_values(
+                network_v4="10.0.2.0/24",
+                address_v4="10.0.2.1/24",
+                dns_v4="10.0.2.1",
+                network_v6="fd42:42:42:2::/64",
+                address_v6="fd42:42:42:2::1/64",
+                dns_v6="fd42:42:42:2::1",
+            ),
+        }
+        self.assertEqual(pf.evaluate_subnet_plan(regions), [])
+
+    def test_overlapping_v4_networks_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.0.0/24",
+                address_v4="10.0.0.1/24",
+                dns_v4="10.0.0.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_network_v4", errors[0])
+        self.assertIn("overlap", errors[0])
+
+    def test_overlapping_v6_networks_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+            ),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("wg_network_v6", errors[0])
+        self.assertIn("overlap", errors[0])
+
+    def test_identical_subnets_are_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(),
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any("wg_network_v4" in e for e in errors))
+        self.assertTrue(any("wg_network_v6" in e for e in errors))
+
+    def test_address_outside_own_network_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(address_v4="10.0.5.1/24")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertTrue(any("wg_address_v4" in error for error in errors))
+        self.assertTrue(any("not inside its own network" in error for error in errors))
+
+    def test_dns_address_outside_own_network_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(dns_v6="fd42:42:42:9::1")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertTrue(any("wg_dns_address_v6" in error for error in errors))
+        self.assertTrue(any("not inside its own network" in error for error in errors))
+
+    def test_network_outside_v4_aggregate_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(
+                network_v4="10.1.0.0/24", address_v4="10.1.0.1/24", dns_v4="10.1.0.1"
+            )
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("outside the shared aggregate", errors[0])
+        self.assertIn("10.0.0.0/16", errors[0])
+
+    def test_network_outside_v6_aggregate_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(
+                network_v6="fd43:42:42::/64", address_v6="fd43:42:42::1/64", dns_v6="fd43:42:42::1"
+            )
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("outside the shared aggregate", errors[0])
+        self.assertIn("fd42:42:42::/48", errors[0])
+
+    def test_host_bits_set_is_flagged(self):
+        regions = {"us-sanjose-1": region_values(network_v4="10.0.0.5/24")}
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no host bits set", errors[0])
+
+    def test_wrong_family_is_flagged(self):
+        regions = {
+            "us-sanjose-1": region_values(network_v4="fd42:42:42::/64")
+        }
+        errors = pf.evaluate_subnet_plan(regions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("must be an IPv4 network", errors[0])
+
+    def test_incomplete_region_is_hard_failure(self):
+        values = region_values()
+        del values["wg_network_v6"]
+        errors = pf.evaluate_subnet_plan({"us-chicago-1": values})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("missing", errors[0])
+        self.assertIn("wg_network_v6", errors[0])
+
+
+class DiscoverSiblingTfvarsTests(unittest.TestCase):
+    def _write(self, directory: Path, name: str, body: str) -> Path:
+        path = directory / name
+        path.write_text(body)
+        return path
+
+    def test_skips_malformed_and_region_id_less_siblings_and_flags_broken_sibling(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            self._write(
+                directory,
+                "us-sanjose-1.terraform.tfvars",
+                'region_id = "us-sanjose-1"\n'
+                'wg_network_v4 = "10.0.0.0/24"\n'
+                'wg_address_v4 = "10.0.0.1/24"\n'
+                'wg_dns_address_v4 = "10.0.0.1"\n'
+                'wg_network_v6 = "fd42:42:42::/64"\n'
+                'wg_address_v6 = "fd42:42:42::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42::1"\n',
+            )
+            self._write(directory, "no-region-id.terraform.tfvars", 'region = "us-x-1"\n')
+            self._write(
+                directory,
+                "us-chicago-1.terraform.tfvars",
+                'region_id = "us-chicago-1"\n',
+            )
+
+            varfile = directory / "us-sanjose-1.terraform.tfvars"
+            regions, notes = pf.discover_sibling_tfvars(varfile)
+
+            self.assertIn("us-sanjose-1", regions)
+            self.assertIn("us-chicago-1", regions)
+            self.assertEqual(regions["us-chicago-1"]["wg_network_v4"], "")
+            self.assertEqual(len(notes), 1)
+            self.assertIn("no-region-id.terraform.tfvars", notes[0])
+
+            errors = pf.evaluate_subnet_plan(regions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("us-chicago-1", errors[0])
+            self.assertIn("missing", errors[0])
+
+
+def valid_registry_payload() -> dict:
+    return {
+        "schema_version": 1,
+        "aggregate_v4": "10.0.0.0/16",
+        "aggregate_v6": "fd42:42:42::/48",
+        "regions": [
+            {
+                "region_id": "us-sanjose-1",
+                "wg_network_v4": "10.0.0.0/24",
+                "wg_network_v6": "fd42:42:42::/64",
+                "status": "active",
+            },
+            {
+                "region_id": "us-chicago-1",
+                "wg_network_v4": "10.0.1.0/24",
+                "wg_network_v6": "fd42:42:42:1::/64",
+                "status": "active",
+            },
+        ],
+    }
+
+
+def decoded_registry(payload: dict | None = None):
+    errors, registry = pf.validate_subnet_registry(payload or valid_registry_payload(), Path("subnet-registry.json"))
+    if errors or registry is None:
+        raise AssertionError(errors)
+    return registry
+
+
+class SubnetRegistryTests(unittest.TestCase):
+    def test_checked_in_registry_has_active_san_jose_and_chicago_allocations(self):
+        errors, registry = pf.load_subnet_registry()
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(registry)
+        assert registry is not None
+        self.assertEqual(
+            {
+                region.region_id: (str(region.network_v4), str(region.network_v6), region.status)
+                for region in registry.regions
+            },
+            {
+                "us-sanjose-1": ("10.0.0.0/24", "fd42:42:42::/64", "active"),
+                "us-chicago-1": ("10.0.1.0/24", "fd42:42:42:1::/64", "active"),
+            },
+        )
+
+    def test_valid_registry_is_canonical(self):
+        errors, registry = pf.validate_subnet_registry(valid_registry_payload(), Path("registry.json"))
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(registry)
+        assert registry is not None
+        self.assertEqual(len(registry.regions), 2)
+
+    def test_registry_duplicate_id_is_flagged(self):
+        payload = valid_registry_payload()
+        payload["regions"].append(dict(payload["regions"][0]))
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("duplicate registry region_id" in error for error in errors))
+
+    def test_registry_overlap_includes_reserved_allocations(self):
+        payload = valid_registry_payload()
+        payload["regions"][1]["status"] = "reserved"
+        payload["regions"][1]["wg_network_v4"] = "10.0.0.0/24"
+        payload["regions"][1]["wg_network_v6"] = "fd42:42:42::/64"
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("overlap" in error for error in errors))
+
+    def test_registry_invalid_status_is_flagged(self):
+        payload = valid_registry_payload()
+        payload["regions"][0]["status"] = "retired"
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("status must be exactly" in error for error in errors))
+
+    def test_registry_malformed_shape_and_version_are_flagged(self):
+        errors, registry = pf.validate_subnet_registry(
+            {"schema_version": 2, "aggregate_v4": "10.0.0.0/16", "aggregate_v6": "fd42:42:42::/48", "regions": {}},
+            Path("registry.json"),
+        )
+        self.assertIsNone(registry)
+        self.assertTrue(any("schema_version" in error for error in errors))
+        self.assertTrue(any("regions must be a JSON list" in error for error in errors))
+
+    def test_registry_rejects_boolean_schema_version_and_wrong_aggregates(self):
+        payload = valid_registry_payload()
+        payload["schema_version"] = True
+        payload["aggregate_v4"] = "10.0.0.0/15"
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("schema_version" in error for error in errors))
+        self.assertTrue(any("aggregate_v4 must be exactly" in error for error in errors))
+
+    def test_registry_wrong_family_and_outside_aggregate_are_flagged(self):
+        payload = valid_registry_payload()
+        payload["regions"][0]["wg_network_v4"] = "fd42:42:42:2::/64"
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("must be IPv4" in error for error in errors))
+
+        payload = valid_registry_payload()
+        payload["regions"][0]["wg_network_v4"] = "10.1.0.0/24"
+        errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertIsNone(registry)
+        self.assertTrue(any("outside aggregate_v4" in error for error in errors))
+
+
+class RegistryConsistencyTests(unittest.TestCase):
+    def test_selected_entry_missing_is_flagged(self):
+        registry = decoded_registry()
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": region_values()}, registry, "us-missing-1")
+        self.assertTrue(any("no registry entry" in error for error in errors))
+
+    def test_reserved_selected_region_is_flagged(self):
+        payload = valid_registry_payload()
+        payload["regions"][0]["status"] = "reserved"
+        registry_errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertEqual(registry_errors, [])
+        assert registry is not None
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": region_values()}, registry, "us-sanjose-1")
+        self.assertTrue(any("reserved" in error for error in errors))
+
+    def test_reserved_selected_region_is_allowed_when_active_not_required(self):
+        # destroy must accept a reserved allocation: README.md tells operators to leave a
+        # decommissioned region reserved, and it still needs to be torn down.
+        payload = valid_registry_payload()
+        payload["regions"][0]["status"] = "reserved"
+        registry_errors, registry = pf.validate_subnet_registry(payload, Path("registry.json"))
+        self.assertEqual(registry_errors, [])
+        assert registry is not None
+        errors = pf.evaluate_subnet_plan(
+            {"us-sanjose-1": region_values()}, registry, "us-sanjose-1", require_active=False
+        )
+        self.assertEqual(errors, [])
+
+    def test_active_selected_region_is_unaffected_by_require_active_false(self):
+        registry = decoded_registry()
+        errors = pf.evaluate_subnet_plan(
+            {"us-sanjose-1": region_values()}, registry, "us-sanjose-1", require_active=False
+        )
+        self.assertEqual(errors, [])
+
+    def test_selected_tfvars_network_mismatch_is_flagged(self):
+        registry = decoded_registry()
+        values = region_values(network_v4="10.0.2.0/24", address_v4="10.0.2.1/24", dns_v4="10.0.2.1")
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values}, registry, "us-sanjose-1")
+        self.assertTrue(any("must exactly match registry allocation" in error for error in errors))
+
+    def test_noncanonical_selected_network_text_is_flagged(self):
+        registry = decoded_registry()
+        values = region_values(
+            network_v4="10.0.0.0/024",
+            network_v6="FD42:42:42::/64",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values}, registry, "us-sanjose-1")
+        self.assertTrue(any("wg_network_v4" in error and "not canonical" in error for error in errors))
+        self.assertTrue(any("wg_network_v6" in error and "not canonical" in error for error in errors))
+
+    def test_noncanonical_sibling_network_text_is_flagged(self):
+        registry = decoded_registry()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            selected = directory / "us-sanjose-1.terraform.tfvars"
+            sibling = directory / "us-chicago-1.terraform.tfvars"
+            selected.write_text(
+                'region_id = "us-sanjose-1"\n'
+                'wg_network_v4 = "10.0.0.0/24"\n'
+                'wg_address_v4 = "10.0.0.1/24"\n'
+                'wg_dns_address_v4 = "10.0.0.1"\n'
+                'wg_network_v6 = "fd42:42:42::/64"\n'
+                'wg_address_v6 = "fd42:42:42::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42::1"\n'
+            )
+            sibling.write_text(
+                'region_id = "us-chicago-1"\n'
+                'wg_network_v4 = "10.0.1.0/024"\n'
+                'wg_address_v4 = "10.0.1.1/24"\n'
+                'wg_dns_address_v4 = "10.0.1.1"\n'
+                'wg_network_v6 = "FD42:42:42:1::/64"\n'
+                'wg_address_v6 = "fd42:42:42:1::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42:1::1"\n'
+            )
+            regions, notes = pf.discover_sibling_tfvars(selected)
+            self.assertEqual(notes, [])
+            errors = pf.evaluate_subnet_plan(regions, registry, "us-sanjose-1")
+        self.assertTrue(any("us-chicago-1" in error and "wg_network_v4" in error for error in errors))
+        self.assertTrue(any("us-chicago-1" in error and "wg_network_v6" in error for error in errors))
+
+    def test_unknown_local_region_id_is_flagged(self):
+        registry = decoded_registry()
+        errors = pf.evaluate_subnet_plan({"us-local-only": region_values()}, registry, "us-sanjose-1")
+        self.assertTrue(any("not present in the authoritative subnet registry" in error for error in errors))
+
+    def test_missing_local_file_for_other_registry_region_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            varfile = directory / "us-sanjose-1.terraform.tfvars"
+            varfile.write_text(
+                'region_id = "us-sanjose-1"\n'
+                'wg_network_v4 = "10.0.0.0/24"\n'
+                'wg_address_v4 = "10.0.0.1/24"\n'
+                'wg_dns_address_v4 = "10.0.0.1"\n'
+                'wg_network_v6 = "fd42:42:42::/64"\n'
+                'wg_address_v6 = "fd42:42:42::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42::1"\n'
+            )
+            regions, notes = pf.discover_sibling_tfvars(varfile)
+            self.assertEqual(notes, [])
+            self.assertEqual(pf.evaluate_subnet_plan(regions, decoded_registry(), "us-sanjose-1"), [])
+
+
+class SplitBlockingSiblingsTests(unittest.TestCase):
+    """A sibling tfvars only hard-fails a deploy/destroy when its filename is the
+    canonical <region-id>.terraform.tfvars for a region that is actually registered;
+    an unrelated draft or renamed backup is downgraded to a note instead."""
+
+    def test_canonical_named_registered_sibling_is_blocking(self):
+        registry = decoded_registry()
+        siblings = {
+            "us-chicago-1": pf.RegionValues(region_values(), Path("us-chicago-1.terraform.tfvars")),
+        }
+        blocking, notes = pf.split_blocking_siblings(siblings, registry)
+        self.assertEqual(set(blocking), {"us-chicago-1"})
+        self.assertEqual(notes, [])
+
+    def test_renamed_backup_with_mismatched_filename_is_a_note_not_blocking(self):
+        # region_id inside the file is us-chicago-1, but it was copied/renamed to a
+        # different filename, e.g. as an operator backup.
+        registry = decoded_registry()
+        siblings = {
+            "us-chicago-1": pf.RegionValues(region_values(), Path("us-chicago-2.terraform.tfvars")),
+        }
+        blocking, notes = pf.split_blocking_siblings(siblings, registry)
+        self.assertEqual(blocking, {})
+        self.assertEqual(len(notes), 1)
+        self.assertIn("us-chicago-2.terraform.tfvars", notes[0])
+        self.assertFalse(notes[0].startswith("error:"))
+
+    def test_unregistered_draft_region_is_a_note_not_blocking(self):
+        # us-ashburn-1 is not in the registry yet: a half-written draft tfvars for it
+        # must not block other regions' deploys.
+        registry = decoded_registry()
+        siblings = {
+            "us-ashburn-1": pf.RegionValues({}, Path("us-ashburn-1.terraform.tfvars")),
+        }
+        blocking, notes = pf.split_blocking_siblings(siblings, registry)
+        self.assertEqual(blocking, {})
+        self.assertEqual(len(notes), 1)
+        self.assertIn("us-ashburn-1.terraform.tfvars", notes[0])
+
+    def test_broken_registry_downgrades_every_sibling_to_a_note(self):
+        siblings = {
+            "us-chicago-1": pf.RegionValues(region_values(), Path("us-chicago-1.terraform.tfvars")),
+        }
+        blocking, notes = pf.split_blocking_siblings(siblings, None)
+        self.assertEqual(blocking, {})
+        self.assertEqual(len(notes), 1)
+
+
+class CheckRegionSiblingGatingTests(unittest.TestCase):
+    """check_region-level integration: an unrelated sibling tfvars must not hard-fail an
+    otherwise-valid region's deploy or destroy."""
+
+    def _write_sanjose_tfvars(self, directory: Path) -> Path:
+        varfile = directory / "us-sanjose-1.terraform.tfvars"
+        varfile.write_text(
+            'region_id = "us-sanjose-1"\n'
+            'region = "us-sanjose-1"\n'
+            'cloudflare_zone_id = "zone123"\n'
+            'cloudflare_api_token = "token"\n'
+            'compartment_id = "compartment"\n'
+            'api_hostname = "us-sanjose-1.example.com"\n'
+            'wg_endpoint_hostname = "wg.us-sanjose-1.example.com"\n'
+            'wg_network_v4 = "10.0.0.0/24"\n'
+            'wg_address_v4 = "10.0.0.1/24"\n'
+            'wg_dns_address_v4 = "10.0.0.1"\n'
+            'wg_network_v6 = "fd42:42:42::/64"\n'
+            'wg_address_v6 = "fd42:42:42::1/64"\n'
+            'wg_dns_address_v6 = "fd42:42:42::1"\n'
+        )
+        return varfile
+
+    def test_unrelated_renamed_backup_sibling_does_not_block_deploy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            varfile = self._write_sanjose_tfvars(directory)
+            # A backup of Chicago's tfvars renamed so its filename no longer matches its
+            # own region_id: the exact "unrelated local tfvars" scenario from the finding.
+            (directory / "us-chicago-2.terraform.tfvars").write_text(
+                'region_id = "us-chicago-1"\n'
+                'wg_network_v4 = "10.0.1.0/24"\n'
+                'wg_address_v4 = "10.0.1.1/24"\n'
+                'wg_dns_address_v4 = "10.0.1.1"\n'
+                'wg_network_v6 = "fd42:42:42:1::/64"\n'
+                'wg_address_v6 = "fd42:42:42:1::1/64"\n'
+                'wg_dns_address_v6 = "fd42:42:42:1::1"\n'
+            )
+            registry_path = directory / "subnet-registry.json"
+            registry_path.write_text(
+                '{"schema_version": 1, "aggregate_v4": "10.0.0.0/16", "aggregate_v6": "fd42:42:42::/48", '
+                '"regions": [{"region_id": "us-sanjose-1", "wg_network_v4": "10.0.0.0/24", '
+                '"wg_network_v6": "fd42:42:42::/64", "status": "active"}]}'
+            )
+
+            with (
+                mock.patch.object(pf, "cloudflare_records", return_value=[]),
+                mock.patch.object(pf, "oci_instances", return_value=[]),
+                mock.patch.object(pf, "state_ids", return_value={}),
+            ):
+                result = pf.check_region("us-sanjose-1", varfile, None, registry_path)
+        self.assertEqual(result, 0)
+
+
+class InterfaceAndDnsTests(unittest.TestCase):
+    def test_documented_san_jose_and_chicago_first_hosts_are_clean(self):
+        regions = {
+            "us-sanjose-1": region_values(),
+            "us-chicago-1": region_values(
+                network_v4="10.0.1.0/24",
+                address_v4="10.0.1.1/24",
+                dns_v4="10.0.1.1",
+                network_v6="fd42:42:42:1::/64",
+                address_v6="fd42:42:42:1::1/64",
+                dns_v6="fd42:42:42:1::1",
+            ),
+        }
+        self.assertEqual(pf.evaluate_subnet_plan(regions), [])
+
+    def test_matching_non_first_hosts_are_flagged(self):
+        values = region_values(address_v4="10.0.0.2/24", dns_v4="10.0.0.2", address_v6="fd42:42:42::2/64", dns_v6="fd42:42:42::2")
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("first host address" in error and "wg_address_v4" in error for error in errors))
+        self.assertTrue(any("first host address" in error and "wg_address_v6" in error for error in errors))
+
+    def test_v4_and_v6_interface_prefix_mismatch_are_flagged(self):
+        values = region_values(address_v4="10.0.0.1/32", address_v6="fd42:42:42::1/128")
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("wg_address_v4 prefix" in error for error in errors))
+        self.assertTrue(any("wg_address_v6 prefix" in error for error in errors))
+
+    def test_terminal_ipv4_network_is_reported_without_overflow(self):
+        values = region_values(
+            network_v4="255.255.255.255/32",
+            address_v4="255.255.255.255/32",
+            dns_v4="255.255.255.255",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("wg_network_v4 must use /24" in error for error in errors))
+        self.assertTrue(any("has no first host address" in error for error in errors))
+
+    def test_terminal_ipv6_network_is_reported_without_overflow(self):
+        values = region_values(
+            network_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128",
+            address_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128",
+            dns_v6="ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        )
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("wg_network_v6 must use /64" in error for error in errors))
+        self.assertTrue(any("has no first host address" in error for error in errors))
+
+    def test_dns_mismatch_is_flagged(self):
+        values = region_values(dns_v4="10.0.0.2", dns_v6="fd42:42:42::2")
+        errors = pf.evaluate_subnet_plan({"us-sanjose-1": values})
+        self.assertTrue(any("must equal" in error and "wg_dns_address_v4" in error for error in errors))
+        self.assertTrue(any("must equal" in error and "wg_dns_address_v6" in error for error in errors))
+
+
+class TerraformDnsPreconditionTests(unittest.TestCase):
+    _CONFIG = Path(__file__).resolve().parents[1] / "Infrastructure" / "OCI" / "terraform" / "cloudgateway.tf"
+
+    def _expression(self, local_name: str) -> str:
+        text = self._CONFIG.read_text()
+        match = re.search(
+            rf"(?ms)^ *{re.escape(local_name)} * = *try\(.*?^ *\)",
+            text,
+        )
+        self.assertIsNotNone(match, f"missing {local_name} expression")
+        assert match is not None
+        return match.group(0).split("=", 1)[1].strip()
+
+    def _probe_module(self) -> str:
+        expression_names = (
+            "wg_address_v4_is_first_host",
+            "wg_address_v6_is_first_host",
+            "wg_dns_v4_matches_interface",
+            "wg_dns_v6_matches_interface",
+        )
+        expressions = {name: self._expression(name) for name in expression_names}
+        return f'''\
+variable "wg_network_v4" {{
+  type = string
+}}
+
+variable "wg_address_v4" {{
+  type = string
+}}
+
+variable "wg_dns_address_v4" {{
+  type = string
+}}
+
+variable "wg_network_v6" {{
+  type = string
+}}
+
+variable "wg_address_v6" {{
+  type = string
+}}
+
+variable "wg_dns_address_v6" {{
+  type = string
+}}
+
+locals {{
+  actual_v4 = {expressions["wg_address_v4_is_first_host"]}
+  actual_v6 = {expressions["wg_address_v6_is_first_host"]}
+  dns_v4 = {expressions["wg_dns_v4_matches_interface"]}
+  dns_v6 = {expressions["wg_dns_v6_matches_interface"]}
+}}
+'''
+
+    def _evaluate(self, values: dict[str, str], local_name: str) -> bool:
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.fail("Terraform is required to evaluate the DNS precondition")
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "main.tf").write_text(self._probe_module())
+            command = [terraform, f"-chdir={directory}", "console"]
+            command.extend(f"-var={name}={value}" for name, value in values.items())
+            result = subprocess.run(
+                command,
+                input=f"local.{local_name}\n",
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.strip() == "true"
+
+    def test_documented_san_jose_and_chicago_values_are_accepted_by_hcl_expression(self):
+        documented = (
+            ("10.0.0.0/24", "10.0.0.1/24", "10.0.0.1", "fd42:42:42::/64", "fd42:42:42::1/64", "fd42:42:42::1"),
+            ("10.0.1.0/24", "10.0.1.1/24", "10.0.1.1", "fd42:42:42:1::/64", "fd42:42:42:1::1/64", "fd42:42:42:1::1"),
+        )
+        for network_v4, address_v4, dns_v4, network_v6, address_v6, dns_v6 in documented:
+            values = {
+                "wg_network_v4": network_v4,
+                "wg_address_v4": address_v4,
+                "wg_dns_address_v4": dns_v4,
+                "wg_network_v6": network_v6,
+                "wg_address_v6": address_v6,
+                "wg_dns_address_v6": dns_v6,
+            }
+            self.assertTrue(self._evaluate(values, "actual_v4"))
+            self.assertTrue(self._evaluate(values, "actual_v6"))
+            self.assertTrue(self._evaluate(values, "dns_v4"))
+            self.assertTrue(self._evaluate(values, "dns_v6"))
+
+    def test_matching_non_first_hosts_are_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.2/24",
+            "wg_dns_address_v4": "10.0.1.2",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::2/64",
+            "wg_dns_address_v6": "fd42:42:42:1::2",
+        }
+        self.assertFalse(self._evaluate(values, "actual_v4"))
+        self.assertFalse(self._evaluate(values, "actual_v6"))
+
+    def test_ipv4_dns_mismatch_is_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.1/24",
+            "wg_dns_address_v4": "10.0.1.2",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::1/64",
+            "wg_dns_address_v6": "fd42:42:42:1::1",
+        }
+        self.assertFalse(self._evaluate(values, "dns_v4"))
+
+    def test_ipv6_dns_mismatch_is_rejected_by_hcl_expression(self):
+        values = {
+            "wg_network_v4": "10.0.1.0/24",
+            "wg_address_v4": "10.0.1.1/24",
+            "wg_dns_address_v4": "10.0.1.1",
+            "wg_network_v6": "fd42:42:42:1::/64",
+            "wg_address_v6": "fd42:42:42:1::1/64",
+            "wg_dns_address_v6": "fd42:42:42:1::2",
+        }
+        self.assertFalse(self._evaluate(values, "dns_v6"))
+
+    def test_instance_lifecycle_preconditions_reference_dns_and_interface_locals(self):
+        text = self._CONFIG.read_text()
+        resource_start = text.index('resource "oci_core_instance"')
+        lifecycle_start = text.index("  lifecycle {", resource_start)
+        lifecycle_end = text.index("  agent_config {", lifecycle_start)
+        lifecycle = text[lifecycle_start:lifecycle_end]
+        for local_name in (
+            "wg_address_v4_is_first_host",
+            "wg_address_v6_is_first_host",
+            "wg_dns_v4_matches_interface",
+            "wg_dns_v6_matches_interface",
+        ):
+            self.assertIn(f"local.{local_name}", lifecycle)
+
+
+class WgVariableValidationTests(unittest.TestCase):
+    """wg_interface/wg_rate_limit interpolate unquoted into root-executed PostUp/PostDown
+    lines (bootstrap.sh); these validation blocks close the same shell-injection surface the
+    address/network variables already validate."""
+
+    _CONFIG = Path(__file__).resolve().parents[1] / "Infrastructure" / "OCI" / "terraform" / "cloudgateway.tf"
+
+    def _validation_condition(self, variable_name: str) -> str:
+        text = self._CONFIG.read_text()
+        match = re.search(
+            rf'(?ms)variable "{re.escape(variable_name)}" \{{.*?validation \{{\s*condition\s*=\s*(.+?)\n\s*error_message',
+            text,
+        )
+        self.assertIsNotNone(match, f"missing validation condition for {variable_name}")
+        assert match is not None
+        return match.group(1).strip()
+
+    def _evaluate(self, variable_name: str, value: str) -> bool:
+        terraform = shutil.which("terraform")
+        if terraform is None:
+            self.fail("Terraform is required to evaluate the variable validation condition")
+
+        condition = self._validation_condition(variable_name)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "main.tf").write_text(
+                f'variable "{variable_name}" {{\n  type = string\n}}\n\nlocals {{\n  result = {condition}\n}}\n'
+            )
+            command = [terraform, f"-chdir={directory}", "console", f"-var={variable_name}={value}"]
+            result = subprocess.run(
+                command,
+                input="local.result\n",
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.strip() == "true"
+
+    def test_wg_interface_accepts_documented_value(self):
+        self.assertTrue(self._evaluate("wg_interface", "wg0"))
+
+    def test_wg_interface_rejects_uppercase_overlong_and_shell_metacharacters(self):
+        for value in ("WG0", "wg0; rm -rf /", "wg 0", "a" * 16, ""):
+            self.assertFalse(self._evaluate("wg_interface", value), value)
+
+    def test_wg_rate_limit_accepts_documented_values(self):
+        self.assertTrue(self._evaluate("wg_rate_limit", "25/second"))
+        self.assertTrue(self._evaluate("wg_rate_limit", "10/minute"))
+
+    def test_wg_rate_limit_rejects_malformed_and_shell_metacharacters(self):
+        for value in ("25/second; rm -rf /", "abc", "25/fortnight", "-1/second", ""):
+            self.assertFalse(self._evaluate("wg_rate_limit", value), value)
+
+
+class DuplicateSiblingTests(unittest.TestCase):
+    def test_duplicate_sibling_ids_are_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            body = 'region_id = "us-sanjose-1"\n'
+            first = directory / "a.terraform.tfvars"
+            second = directory / "b.terraform.tfvars"
+            first.write_text(body)
+            second.write_text(body)
+            regions, notes = pf.discover_sibling_tfvars(first, decoded_registry())
+            self.assertEqual(list(regions), ["us-sanjose-1"])
+            self.assertEqual(regions["us-sanjose-1"].source_filename, first)
+            self.assertTrue(any("duplicate region_id" in note for note in notes))
+            self.assertFalse(any(note.startswith("error:") for note in notes))
+
+    def test_duplicate_sibling_id_keeps_the_canonical_file_whatever_the_scan_order(self):
+        # A backup copy sorting before the canonical file must not take its slot: the
+        # consistency check has to run against the file the region is actually deployed from.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            body = 'region_id = "us-sanjose-1"\n'
+            backup = directory / "a-backup.terraform.tfvars"
+            canonical = directory / "us-sanjose-1.terraform.tfvars"
+            backup.write_text(body)
+            canonical.write_text(body)
+            regions, notes = pf.discover_sibling_tfvars(canonical, decoded_registry())
+            self.assertEqual(regions["us-sanjose-1"].source_filename, canonical)
+            self.assertTrue(any("a-backup.terraform.tfvars" in note for note in notes))
+            self.assertFalse(any(note.startswith("error:") for note in notes))
+
+    def test_malformed_canonical_sibling_is_a_hard_error_note(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            selected = directory / "us-sanjose-1.terraform.tfvars"
+            sibling = directory / "us-chicago-1.terraform.tfvars"
+            selected.write_text('region_id = "us-sanjose-1"\n')
+            sibling.write_text("wg_network_v4 =\n")
+            _, notes = pf.discover_sibling_tfvars(selected, decoded_registry())
+            self.assertTrue(any(note.startswith("error:") and "unsupported or malformed" in note for note in notes))
+
+    def test_malformed_unregistered_sibling_is_only_a_note(self):
+        # A half-written draft for a region that has no registry allocation yet.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            selected = directory / "us-sanjose-1.terraform.tfvars"
+            draft = directory / "us-ashburn-1.terraform.tfvars"
+            selected.write_text('region_id = "us-sanjose-1"\n')
+            draft.write_text("wg_network_v4 =\n")
+            _, notes = pf.discover_sibling_tfvars(selected, decoded_registry())
+            self.assertEqual(len(notes), 1)
+            self.assertFalse(notes[0].startswith("error:"))
+            self.assertIn("us-ashburn-1.terraform.tfvars", notes[0])
+
+
+class RecoveryDocumentationTests(unittest.TestCase):
+    def test_recovery_docs_do_not_shell_source_api_env(self):
+        root = Path(__file__).resolve().parents[1]
+        paths = [
+            root / "docs" / "regional-deployment.md",
+            root / "docs" / "deployment-handoff.md",
+            root / "docs" / "vm-loss-recovery.md",
+            root / "Infrastructure" / "OCI" / "README.md",
+            root / "docs" / "service-operations.md",
+        ]
+        for path in paths:
+            text = path.read_text()
+            self.assertNotRegex(text, r"(?:^|[\s`(])(?:source|\.)[\s]+/etc/cloudgateway/api\.env")
+
+    def test_registration_recovery_uses_systemd_environment_file(self):
+        path = Path(__file__).resolve().parents[1] / "docs" / "regional-deployment.md"
+        text = path.read_text()
+        self.assertIn(
+            "systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/opt/cloudgateway/api --property=EnvironmentFile=/etc/cloudgateway/api.env /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region",
+            text,
+        )
 
 
 class LoadPlanChangesTests(unittest.TestCase):
