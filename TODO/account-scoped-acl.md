@@ -462,15 +462,28 @@ faithful. Periphery reports no dead code. `./scripts/test.sh apple` passes after
 the fixes; the full gate was last run green when the parity work landed and is
 re-run before release per "Validation and release order".
 
-### Open release blockers
+### Live-host verification - closed 2026-08-21
 
-**Live-host verification.** Neither item is covered by the offline contract test:
+Both items are done; neither was covered by the offline contract test. Full
+method, evidence and the per-flow matrix live in
+[docs/acl-live-verification.md](../docs/acl-live-verification.md).
 
-* nft verdict precedence, chain priority, and the concatenated-set mark
-  comparison syntax on a real host.
-* The four reachability cases end to end: same-account same-region, same-account
-  cross-region, cross-account denied in both directions, and the admin proxy jump
-  in both directions cross-region.
+* **nft semantics.** Verified on both regional hosts (nftables 1.0.9, kernel
+  6.17 aarch64, iptables 1.8.10 nf_tables). `cg_forward` sits at
+  `priority filter - 10`, ahead of both iptables-nft forward chains at priority
+  0; all nine rules present in order with no duplicates; the concatenated-set
+  comparison round-trips verbatim and `cg_pairs4/6` resolve to
+  `ipv4_addr . mark` / `ipv6_addr . mark`; no other subsystem touches the packet
+  mark and no `fwmark` policy rule exists, so the masked-mark fallback is not
+  needed; no slot-0 element. `LocalPolicyManager().read_map()` run against the
+  live ruleset parses cleanly and produces identical v4/v6 hashes on both
+  regions. Verdict precedence was proved by packet, not inspection: a
+  cross-account flow accepted by `-A FORWARD -i wg0 -j ACCEPT` at priority 0 was
+  still dropped by the chain at -10.
+* **The four reachability cases**, both address families, each with a
+  same-session positive control. The decisive evidence is a single-variable A/B:
+  one phone, one target, one protocol, reaching `10.0.0.9`/`fd42:42:42::9` on a
+  same-account client and denied on an admin client seconds later.
 
 ### Validation and release order
 
@@ -505,7 +518,7 @@ re-run before release per "Validation and release order".
 * [x] Findings 2, 3, 4, 6, 7, 8, 9, 10, 11, and 12 implemented across Waves 1-6.
 * [x] Full `./scripts/test.sh` gate green after the remediation (2026-08-19).
 * [x] iOS Server Health Policy parity implemented and reviewed before release.
-* [ ] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host.
-* [ ] Verify the four reachability cases end to end.
-* [ ] Run the migration (backup, dry-run, `--apply`, no-op rerun) and rebuild every region from one tag.
-* [ ] Final `./scripts/test.sh` gate after all PR blockers, including Apple, are complete.
+* [x] Verify nft verdict precedence, chain priority, and the mark comparison syntax on a real host (2026-08-21, both regions; see docs/acl-live-verification.md).
+* [x] Verify the four reachability cases end to end (2026-08-21, IPv4 and IPv6, each with a same-session control).
+* [x] Run the migration (backup, dry-run, `--apply`, no-op rerun) and rebuild every region from one tag.
+* [x] Final `./scripts/test.sh` gate after all PR blockers, including Apple, are complete (2026-08-21, all targets, exit 0).
