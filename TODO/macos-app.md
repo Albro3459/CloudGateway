@@ -15,6 +15,7 @@ A command line tool is deferred. See `TODO/macos-cli-deferred.md`.
 | Distribution | Developer ID, notarized, DMG. Not Mac App Store. |
 | Extension packaging | System extension (confirm against TN3134) |
 | Minimum OS | macOS 14, matching `CloudGatewayKit`'s existing platform floor |
+| Identifiers | New macOS-specific App IDs, separate from iOS |
 | Auth | Browser device flow, then Firebase SDK `signIn(withCustomToken:)` |
 | Firestore | Firebase SDK, port of the iOS repository |
 | GUI | Normal window app plus an `NSStatusItem` menu. No popover. |
@@ -33,6 +34,29 @@ constraint does not apply to Developer ID distribution.
 * no cross-process locking, tunnel-coordinator extraction, or client selector.
   Those exist only to serve a second, non-UI consumer. See "Deliberately Not
   Building" below.
+
+## Identifiers
+
+macOS uses its own App IDs rather than extending the iOS ones, so macOS signing,
+entitlement, and app group changes can never affect the shipping iOS app.
+
+| Purpose | Identifier |
+|---|---|
+| App | `com.gocloudlaunch.gateway.mac` |
+| System extension | `com.gocloudlaunch.gateway.mac.tunnel` |
+| App group | `group.com.gocloudlaunch.gateway.mac` |
+| Keychain access group | `$(AppIdentifierPrefix)com.gocloudlaunch.gateway.mac` |
+| Mach service | `<TeamID>.group.com.gocloudlaunch.gateway.mac.tunnel` |
+
+The Mach service name must be prefixed with the app group identifier. See the
+system extension section.
+
+These are new registrations, so the Network Extension capability and
+`com.apple.developer.system-extension.install` have to be enabled on them from
+scratch. That is phase 0.
+
+The macOS app does not reuse iOS production identifiers, per
+`Frontend/Apple/macOS/README.md`.
 
 ## Targets
 
@@ -179,9 +203,8 @@ background and gradients, and simplify: the tunnel detail will not read at
 an asset catalog.
 
 Mark both as Template Image so macOS adapts them to light and dark menu bars.
-A literal filled-white icon is invisible on a light menu bar. If an accent color
-is wanted for the on state instead, that requires non-template rendering and
-gives up automatic appearance adaptation.
+A literal filled-white icon would be invisible on a light menu bar; template
+rendering keeps the same filled shape while staying legible in both.
 
 The full-color SVG is still the right source for the app icon `.icns`.
 
@@ -235,13 +258,13 @@ on unused code.
 
 ## Risks
 
-1. **Developer ID Network Extension provisioning.** The existing entitlement
-   covers App Store and TestFlight distribution. Developer ID uses a different
-   provisioning profile type, and Apple has historically gated Network
-   Extension on Developer ID behind a separate capability request. Confirm this
-   path in the developer portal before phase 3, and submit any request
-   immediately. This is a lead-time risk, not a technical one, and it is the
-   most likely thing to block the release.
+1. **Developer ID Network Extension provisioning.** Two compounding factors.
+   The existing entitlement covers App Store and TestFlight distribution, and
+   Developer ID uses a different provisioning profile type that Apple has
+   historically gated behind a separate Network Extension capability request.
+   On top of that, the macOS App IDs are new registrations with no capabilities
+   yet. Start this immediately. It is a lead-time risk rather than a technical
+   one, and it is the most likely thing to block the release.
 2. WireGuardKitGo building for macOS arm64. The fork's bridge is device-only
    today.
 3. Firebase and Firestore SDKs on macOS. Officially supported, never compiled in
@@ -254,7 +277,7 @@ on unused code.
 
 | Phase | Work |
 |---|---|
-| 0 | Portal: confirm Developer ID plus Network Extension provisioning. Submit any capability request. Does not block phases 1 and 2. |
+| 0 | Portal: register the macOS App IDs and app group, enable Network Extension and `system-extension.install`, create Developer ID provisioning profiles, and submit any capability request. Start now; does not block phases 1 and 2. |
 | 1 | Device flow endpoints on the apex API, `/device` page in the React app, `signInWithCustomToken` on the auth adapter, `CloudGatewayDeviceAuthClient` and view model in AppCore with `swift test` coverage |
 | 2 | macOS app target, composition root, Firestore repository port, login gate and dashboard window. No tunnel yet; proves Firebase and Firestore on macOS |
 | 3 | System extension target, WireGuardKitGo macOS build, entitlements, signing, install and toggle working end to end |
