@@ -60,3 +60,16 @@ specific collection-group index only when the query adds more filters or orderin
 Firestore explicitly requires.
 
 At the moment there are no required composite indexes for the current Firestore schema.
+
+## Device Authorization TTL
+
+`DeviceAuthRequests.expiresAt` and `DeviceAuthLimits.expiresAt` have TTL policies defined in
+[firestore.indexes.json](./firestore.indexes.json). Their field overrides set `indexes` to an
+empty array, which exempts these cleanup timestamps from single-field indexing. No request or
+limit query needs an index on `expiresAt`; the API reads each record by document ID.
+
+TTL is asynchronous and may take up to 24 hours to delete expired documents. The API must
+enforce `expiresAt` on every operation and must not rely on TTL for authorization. After
+deploying the index configuration, verify both collection-group TTL policies show as enabled
+in Firestore before enabling device authorization. See the [Firebase reference](./README.md#device-authorization-records)
+for the temporary-record retention and backup handling rules.

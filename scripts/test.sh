@@ -105,6 +105,8 @@ test_firebase() {
     run_check "Firebase dependency install" npm install || return 1
   fi
 
+  run_check "Firebase schema and tests typecheck" npm run typecheck
+
   run_firestore_rules_tests() {
     env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only firestore --project demo-cloudgateway "npm test" 2> >(
       grep -Ev "^(lsof: WARNING: can't stat\\(\\)|      Output information may be incomplete\\.|      assuming \"dev=)" >&2

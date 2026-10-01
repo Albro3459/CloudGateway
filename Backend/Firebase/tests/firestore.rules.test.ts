@@ -39,10 +39,14 @@ beforeAll(async () => {
     await setDoc(doc(db, "UserRoles/user1"), { roleId: "user" });
     await setDoc(doc(db, "UserRoles/admin1"), { roleId: "admin" });
     await setDoc(doc(db, "UserRoles/disabled1"), { roleId: "user" });
+    await setDoc(doc(db, "UserRoles/approver1"), { roleId: "user" });
+    await setDoc(doc(db, "UserRoles/other1"), { roleId: "user" });
     await setDoc(doc(db, "UserRoles/nofield1"), { roleId: "user" });
     await setDoc(doc(db, "Users/user1"), { email: "user1@example.com", disabled: false });
     await setDoc(doc(db, "Users/admin1"), { email: "admin1@example.com", disabled: false });
     await setDoc(doc(db, "Users/disabled1"), { email: "disabled1@example.com", disabled: true });
+    await setDoc(doc(db, "Users/approver1"), { email: "approver1@example.com", disabled: false });
+    await setDoc(doc(db, "Users/other1"), { email: "other1@example.com", disabled: false });
     // A provisioned user whose Users doc predates the disabled field: absent must
     // read as "not disabled" so isUser() stays true.
     await setDoc(doc(db, "Users/nofield1"), { email: "nofield1@example.com" });
@@ -61,6 +65,23 @@ beforeAll(async () => {
       rowCount: 0,
     });
     await setDoc(doc(db, "Counters/accountSlots"), { nextSlot: 1 });
+    await setDoc(doc(db, "DeviceAuthRequests/0123456789abcdef0123456789abcdef"), {
+      deviceSecretHash: "a".repeat(64),
+      userCodeHash: "b".repeat(64),
+      deviceName: "Test device",
+      state: "approved",
+      decidedUid: "approver1",
+      approvedUid: "approver1",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      decidedAt: new Date("2026-01-01T00:01:00Z"),
+      expiresAt: new Date("2026-01-01T00:05:00Z"),
+      nextPollAt: new Date("2026-01-01T00:00:05Z"),
+    });
+    await setDoc(doc(db, "DeviceAuthLimits/creation-source-digest"), {
+      scope: "creation",
+      attempts: [new Date("2026-01-01T00:00:00Z")],
+      expiresAt: new Date("2026-01-01T00:05:00Z"),
+    });
   });
 });
 
@@ -205,6 +226,49 @@ describe("every client write is denied — including admins", () => {
         await assertFails(setDoc(doc(db, path), { hacked: true }));
         await assertFails(updateDoc(doc(db, path), { hacked: true }));
         await assertFails(deleteDoc(doc(db, path)));
+      });
+    }
+  }
+});
+
+describe("device authorization collections are API-only", () => {
+  const clients = [
+    { name: "anonymous", db: unauthed },
+    { name: "normal user", db: () => authed("user1") },
+    { name: "approving user", db: () => authed("approver1") },
+    { name: "unrelated user", db: () => authed("other1") },
+    { name: "admin", db: () => authed("admin1") },
+    { name: "disabled user", db: () => authed("disabled1") },
+    { name: "unprovisioned user", db: () => authed("nouser") },
+  ];
+  const collections = [
+    {
+      name: "DeviceAuthRequests",
+      existingId: "0123456789abcdef0123456789abcdef",
+      createId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      createData: { state: "pending" },
+      updateData: { state: "denied" },
+    },
+    {
+      name: "DeviceAuthLimits",
+      existingId: "creation-source-digest",
+      createId: "guess-user-digest",
+      createData: { scope: "guesses", attempts: [] },
+      updateData: { scope: "guesses" },
+    },
+  ];
+
+  for (const client of clients) {
+    for (const collectionPath of collections) {
+      it(`${client.name} cannot read or write ${collectionPath.name}`, async () => {
+        const db = client.db();
+        await assertFails(getDoc(doc(db, `${collectionPath.name}/${collectionPath.existingId}`)));
+        await assertFails(getDocs(collection(db, collectionPath.name)));
+        await assertFails(setDoc(doc(db, `${collectionPath.name}/${collectionPath.createId}`), collectionPath.createData));
+        await assertFails(
+          updateDoc(doc(db, `${collectionPath.name}/${collectionPath.existingId}`), collectionPath.updateData),
+        );
+        await assertFails(deleteDoc(doc(db, `${collectionPath.name}/${collectionPath.existingId}`)));
       });
     }
   }

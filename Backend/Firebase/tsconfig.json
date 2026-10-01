@@ -9,5 +9,5 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["tests", "vitest.config.ts"]
+  "include": ["schema.ts", "tests", "vitest.config.ts"]
 }
