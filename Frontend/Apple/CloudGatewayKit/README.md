@@ -92,16 +92,18 @@ Firebase belongs behind containing-app adapters:
   local Firebase Auth package, iOS Firestore repository, and iOS Google
   presenter, and maps remote config data into Kit VPN/config types.
 * Future macOS app: a menu bar agent with browser sign-in and native session,
-  inventory, lifecycle, notification, and IPC adapters. See the
+  account-scoped inventory, lifecycle, Apple VPN status, and IPC adapters. It
+  does not instantiate the blackout monitor or implement notifications. See the
   [macOS plan](../../../TODO/macos-app.md).
 * Packet tunnel extension: stays VPN-only and must not link Firebase unless a later product decision explicitly requires it.
 
 Platform packet-tunnel extensions retain lifecycle, WireGuardKit mapping,
-`NWPathMonitor` fingerprinting, storage/notification adapters, and bounded stop
-composition. The macOS system extension requires root-aware storage and IPC;
-iOS App Group files and shared user Keychain access are not macOS adapters.
-Neither platform duplicates the evaluator/recovery state machine or adds a
-second polling timer.
+network-change handling, storage adapters, and bounded start/stop composition.
+iOS additionally composes the shared health monitor and notification adapters.
+The macOS system extension requires root-aware storage and IPC; iOS App Group
+files and shared user Keychain access are not macOS adapters. macOS reuses
+VPN/config APIs without enabling health monitoring. Keep existing iOS contracts
+and behavior unchanged when adding macOS seams.
 
 The shared config manager lives in CloudGatewayKit and depends on small
 protocols instead of concrete Firebase types. AppCore depends on those Kit APIs

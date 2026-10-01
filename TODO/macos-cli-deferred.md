@@ -7,7 +7,8 @@ The v1 app is a menu bar agent with browser auth and a packet-tunnel system
 extension. Admin and account/client management stay on the site or mobile app.
 The proposals below remain future research, not approved implementation. Any
 CLI must preserve the plan's authenticated IPC and user/root storage boundary;
-it must not assume access to the extension's group files or VPN secrets.
+it must not assume access to the extension's group files or VPN secrets. Account
+inventory and caches must preserve the menu app's Firebase UID filtering.
 
 Kept because the research below is load bearing for any future attempt, and
 because it answers "can we just bolt a CLI on later" concretely. Nothing here
@@ -114,9 +115,9 @@ them and the Periphery scans would fail the build on unused code.
   `removeTunnel`, `removeInstalledConfigIfMatches`. Use `LOCK_EX | LOCK_NB` in a
   retry loop with a roughly ten second deadline so the CLI fails fast rather
   than hanging. The lock is advisory, so route all mutations through the
-  coordinator to make that structurally true. The extension does not take it; it
-  only writes the health snapshot, already FIFO-guarded by
-  `CloudGatewayTunnelHealthStoreAdapter`.
+  coordinator to make that structurally true. Extension-owned secret mutations
+  need separate IPC serialization; a user app group file lock does not protect
+  root-owned extension state. macOS v1 has no health snapshot writer.
 * **`CloudGatewayClientSelector`.** Resolves `(region?, nameOrIndex?)` to one
   client or a typed ambiguity error.
 
@@ -131,8 +132,9 @@ Toolkit and Firestore REST v1, plus its own Keychain token store.
 Because both sit behind existing protocols, that is a substitution rather than a
 rewrite. Rough cost: roughly 700 lines against roughly 260 for the SDK path.
 
-The device flow endpoints and the React `/device` page built for v1 are reused
-unchanged.
+The planned device flow endpoints and React `/#/auth/code` page can support a
+future CLI after its credential and authorization requirements are checked.
+They are not implemented yet.
 
 ## Proposed Surface
 
@@ -205,7 +207,7 @@ machinery and another signing surface for one symlink.
 
 `wg-quick` uses root plus `utun` plus wireguard-go and no NetworkExtension at
 all. Wrapping it would mean two VPN implementations with divergent state, sudo
-on every command, no shared tunnel-health monitoring, and GUI tunnels and CLI
+on every command, separate VPN preference state, and GUI tunnels and CLI
 tunnels mutually invisible.
 
 That is the exact divergence the shared core exists to prevent. It is a last
