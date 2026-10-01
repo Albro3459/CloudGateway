@@ -180,29 +180,25 @@ or reused as a permanent installation credential. Keep it in app memory only
 for the pending flow and discard it after success, cancellation, expiry, or quit.
 Store only its SHA-256 verifier in Firestore. A plain hash needs no private key
 or shared API secret. Do not accept the verifier in place of the device secret.
-Keep the short displayed user code separate from the device secret. It only
-locates an approval request and cannot redeem a session. A hash alone does not
-protect a short code from enumeration; finite validity, unique live codes,
-explicit confirmation, and rate limiting remain required.
+Keep the short displayed user code separate from the device secret. Approval
+requires the random request ID and matching code. The code cannot redeem a
+session. Finite validity, explicit confirmation, and shared failed-guess limits
+remain required. Codes may repeat across different request IDs.
 
 Proposed initial defaults are a uniformly random six-digit user code, a
 five-minute request lifetime, and three failed approval-code attempts per
 authenticated Firebase UID in a rolling five-minute window. Preserve leading
-zeros by treating codes as strings. Limit identified-request failures as well,
-and enforce additional source, request-creation, and polling limits across API
-instances. Changing a code, request ID, or API replica must not reset an actor's
-guess budget. Successful approval requires authenticated product access and
+zeros by treating codes as strings. Enforce shared source creation limits and
+per-request polling intervals across API instances. Changing a code, request ID,
+or API replica must not reset an actor's guess budget. Successful approval
+requires authenticated product access and
 explicit confirmation. Expiry is measured from creation and is not extended by
 polling or failed guesses.
 
 Six digits and these limits are product defaults, not a universal device-flow
-standard. The implementation must assess the number of simultaneously live
-codes and the probability of guessing any live request, not only one target.
-Scope approval links to a random request ID plus the matching user code; assess
-any future code-only lookup separately. Bound unauthenticated request creation
-and live code allocation. Increase code length if the abuse/scale assessment
-requires it. RFC 8628 specifies entropy and rate-limiting considerations rather
-than one mandatory length, lifetime, or attempt count.
+standard. Scope approval links to a random request ID plus the matching code.
+There is no code-only lookup, globally unique code reservation, or live-code
+allocation budget. See the [device auth plan](device-auth.md) for the contract.
 
 Use unkeyed SHA-256 verifiers for this flow. No new shared hashing key or
 Terraform secret distribution is required. Firebase custom-token signing uses

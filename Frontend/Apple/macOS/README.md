@@ -16,8 +16,9 @@ OS randomness. Send its SHA-256 verifier when creating the API request and prove
 possession of the secret during polling/exchange. Never bundle or reuse a device
 secret, accept the verifier as a bearer credential, or persist pending secrets
 beyond the flow. Proposed user-code defaults are six digits, five-minute expiry,
-and three failed guesses, with shared actor/source limits and live-code capacity
-assessment as defined in the plan.
+and three failed guesses per UID, with shared source creation limits and
+per-request polling intervals. Approval requires the random request ID and code,
+so codes can repeat. See the [device auth plan](../../../TODO/device-auth.md).
 
 Import `CloudGatewayAppCore` for suitable Firebase-free contracts and API
 workflows, and `CloudGatewayKit` for VPN/config APIs. Supply native menu state,

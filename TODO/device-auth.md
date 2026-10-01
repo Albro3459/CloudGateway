@@ -74,7 +74,7 @@ device name is untrusted descriptive text, never verified device identity.
 
 The device generates a fresh 32-byte secret with an OS cryptographic random
 generator for each attempt. Encode it canonically as unpadded base64url and send
-its lowercase SHA-256 hex verifier at creation. Send the raw secret only in the
+the lowercase SHA-256 hex hash of its 32 bytes at creation. Send the secret only in the
 HTTPS polling body. Validate exact encoding and decoded length. Compare hashes
 in constant time. Reject a submitted verifier used as the secret. Keep the
 secret in device memory and discard it on success, cancellation, expiry, or
@@ -114,50 +114,42 @@ user can approve several devices without maintaining an array on their user doc.
   missing documents without accepting stale state or falling back to memory.
 
 Auth and Firestore cannot participate in one shared transaction. Check Auth
-before claiming and again immediately before issuance, and document that narrow
-cross-service race. Normal backend/rules access checks still apply after sign-in.
+before claiming and document that narrow cross-service race. Normal backend/rules
+access checks still apply after sign-in.
 Consuming our request once does not promise the resulting Firebase custom token
 is itself single-use. The device exchanges it promptly and discards it. See
 [Firebase custom tokens](https://firebase.google.com/docs/auth/admin/create-custom-tokens).
 
 ## Shared Abuse Limits
 
-The initial policy is conservative and must be documented and tested:
+Keep three shared limits:
 
 | Limit | Initial policy |
 |---|---|
 | Failed browser code/request guesses | Three per authenticated UID in a rolling five-minute window |
-| Failed browser guesses by source | Ten per trusted source in a rolling five-minute window |
-| Browser verify/decision traffic | Thirty per UID per rolling five minutes, including valid requests |
 | Creation by source | Five requests per trusted source per rolling five minutes |
-| Global creation | 1,000 requests per rolling five minutes, bounding live requests at the five-minute lifetime |
-| Polling | At most one poll per request every five seconds, plus a bounded source traffic limit of 120 polls per minute |
+| Polling | At most one valid poll per request every five seconds |
 
 Use Firestore transactions for rolling windows and per-request polling state.
 Budgets survive code changes, request changes, process restarts, and routing to
 another API instance. Failed unknown-request/code checks count against the
-authenticated actor without revealing existence. Invalid proof and malformed
-traffic also need source limits. Successful guesses do not erase failure
-history. Prune bounded timestamp windows while updating them, and use TTL only
+authenticated actor without revealing existence. Check device proof before
+updating polling state so an invalid caller cannot delay the device.
+Successful guesses do not erase failure history. Prune bounded timestamp windows
+while updating them, and use TTL only
 after the window has ended. Fail closed if persistent limit storage fails.
 Commit counted failures before returning an API error. Raising an exception
 inside the transaction must not silently roll back the failed-guess budget.
 
-Existing Caddy limits remain an outer traffic bound. They are per-host and do
-not replace shared approval limits. Resolve sources only through the verified
-Cloudflare/Caddy path. Confirm the loopback-only API boundary, sanitize/overwrite
-forwarded source headers at the proxy, and test spoofed headers. Do not trust
-arbitrary `X-Forwarded-For` or direct client assertions. Store only a scoped
-source digest where possible, with short retention. A plain IP hash is still
-personal data, not anonymization. No new shared hashing secret is required.
+Reuse existing Caddy limits for outer traffic control, including malformed
+requests and invalid proof traffic. Use the trusted Cloudflare/Caddy source
+for creation limits and test spoofed headers. Keep the loopback-only API
+boundary, and change proxy source handling only if needed. Store source digests
+with short retention. A plain IP hash is personal data, not anonymization.
 
-Document the guessing analysis for one request and the maximum live code pool.
-The random request ID is required alongside the short code. A six-digit code
-alone has insufficient entropy to act as a bearer credential. Validate limits
-under expected concurrency, including contention on the global budget document.
-Keep counters bounded and deny allocation when capacity or retries are exhausted.
-Increase code length or tighten allocation before release if the analysis fails.
-Any future code-only entry flow needs a separate assessment.
+Approval requires the random request ID and matching code. Codes can repeat
+across requests because they are never looked up alone. Use direct request-ID
+lookup without a global code pool, reservations, or allocation budget.
 
 ## Firebase Work
 
@@ -167,8 +159,7 @@ arrays are needed. The proposed API-only collections are:
 | Collection | Purpose and fields |
 |---|---|
 | `DeviceAuthRequests/{deviceRequestId}` | Secret/code verifiers, sanitized device name, state, `createdAt`, fixed `expiresAt`, `nextPollAt`, and optional `decidedUid`, `approvedUid`, `decidedAt`, `consumedAt` |
-| `DeviceAuthCodes/{codeHash}` | Unique live code reservation with `deviceRequestId` and `expiresAt` |
-| `DeviceAuthLimits/{scopeId}` | Versioned operation/actor scope, bounded rolling attempt timestamps, cleanup `expiresAt` |
+| `DeviceAuthLimits/{scopeId}` | Creation-source or failed-guess UID scope, bounded rolling attempt timestamps, cleanup `expiresAt` |
 
 `decidedUid` records the actor for either decision. `approvedUid` exists only
 after approval and must match that actor. Do not expose these stored identities
@@ -180,28 +171,24 @@ They avoid routine plaintext storage. Only the raw random device secret protects
 redemption. Do not store provider credentials, Firebase tokens, custom tokens,
 or full request bodies in these documents.
 
-Allocate a code, reservation, request, and applicable creation budgets in one
-transaction. Retry collisions with a bounded number of fresh random candidates.
-An expired reservation may be replaced without waiting for TTL. Any cleanup
-or release must compare its request ID so an old request cannot remove a newer
-reservation. Consumed and denied requests can retain their reservation until
-the original expiry to avoid confusing immediate code reuse.
+Create the request and update its source creation limit in one transaction.
+Never overwrite an existing request ID. Regenerate the random ID on a collision.
+Repeated user codes need no special handling. Polling state stays on the request.
 
 Update `schema.ts` types and `FirebaseDocumentTree`, including state-dependent
 fields and timestamp semantics. Include `schema.ts` in Firebase type checking,
 which currently covers test sources rather than the schema document itself.
 
-Add explicit deny-all rules for all three collections. Anonymous users, normal
+Add explicit deny-all rules for both collections. Anonymous users, normal
 users, approving users, and admins cannot read, list, or write them through
 client SDKs. React uses the API. Admin SDK access bypasses Firestore rules,
 so test API authorization separately from rules. See
 [Firestore rule conditions](https://firebase.google.com/docs/firestore/security/rules-conditions).
 
-Use direct document reads for request, code reservation, and limits. No new
-composite index is expected. Record index exemptions for verifier fields and
-unused query fields. Define TTL on each cleanup `expiresAt` field through
-`firestore.indexes.json` field overrides and verify deployment support with the
-installed tooling. Keep existing indexes intact. See
+Use direct document reads for requests and limits. No new composite index is
+expected. Define TTL and an index exemption on each cleanup `expiresAt` field
+through `firestore.indexes.json` field overrides. Verify deployment support
+with the installed tooling and keep existing indexes intact. See
 [index definitions](https://firebase.google.com/docs/reference/firestore/indexes).
 
 Firestore TTL is asynchronous cleanup, often within 24 hours. The API must
@@ -224,8 +211,8 @@ before expensive work. Use the configured origin to build approval links.
 
 Custom tokens identify the existing approved UID. Do not create a new user or
 derive product privileges from client claims. Verify that local credentials can
-sign before enabling the feature. Use narrow fake token issuers in unit tests
-and exercise the real Admin SDK adapter separately.
+sign during the staging flow. Use narrow fake token issuers and a mocked Admin
+SDK call for our adapter's unit tests. Reuse Firebase's signing implementation.
 
 Set `Cache-Control: no-store` on device responses. Confirm Caddy/Cloudflare
 preserve it and do not cache these endpoints. Keep bodies, codes, secrets,
@@ -276,8 +263,9 @@ for the automated suite.
 | `firebase` | Schema type check, existing rules tests, new device collection rules tests, and actual API store/exchange tests under Auth + Firestore emulators |
 | `infra` | Existing infrastructure checks whenever bootstrap, env, or proxy templates change |
 
-API tests cover leading-zero codes, strict encodings, generation collisions,
-no seeded records, expiry boundaries, pending/backoff, denial, wrong proof,
+API tests cover leading-zero codes, strict encodings, request-ID collisions,
+repeated user codes scoped to different request IDs, no seeded records,
+expiry boundaries, pending/backoff, denial, wrong proof,
 verifier-as-secret rejection, replay, independent requests, access removal,
 disabled/deleted Auth users, first decision wins, and lost-response/signing-failure
 behavior. Assert at most one issuer call for competing redemptions. Exercise
@@ -298,19 +286,19 @@ acceptable if needed, with no parallel test framework.
 Mark Python emulator tests explicitly in `pyproject.toml`. The `api` target runs
 unit tests without requiring emulators. The `firebase` target runs the integration
 marker and fails if emulators are absent. Guard emulator host/project settings
-so tests cannot fall through to production. Use emulator credentials and a test
-signer, never a real service-account file.
+so tests cannot fall through to production. Use emulator-compatible token
+issuance, never a real service-account file.
 
 Integration tests use the actual Firestore store and API HTTP routes, with
 separate service instances sharing one emulator database. Race creation,
-approval/denial, and redemption. Test expired reservations while TTL has not
+approval/denial, and redemption. Test expired requests while TTL has not
 deleted them. Complete create, browser approval, device exchange, and Firebase
 custom-token sign-in, then assert the same UID and existing rules permissions.
 
-The Auth emulator does not validate custom-token signatures or expiry. Add a
-local Admin SDK adapter test with an ephemeral test signing key, and retain
-a staging signing check. Firestore emulator tests cannot prove deployed index
-or TTL behavior. Record these limits rather than claiming production parity.
+The Auth emulator does not validate custom-token signatures or expiry.
+Verify real signing credentials through the staging end-to-end flow.
+Firestore emulator tests cannot prove deployed index or TTL behavior.
+Record these limits rather than claiming production parity.
 See [Auth emulator](https://firebase.google.com/docs/emulator-suite/connect_auth)
 and [Firestore emulator](https://firebase.google.com/docs/emulator-suite/connect_firestore).
 
@@ -348,7 +336,8 @@ Split a large checkpoint only at a working, testable boundary. Do not commit
 unused abstractions, incomplete endpoint sets, or knowingly failing checks.
 
 Hold review until a logical checkpoint is complete. The main agent then reviews
-the complete diff and evidence, using a Luna xHigh review helper where useful.
+the complete diff and evidence. Use a Luna xHigh review helper for substantial
+auth or transaction changes when useful. A separate review agent is optional.
 Prioritize auth bypass, race/expiry failures, log leaks, regressions, and dead
 code. Assign bounded fixes, remove unused code, rerun affected targets, and
 review the final diff again. Repeat until material findings are resolved, then
@@ -366,9 +355,9 @@ enablement, verification, and rollback. Keep the macOS plan linked here.
 After implementation and local review, release proceeds as a separate authorized
 operator action:
 
-1. Verify staging credentials can mint a real Firebase custom token for an
-   existing test account. Record the short-code abuse assessment and limit load
-   results. No new signing or hashing key is assumed.
+1. Confirm the existing staging Firebase credentials and dashboard/API origins.
+   Verify real custom-token sign-in as part of the deployed end-to-end flow.
+   No new signing or hashing key is assumed.
 2. Deploy Firebase rules/index/TTL configuration. Verify policies are active and
    direct client access is denied. Existing product rules remain intact.
 3. Deploy backend and any required host/proxy configuration with device auth
