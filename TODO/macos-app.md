@@ -1,308 +1,284 @@
 # macOS App Plan
 
-Status: planning. No implementation yet.
+Status: planning. No macOS app, system extension, or device-auth endpoints exist
+yet. This is the plan of record for macOS v1.
 
-A native macOS GUI that reuses `CloudGatewayKit` and `CloudGatewayAppCore`,
-replacing the WireGuard app for daily use. Mirrors the iOS app: a login gate,
-then a dashboard with client creation and a region-grouped client table.
+A minimal menu bar app replaces the WireGuard app for daily use. It signs in
+through the React site, lists clients by region, and installs, connects,
+switches, and disconnects VPN configurations. The Python API handles the
+browser-to-app authorization exchange. Account and client management stay on
+the site. Admin dashboards stay on the site or mobile app.
 
-A command line tool is deferred. See `TODO/macos-cli-deferred.md`.
+A command line tool remains deferred. See [macos-cli-deferred.md](macos-cli-deferred.md).
 
 ## Decisions
 
 | Decision | Choice |
 |---|---|
-| Distribution | Developer ID, notarized, DMG. Not Mac App Store. |
-| Extension packaging | System extension (confirm against TN3134) |
-| Minimum OS | macOS 14, matching `CloudGatewayKit`'s existing platform floor |
-| Identifiers | New macOS-specific App IDs, separate from iOS |
-| Auth | Browser device flow, then Firebase SDK `signIn(withCustomToken:)` |
-| Firestore | Firebase SDK, port of the iOS repository |
-| GUI | Normal window app plus an `NSStatusItem` menu. No popover. |
-| Admin panel | Not on macOS. The web dashboard keeps Server Health. |
+| Distribution | Developer ID, notarized, DMG, retaining the existing release plan |
+| Extension packaging | Network Extension packet tunnel packaged as a macOS system extension |
+| Minimum OS | macOS 14, matching the shared package floor |
+| Identifiers | Separate macOS app, extension, and App Group identifiers |
+| Auth | React browser sign-in and approval, Python device-auth endpoints |
+| Native session | Firebase custom-token sign-in behind the existing auth adapter, no native provider UI |
+| Client inventory | Existing Firebase/Firestore model through a containing-app repository adapter |
+| GUI | `NSStatusItem` and `NSMenu`, `LSUIElement` agent, no dashboard window or popover |
+| Admin | React site or mobile app |
 | CLI | Deferred |
 
-The Mac App Store is not an option. App Store Review Guideline 5.4 requires VPN
-apps to be published by an organization, and this is an individual account. That
-constraint does not apply to Developer ID distribution.
+Both extension packages use `NEPacketTunnelProvider`. iOS uses an app extension
+(`.appex`). macOS will use a system extension (`.systemextension`). Apple supports
+system-extension distribution through Developer ID or the Mac App Store, while
+macOS packet-tunnel app extensions are App Store only. Packaging does not commit
+us to an App Store release. See [TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment).
 
-## Non-Goals For v1
+## Scope
 
-* no command line tool;
-* no admin dashboard, access granting, or region sync UI;
-* no popover UI;
-* no cross-process locking, tunnel-coordinator extraction, or client selector.
-  Those exist only to serve a second, non-UI consumer. See "Deliberately Not
-  Building" below.
+The menu owns sign-in progress, client selection, connection state, extension
+setup, permission guidance, disconnect, sign-out, and quit. Small system dialogs
+for a device code or an approval explanation are allowed. There is no normal
+main window, native login form, account editor, client creation/deletion UI,
+Server Health panel, or region administration.
 
-## Identifiers
+Reuse existing Kit VPN/config protocols and AppCore workflows where they fit.
+Do not assume the entire iOS view model or service facade must be composed
+unchanged. Keep new menu state and device-auth logic testable outside AppKit.
+Do not add a second tunnel-health detector or speculative CLI support.
 
-macOS uses its own App IDs rather than extending the iOS ones, so macOS signing,
-entitlement, and app group changes can never affect the shipping iOS app.
+## Identifiers And Capabilities
+
+The user confirmed these portal registrations. Provisioning and signed target
+validation remain pending.
 
 | Purpose | Identifier |
 |---|---|
-| App | `com.gocloudlaunch.gateway.mac` |
-| System extension | `com.gocloudlaunch.gateway.mac.tunnel` |
-| App group | `group.com.gocloudlaunch.gateway.mac` |
-| Keychain access group | `$(AppIdentifierPrefix)com.gocloudlaunch.gateway.mac` |
-| Mach service | `<TeamID>.group.com.gocloudlaunch.gateway.mac.tunnel` |
+| App | `com.gocloudlaunch.gateway.macos` |
+| System extension | `com.gocloudlaunch.gateway.tunnel.macos` |
+| App Group, both macOS targets | `group.com.gocloudlaunch.gateway.macos` |
+| Mach service | `group.com.gocloudlaunch.gateway.macos.tunnel` |
 
-The Mach service name must be prefixed with the app group identifier. See the
-system extension section.
+The Mach service begins with the exact App Group string. Do not prepend a Team
+ID to this `group.` value, which would break the prefix match. App IDs, App
+Group IDs, and Mach service names are different identifiers even when their
+text overlaps.
 
-These are new registrations, so the Network Extension capability and
-`com.apple.developer.system-extension.install` have to be enabled on them from
-scratch. That is phase 0.
+Name the extension bundle
+`com.gocloudlaunch.gateway.tunnel.macos.systemextension` to match its bundle ID.
+Sign both targets with the same Team ID. See Apple's
+[System Extensions requirements](https://developer.apple.com/documentation/systemextensions).
 
-The macOS app does not reuse iOS production identifiers, per
-`Frontend/Apple/macOS/README.md`.
+A separate macOS App Group is our choice, not an Apple requirement to separate
+platforms. Both Mac targets claim the same macOS group. It does not synchronize
+with iOS or make root and user storage the same directory.
 
-## Targets
+| Capability | Menu app | System extension |
+|---|---|---|
+| App Groups | Yes, macOS group | Yes, same macOS group |
+| Network Extensions | Yes, packet tunnel | Yes, packet tunnel |
+| System Extension installation | Yes, `com.apple.developer.system-extension.install` | No, the container installs it |
+| Data Protection | Omit | Omit |
+| Sign In with Apple | Omit, provider login is on the site | Omit |
 
-```
+Do not copy the iOS `com.apple.developer.default-data-protection` setting,
+including Protected Until First User Authentication, into native macOS
+entitlements. It is not the VPN secret-storage solution. See Apple's
+[Data Protection entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.default-data-protection).
+
+Register the `group.` App Group and authorize membership in both targets'
+profiles. Include the macOS application identifier and matching Team ID in the
+signed products. Recheck profiles after changing capabilities. Apple recommends
+`group.` identifiers for new macOS code. See
+[App Group provisioning](https://developer.apple.com/documentation/xcode/accessing-app-group-containers).
+
+Use `packet-tunnel-provider` for Apple Development signing. The Developer ID
+release uses `packet-tunnel-provider-systemextension`. The selected profile must
+authorize the value actually signed into each target. Configure the app's
+[System Extension installation entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.system-extension.install).
+
+Keep platform entitlements separate. Configure sandbox/network access and
+Hardened Runtime for the target and distribution channel, then inspect the built
+products. Do not add unrelated iOS capabilities to silence signing errors.
+The existing distribution plan uses an unsandboxed containing app.
+
+## Targets And Shared Boundaries
+
+```text
 Frontend/Apple/macOS/CloudGateway.xcodeproj
-    CloudGateway         SwiftUI app, window UI, NSStatusItem menu,
-                         composition root, system extension activation
-    CloudGatewayTunnel    system extension; links CloudGatewayKit and
-                         WireGuardKit and the Apple frameworks only
+    CloudGateway          menu bar agent, browser sign-in, client inventory,
+                          VPN preferences, activation, IPC, notifications
+    CloudGatewayTunnel    system extension, NEPacketTunnelProvider,
+                          WireGuardKit, health monitor, VPN secret storage
 ```
 
-The extension must not link `CloudGatewayAppCore`, Firebase, SwiftUI, or AppKit,
-per `Frontend/Apple/macOS/README.md`.
+The extension imports `CloudGatewayKit`, WireGuardKit, and needed Apple
+frameworks. It does not link AppCore, Firebase, Google Sign-In, SwiftUI, or
+AppKit. Neither macOS target compiles iOS app sources.
 
-The macOS target must not compile sources from `Frontend/Apple/iOS/`. Reuse
-happens through the shared packages.
+Reuse shared parsers, config models, the VPN preferences wrapper, health monitor,
+ordering policies, runtime contracts, and callback fences. Supply macOS adapters
+for IPC, storage, notifications, WireGuard runtime, and native lifecycle. See
+[the macOS architecture notes](../Frontend/Apple/macOS/README.md).
 
-## Reused Unchanged
+## Browser Auth
 
-| Workflow | Source |
+The React site retains Apple, Google, and email/password login. A browser device
+flow avoids native provider UI and callback URL routing in the Mac app.
+
+1. The app requests a proposed `POST /api/device/code` endpoint and receives a
+   device code, user code, verification URI, expiry, and polling interval.
+2. It opens the React approval page and displays the user code in a small native
+   dialog or menu action. The page requires explicit code confirmation.
+3. The signed-in site calls proposed `POST /api/device/approve` with its Firebase
+   ID token. The Python API checks identity and product access before approval.
+4. The app polls proposed `POST /api/device/token`. A successful, single-use
+   exchange returns a Firebase custom token for the approved account.
+5. The native auth adapter calls `signIn(withCustomToken:)` and supplies Firebase
+   ID tokens to existing API clients. The SDK handles refresh and local session
+   persistence. Firebase auth credentials stay in the user app, never the tunnel.
+
+These endpoints are proposed, not implemented. Confirm routing in the deployed
+account-level API rather than assuming an apex API deployment already exists.
+The site uses `HashRouter`, so its route is `/#/device`.
+
+Keep expiry, denied/expired states, polling backoff, cancellation, and sign-out
+fencing explicit. Generate high-entropy device codes, store only verifiers where
+possible, rate-limit user-code attempts, atomically consume approvals, and reject
+replays. Firestore TTL cleanup is not the authorization expiry check. Never
+auto-approve a prefilled link or put bearer credentials in URLs or logs. See
+[RFC 8628](https://www.rfc-editor.org/rfc/rfc8628).
+
+The native Firebase SDK remains a session/inventory adapter, not a second login
+UI. No Apple or Google credential presenter is added. Add the custom-token seam
+and device-flow state behind shared contracts only where needed. Local sign-out
+must not call account-wide `revoke_refresh_tokens` and sign out every device.
+
+## Menu
+
+* Show signed-out, setup-required, connecting, connected, and error states.
+* Provide Sign In and an explicit device-code/progress action while pending.
+* List clients in region submenus. Selecting one installs its config when needed
+  and performs the existing stop-before-start switch sequence.
+* Provide Disconnect, Refresh, Open Website, Sign Out, and Disconnect and Quit.
+* Open the site for account/client management. Do not reproduce its dashboard.
+
+Use normal menu behavior on both mouse buttons. A hidden right-click toggle is
+outside v1. Persist the last client in user app preferences, not in a supposed
+root/user shared `UserDefaults` suite.
+
+Derive a monochrome template glyph from `cloudgateway.svg` for light/dark menu
+bars. Use separate off/on shapes and clear textual state. The full-color asset
+remains the app icon source.
+
+Observe `NEVPNStatusDidChange` and reread preferences when state changes outside
+the app. Menu opening must not block on network or IPC. Cache the most recent
+safe state and show unavailable/stale state when appropriate.
+
+Sign Out and Disconnect and Quit drain or fence in-flight work and request a
+bounded tunnel stop. Signing out also clears the local auth session and private
+app inventory cache. Define config/secret removal separately from cloud client
+deletion, and do not delete cloud clients during local sign-out.
+
+## macOS Storage And IPC
+
+The iOS shared App Group files and user Keychain cannot be carried over by
+changing identifier strings. The system extension runs as root, with a different
+group container and no user Data Protection Keychain access. VPN secrets belong
+in extension-owned System Keychain storage. Health/config transfer uses IPC.
+See [Apple's packaging guidance](https://developer.apple.com/forums/thread/800887).
+
+| Data | Owner / route |
 |---|---|
-| App state and commands | `CloudGatewayViewModel` |
-| Auth and account actions | `CloudGatewayAppServiceFacade`, `CloudGatewayFirebaseAuthAdapter` |
-| Apex and regional APIs | `CloudGatewayControlPlaneClient` |
-| VPN, config, cache, Keychain | `CloudGatewayKit` |
-| Tunnel health detection | `CloudGatewayTunnelHealthMonitor` in the extension |
-| Health presentation | AppCore presentation refresh plus the Kit health store |
+| Firebase session | User app auth adapter |
+| Inventory cache and last client | User app storage |
+| VPN private keys and full configs | System extension secret-store adapter |
+| VPN preferences | Kit wrapper over NetworkExtension preferences |
+| Outward health state | Extension-owned snapshot, returned through IPC |
+| Notifications | User-session menu app, consuming safe health events |
 
-`CloudGatewayViewModel` is used directly, the same way iOS uses it. No
-refactoring of the shared core is required for this plan.
+Use a narrow authenticated XPC interface for config installation/removal and
+health state. Authorize callers from signed identity and audit token, not an
+asserted bundle ID or App Group membership. Bind secret handles and mutations
+to their owning user/config. Reject other users' handles. Do not expose arbitrary
+filesystem, shell, or Keychain operations.
 
-## New macOS Code
+Persist only the safe current health snapshot on the extension side. The app
+must not open the root App Group directory directly. Keep full configs out of
+files, VPN preference dictionaries, and health messages. Config material may
+cross authenticated IPC in memory for installation, never through logs.
 
-| Piece | Rough size |
+Notification delivery from the user-session app needs signed validation. Shared
+health detection continues without the app. Do not promise visible notifications
+when the menu process is absent. Validate missed-event reconciliation when it
+returns, without adding connection history or traffic telemetry.
+
+## System Extension Traps And Prevention
+
+Sources: Apple's [debugging guide](https://developer.apple.com/forums/thread/725805),
+the [Mach service mismatch thread](https://developer.apple.com/forums/thread/776759),
+and [packaging guidance](https://developer.apple.com/forums/thread/800887).
+
+| Trap | Prevention / evidence |
 |---|---|
-| `CloudGatewayMacComposition` root | ~80 lines, mirrors the iOS root |
-| `CloudGatewayMacFirestoreRepository` | ~110 lines, port of the iOS repository |
-| `CloudGatewayTunnelHealthReader` | ~10 lines |
-| Notification authorizer | ~30 lines |
-| `CloudGatewayDeviceAuthClient` in AppCore | ~150 lines, pure networking, testable |
-| `CloudGatewayDeviceAuthViewModel` in AppCore | ~120 lines, testable |
-| Window UI | ~800-1200 lines SwiftUI |
-| Status item menu | ~250 lines AppKit |
-| Packet tunnel provider | ~400 lines, macOS adapters around the shared monitor |
+| Wrong metadata | Use a system-extension `NetworkExtension` dictionary, `NEProviderClasses` packet-tunnel mapping, and `NEProvider.startSystemExtensionMode()` entry point. Do not copy the iOS `NSExtension` dictionary. |
+| Wrong installation path | Embed under `Contents/Library/SystemExtensions`, install and run the GUI app from `/Applications`. Point Xcode's run executable there too. |
+| Activation never completes | Retain the activation manager/delegate. Handle approval, failure, replacement, completion, and reboot-required results. Connect only after readiness is established. |
+| Invalid Mach service | Match `NEMachServiceName` to the exact entitled App Group prefix. Inspect signed entitlements and embedded profiles, not just source plists. |
+| Preferences save mistaken for startup | Reload preferences, start the session, and verify provider startup plus connection state separately. |
+| Old extension after rebuild | Stop the tunnel and deliberately replace/reactivate the extension. Inspect installed versions and lifecycle state. |
+| New process assumed on every connection | Clear per-session state on stop and reject late callbacks across restart cycles. |
+| Dependencies lost after activation | Statically link suitable package code or embed dynamic frameworks inside the system extension with correct runpaths. |
+| Root/user storage confused | Implement the storage/IPC boundary above before an end-to-end connection. |
 
-## Auth
+Add safe startup logs in the extension entry point and provider lifecycle, with a
+dedicated subsystem/category. Log activation and sanitized error codes, never
+configs, keys, tokens, runtime traffic counters, DNS queries, endpoints, packet
+metadata, or connection history. Use Console and installed-extension state to
+distinguish registration, activation, provider startup, and connection.
 
-The React site already implements Apple, Google, and email/password. Reusing it
-through a browser device flow means macOS needs no `ASAuthorizationController`,
-no Google presenter, and no Sign in with Apple entitlement.
+The second thread confirmed a group/Mach mismatch and exposed OS crashes while
+reporting validation errors. Do not assume every similar crash has that cause or
+that it remains fixed on every supported OS. Check sanitized system logs/crash
+reports and submit an Apple report if the OS crashes.
 
-1. app calls `POST /api/device/code`, receives `device_code`, `user_code`,
-   `verification_uri`, `expires_in` 300, `interval` 5;
-2. app displays the code and opens the default browser to the React `/device`
-   page;
-3. user signs in on any device and confirms the displayed code matches;
-4. the page calls `POST /api/device/approve` with its Firebase ID token and the
-   user code; the API verifies the token and records the approval;
-5. the app polls `POST /api/device/token` and receives a Firebase custom token
-   from `auth.create_custom_token(uid)`;
-6. the app calls `Auth.auth().signIn(withCustomToken:)`.
+Keep SIP enabled. No kernel-extension approval or Reduced Security boot policy
+is needed. `systemextensionsctl` is a development aid, not a product installation
+API. Do not install diagnostic profiles that collect private traffic data as
+part of normal validation.
 
-Step 6 is why this is cheap. The Firebase SDK persists the resulting session in
-the Keychain itself, so there is no token store to write, and the existing auth
-state listener in `CloudGatewayViewModel` picks up the sign-in with no changes.
-Firestore is then used through the SDK exactly as on iOS.
+Backend restart remains unsupported in the pinned WireGuard macOS API until
+separately implemented and tested. Preserve shared bounded recovery, callback
+fences, joined stop, path generations, and the five-second stop deadline.
 
-Shared-core changes are additive and small:
+## Phases And Validation Gates
 
-* add `signInWithCustomToken(_:)` to `CloudGatewayAuthServicing` and implement it
-  in `CloudGatewayFirebaseAuthAdapter`;
-* add `CloudGatewayDeviceAuthClient` and `CloudGatewayDeviceAuthViewModel` to
-  `CloudGatewayAppCore`, used only by macOS.
-
-`CloudGatewayViewModel`'s existing `signIn`, `signInWithGoogle`, and
-`linkApple` paths are simply not called by the macOS UI.
-
-Backend work, on the apex API rather than regional because this is account
-level:
-
-* `POST /api/device/code`, `/api/device/approve`, `/api/device/token`;
-* pending codes in Firestore with a TTL;
-* `user_code` entropy, single-use codes, `device_code` bound to `user_code`,
-  poll rate limiting returning `slow_down`;
-* wire `auth logout` to `auth.revoke_refresh_tokens(uid)`, already used at
-  `Backend/API/src/firebase.py:357`.
-
-Anti-phishing: the approval page must display the code and require the user to
-confirm it matches what the app shows. Never accept a prefilled link that
-auto-approves. This is the known weakness of device flows and the reason
-cross-device sign-in is otherwise safe.
-
-Web work: a `/device` route in the React app. Note the app uses `HashRouter`, so
-the verification URI is `gocloudlaunch.com/#/device`.
-
-## Window UI
-
-Mirrors the iOS app.
-
-* login gate: sign-in button that starts the device flow, displays the user
-  code, and shows progress and expiry;
-* dashboard: an input area to create a client, then a table of clients grouped
-  by region;
-* per-client: install, toggle, delete, and a details disclosure;
-* keep the offline and stale handling. It comes free from
-  `CloudGatewayConfigManager` and it is what makes the table useful when the
-  network is unavailable.
-
-Use a `Table` and a real toolbar rather than transcribing the iOS layout. The
-view models are shared, so behavior stays in sync without sharing views.
-
-## Status Item Menu
-
-Docker Desktop is the reference. `NSStatusItem` with an `NSMenu`, no popover.
-
-* a "Open Dashboard" item;
-* one submenu per region, listing that region's clients, click to toggle;
-* right-click toggles the most recently used client;
-* current status shown at the top;
-* Quit.
-
-Two implementation notes:
-
-**Click handling.** Assigning `statusItem.menu` makes the system show the menu on
-both left and right click, and you cannot intercept right-click. To distinguish
-them, leave `menu` unset and drive the button directly:
-
-```swift
-button.action = #selector(handleClick)
-button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-```
-
-On left click, temporarily assign `statusItem.menu`, call
-`statusItem.button?.performClick(nil)`, then clear it. `popUpMenu(_:)` is
-deprecated; do not use it.
-
-Rebuild the menu in `NSMenuDelegate.menuNeedsUpdate` so it reflects live state.
-
-**Icons.** `cloudgateway.svg` is a full-color asset with gradients and a rounded
-rectangle background. Menu bar template images are alpha-only, so it cannot be
-used directly. Derive a monochrome glyph from the cloud silhouette, drop the
-background and gradients, and simplify: the tunnel detail will not read at
-16-18pt. Ship two shapes, outline for off and filled for on, as vector PDFs in
-an asset catalog.
-
-Mark both as Template Image so macOS adapts them to light and dark menu bars.
-A literal filled-white icon would be invisible on a light menu bar; template
-rendering keeps the same filled shape while staying legible in both.
-
-The full-color SVG is still the right source for the app icon `.icns`.
-
-Most-recently-used client is persisted in app group `UserDefaults` so the
-window and the menu agree.
-
-Observe `NEVPNStatusDidChange` to keep the icon live. Even with a single app
-process, status changes outside the app when the extension dies, the network
-drops, or the user disconnects from System Settings.
-
-## System Extension
-
-Activation is GUI-only and happens once per machine. Per Apple DTS,
-`OSSystemExtensionRequest` holds its delegate weakly, so hold the manager in a
-static on the `@main` app and activate from `init`.
-
-Gotchas, from Apple forum threads 725805 and 776759:
-
-* the container app must live in `/Applications` for activation to succeed;
-* `NEMachServiceName` in the extension `Info.plist` must be prefixed with the
-  app group identifier. A mismatch leaves the extension stuck in
-  `validating by category` and can crash `sysextd` and `nesessionmanager`;
-* network system extensions are sandboxed; the app is not;
-* debug with `systemextensionctl`;
-* add a build post-action that copies the app to `/Applications`, since the
-  activation path requires it.
-
-Three things require a GUI session, once per machine: system extension
-activation, the first `saveToPreferences()` which prompts to add VPN
-configurations, and notification authorization for the dead-tunnel
-notification. The app owns all three.
-
-Recovery behavior follows `Frontend/Apple/macOS/README.md`. Backend restart is
-iOS-only in the pinned WireGuard fork, so the macOS runtime adapter reports it
-as `unsupported` initially; the shared bounded recovery policy still confirms
-and notifies.
-
-## Deliberately Not Building
-
-These appeared in earlier drafts to serve a command line tool. With a single
-GUI consumer they are speculative, and the Periphery scans would fail the build
-on unused code.
-
-* `CloudGatewayTunnelCoordinator`. The sequencing in `CloudGatewayViewModel`
-  (`activeTunnelClient` line 917, `switchTunnel` line 936, `pullFreshAndInstall`
-  line 890) stays where it is. Extract it when a real second consumer exists and
-  can say where the seam belongs.
-* `CloudGatewayStateLock`. A cross-process `flock` protects against mutation
-  from a second process. There is no second process.
-* `CloudGatewayClientSelector`. Name and index resolution is a CLI concern.
-
-## Risks
-
-1. **Developer ID Network Extension provisioning.** Two compounding factors.
-   The existing entitlement covers App Store and TestFlight distribution, and
-   Developer ID uses a different provisioning profile type that Apple has
-   historically gated behind a separate Network Extension capability request.
-   On top of that, the macOS App IDs are new registrations with no capabilities
-   yet. Start this immediately. It is a lead-time risk rather than a technical
-   one, and it is the most likely thing to block the release.
-2. WireGuardKitGo building for macOS arm64. The fork's bridge is device-only
-   today.
-3. Firebase and Firestore SDKs on macOS. Officially supported, never compiled in
-   this repo.
-4. Confirm the system extension versus app extension rule against TN3134 before
-   creating the target.
-5. Notarization and the signed hardware test matrix.
-
-## Phases
-
-| Phase | Work |
+| Phase | Work and required evidence |
 |---|---|
-| 0 | Portal: register the macOS App IDs and app group, enable Network Extension and `system-extension.install`, create Developer ID provisioning profiles, and submit any capability request. Start now; does not block phases 1 and 2. |
-| 1 | Device flow endpoints on the apex API, `/device` page in the React app, `signInWithCustomToken` on the auth adapter, `CloudGatewayDeviceAuthClient` and view model in AppCore with `swift test` coverage |
-| 2 | macOS app target, composition root, Firestore repository port, login gate and dashboard window. No tunnel yet; proves Firebase and Firestore on macOS |
-| 3 | System extension target, WireGuardKitGo macOS build, entitlements, signing, install and toggle working end to end |
-| 4 | Status item menu, icon assets, most-recently-used persistence |
-| 5 | `./scripts/test.sh macos`, Periphery config, notarization and DMG release script mirroring `scripts/ios-release.sh`, docs |
+| 0 | IDs/group registered, per user confirmation. Verify capability/group assignment in the signed products, configure development profiles, and confirm Developer ID release profiles. A new distribution certificate is not assumed merely because bundle IDs are new. |
+| 1 | Python device-auth endpoints and React approval page, custom-token seam and pure device-flow state. Verify expiry, denial, rate limiting, replay, and account binding. |
+| 2 | Menu bar target, browser sign-in, inventory, template icons, offline state. No native provider/admin UI. |
+| 3 | Signed system-extension spike: WireGuard Go bridge on macOS arm64, activation, metadata, Mach service, authenticated XPC, System Keychain, safe health events. This gates storage reuse. |
+| 4 | Install/connect/switch/disconnect, health/recovery adapters, notification reconciliation, sign-out and quit. |
+| 5 | Add a `macos` target to `./scripts/test.sh`, Periphery coverage, notarization/DMG workflow, operational docs. The target does not exist yet. |
 
-Phases 1 and 2 carry most of the logic and no signing risk. Phase 3 carries
-nearly all the risk.
+Pure package tests and unsigned compile checks need no registered macOS IDs.
+Signed VPN integration requires real identifiers, capabilities, and development
+provisioning. Distribution signing and notarization are release work. Use the
+repo test entry point when implementation lands. This docs-only update needs
+manual review, not builds or tests.
 
-## Validation
+On signed hardware, cover macOS 14 and each later supported major version,
+especially macOS 15+ App Group authorization changes. Validate:
 
-Beyond `./scripts/test.sh`, on a signed Mac verify:
+* clean activation, denied/delayed approval, upgrade/replacement, and reboot;
+* both embedded profiles, actual entitlement values, and group/Mach prefix;
+* user/root isolation, rejected unauthorized XPC callers, and secret handles;
+* provider availability after relocation, with no dependency on DerivedData;
+* repeated connect/stop/switch cycles in one extension process;
+* sleep/wake, Wi-Fi/Ethernet changes, DNS/gateway changes, and late callbacks;
+* local sign-out/account switch, offline installed configs, and bounded quit;
+* notifications and snapshot reconciliation in the user session;
+* a notarized Developer ID install on a clean Mac with SIP enabled.
 
-* system extension activation from `/Applications`, and `NEMachServiceName` app
-  group prefixing;
-* the three bootstrap prompts, and that the app explains each;
-* device flow across two machines, code expiry, and replay of a used code;
-* `NEVPNStatusDidChange` keeping the status item icon correct after the tunnel
-  drops on its own;
-* template icons in light and dark menu bars;
-* app group snapshot and Keychain access under real entitlements;
-* sleep and wake, Wi-Fi to Ethernet, and DNS and gateway changes against the
-  shared path policy;
-* start and stop ordering, callback loss, stale sessions, and the bounded stop
-  deadline.
-
-Simulator behavior is not evidence for the extension, entitlement, sleep,
-WireGuard, notification, or deadline contracts.
+Start basic connectivity checks with a controlled TCP/IP request, then DNS and
+UDP, before complex browser behavior. Do not record user traffic. Unit tests and
+simulator behavior do not establish signed extension parity.

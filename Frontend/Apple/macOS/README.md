@@ -1,43 +1,68 @@
 # CloudGateway macOS
 
-Future native macOS app project home.
+Future native macOS menu bar app and packet-tunnel system extension.
 
-No macOS app or packet-tunnel targets exist yet.
+No macOS app or packet-tunnel targets exist yet. The implementation plan is
+[TODO/macos-app.md](../../../TODO/macos-app.md).
 
-The future macOS GUI app should import `CloudGatewayAppCore` for Firebase-free
-app workflows and presentation refresh, and `CloudGatewayKit` for VPN/config,
-cache, Keychain, and tunnel-health consumption. It supplies native lifecycle,
-UI, Firebase/Firestore, provider-presentation, notification, and identifier
-adapters; it should not compile iOS app sources.
+The containing app is an `LSUIElement` menu bar agent using `NSStatusItem` and
+`NSMenu`, with no dashboard window. React owns provider sign-in and account
+management, and the Python API owns the device-auth exchange. Admin dashboards
+stay on the site or mobile app. Small device-code and permission dialogs are
+allowed.
 
-The macOS packet-tunnel extension imports `CloudGatewayKit`, not AppCore. It
-should instantiate
+Import `CloudGatewayAppCore` for suitable Firebase-free workflows and
+`CloudGatewayKit` for VPN/config contracts. Supply native lifecycle, menu,
+session/inventory, IPC, notification, and identifier adapters. Do not compile
+iOS app sources or assume the entire iOS view model is needed unchanged.
+
+The macOS packet-tunnel system extension imports `CloudGatewayKit`, not AppCore.
+It should instantiate
 `CloudGatewayTunnelHealthMonitor`, which encapsulates the shared coordinator,
 artifact driver, and effect-submission arbiter. The extension also reuses the
-notification-registration fence, `CloudGatewayTunnelHealthTiming`,
-`CloudGatewayTunnelHealthStore`, and the shared notification contract without
-forking the iOS detector or adding another health timer.
+notification-registration fence, `CloudGatewayTunnelHealthTiming`, snapshot
+types, and shared notification contract through macOS adapters without forking
+the iOS detector or adding another health timer. Storage and notification
+delivery must respect the root/user boundary below.
 
-## GUI App Dependency Boundary
+## Menu App Dependency Boundary
 
 | Workflow | Reusable product | Native macOS composition |
 |---|---|---|
-| Auth and account actions | `CloudGatewayAppCore` contracts/facade plus the macOS-compatible `CloudGatewayFirebaseAuthAdapter` package | Firebase startup, Sign in with Apple request UI, Google credential presentation, and provider callback routing |
-| Roles and clients | AppCore repository contract (now also `fetchMeshRegions`, `fetchMeshDocs`, `setRegionMeshEnabled`, `fetchPolicyDocs`) and pure Firestore document mappers (mesh and Policy) | A macOS repository; Firebase 11.15 advertises macOS support, but this refactor did not compile or integration-test a macOS Firestore conformer |
+| Auth session | AppCore auth contracts and `CloudGatewayFirebaseAuthAdapter` | Browser device flow, custom-token session adapter, and cancellation. No native Apple/Google provider UI. |
+| Client inventory | AppCore repository contracts and document mappers where needed | A containing-app repository limited to menu workflows. No native admin panel. |
 | Apex and regional APIs | `CloudGatewayControlPlaneClient`, DTOs, URL validation, error mapping, and bounded session from `CloudGatewayAppCore` | Inject the origin host; no platform HTTP client rewrite |
-| App state and commands | `CloudGatewayViewModel`, `CloudGatewayAppServiceFacade`, and passive contracts from `CloudGatewayAppCore` | Construct them in a native composition root with macOS adapters |
-| VPN/config and offline install state | Config manager, VPN manager, selection/models, app-group cache, Keychain secret store, and parser from `CloudGatewayKit` | Inject macOS app/provider/group/Keychain identifiers and entitlements |
-| Health presentation | AppCore presentation refresh and health-reader contract plus Kit health store/snapshot types | A native reader adapter wraps the Kit store; native notification authorization and app lifecycle invoke/cancel the shared operations |
-| Server Health (admin) | `CloudGatewayServerHealthViewModel`, `CloudGatewayMeshStatus`, and `CloudGatewayPolicyStatus` derivation, plus the Mesh/Policy Firestore mappers and repository contract (including `fetchPolicyDocs`) in `CloudGatewayAppCore` | A macOS Firestore adapter conforming to the repository contract (including `fetchPolicyDocs`) and a native SwiftUI/AppKit Server Health UI - neither exists yet |
+| App state and commands | AppCore selection and workflow contracts where they fit | Minimal menu state and composition. Reuse the iOS view model only where its dependencies fit. |
+| VPN/config and offline install state | Kit config manager, VPN manager, models, parser, and storage protocols | User inventory cache and extension-owned VPN secrets through authenticated IPC. |
+| Health presentation | AppCore health-reader contract and Kit snapshot types | Read safe health state through IPC. The user app owns notification permission and delivery. |
 
-SwiftUI/AppKit views, navigation, menu-bar behavior, settings, scene lifecycle,
-window ownership, and launch-at-login policy remain native and are not shared.
+Menu behavior, onboarding dialogs, app lifecycle, and launch-at-login policy
+remain native. Account/client management opens the site.
+
+## System Extension Storage Boundary
+
+Use separate macOS identifiers and one macOS App Group claimed by both targets.
+The group is also the exact prefix of `NEMachServiceName`; do not prepend a Team
+ID to a `group.` identifier. Provision both targets for the group. See the plan's
+capability matrix and [Apple's App Group guidance](https://developer.apple.com/documentation/xcode/accessing-app-group-containers).
+
+The extension's root context changes storage, IPC, process lifetime, and
+dependency packaging. The plan's [storage and IPC section](../../../TODO/macos-app.md#macos-storage-and-ipc)
+defines ownership and its [trap checklist](../../../TODO/macos-app.md#system-extension-traps-and-prevention)
+defines validation. In particular, matching groups do not provide a shared
+root/user directory or shared user Keychain. Full VPN configs remain in
+extension-owned System Keychain storage and move through authenticated IPC only
+for installation. Firebase sessions remain in the user app.
+
+Do not pass the concrete iOS Keychain store or App Group health file reader to
+macOS composition unchanged. Add adapters behind the existing contracts and
+validate them on signed hardware before claiming parity.
 
 ## Packet-Tunnel Dependency Boundary
 
 The macOS packet-tunnel target should link only `CloudGatewayKit`, WireGuardKit,
-and the Apple `NetworkExtension`, `Network`, `UserNotifications`, and `os`
-frameworks. It must not link `CloudGatewayAppCore`, Firebase, Google Sign-In,
+and needed Apple networking, IPC, Security, and logging frameworks. It must not
+link `CloudGatewayAppCore`, Firebase, Google Sign-In,
 SwiftUI, UIKit, or AppKit.
 
 The current iOS provider is the behavior reference, not a source directory for
@@ -48,11 +73,11 @@ must not compile files from `Frontend/Apple/iOS/`.
 |---|---|---|
 | Detection and recovery | Instantiate the public `CloudGatewayTunnelHealthMonitor`. It encapsulates the coordinator, evaluator/recovery/path/persistence policies, artifact driver, and effect arbiter; inject shared scheduling and timing APIs only when production defaults are unsuitable. | No second detector, policy graph, or health timer. |
 | Runtime | Reuse `CloudGatewayTunnelHealthRuntimeAdapter`, recovery result/capability types, and `CloudGatewayTunnelRuntimeStats.parse`. | A small WireGuardKit adapter maps runtime reads and binding refresh callbacks. Backend restart reports `unsupported` until the fork exposes and device-tests a public macOS entry point. |
-| Persistence | Reuse `CloudGatewayTunnelHealthStore` and its FIFO `CloudGatewayTunnelHealthStoreAdapter`. | Supply macOS app-group identifiers and matching entitlements. Persist only the outward health snapshot. |
-| Notifications | Reuse `CloudGatewayTunnelHealthNotification`, the adapter contract, and `CloudGatewayTunnelHealthNotificationRegistrationFence`. | An extension adapter owns `UNUserNotificationCenter` authorization observation, request creation, pending/delivered reconciliation, and removal. The containing app owns permission requests and foreground presentation. |
+| Persistence | Reuse outward snapshot types and FIFO/generation contracts. Use `CloudGatewayTunnelHealthStore` only with an appropriate extension-owned location. | An IPC reader exposes safe state to the user app. No direct root/user App Group file sharing. |
+| Notifications | Reuse `CloudGatewayTunnelHealthNotification`, the adapter contract, and `CloudGatewayTunnelHealthNotificationRegistrationFence`. | Bridge safe notification effects to the user app through IPC, preserving epochs and reconciliation. Verify user-session delivery on signed hardware. |
 | Start and stop | Reuse `CloudGatewayTunnelPendingStartBarrier`, `CloudGatewayTunnelStartStopJoin`, `CloudGatewayTunnelStopSubmission`, `CloudGatewayTunnelStopCompletion`, and monitor stop tokens. | The `NEPacketTunnelProvider` subclass owns callbacks, provider lifecycle, adapter stop submission, the five-second physical-stop deadline, and target-specific capabilities. |
 | Path changes | Reuse `CloudGatewayTunnelPathDescriptor` and shared path policy. | A macOS `NWPathMonitor` source deduplicates meaningful fingerprints and emits monotonically increasing route generations. |
-| Configuration | Reuse provider-configuration keys, Keychain secret references/store, raw WireGuard models, and the parser. | The provider reads its injected identifiers and maps parsed values to WireGuardKit types. Full configs remain in shared Keychain storage, never app-group files. |
+| Configuration | Reuse safe provider-configuration metadata, secret-reference contracts, raw WireGuard models, and the parser. | Resolve user-bound secret handles in an extension-owned System Keychain adapter. Full configs never enter App Group files or VPN preference dictionaries. |
 
 ## Code That Remains Platform-Owned
 
@@ -112,10 +137,12 @@ The macOS implementation is not equivalent until it preserves all of these:
 6. Exactly one shared `CloudGatewayTunnelHealthMonitor` owns detection for the
    active tunnel. No macOS-specific detector or polling timer is allowed.
 
-The GUI app will request notification authorization and read the shared health
-snapshot. Detection remains in the future packet extension so it continues
-while the GUI is backgrounded, closed, or signed out. Bundle, provider,
-app-group, and Keychain identifiers remain injected platform configuration.
+The menu app requests notification authorization and consumes health state over
+IPC. Detection remains in the system extension while a tunnel is active,
+independently of menu presentation. Planned Sign Out and Disconnect and Quit
+request a bounded stop. Notification delivery requires the user-session app;
+do not promise delivery when it is absent. Bundle, provider, group, service,
+and storage configuration remain injected.
 
 WireGuardKit stays outside `CloudGatewayKit`. The pinned fork exposes binding
 refresh on macOS, but its public backend-restart entry point is currently
@@ -132,9 +159,11 @@ On a signed Mac and extension, verify:
   runtime-read and binding-refresh callbacks complete correctly;
 * `NWPath` fingerprints and route generations across sleep/wake, Wi-Fi,
   Ethernet, DNS/gateway changes, and interface churn;
-* pending/delivered notification reconciliation plus containing-app
-  authorization and foreground presentation;
-* app-group snapshot and shared Keychain access under real entitlements;
+* user-session notification delivery, authorization, and reconciliation;
+* authenticated IPC, user/config-bound secret handles, System Keychain access,
+  and root/user isolation under real entitlements;
+* activation/replacement from `/Applications`, embedded profiles, Mach service
+  prefixing, relocated dependencies, and repeated sessions in one process;
 * start/stop ordering, callback loss, stale sessions, and the bounded stop
   deadline with deliberately late or missing callbacks.
 
@@ -142,5 +171,5 @@ Simulator behavior is not evidence for these extension, entitlement, sleep,
 WireGuard, notification, or deadline contracts.
 
 Remaining macOS work includes app and extension targets, entitlements, signing,
-UI/Firebase composition, adapter compile tests, and the signed real-device
-matrix. None of that work was implemented or verified by this extraction.
+menu/browser-auth composition, macOS storage/IPC adapters, and the signed
+hardware matrix. None of that work is implemented or verified yet.

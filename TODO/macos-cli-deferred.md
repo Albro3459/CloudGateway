@@ -3,6 +3,12 @@
 Status: **deferred, not scheduled.** Not part of the macOS v1 plan. See
 `TODO/macos-app.md` for the plan of record.
 
+The v1 app is a menu bar agent with browser auth and a packet-tunnel system
+extension. Admin and account/client management stay on the site or mobile app.
+The proposals below remain future research, not approved implementation. Any
+CLI must preserve the plan's authenticated IPC and user/root storage boundary;
+it must not assume access to the extension's group files or VPN secrets.
+
 Kept because the research below is load bearing for any future attempt, and
 because it answers "can we just bolt a CLI on later" concretely. Nothing here
 should be built without re-confirming the entitlement spike in "Blocking
@@ -50,7 +56,7 @@ group, and app group container behave identically in both modes. The CLI does
 not borrow the app's identity; it is the app, invoked differently. That is what
 makes GUI-installed configurations visible and removable from the CLI.
 
-## No Daemon Is Needed
+## No Additional Daemon Is Needed
 
 The tunnel runs in the system extension, which the system launches on
 `startVPNTunnel()`. Configurations live in system VPN preferences. A process
