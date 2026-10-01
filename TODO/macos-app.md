@@ -1,7 +1,8 @@
 # macOS App Plan
 
 Status: planning. No macOS app, system extension, or device-auth endpoints exist
-yet. This is the plan of record for macOS v1.
+yet. This is the plan of record for macOS v1. Implement and deploy the separate
+[device auth plan](device-auth.md) before starting macOS development.
 
 A minimal menu bar app replaces the WireGuard app for daily use. It signs in
 through the React site, lists clients by region, and installs, connects,
@@ -134,6 +135,10 @@ Do not migrate the iOS provider or view model merely to support the second app.
 
 ## Browser Auth
 
+The [device auth implementation plan](device-auth.md) defines the Firebase,
+API, React, test, and release contract. Implement that flow independently first.
+The summary below records the future native client's responsibilities.
+
 The React site retains Apple, Google, and email/password login. A browser device
 flow avoids native provider UI and callback URL routing in the Mac app.
 
@@ -154,8 +159,8 @@ flow avoids native provider UI and callback URL routing in the Mac app.
    ID tokens to existing API clients. The SDK handles refresh and local session
    persistence. Firebase auth credentials stay in the user app, never the tunnel.
 
-These endpoints are proposed, not implemented. Confirm routing in the deployed
-account-level API rather than assuming an apex API deployment already exists.
+These endpoints are proposed, not implemented. The existing account-level
+`api.<origin>/api/*` route will host them. Verify deployed routing during release.
 The site uses `HashRouter`; the proposed approval route is `/#/auth/code`.
 This is a device-flow design informed by RFC 8628 with a client-generated
 redemption secret, not a claim of exact RFC wire compatibility.
@@ -203,7 +208,7 @@ Use unkeyed SHA-256 verifiers for this flow. No new shared hashing key or
 Terraform secret distribution is required. Firebase custom-token signing uses
 the Admin SDK's signing credentials and is separate from request-code hashing.
 
-Store `expiresAt` as a Firestore timestamp and return `expires_in` in seconds to
+Store `expiresAt` as a Firestore timestamp and return `expiresIn` in seconds to
 the app. The API checks server-side expiry on approval and exchange. Firestore
 TTL provides eventual cleanup, typically within 24 hours, not immediate expiry
 enforcement. See [Firestore TTL](https://firebase.google.com/docs/firestore/ttl).
@@ -360,9 +365,9 @@ to expose a blackout-triggered backend restart is required for macOS v1.
 | Phase | Work and required evidence |
 |---|---|
 | 0 | IDs/group registered, per user confirmation. Verify capability/group assignment in the signed products, configure development profiles, and confirm Developer ID release profiles. A new distribution certificate is not assumed merely because bundle IDs are new. |
-| 1 | Minimal signed app/system-extension spike: WireGuard Go bridge on macOS arm64, activation, metadata, Mach service, authenticated XPC, System Keychain, repeated sessions without the app. This gates storage reuse and the OS/hardware support choice before full app composition. |
-| 2 | Device-generated per-attempt secret, Python device-auth endpoints, temporary Firestore request collection and TTL, React `/#/auth/code` approval page, custom-token seam and pure device-flow state. Verify concurrent requests, expiry, denial, shared guess limits, live-code abuse limits, replay, and account binding. |
-| 3 | Complete menu bar target, browser sign-in, account-scoped inventory/cache, template icons, offline state, launch at login, Apple status observation and refresh. No native provider/admin UI. |
+| 1 | Complete the separate [device auth plan](device-auth.md): Firebase, Python API, React approval, tests through `test.sh`, and docs. Deploy and verify the flow with a test device client before macOS development. No native auth adapter is needed for this gate. |
+| 2 | Minimal signed app/system-extension spike: WireGuard Go bridge on macOS arm64, activation, metadata, Mach service, authenticated XPC, System Keychain, repeated sessions without the app. This gates storage reuse and the OS/hardware support choice before full app composition. |
+| 3 | Compose native device-flow state and the custom-token auth adapter against the deployed contract. Complete the menu bar target, account-scoped inventory/cache, template icons, offline state, launch at login, Apple status observation and refresh. No native provider/admin UI. |
 | 4 | Install/connect/switch/disconnect, normal path changes, signed-out/account-switch visibility, retained profiles/secrets, and quit without disconnect. No blackout monitor or notifications. |
 | 5 | Add a `macos` target to `./scripts/test.sh`, Periphery coverage, operational docs. Developer ID/notarized ZIP release and hosting are later work. The target does not exist yet. |
 
