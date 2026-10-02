@@ -15,6 +15,28 @@ compilation and packaging. Signed builds also inspect signatures, embedded
 profiles, and entitlements. Neither proves activation, authenticated IPC,
 System Keychain access, or networking on a real machine.
 
+## Validation checkpoint (2026-10-02)
+
+The full `./scripts/test.sh` run passed API, web, infrastructure, Firebase
+emulator, and iOS gates. Its macOS scan exposed compile/dead-code findings,
+which were fixed. The affected `./scripts/test.sh macos` rerun passed:
+
+* 260 shared Kit/AppCore tests, 31 Firebase adapter tests, and 73 macOS
+  core/IPC tests, plus packaging-verifier tests
+* Strict app/extension and host-free test Periphery scans
+* Unsigned arm64 app/extension compilation and bundle packaging inspection
+
+The iOS regression run passed its three strict Periphery scans, shared/adapter
+tests, and unsigned device build. Signed macOS builds remain blocked by missing
+matching Mac development profiles and a registered development Mac. Activation,
+real System Keychain/XPC behavior, native browser session persistence, and live
+VPN/network checks are deferred for local approval. No validation activated the
+extension, installed a live VPN profile, or changed the running VPN.
+
+The implementation received at most two review passes per chunk and an
+integrated auth/menu review. Local commits are stable WIP checkpoints while
+those signed runtime gates remain pending.
+
 ## Signing and installation
 
 Both targets use the same development team. Register these identifiers and
@@ -51,6 +73,39 @@ Before runtime checks, inspect the built products with the validation script.
 Confirm the bundle IDs, team, development entitlement value, App Group, extension
 sandbox/network entitlements, profiles, arm64 executable, and framework runpaths.
 Move the signed app out of its build directory before checking activation.
+
+If automatic provisioning reports no registered devices or matching Mac App
+Development profiles, register the development Mac with the team and generate
+profiles for both IDs with their required capabilities and App Group membership.
+The Apple Development certificate alone does not supply those profiles. Retry
+the signed build before treating the app as ready for activation.
+
+## Firebase and browser sign-in
+
+The native Firebase app is registered in `cloud-launch-gateway` with bundle ID
+`com.gocloudlaunch.gateway.macos`. Its `GoogleService-Info.plist` lives in
+`Frontend/Apple/macOS/CloudGateway/` and belongs to the menu app only. The app
+checks the configuration before starting Firebase. Keep the existing SDK pin
+and the web API key's restrictions. No dashboard Referer is sent by the app.
+See [Firebase Apple setup](https://firebase.google.com/docs/ios/setup).
+
+The browser approves the deployed device-auth request. The menu displays its
+six-digit code, including leading zeros, with Open Browser and Cancel actions.
+The app validates the complete approval URL against the configured HTTPS
+dashboard origin. Device secrets and custom tokens stay in memory. Polling
+honors the server interval, fixed lifetime, and `Retry-After`.
+
+Firebase persists the accepted native session in the user's Keychain. A canceled
+SDK exchange is fenced and cleaned up even if its completion arrives after
+sign-out. A metadata-only unsettled-exchange marker causes local cleanup on
+relaunch after an interrupted exchange. Failed cleanup keeps the session hidden
+until local sign-out succeeds. Product-access checks precede menu inventory.
+
+Firestore uses memory-only SDK caching and explicit server reads. The app keeps
+a separate metadata-only installed cache and last selection per Firebase UID.
+Known access denial prevents offline fallback. Successful refresh prunes
+removed clients and outdated config hashes. No cache file contains a full
+config, private key, Firebase session, or pending device secret.
 
 ## Secret storage and IPC
 

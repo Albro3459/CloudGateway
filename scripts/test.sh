@@ -265,6 +265,7 @@ test_macos() {
   local failed=0
   local derived_data="$ROOT/Frontend/Apple/macOS/.build/Xcode"
   local configuration=Debug
+  local destination=generic/platform=macOS
   local signing=(CODE_SIGNING_ALLOWED=NO)
 
   run_check "macOS packaging verifier tests" \
@@ -272,6 +273,9 @@ test_macos() {
     failed=1
   run_check "macOS Kit and AppCore package tests" \
     swift test --package-path Frontend/Apple/CloudGatewayKit ||
+    failed=1
+  run_check "macOS Firebase auth adapter tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
     failed=1
   run_check "macOS host-free core and IPC tests" \
     swift test --package-path Frontend/Apple/macOS/CloudGatewayMacCore ||
@@ -284,12 +288,13 @@ test_macos() {
   if [[ "$APPLE_SIGNED" -eq 1 ]]; then
     run_check "macOS signing prerequisites" check_macos_signing_prerequisites || return 1
     configuration=Release
+    destination=platform=macOS,arch=arm64
     signing=(-allowProvisioningUpdates)
   fi
   if run_check "macOS $configuration arm64 app and system extension build" \
     xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
       -scheme CloudGateway -configuration "$configuration" \
-      -destination 'generic/platform=macOS' -derivedDataPath "$derived_data" \
+      -destination "$destination" -derivedDataPath "$derived_data" \
       ARCHS=arm64 "${signing[@]}" build
   then
     if [[ "$APPLE_SIGNED" -eq 1 ]]; then

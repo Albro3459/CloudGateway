@@ -1,12 +1,16 @@
 # macOS Menu Bar Implementation Plan
 
-Status: implementation in progress. Native macOS targets, authenticated IPC,
-System Keychain storage, and automated validation are implemented. The
-API and React device-auth flow is deployed. Live browser approval, Firebase
+Status: implementation and automated validation are complete. The native menu,
+packet-tunnel provider, browser auth, account-scoped offline inventory,
+authenticated IPC, System Keychain storage, and launch-at-login composition
+are implemented. Signed activation and live native VPN/auth checks remain
+pending, so this is a stable WIP rather than a runtime-verified release.
+
+The API and React device-auth flow is deployed. Live browser approval, Firebase
 custom-token sign-in, authenticated API access, cross-region polling, and
-dashboard anti-framing headers were verified on 2026-10-01. Deployed Firestore
-rules and active TTL policies still need operator verification. See the
-[device-auth runbook](../docs/device-auth.md).
+dashboard anti-framing headers were verified on 2026-10-01 with the protocol
+tools. Deployed Firestore rules and active TTL policies still need operator
+verification. See the [device-auth runbook](../docs/device-auth.md).
 
 The user is remote and deferred signed activation and live VPN checks until
 they can handle macOS approval. Continue implementation and automated builds,

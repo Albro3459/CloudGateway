@@ -1,7 +1,7 @@
 # CloudGateway Apple Shared Packages
 
-This package exports two products for the CloudGateway iOS app and future macOS
-app. They deliberately share workflows and VPN behavior without sharing app UI:
+This package exports two products for the CloudGateway iOS and macOS
+apps. They deliberately share workflows and VPN behavior without sharing app UI:
 
 * `CloudGatewayKit` owns VPN/configuration, app-group cache metadata, Keychain
   config secrets, and packet-tunnel health. Both containing apps and both
@@ -47,8 +47,8 @@ Snapshot writes and clears enqueue on one private FIFO persistence lane and are
 retried toward desired state after failures. Notification registration uses an
 epoch fence across authorization and add callbacks so stop, withdrawal, and a
 replacement session invalidate stale work synchronously.
-The package builds for iOS 17 and macOS 14; that compatibility does not imply a
-macOS app integration exists.
+The package builds for iOS 17 and macOS 14. The initial macOS app targets
+macOS 26 and Apple silicon.
 
 ## CloudGatewayAppCore
 
@@ -60,6 +60,10 @@ Current shared app responsibilities:
 * `CloudGatewayControlPlaneClient` owns apex/regional URL construction, DTO
   encoding and decoding, authenticated request plumbing, error mapping, and
   bounded URL sessions.
+* `CloudGatewayDeviceAuthClient` implements macOS browser device-code requests
+  and token polling with ephemeral HTTP storage, approval URL validation, and
+  bounded requests. `CloudGatewayCustomTokenAuthServicing` adds custom-token
+  exchange without expanding the existing iOS auth protocol.
 * `CloudGatewayAppServiceFacade` composes auth, client persistence, control-plane
   access, and provider presentation behind the service consumed by the model.
 * `CloudGatewayViewModel` owns guest/authenticated startup, role/access and
@@ -91,7 +95,7 @@ Firebase belongs behind containing-app adapters:
 * iOS app: configures Firebase, composes the shared AppCore workflows with the
   local Firebase Auth package, iOS Firestore repository, and iOS Google
   presenter, and maps remote config data into Kit VPN/config types.
-* Future macOS app: a menu bar agent with browser sign-in and native session,
+* macOS app: a menu bar agent with browser sign-in and native session,
   account-scoped inventory, lifecycle, Apple VPN status, and IPC adapters. It
   does not instantiate the blackout monitor or implement notifications. See the
   [macOS plan](../../../TODO/macos-app.md).
