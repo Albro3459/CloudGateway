@@ -80,13 +80,14 @@ Add these response header operations:
 
 | Operation | Header | Value |
 |---|---|---|
-| Set static | `Content-Security-Policy` | `frame-ancestors 'none'` |
+| Add static | `Content-Security-Policy` | `frame-ancestors 'none'` |
 | Set static | `X-Frame-Options` | `DENY` |
 
-Set static adds the header if absent and replaces existing values. If the
-dashboard already has a CSP, preserve its other directives and include
-`frame-ancestors 'none'` in the value. Enable the rule and confirm its status is
-**Enabled** before checking the headers. This requires no Worker. Follow the [Cloudflare rule instructions](https://developers.cloudflare.com/rules/transform/response-header-modification/create-dashboard/).
+Add static appends the CSP header and preserves any existing CSP headers.
+Set static adds `X-Frame-Options` if absent and replaces its existing value.
+Use a **Response Header Transform Rule** so the browser receives these headers.
+Enable the rule and confirm its status is **Enabled** before checking the
+headers. This requires no Worker. Follow the [Cloudflare rule instructions](https://developers.cloudflare.com/rules/transform/response-header-modification/create-dashboard/).
 
 Match the entire dashboard hostname. The `/#/auth/code` fragment is never sent
 in an HTTP request, so a path filter for `/auth/code` will not cover this page.
