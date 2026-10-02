@@ -152,7 +152,7 @@ def verify_signature(bundle: Path, bundle_id: str, is_extension: bool) -> None:
     require(re.search(r"flags=0x[0-9a-f]+\([^)]*runtime", metadata) is not None,
             "Hardened Runtime signature flag missing")
     entitlements = plistlib.loads(command(
-        "/usr/bin/codesign", "--display", "--entitlements", "-", str(bundle)
+        "/usr/bin/codesign", "--display", "--entitlements", "-", "--xml", str(bundle)
     ).stdout)
     verify_entitlements(entitlements, is_extension)
     profile_path = bundle / "Contents" / "embedded.provisionprofile"

@@ -41,11 +41,15 @@ The follow-up access/session guards and extension-version check passed
 `./scripts/test.sh apple`, including 90 macOS tests, all five strict Apple
 Periphery scans, both unsigned builds, and macOS packaging verification.
 
-Signed macOS builds remain blocked by missing
-matching Mac development profiles and a registered development Mac. Activation,
-real System Keychain/XPC behavior, native browser session persistence, and live
-VPN/network checks are deferred for local approval. No validation activated the
-extension, installed a live VPN profile, or changed the running VPN.
+Signed macOS builds were initially blocked by missing matching development
+profiles and a registered development Mac. After signing setup,
+`./scripts/test.sh macos --signed` passed the Release build and inspection of
+both targets' signatures, entitlements, profiles, and Hardened Runtime.
+The verifier explicitly requests XML entitlements from `codesign`, whose
+default readable output cannot be parsed as a plist.
+Activation, real System Keychain/XPC behavior, native browser session
+persistence, and live VPN/network checks remain pending. No validation
+activated the extension, installed a live VPN profile, or changed the running VPN.
 
 The implementation received at most two review passes per chunk and an
 integrated auth/menu review. Local commits are stable WIP checkpoints while

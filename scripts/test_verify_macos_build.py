@@ -89,6 +89,40 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             with self.subTest(capability=key), self.assertRaises(ValueError):
                 verifier.verify_profile(profile, verifier.APP_ID, False, self.now)
 
+    def test_signed_verification_requests_xml_entitlements(self) -> None:
+        (self.bundle / "Contents" / "embedded.provisionprofile").touch()
+        for is_extension in (False, True):
+            profile = copy.deepcopy(self.profile)
+            profile["ExpirationDate"] = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+            bundle_id = verifier.EXTENSION_ID if is_extension else verifier.APP_ID
+            entitlements = profile["Entitlements"]
+            entitlements["com.apple.application-identifier"] = f"{verifier.TEAM_ID}.{bundle_id}"
+            entitlements["keychain-access-groups"] = [f"{verifier.TEAM_ID}.{verifier.APP_ID}"]
+            if is_extension:
+                entitlements.pop("keychain-access-groups")
+                entitlements.pop("com.apple.developer.system-extension.install")
+                entitlements.update({
+                    "com.apple.security.app-sandbox": True,
+                    "com.apple.security.network.client": True,
+                    "com.apple.security.network.server": True,
+                })
+
+            def fake_command(*args: str) -> subprocess.CompletedProcess:
+                output = b""
+                metadata = b""
+                if "--entitlements" in args:
+                    output = plistlib.dumps(entitlements) if "--xml" in args else b"[Dict]\n"
+                elif "--verbose=4" in args:
+                    metadata = b"flags=0x10000(runtime)\n"
+                elif "cms" in args:
+                    output = plistlib.dumps(profile)
+                else:
+                    self.assertIn("--verify", args)
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr=metadata)
+
+            with self.subTest(is_extension=is_extension), patch.object(verifier, "command", side_effect=fake_command):
+                verifier.verify_signature(self.bundle, bundle_id, is_extension)
+
     def test_valid_packaged_fixture_and_duplicate_embedding(self) -> None:
         app = Path(self.temporary.name) / "CloudGateway.app"
         extension = app / "Contents" / "Library" / "SystemExtensions" / f"{verifier.EXTENSION_ID}.systemextension"
