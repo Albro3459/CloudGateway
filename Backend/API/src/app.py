@@ -1,14 +1,22 @@
 import logging
 import time
 import uuid
+from collections.abc import Callable
+from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .auth import TokenVerifier
+from .device_auth import (
+    DeviceAuthService,
+    DeviceAuthStore,
+    DeviceAuthTokenIssuer,
+    DeviceAuthUserChecker,
+)
 from .enums import ErrorCode, Event
-from .errors import ApiError
+from .errors import ApiError, DeviceAuthError, DeviceAuthInvalidError, DeviceAuthUnavailableError
 from .logs import log_event, setup_logging
 from .models import ErrorDetail, ErrorResponse
 from .policy import LocalPolicyManager, PolicyManager
@@ -25,9 +33,19 @@ def request_id_of(request: Request) -> str:
     return getattr(request.state, "request_id", "") or str(uuid.uuid4())
 
 
-def _error_response(request: Request, code: ErrorCode, message: str, status: int) -> JSONResponse:
+def _error_response(
+    request: Request,
+    code: ErrorCode,
+    message: str,
+    status: int,
+    *,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     body = ErrorResponse(error=ErrorDetail(code=code, message=message, request_id=request_id_of(request)))
-    return JSONResponse(status_code=status, content=body.model_dump(by_alias=True))
+    response_headers = dict(headers or {})
+    if request.url.path == "/device" or request.url.path.startswith("/device/"):
+        response_headers["Cache-Control"] = "no-store"
+    return JSONResponse(status_code=status, content=body.model_dump(by_alias=True), headers=response_headers)
 
 
 def create_app(
@@ -37,6 +55,11 @@ def create_app(
     repository: FirebaseRepository | None = None,
     wireguard: WireGuardManager | None = None,
     policy: PolicyManager | None = None,
+    device_auth_store: DeviceAuthStore | None = None,
+    device_auth_token_issuer: DeviceAuthTokenIssuer | None = None,
+    device_auth_user_checker: DeviceAuthUserChecker | None = None,
+    device_auth_clock: Callable[[], datetime] | None = None,
+    device_auth_random_bytes: Callable[[int], bytes] | None = None,
 ) -> FastAPI:
     setup_logging()
     settings = settings or Settings()
@@ -51,6 +74,18 @@ def create_app(
         repository = repository or FirestoreRepository(settings)
     app.state.token_verifier = token_verifier
     app.state.repository = repository
+    from .device_auth_firebase import FirebaseDeviceAuthAdmin, FirestoreDeviceAuthStore
+
+    device_auth_admin = FirebaseDeviceAuthAdmin(settings)
+    app.state.device_auth_service = DeviceAuthService(
+        settings=settings,
+        repository=repository,
+        store=device_auth_store or FirestoreDeviceAuthStore(settings),
+        token_issuer=device_auth_token_issuer or device_auth_admin,
+        user_checker=device_auth_user_checker or device_auth_admin,
+        clock=device_auth_clock,
+        random_bytes=device_auth_random_bytes,
+    )
     app.state.wireguard = wireguard or LocalWireGuardManager(
         interface=settings.wg_interface,
         server_public_key=settings.wg_server_public_key,
@@ -96,6 +131,8 @@ def create_app(
                 duration_ms=duration_ms,
             )
             raise
+        if request.url.path == "/device" or request.url.path.startswith("/device/"):
+            response.headers["Cache-Control"] = "no-store"
         duration_ms = round((time.monotonic() - started) * 1000, 2)
         log_event(
             logger,
@@ -122,7 +159,10 @@ def create_app(
             path=request.url.path,
             error_code=exc.code.value,
         )
-        return _error_response(request, exc.code, exc.message, exc.http_status)
+        headers = {}
+        if isinstance(exc, DeviceAuthError) and exc.retry_after is not None:
+            headers["Retry-After"] = str(exc.retry_after)
+        return _error_response(request, exc.code, exc.message, exc.http_status, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -134,12 +174,25 @@ def create_app(
             region_id=settings.region_id,
             method=request.method,
             path=request.url.path,
-            error_code=ErrorCode.INVALID_REQUEST.value,
+            error_code=(
+                ErrorCode.DEVICE_AUTH_INVALID
+                if request.url.path == "/device" or request.url.path.startswith("/device/")
+                else ErrorCode.INVALID_REQUEST
+            ).value,
         )
+        if request.url.path == "/device" or request.url.path.startswith("/device/"):
+            device_error = DeviceAuthInvalidError()
+            return _error_response(
+                request,
+                device_error.code,
+                device_error.message,
+                device_error.http_status,
+            )
         return _error_response(request, ErrorCode.INVALID_REQUEST, "Invalid request body.", 400)
 
     @app.exception_handler(Exception)
     async def unexpected_error_handler(request: Request, exc: Exception):
+        is_device_path = request.url.path == "/device" or request.url.path.startswith("/device/")
         log_event(
             logger,
             Event.REQUEST_FAILED,
@@ -148,9 +201,12 @@ def create_app(
             region_id=settings.region_id,
             method=request.method,
             path=request.url.path,
-            error_code=ErrorCode.INTERNAL_ERROR.value,
-            exc_info=(type(exc), exc, exc.__traceback__),
+            error_code=(ErrorCode.DEVICE_AUTH_UNAVAILABLE if is_device_path else ErrorCode.INTERNAL_ERROR).value,
+            **({} if is_device_path else {"exc_info": (type(exc), exc, exc.__traceback__)}),
         )
+        if is_device_path:
+            error = DeviceAuthUnavailableError()
+            return _error_response(request, error.code, error.message, error.http_status)
         return _error_response(request, ErrorCode.INTERNAL_ERROR, "Unexpected error.", 500)
 
     app.include_router(router)

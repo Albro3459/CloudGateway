@@ -628,6 +628,7 @@ CLOUDGATEWAY_REGION_ID=$REGION_ID
 CLOUDGATEWAY_API_PORT=$FASTAPI_PORT
 CLOUDGATEWAY_API_HOSTNAME=$API_HOSTNAME
 CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN=$DASHBOARD_CORS_ORIGIN
+CLOUDGATEWAY_DEVICE_AUTH_ENABLED=false
 CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE=$FIREBASE_CREDENTIALS_FILE
 CLOUDGATEWAY_WG_INTERFACE=$WG_INTERFACE
 CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY
@@ -800,7 +801,7 @@ ConditionPathExists=/opt/cloudgateway/api/.venv/bin/uvicorn
 User=root
 WorkingDirectory=/opt/cloudgateway/api
 EnvironmentFile=/etc/cloudgateway/api.env
-ExecStart=/opt/cloudgateway/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port \$CLOUDGATEWAY_API_PORT
+ExecStart=/opt/cloudgateway/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --no-proxy-headers --port \$CLOUDGATEWAY_API_PORT
 Restart=on-failure
 RestartSec=5
 

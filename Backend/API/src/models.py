@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
@@ -106,6 +107,63 @@ class AccessCheckResponse(ApiModel):
     user_id: str
     email: str | None = None
     role: Role
+
+
+class DeviceAuthRequestModel(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        use_enum_values=True,
+        extra="forbid",
+    )
+
+
+class DeviceCodeRequest(DeviceAuthRequestModel):
+    device_secret_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    device_name: str | None = Field(default=None, max_length=512)
+
+
+class DeviceCodeResponse(ApiModel):
+    device_request_id: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str
+    expires_in: int
+    interval: int
+
+
+class DeviceAuthLookupRequest(DeviceAuthRequestModel):
+    device_request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    user_code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class DeviceVerifyResponse(ApiModel):
+    device_name: str | None
+    user_code: str
+    state: Literal["pending", "approved", "denied", "consumed"]
+    expires_at: datetime
+
+
+class DeviceApproveRequest(DeviceAuthLookupRequest):
+    decision: Literal["approve", "deny"]
+
+
+class DeviceDecisionResponse(ApiModel):
+    state: Literal["approved", "denied"]
+
+
+class DeviceTokenRequest(DeviceAuthRequestModel):
+    device_request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    device_secret: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
+
+
+class DeviceTokenPendingResponse(ApiModel):
+    state: Literal["pending"] = "pending"
+    interval: int = 5
+
+
+class DeviceTokenResponse(ApiModel):
+    custom_token: str
 
 
 class CapacityResponse(ApiModel):
