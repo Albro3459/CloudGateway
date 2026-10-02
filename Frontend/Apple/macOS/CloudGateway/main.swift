@@ -1,6 +1,10 @@
 import AppKit
 
-let application = NSApplication.shared
-let delegate = CloudGatewayAppDelegate()
-application.delegate = delegate
-application.run()
+MainActor.assumeIsolated {
+    let application = NSApplication.shared
+    let delegate = CloudGatewayAppDelegate()
+    application.delegate = delegate
+    withExtendedLifetime(delegate) {
+        application.run()
+    }
+}

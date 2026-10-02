@@ -4,6 +4,30 @@
 	classes = {};
 	objectVersion = 56;
 	objects = {
+		A26C0D000000000000000052 /* CloudGatewayMacAppController.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacAppController.swift; sourceTree = "<group>"; };
+		A26C0D000000000000000055 /* CloudGatewayMacAppController.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000052; };
+		A26C0D000000000000000053 /* CloudGatewayMacInventoryService.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacInventoryService.swift; sourceTree = "<group>"; };
+		A26C0D000000000000000056 /* CloudGatewayMacInventoryService.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000053; };
+		A26C0D000000000000000054 /* CloudGatewayStatusGlyph.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayStatusGlyph.swift; sourceTree = "<group>"; };
+		A26C0D000000000000000057 /* CloudGatewayStatusGlyph.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000054; };
+		A26C0D000000000000000058 /* Firebase config */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		A26C0D000000000000000059 /* Firebase config in Resources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000058; };
+		A26C0D00000000000000005A /* Firebase adapter package */ = { isa = XCLocalSwiftPackageReference; relativePath = ../CloudGatewayFirebaseAdapter; };
+		A26C0D00000000000000005B /* Firebase package */ = { isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git"; requirement = {kind = exactVersion; version = 11.15.0;}; };
+		A26C0D000000000000000060 /* CloudGatewayAppCore dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000001C; productName = CloudGatewayAppCore; };
+		A26C0D000000000000000066 /* CloudGateway CloudGatewayAppCore build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000060; };
+		A26C0D000000000000000061 /* CloudGatewayFirebaseAuthAdapter dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000005A; productName = CloudGatewayFirebaseAuthAdapter; };
+		A26C0D000000000000000067 /* CloudGateway CloudGatewayFirebaseAuthAdapter build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000061; };
+		A26C0D000000000000000062 /* FirebaseCore dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000005B; productName = FirebaseCore; };
+		A26C0D000000000000000068 /* CloudGateway FirebaseCore build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000062; };
+		A26C0D000000000000000063 /* FirebaseFirestore dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000005B; productName = FirebaseFirestore; };
+		A26C0D000000000000000069 /* CloudGateway FirebaseFirestore build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000063; };
+		A26C0D000000000000000064 /* CloudGatewayKit dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000001C; productName = CloudGatewayKit; };
+		A26C0D00000000000000006A /* CloudGateway CloudGatewayKit build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000064; };
+		A26C0D000000000000000065 /* CloudGatewayMacIPC dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000001B; productName = CloudGatewayMacIPC; };
+		A26C0D00000000000000006B /* CloudGateway CloudGatewayMacIPC build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000065; };
+		A26C0D000000000000000050 /* CloudGatewayMacVPNProfileAdapter.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacVPNProfileAdapter.swift; sourceTree = "<group>"; };
+		A26C0D000000000000000051 /* CloudGatewayMacVPNProfileAdapter.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000050; };
 		A26C0D000000000000000001 /* CloudGateway/main.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A26C0D000000000000000002 /* CloudGateway/main.swift build */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000001; };
 		A26C0D000000000000000003 /* CloudGateway/CloudGatewayAppDelegate.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayAppDelegate.swift; sourceTree = "<group>"; };
@@ -13,9 +37,9 @@
 		A26C0D000000000000000007 /* CloudGateway/Info.plist */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A26C0D000000000000000008 /* CloudGateway/CloudGateway.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = CloudGateway.entitlements; sourceTree = "<group>"; };
 		A26C0D000000000000000009 /* CloudGateway/CloudGateway.DeveloperID.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = CloudGateway.DeveloperID.entitlements; sourceTree = "<group>"; };
-		A26C0D00000000000000000A /* CloudGateway group */ = { isa = PBXGroup; children = (A26C0D000000000000000001, A26C0D000000000000000003, A26C0D000000000000000005, A26C0D000000000000000007, A26C0D000000000000000008, A26C0D000000000000000009); path = CloudGateway; sourceTree = "<group>"; };
-		A26C0D00000000000000000B /* CloudGateway sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000002, A26C0D000000000000000004, A26C0D000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
-		A26C0D00000000000000000C /* CloudGateway resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A26C0D00000000000000000A /* CloudGateway group */ = { isa = PBXGroup; children = (A26C0D000000000000000052, A26C0D000000000000000053, A26C0D000000000000000054, A26C0D000000000000000058, A26C0D000000000000000050, A26C0D000000000000000001, A26C0D000000000000000003, A26C0D000000000000000005, A26C0D000000000000000007, A26C0D000000000000000008, A26C0D000000000000000009); path = CloudGateway; sourceTree = "<group>"; };
+		A26C0D00000000000000000B /* CloudGateway sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000055, A26C0D000000000000000056, A26C0D000000000000000057, A26C0D000000000000000051, A26C0D000000000000000002, A26C0D000000000000000004, A26C0D000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
+		A26C0D00000000000000000C /* CloudGateway resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000059); runOnlyForDeploymentPostprocessing = 0; };
 		A26C0D00000000000000000D /* CloudGatewayTunnel/main.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A26C0D00000000000000000E /* CloudGatewayTunnel/main.swift build */ = { isa = PBXBuildFile; fileRef = A26C0D00000000000000000D; };
 		A26C0D00000000000000000F /* CloudGatewayTunnel/PacketTunnelProvider.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
@@ -38,8 +62,8 @@
 		A26C0D000000000000000020 /* CloudGatewayKit dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000001C; productName = CloudGatewayKit; };
 		A26C0D000000000000000021 /* WireGuardKit dependency */ = { isa = XCSwiftPackageProductDependency; package = A26C0D00000000000000001D; productName = WireGuardKit; };
 		A26C0D000000000000000022 /* CloudGateway CloudGatewayMacCore build */ = { isa = PBXBuildFile; productRef = A26C0D00000000000000001E; };
-		A26C0D000000000000000023 /* CloudGateway frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000022); runOnlyForDeploymentPostprocessing = 0; };
-		A26C0D000000000000000027 /* CloudGateway target */ = { isa = PBXNativeTarget; buildConfigurationList = A26C0D000000000000000024; buildPhases = (A26C0D00000000000000000B, A26C0D000000000000000023, A26C0D00000000000000000C, A26C0D000000000000000025); buildRules = (); dependencies = (A26C0D000000000000000026); name = CloudGateway; packageProductDependencies = (A26C0D00000000000000001E); productName = CloudGateway; productReference = A26C0D000000000000000017; productType = "com.apple.product-type.application"; };
+		A26C0D000000000000000023 /* CloudGateway frameworks */ = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000022, A26C0D000000000000000066, A26C0D000000000000000067, A26C0D000000000000000068, A26C0D000000000000000069, A26C0D00000000000000006A, A26C0D00000000000000006B); runOnlyForDeploymentPostprocessing = 0; };
+		A26C0D000000000000000027 /* CloudGateway target */ = { isa = PBXNativeTarget; buildConfigurationList = A26C0D000000000000000024; buildPhases = (A26C0D00000000000000000B, A26C0D000000000000000023, A26C0D00000000000000000C, A26C0D000000000000000025); buildRules = (); dependencies = (A26C0D000000000000000026); name = CloudGateway; packageProductDependencies = (A26C0D00000000000000001E, A26C0D000000000000000060, A26C0D000000000000000061, A26C0D000000000000000062, A26C0D000000000000000063, A26C0D000000000000000064, A26C0D000000000000000065); productName = CloudGateway; productReference = A26C0D000000000000000017; productType = "com.apple.product-type.application"; };
 		A26C0D000000000000000028 /* CloudGatewayTunnel CloudGatewayMacIPC build */ = { isa = PBXBuildFile; productRef = A26C0D00000000000000001F; };
 		A26C0D000000000000000029 /* CloudGatewayTunnel CloudGatewayKit build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000020; };
 		A26C0D00000000000000002A /* CloudGatewayTunnel WireGuardKit build */ = { isa = PBXBuildFile; productRef = A26C0D000000000000000021; };
@@ -68,7 +92,7 @@
 		A26C0D000000000000000040 /* WireGuardGoBridgemacOS Release */ = { isa = XCBuildConfiguration; buildSettings = {}; name = Release; };
 		A26C0D000000000000000041 /* WireGuardGoBridgemacOS DeveloperID */ = { isa = XCBuildConfiguration; buildSettings = {}; name = DeveloperID; };
 		A26C0D000000000000000034 /* WireGuardGoBridgemacOS configurations */ = { isa = XCConfigurationList; buildConfigurations = (A26C0D00000000000000003F, A26C0D000000000000000040, A26C0D000000000000000041); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		A26C0D000000000000000030 /* Project */ = { isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2650; LastUpgradeCheck = 2650;}; buildConfigurationList = A26C0D000000000000000038; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A26C0D00000000000000001A; packageReferences = (A26C0D00000000000000001B, A26C0D00000000000000001C, A26C0D00000000000000001D); productRefGroup = A26C0D000000000000000019; projectDirPath = ""; projectRoot = ""; targets = (A26C0D000000000000000027, A26C0D00000000000000002E, A26C0D000000000000000032); };
+		A26C0D000000000000000030 /* Project */ = { isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2650; LastUpgradeCheck = 2650;}; buildConfigurationList = A26C0D000000000000000038; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A26C0D00000000000000001A; packageReferences = (A26C0D00000000000000001B, A26C0D00000000000000001C, A26C0D00000000000000001D, A26C0D00000000000000005A, A26C0D00000000000000005B); productRefGroup = A26C0D000000000000000019; projectDirPath = ""; projectRoot = ""; targets = (A26C0D000000000000000027, A26C0D00000000000000002E, A26C0D000000000000000032); };
 	};
 	rootObject = A26C0D000000000000000030;
 }
