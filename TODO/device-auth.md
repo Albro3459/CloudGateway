@@ -1,10 +1,13 @@
 # Device Auth Implementation Plan
 
-Status: implemented and verified locally on 2026-10-01. Device authorization
-is available when deployed. Deployment and staging verification are pending,
-including real Firebase signing, active TTL policies, provider login, and the
-Cloudflare/Caddy boundary. Follow the [operator runbook](../docs/device-auth.md)
-before returning to the [macOS app plan](macos-app.md).
+Status: implemented, validated locally, and deployed on 2026-10-01. Live browser
+approval, custom-token exchange, Firebase sign-in, authenticated API access,
+cross-region polling, throttling, no-store responses, and dashboard anti-framing
+headers were verified. Deployed Firestore rules and active TTL policies still
+need operator verification. The smoke test did not cover every login provider
+or terminal state. Follow the [operator runbook](../docs/device-auth.md) for
+remaining checks. Native work is scoped in the
+[macOS implementation plan](macos-app.md).
 
 Completed Firebase schema/rules/TTL definitions, transactional API authorization,
 React approval/login returns, the test device client, and emulator integration.
