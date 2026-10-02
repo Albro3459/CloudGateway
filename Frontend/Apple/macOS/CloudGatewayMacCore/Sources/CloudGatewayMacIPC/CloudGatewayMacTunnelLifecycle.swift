@@ -86,10 +86,6 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
                 completion()
                 return
             }
-            if session.stopDeadlineExpired {
-                completion()
-                return
-            }
             session.stopCompletions.append(completion)
             guard !session.stopping else { return }
             session.stopping = true
@@ -143,14 +139,13 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
 
     private func finishStop(id: UUID, confirmed: Bool) {
         guard let session, session.id == id, session.stopping else { return }
+        guard confirmed else {
+            session.stopDeadlineExpired = true
+            return
+        }
         let completions = session.stopCompletions
         session.stopCompletions = []
-        if confirmed {
-            self.session = nil
-        } else {
-            // Keep an unconfirmed backend fenced until its real stop callback arrives
-            session.stopDeadlineExpired = true
-        }
+        self.session = nil
         completions.forEach { $0() }
     }
 }

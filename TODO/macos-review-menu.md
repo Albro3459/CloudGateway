@@ -1,7 +1,20 @@
 # macOS menu and config review
 
 Baseline: `8cc964a`, 2026-10-02
-Status: fresh review complete, three confirmed findings
+Status: M1, M2, and M3 implemented, implemented and validated, two review loops complete
+
+## Implementation follow-up
+
+* M1 drains cancelled VPN commands and mandatory profile/secret recovery before
+  dropping the cancellation busy state. Read-only remote tasks remain fenced
+  without blocking the new account until an SDK callback arrives
+* M2 separates inventory refresh from command/cancellation activity. Refresh
+  disables new connections but leaves local Turn Off available
+* M3 retains last observed profiles/status and an independent preferences error.
+  Only successful preference reads clear that error. No visible state was added
+* Host-free regressions cover stop/connect gating, retained observation/error,
+  and cancellation drain through both commit/cache recovery and rollback
+
 
 ## Confirmed findings
 
@@ -60,3 +73,6 @@ Malformed or duplicate owned profiles fail the whole adapter read. M3 covers the
 resulting false status presentation. Whether old releases or macOS itself can
 produce such a profile needs a runtime or migration example before treating profile
 repair as a separate finding.
+
+Final no-target `./scripts/test.sh` passed all suites. Log:
+`/tmp/cloudgateway-macos-eight-fixes-full.log`. Signed runtime checks remain pending.

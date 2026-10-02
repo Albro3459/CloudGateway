@@ -125,6 +125,41 @@ import Testing
     #expect(try await cache.load(accountId: "user-a").configs == [config])
 }
 
+@Test func removedClientHistoryDoesNotBlockLiveInventoryOrRetainRemovedConfigs() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (config, option) = try accountCacheFixture(accountId: "user-a")
+    let history = (0..<1001).map { index in
+        CloudGatewayClientOption(client: CloudGatewayClient(
+            clientId: "removed-\(index)", clientName: nil, regionId: "us-a", status: .removed,
+            wireGuardConfig: nil, ownerUid: "user-a"
+        ), region: option.region)
+    }
+    try await cache.authorize(accountId: "user-a", role: .user, options: history + [option])
+    try await cache.save(config)
+    #expect(try await CloudGatewayMacAccountCache(directory: directory).load(accountId: "user-a").configs == [config])
+    try await cache.authorize(accountId: "user-a", role: .user, options: history)
+    #expect(try await cache.load(accountId: "user-a").configs.isEmpty)
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await cache.save(config) }
+}
+
+@Test func liveInventoryLimitStillRejectsOverflowWithoutChangingAuthorization() async throws {
+    let cache = CloudGatewayMacAccountCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())"))
+    let (config, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(config)
+    let overflow = (0..<1001).map { index in
+        CloudGatewayClientOption(client: CloudGatewayClient(
+            clientId: "active-\(index)", clientName: nil, regionId: "us-a", status: .active,
+            wireGuardConfig: option.client.wireGuardConfig, ownerUid: "user-a"
+        ), region: option.region)
+    }
+    await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) {
+        try await cache.authorize(accountId: "user-a", role: .user, options: overflow)
+    }
+    #expect(try await cache.load(accountId: "user-a").configs == [config])
+}
+
 @Test func cacheRejectsUnboundOrNonMacSecretReferences() async throws {
     let cache = CloudGatewayMacAccountCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())"))
     let (config, option) = try accountCacheFixture(accountId: "user-a")

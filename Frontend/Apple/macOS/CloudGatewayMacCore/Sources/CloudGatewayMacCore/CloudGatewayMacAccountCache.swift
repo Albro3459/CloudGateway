@@ -105,7 +105,8 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
     public func authorize(accountId: String, role: CloudGatewayMacAccountRole, options: [CloudGatewayClientOption]) throws {
         try Task.checkCancellation()
         try validate(accountId: accountId)
-        guard options.count <= 1000 else { throw CloudGatewayMacCacheError.invalidMetadata }
+        let inventory = options.filter { $0.client.status != .removed }
+        guard inventory.count <= 1000 else { throw CloudGatewayMacCacheError.invalidMetadata }
         guard role == .admin || options.allSatisfy({ $0.client.ownerUid == accountId }) else {
             throw CloudGatewayMacCacheError.accessDenied
         }
@@ -114,7 +115,7 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
         )
         payload.authorizedConfigHashes = [:]
         var authorizedOptions: [String: CloudGatewayClientOption] = [:]
-        for option in options where option.client.hasUsableConfig && option.region?.enabled == true {
+        for option in inventory where option.client.hasUsableConfig && option.region?.enabled == true {
             let identifier = "\(accountId)/\(option.client.regionId)/\(option.client.clientId)"
             guard authorizedOptions[identifier] == nil else { throw CloudGatewayMacCacheError.invalidMetadata }
             authorizedOptions[identifier] = option

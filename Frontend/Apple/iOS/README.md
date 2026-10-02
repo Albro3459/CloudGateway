@@ -114,11 +114,17 @@ Archive from Xcode with the source Firestore environment:
 
 The source distribution compiles Firestore, abseil, gRPC, and BoringSSL into the app build instead of embedding those dependencies as separate prebuilt frameworks. The code is still present; the standalone framework folders are not.
 
-If Xcode archiving does not work, use isolated DerivedData and SwiftPM checkout directories. The `CLOUDGATEWAY_SOURCE_PACKAGES_DIR` value lets the WireGuard legacy target find the same SwiftPM checkout root:
+Both Apple projects build WireGuardKit and its Go bridge from the existing
+`../wireguard-apple` submodule. Initialize that submodule when checking out the
+repository. Backend startup and unconfirmed network-settings failures propagate
+as errors. An adapter with a settings timeout stays fenced until its provider
+instance is replaced.
+
+If Xcode archiving does not work, use isolated DerivedData and SwiftPM checkout directories for the other package dependencies:
 
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
-FIREBASE_SOURCE_FIRESTORE=1 CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
+FIREBASE_SOURCE_FIRESTORE=1 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
 ```
 
 After archiving, confirm the archive no longer embeds the binary Firestore dependency frameworks under `Products/Applications/CloudGateway.app/Frameworks/`.

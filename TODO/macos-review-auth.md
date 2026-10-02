@@ -1,7 +1,20 @@
 # macOS authentication review
 
 Baseline: `8cc964a`, 2026-10-02
-Status: fresh source review complete, 2 open P2 findings
+Status: AUTH-1 and AUTH-2 implemented, implemented and validated, two review loops complete
+
+## Implementation follow-up
+
+* AUTH-1 excludes removed history from the live inventory cap while retaining
+  ownership, duplicate, hash, and installed-cache validation. Regressions cover
+  1,001 removed rows plus one live config, history-only pruning, and live overflow
+* AUTH-2 returns sanitized AUTH_UNAVAILABLE 503 for verifier infrastructure
+  errors, retaining 401 for invalid/revoked/disabled/deleted identities. macOS
+  keeps native session and disk metadata without authorizing new online inventory
+  or using unavailable responses as transport fallback
+* API and host-free classification regressions cover the actual SDK revocation
+  lookup, certificate/backend failures, denial, sanitization, and fallback policy
+
 
 ## Confirmed findings
 
@@ -80,3 +93,6 @@ Status: fresh source review complete, 2 open P2 findings
   actions. Actual Firebase SDK listener/keychain persistence ordering,
   abrupt process-exit marker durability, signed macOS runtime behavior, and
   deployed approval/Firestore contracts still require runtime verification.
+
+Final no-target `./scripts/test.sh` passed all suites. Log:
+`/tmp/cloudgateway-macos-eight-fixes-full.log`. Signed runtime checks remain pending.

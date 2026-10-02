@@ -45,6 +45,9 @@ become the current inventory. Admin visibility follows backend authorization.
 The cache records its authorization role. A confirmed admin-to-user change
 invalidates the admin cache before inventory requests, and a full online refresh
 rebuilds the permitted inventory. Role-less caches require that refresh too.
+Removed client history does not count toward the live inventory limit.
+Temporary Firebase verification outages retain the native session and cache,
+while fresh online inventory stays unavailable until access can be checked.
 
 Selection explicitly connects or switches. Turn Off retains configs/secrets
 and cloud clients. Sign Out hides inventory and ends the local Firebase session,
@@ -57,6 +60,10 @@ authenticated menu app, which supplies a single-use start grant.
 Refresh Apple preferences/status asynchronously on launch, menu opening,
 preference changes, and commands. Observe status events for app-owned managers.
 The icon may indicate a hidden active tunnel without exposing client details.
+Failed preference reads retain the last observed status and the existing error
+until a successful read. Inventory refresh does not hide the local Turn Off
+action. Account switching waits for cancelled commands and required installation
+cleanup before enabling another command.
 Launch at Login starts the menu app without connecting.
 Readiness requires the running extension's build and marketing versions to
 match the embedded copy. A mismatch exposes Update VPN Extension and disables
@@ -70,6 +77,12 @@ authenticated IPC are implemented. Automated validation covers host-free
 workflows, race handling, dead code, compilation, and bundle packaging.
 Signed activation, live Keychain/IPC, and VPN networking remain pending until
 development profiles and local macOS approval are available.
+
+Both Apple projects build the existing `../wireguard-apple` submodule. Its
+startup checks fail when the backend cannot start or network settings remain
+unconfirmed. A settings timeout fences that adapter against another startup.
+Provider stop completion waits for actual backend shutdown, including after
+the stop deadline. The app reports a stop timeout instead of starting a replacement.
 
 Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
 and packaging checks. Use `./scripts/test.sh macos --signed` for signed builds and

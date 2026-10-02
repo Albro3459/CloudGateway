@@ -24,7 +24,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private var user: AuthenticatedUser?
     private var options: [CloudGatewayClientOption] = []
     private var installed: [CloudGatewayMacInstalledConfig] = []
-    private var profileSnapshot: [CloudGatewayMacInstalledProfile] = []
+    private var profileObservation = CloudGatewayMacProfileObservation()
     private var isOffline = false
     private var errorMessage: String?
     private var sessionEpoch: UInt64 = 0
@@ -68,6 +68,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             checkAccess: { [weak self] candidate in
                 guard let self else { return false }
                 do {
+                    await cancellationTask?.value
+                    try Task.checkCancellation()
                     let role = try await inventory.checkAccess(for: candidate)
                     try Task.checkCancellation()
                     guard auth.currentUser?.uid == candidate.uid else { throw CancellationError() }
@@ -169,12 +171,15 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         guard user == nil, restorationTask == nil, let candidate = auth.currentUser,
               !auth.isCustomTokenSignInSettling, !isShuttingDown else { return }
         let epoch = sessionEpoch
+        let pendingCancellation = cancellationTask
         restorationTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if sessionEpoch == epoch { restorationTask = nil; render() }
             }
             do {
+                await pendingCancellation?.value
+                try requireCurrent(epoch)
                 let role = try await inventory.checkAccess(for: candidate)
                 try requireCurrent(epoch)
                 guard auth.currentUser?.uid == candidate.uid else { return }
@@ -220,12 +225,15 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         guard let account = user, inventoryTask == nil, commandTask == nil, !isShuttingDown else { return }
         let epoch = sessionEpoch
         let token = sessionFence.currentToken
+        let pendingCancellation = cancellationTask
         inventoryTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if sessionEpoch == epoch { inventoryTask = nil; render() }
             }
             do {
+                await pendingCancellation?.value
+                try requireCurrent(epoch, token: token)
                 let role = try await inventory.checkAccess(for: account)
                 try requireCurrent(epoch, token: token)
                 try await observeRole(role, accountId: account.uid)
@@ -276,6 +284,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
 
     private func observeRole(_ role: CloudGatewayMacAccountRole, accountId: String) async throws {
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == accountId else { throw CancellationError() }
         do {
             try await cache.observeRole(accountId: accountId, role: role)
         } catch {
@@ -297,11 +307,10 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             do {
                 let snapshot = try await profiles.installedProfiles()
                 guard profileEpoch == epoch, !Task.isCancelled else { return }
-                profileSnapshot = snapshot
+                profileObservation.didRead(snapshot)
             } catch {
                 guard profileEpoch == epoch, !Task.isCancelled else { return }
-                profileSnapshot = []
-                if user != nil { errorMessage = "Unable to read VPN preferences. Try Refresh again" }
+                profileObservation.didFailRead()
             }
             render()
         }
@@ -320,6 +329,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
 
     private func cancelPendingWork() {
+        let pendingCommand = commandTask
         inventoryTask?.cancel()
         restorationTask?.cancel()
         commandTask?.cancel()
@@ -334,6 +344,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             await previousCancellation?.value
             guard let self else { return }
             await configs.cancelPendingWork()
+            await pendingCommand?.value
+            await configs.waitForPendingWork()
             guard cancellationEpoch == epoch else { return }
             cancellationTask = nil
             render()
@@ -349,9 +361,14 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
 
     private var presentation: CloudGatewayMacMenuState {
         CloudGatewayMacMenuState(accountId: user?.uid, setupState: activation.state,
-            onlineOptions: options, cachedConfigs: installed, profiles: profileSnapshot,
-            commandInFlight: commandTask != nil || cancellationTask != nil || inventoryTask != nil, isOffline: isOffline,
-            hasError: errorMessage != nil, hasRetainedSession: auth.currentUser != nil)
+            onlineOptions: options, cachedConfigs: installed, profiles: profileObservation.profiles,
+            commandInFlight: commandTask != nil || cancellationTask != nil, isOffline: isOffline,
+            inventoryInFlight: inventoryTask != nil,
+            hasError: visibleErrorMessage != nil, hasRetainedSession: auth.currentUser != nil)
+    }
+
+    private var visibleErrorMessage: String? {
+        (user != nil ? profileObservation.errorMessage : nil) ?? errorMessage
     }
 
     private func render() {
@@ -360,7 +377,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
         menu.removeAllItems()
         add(state.statusTitle)
-        if let errorMessage { add(errorMessage) }
+        if let visibleErrorMessage { add(visibleErrorMessage) }
         if user == nil {
             switch browser.state {
             case .requestingCode: add("Requesting sign-in code…"); add("Cancel Sign In", #selector(cancelSignIn))
@@ -381,7 +398,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         } else {
             let visible = Set(state.groups.flatMap(\.rows).map(\.identifier))
-            if profileSnapshot.contains(where: { $0.needsConfirmedStop && !visible.contains($0.identifier) }) {
+            if profileObservation.profiles.contains(where: { $0.needsConfirmedStop && !visible.contains($0.identifier) }) {
                 add("Connecting replaces the current CloudGateway VPN")
             }
             for group in state.groups {

@@ -246,6 +246,53 @@ import Testing
     _ = try await task.value
 }
 
+@Test func macConfigCancellationDrainWaitsForReferencedSecretRecovery() async throws {
+    let fixture = MacConfigFixture()
+    let saveGate = MacConfigTestGate()
+    let cacheGate = MacConfigTestGate()
+    await fixture.profiles.pauseSave(saveGate)
+    await fixture.profiles.setSaveFailure(.afterSave)
+    await fixture.snapshots.pauseSave(cacheGate)
+    let command = Task { try await fixture.install() }
+    await saveGate.waitUntilEntered()
+    await fixture.coordinator.cancelPendingWork()
+    let drain = Task {
+        await fixture.coordinator.waitForPendingWork()
+        await fixture.events.append("drained")
+    }
+    await saveGate.release()
+    await cacheGate.waitUntilEntered()
+    await #expect(throws: CloudGatewayMacConfigError.busy) { try await fixture.coordinator.turnOff() }
+    await cacheGate.release()
+    await #expect(throws: CloudGatewayMacConfigError.cancelled) { try await command.value }
+    await drain.value
+    #expect(await fixture.events.values == ["install", "save", "profiles", "commit", "cache", "cache-resumed", "drained"])
+    try await fixture.coordinator.turnOff()
+}
+
+@Test func macConfigCancellationDrainWaitsForUnreferencedSecretRollback() async throws {
+    let fixture = MacConfigFixture()
+    let installGate = MacConfigTestGate()
+    let rollbackGate = MacConfigTestGate()
+    await fixture.secrets.pauseInstall(installGate)
+    await fixture.secrets.pauseRollback(rollbackGate)
+    let command = Task { try await fixture.install() }
+    await installGate.waitUntilEntered()
+    await fixture.coordinator.cancelPendingWork()
+    let drain = Task {
+        await fixture.coordinator.waitForPendingWork()
+        await fixture.events.append("drained")
+    }
+    await installGate.release()
+    await rollbackGate.waitUntilEntered()
+    await #expect(throws: CloudGatewayMacConfigError.busy) { try await fixture.coordinator.turnOff() }
+    await rollbackGate.release()
+    await #expect(throws: CloudGatewayMacConfigError.cancelled) { try await command.value }
+    await drain.value
+    #expect(await fixture.events.values == ["install", "profiles", "rollback", "rollback-resumed", "drained"])
+    try await fixture.coordinator.turnOff()
+}
+
 private let macTestWireGuardConfig = """
 [Interface]
 PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
@@ -296,6 +343,7 @@ private actor MacConfigTestSecrets: CloudGatewayMacSecretClient {
     private var commitFails = false
     private var installGate: MacConfigTestGate?
     private var authorizationGate: MacConfigTestGate?
+    private var rollbackGate: MacConfigTestGate?
 
     init(events: MacConfigTestEvents, reference: CloudGatewayMacSecretReference) {
         self.events = events
@@ -305,6 +353,7 @@ private actor MacConfigTestSecrets: CloudGatewayMacSecretClient {
     func failCommit() { commitFails = true }
     func pauseInstall(_ gate: MacConfigTestGate) { installGate = gate }
     func pauseAuthorization(_ gate: MacConfigTestGate) { authorizationGate = gate }
+    func pauseRollback(_ gate: MacConfigTestGate) { rollbackGate = gate }
 
     func install(configId: String, config: CloudGatewayWireGuardConfig) async throws -> CloudGatewayMacSecretReference {
         try Task.checkCancellation()
@@ -322,6 +371,10 @@ private actor MacConfigTestSecrets: CloudGatewayMacSecretClient {
     func rollback(reference: CloudGatewayMacSecretReference, configId: String) async throws {
         try Task.checkCancellation()
         await events.append("rollback")
+        if let rollbackGate {
+            await rollbackGate.arriveAndWait()
+            await events.append("rollback-resumed")
+        }
     }
 
     func isAvailable(reference: CloudGatewayMacSecretReference, configId: String) async throws -> Bool {
@@ -403,11 +456,17 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
 private actor MacConfigTestSnapshots: CloudGatewayMacSnapshotPersisting {
     let events: MacConfigTestEvents
     private var saveFails = false
+    private var saveGate: MacConfigTestGate?
     init(events: MacConfigTestEvents) { self.events = events }
     func failSave() { saveFails = true }
+    func pauseSave(_ gate: MacConfigTestGate) { saveGate = gate }
     func save(_: CloudGatewayMacInstalledConfig) async throws {
         try Task.checkCancellation()
         await events.append("cache")
+        if let saveGate {
+            await saveGate.arriveAndWait()
+            await events.append("cache-resumed")
+        }
         if saveFails { throw MacConfigTestFailure() }
     }
 }

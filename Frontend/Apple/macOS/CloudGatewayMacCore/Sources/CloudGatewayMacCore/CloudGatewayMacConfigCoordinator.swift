@@ -73,6 +73,7 @@ public actor CloudGatewayMacConfigCoordinator {
     private var busy = false
     private var generation: UInt64 = 0
     private var cancelActiveCommand: (@Sendable () -> Void)?
+    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         secrets: any CloudGatewayMacSecretClient,
@@ -87,6 +88,11 @@ public actor CloudGatewayMacConfigCoordinator {
     public func cancelPendingWork() {
         generation &+= 1
         cancelActiveCommand?()
+    }
+
+    public func waitForPendingWork() async {
+        guard busy else { return }
+        await withCheckedContinuation { drainWaiters.append($0) }
     }
 
     public func install(
@@ -240,6 +246,9 @@ public actor CloudGatewayMacConfigCoordinator {
         defer {
             busy = false
             cancelActiveCommand = nil
+            let waiters = drainWaiters
+            drainWaiters = []
+            waiters.forEach { $0.resume() }
         }
         let task = Task { try await operation(command) }
         cancelActiveCommand = { task.cancel() }

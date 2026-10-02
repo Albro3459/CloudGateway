@@ -3,6 +3,7 @@ from .enums import ErrorCode
 
 HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.AUTH_REQUIRED: 401,
+    ErrorCode.AUTH_UNAVAILABLE: 503,
     ErrorCode.ADMIN_REQUIRED: 403,
     ErrorCode.USER_NOT_PROVISIONED: 403,
     ErrorCode.INVALID_REQUEST: 400,
@@ -46,6 +47,11 @@ class ApiError(Exception):
 class AuthRequiredError(ApiError):
     code = ErrorCode.AUTH_REQUIRED
     default_message = "Authentication required."
+
+
+class AuthUnavailableError(ApiError):
+    code = ErrorCode.AUTH_UNAVAILABLE
+    default_message = "Authentication is temporarily unavailable. Try again shortly."
 
 
 class AdminRequiredError(ApiError):

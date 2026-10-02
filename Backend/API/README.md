@@ -111,6 +111,11 @@ All request/response JSON uses camelCase.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
 * `DELETE /account`: deletes the authenticated user's account and associated client documents after removing any live regional peers.
+
+Firebase certificate or verification-backend failures return a retryable 503,
+so clients can retain their session and retry. Invalid, expired, revoked,
+disabled, or deleted identities return 401. A service outage does not confirm
+product access and must not be treated as a successful authorization check.
 * `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
 
 For the full route, URL, and error contract, see [docs/api-contract.md](../../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Backend/Firebase/README.md](../Firebase/README.md).

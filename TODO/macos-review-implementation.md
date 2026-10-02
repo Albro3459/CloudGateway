@@ -1,7 +1,7 @@
 # macOS review fixes implementation plan
 
 Baseline: `a57baad`, branch `apple`, 2026-10-02
-Status: approved, implementation pending
+Status: complete, all eight implemented and validated
 
 Implement all eight findings from [the fresh review](macos-review.md).
 For status-read failure, retain the last observed status and the existing error
@@ -69,3 +69,11 @@ and any remaining runtime limits, then make logical local commits.
 
 Signed extension replacement, System Keychain ACL/XPC, Firebase persistence,
 and actual delayed OS networking callbacks remain separate runtime gates.
+
+## Completion
+
+All eight changes are implemented. Review loop 1 corrections are recorded in
+the component/integration notes. Review loop 2 found no remaining confirmed
+issues, and no third loop ran. The full no-target `./scripts/test.sh` passed
+with exit 0. Log: `/tmp/cloudgateway-macos-eight-fixes-full.log`.
+The WireGuard fork and containing repository are committed locally, without a push.

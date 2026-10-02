@@ -50,7 +50,7 @@ import Testing
     #expect(fixture.state.value.stopCount == 1)
 }
 
-@Test func macTunnelStopDeadlineCompletesOnceAndBlocksStartUntilConfirmedStop() async {
+@Test func macTunnelStopDeadlineKeepsCompletionPendingUntilConfirmedStop() async {
     let fixture = MacLifecycleFixture()
     fixture.start()
     await fixture.drain()
@@ -61,7 +61,7 @@ import Testing
     await fixture.drain()
     fixture.start()
     await fixture.drain()
-    #expect(fixture.state.value.stopCount == 1)
+    #expect(fixture.state.value.stopCount == 0)
     #expect(fixture.state.value.startResults == [.cancelled, .stopUnconfirmed])
     #expect(fixture.state.value.events == ["start", "stop"])
     fixture.state.value.stopCallback?()
@@ -70,6 +70,24 @@ import Testing
     await fixture.drain()
     #expect(fixture.state.value.events == ["start", "stop", "start"])
     #expect(fixture.state.value.stopCount == 1)
+}
+
+@Test func macTunnelRepeatedStopAfterDeadlineWaitsForActualShutdown() async {
+    let fixture = MacLifecycleFixture()
+    fixture.start()
+    await fixture.drain()
+    fixture.stop()
+    await fixture.drain()
+    fixture.state.value.deadline?()
+    await fixture.drain()
+    fixture.stop()
+    await fixture.drain()
+    #expect(fixture.state.value.stopCount == 0)
+    #expect(fixture.state.value.events == ["start", "stop"])
+    fixture.state.value.stopCallback?()
+    fixture.state.value.stopCallback?()
+    await fixture.drain()
+    #expect(fixture.state.value.stopCount == 2)
 }
 
 @Test func macTunnelOldCallbacksDoNotCompleteReplacementSession() async {

@@ -161,7 +161,8 @@ scan_apple_dead_code() {
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project "$ROOT/Frontend/Apple/iOS/CloudGateway.xcodeproj" \
-      --schemes CloudGateway --schemes CloudGatewayScreenshots ||
+      --schemes CloudGateway --schemes CloudGatewayScreenshots \
+      --report-exclude "**/wireguard-apple/**" ||
     failed=1
   run_check "Apple dead code: Kit tests" \
     periphery scan --quiet --strict \
@@ -184,6 +185,9 @@ test_apple_shared_packages() {
   fi
   cd "$ROOT" || return 1
   APPLE_SHARED_TEST_STATUS=0
+  run_check "Apple WireGuard startup regressions" \
+    make -C Frontend/Apple/wireguard-apple test ||
+    APPLE_SHARED_TEST_STATUS=1
   run_check "Apple Kit and AppCore package tests" \
     swift test --package-path Frontend/Apple/CloudGatewayKit ||
     APPLE_SHARED_TEST_STATUS=1

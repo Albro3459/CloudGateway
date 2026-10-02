@@ -95,7 +95,7 @@ class TestRunnerTests(unittest.TestCase):
                 self.assertEqual(self.called(result), targets)
                 self.assertNotIn("All checks passed.", result.stdout)
 
-    def run_shared_packages(self, fail_kit: bool) -> subprocess.CompletedProcess[str]:
+    def run_shared_packages(self, fail_kit: bool, fail_wireguard: bool = False) -> subprocess.CompletedProcess[str]:
         text = SCRIPT.read_text()
         start = text.index("test_apple_shared_packages() {")
         helper = text[start:text.index("\n}\n", start) + 3]
@@ -104,7 +104,9 @@ class TestRunnerTests(unittest.TestCase):
             "ROOT=/",
             "APPLE_SHARED_TEST_STATUS=-1",
             f"FAIL_KIT={int(fail_kit)}",
-            'run_check() { echo "CHECK: $1"; if [[ "$FAIL_KIT" -eq 1 && "$1" == *Kit* ]]; then return 1; fi; }',
+            f"FAIL_WIREGUARD={int(fail_wireguard)}",
+            'run_check() { echo "CHECK: $1"; if [[ "$FAIL_KIT" -eq 1 && "$1" == *Kit* ]] || '
+            '[[ "$FAIL_WIREGUARD" -eq 1 && "$1" == *WireGuard* ]]; then return 1; fi; }',
             helper,
             'for iteration in 1 2; do status=0; test_apple_shared_packages || status=$?; echo "RESULT: $status"; done',
         ])
@@ -115,13 +117,21 @@ class TestRunnerTests(unittest.TestCase):
     def test_shared_packages_run_once_for_both_platforms(self):
         result = self.run_shared_packages(fail_kit=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("CHECK:"), 2)
+        self.assertEqual(result.stdout.count("CHECK:"), 3)
         self.assertEqual(result.stdout.count("RESULT: 0"), 2)
 
     def test_shared_failure_is_cached_without_skipping_other_package(self):
         result = self.run_shared_packages(fail_kit=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("CHECK:"), 2)
+        self.assertEqual(result.stdout.count("CHECK:"), 3)
+        self.assertIn("CHECK: Apple Firebase auth adapter tests", result.stdout)
+        self.assertEqual(result.stdout.count("RESULT: 1"), 2)
+
+    def test_wireguard_failure_is_cached_without_skipping_shared_packages(self):
+        result = self.run_shared_packages(fail_kit=False, fail_wireguard=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("CHECK:"), 3)
+        self.assertIn("CHECK: Apple Kit and AppCore package tests", result.stdout)
         self.assertIn("CHECK: Apple Firebase auth adapter tests", result.stdout)
         self.assertEqual(result.stdout.count("RESULT: 1"), 2)
 

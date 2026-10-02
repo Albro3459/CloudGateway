@@ -7,19 +7,7 @@ import Foundation
 
 @MainActor
 final class CloudGatewayMacInventoryService {
-    enum Failure: Error {
-        case accessDenied
-        case offline
-        case unavailable
-
-        var cacheFailure: CloudGatewayMacInventoryFailure {
-            switch self {
-            case .accessDenied: .accessDenied
-            case .offline: .transport
-            case .unavailable: .invalidResponse
-            }
-        }
-    }
+    typealias Failure = CloudGatewayMacInventoryError
 
     private let auth: CloudGatewayFirebaseAuthAdapter
     private let database: Firestore
@@ -41,7 +29,7 @@ final class CloudGatewayMacInventoryService {
         guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
         let token: String
         do { token = try await auth.idToken(forceRefresh: false) }
-        catch { throw Self.failure(error) }
+        catch { throw Failure.classify(error) }
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         var request = URLRequest(url: try CloudGatewayAPIURLBuilder.apexAPIURL(
@@ -58,12 +46,12 @@ final class CloudGatewayMacInventoryService {
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
-        catch { throw Self.failure(error) }
+        catch { throw Failure.classify(error) }
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         guard let response = response as? HTTPURLResponse, response.url == request.url else { throw Failure.unavailable }
-        if response.statusCode == 401 || response.statusCode == 403 { throw Failure.accessDenied }
-        guard response.statusCode == 200, data.count <= 64 * 1024,
+        if let failure = Failure.accessResponseFailure(statusCode: response.statusCode) { throw failure }
+        guard data.count <= 64 * 1024,
               let result = try? JSONDecoder().decode(CloudGatewayAccessCheck.self, from: data),
               result.userId == user.uid,
               let role = CloudGatewayMacAccountRole(rawValue: result.role) else { throw Failure.unavailable }
@@ -114,28 +102,8 @@ final class CloudGatewayMacInventoryService {
             return snapshot
         } catch {
             try Task.checkCancellation()
-            throw Self.failure(error)
+            throw Failure.classify(error)
         }
-    }
-
-    private static func failure(_ error: Error) -> Error {
-        if error is CancellationError { return error }
-        if let failure = error as? Failure { return failure }
-        let error = error as NSError
-        if error.domain == "FIRFirestoreErrorDomain" {
-            if error.code == 7 || error.code == 16 { return Failure.accessDenied }
-            if error.code == 4 || error.code == 14 { return Failure.offline }
-        }
-        if error.domain == "FIRAuthErrorDomain" {
-            if [17005, 17011, 17021, 17020].contains(error.code) {
-                return error.code == 17020 ? Failure.offline : Failure.accessDenied
-            }
-        }
-        if error.domain == NSURLErrorDomain,
-           [NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost,
-            NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
-            NSURLErrorDNSLookupFailed].contains(error.code) { return Failure.offline }
-        return Failure.unavailable
     }
 
     private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {

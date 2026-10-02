@@ -51,6 +51,12 @@ The implementation received at most two review passes per chunk and an
 integrated auth/menu review. Local commits are stable WIP checkpoints while
 those signed runtime gates remain pending.
 
+The eight follow-up review fixes passed the full no-target `./scripts/test.sh`
+gate, including API, web, infrastructure, Firebase emulator, both Apple builds,
+all five scans, and 100 macOS core/IPC tests. WireGuard startup and six settings
+regressions run through the shared Apple gate. Two review loops completed with
+no remaining confirmed issues. Signed runtime checks remain pending.
+
 ## Signing and installation
 
 Both targets use the same development team. Register these identifiers and
@@ -97,6 +103,11 @@ Package dependencies must be statically linked or embedded inside the extension.
 The installed system extension cannot depend on the original build directory or
 the containing app's Frameworks directory.
 
+Both Apple projects use the checked-in `Frontend/Apple/wireguard-apple`
+submodule for Swift sources and the Go bridge. Initialize that submodule when
+checking out the repository. Local fork revisions are recorded by the containing
+repository. The build does not fetch a separate remote WireGuard package.
+
 Before runtime checks, inspect the built products with the validation script.
 Confirm the bundle IDs, team, development entitlement value, App Group, extension
 sandbox/network entitlements, profiles, arm64 executable, and framework runpaths.
@@ -142,6 +153,17 @@ role require an online refresh. Successful refresh prunes
 removed clients and outdated config hashes. No cache file contains a full
 config, private key, Firebase session, or pending device secret.
 
+Removed client history is excluded from the live inventory cap. Temporary
+Firebase token-verification service failures return a retryable error, preserving
+the native session and cached metadata without authorizing fresh online inventory.
+Invalid, revoked, disabled, or deleted identities still fail as access denial.
+
+Inventory refresh gates new connections but leaves local Turn Off available.
+Account switching keeps commands blocked until prior cancellation and required
+profile/secret recovery finish. Failed VPN preferences reads retain the last
+observed status and show the existing error, which only a successful preferences
+read clears. No additional visible status state is introduced.
+
 ## Secret storage and IPC
 
 The extension stores configs in the file-based System Keychain. The user app's
@@ -166,6 +188,13 @@ It is never saved in preferences. An asserted owner ID in a profile is not an
 authorization source. Start VPNs through the menu app. Starts from System
 Settings without a grant fail closed. System Settings can still stop a retained
 VPN and display its status.
+
+The provider reports startup failure if WireGuard cannot bring its device up or
+network settings miss their completion deadline. An unconfirmed settings call
+fences that adapter, including late callbacks and restart paths. A new provider
+instance is needed to retry after that timeout. Backend shutdown must complete
+before NetworkExtension receives stop completion. A stop deadline alone does
+not confirm disconnection or permit a replacement to start.
 
 Use an isolated fixture to check persistence across app relaunch and extension
 replacement. Verify unsigned/wrong-target callers and another macOS user cannot

@@ -20,6 +20,7 @@ public struct CloudGatewayMacMenuState: Sendable {
     private let cachedConfigs: [CloudGatewayMacInstalledConfig]
     private let profiles: [CloudGatewayMacInstalledProfile]
     private let commandInFlight: Bool
+    private let inventoryInFlight: Bool
     private let isOffline: Bool
     private let hasError: Bool
     private let hasRetainedSession: Bool
@@ -32,6 +33,7 @@ public struct CloudGatewayMacMenuState: Sendable {
         profiles: [CloudGatewayMacInstalledProfile],
         commandInFlight: Bool,
         isOffline: Bool,
+        inventoryInFlight: Bool = false,
         hasError: Bool = false,
         hasRetainedSession: Bool = false
     ) {
@@ -41,12 +43,13 @@ public struct CloudGatewayMacMenuState: Sendable {
         self.cachedConfigs = cachedConfigs
         self.profiles = profiles
         self.commandInFlight = commandInFlight
+        self.inventoryInFlight = inventoryInFlight
         self.isOffline = isOffline
         self.hasError = hasError
         self.hasRetainedSession = hasRetainedSession
     }
 
-    public var canRefresh: Bool { accountId != nil && !commandInFlight }
+    public var canRefresh: Bool { accountId != nil && !commandInFlight && !inventoryInFlight }
     public var canSignOut: Bool { accountId != nil || hasRetainedSession }
     public var canTurnOff: Bool {
         accountId != nil && !commandInFlight && profiles.contains(where: \.needsConfirmedStop)
@@ -113,7 +116,7 @@ public struct CloudGatewayMacMenuState: Sendable {
             tunnelTitle = "VPN connecting…"
         } else if profiles.contains(where: { $0.status == .disconnecting }) {
             tunnelTitle = "VPN disconnecting…"
-        } else if commandInFlight {
+        } else if commandInFlight || inventoryInFlight {
             tunnelTitle = "Working…"
         } else if setupState != .ready {
             return setupState.title
@@ -125,7 +128,23 @@ public struct CloudGatewayMacMenuState: Sendable {
         return isOffline ? "Offline · \(tunnelTitle)" : tunnelTitle
     }
 
-    private var canConnect: Bool { accountId != nil && setupState == .ready && !commandInFlight }
+    private var canConnect: Bool { accountId != nil && setupState == .ready && !commandInFlight && !inventoryInFlight }
+}
+
+public struct CloudGatewayMacProfileObservation: Sendable {
+    public private(set) var profiles: [CloudGatewayMacInstalledProfile] = []
+    public private(set) var errorMessage: String?
+
+    public init() {}
+
+    public mutating func didRead(_ profiles: [CloudGatewayMacInstalledProfile]) {
+        self.profiles = profiles
+        errorMessage = nil
+    }
+
+    public mutating func didFailRead() {
+        errorMessage = "Unable to read VPN preferences. Try Refresh again"
+    }
 }
 
 public struct CloudGatewayMacSessionToken: Equatable, Sendable {

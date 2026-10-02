@@ -43,6 +43,37 @@ import Testing
     #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true).canTurnOff)
 }
 
+@Test func macInventoryRefreshKeepsLocalStopAvailableAndConnectionsDisabled() {
+    let state = macMenuState(options: [macMenuOption(clientId: "client")],
+        profiles: [macMenuProfile(status: .connected)], inventoryBusy: true)
+    #expect(state.canTurnOff)
+    #expect(!state.canRefresh)
+    #expect(state.groups.first?.rows.first?.isEnabled == false)
+    #expect(state.statusTitle == "VPN connected")
+    #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true,
+        inventoryBusy: true).canTurnOff)
+}
+
+@Test func macPreferencesFailureRetainsLastObservedStatusAndErrorUntilSuccessfulRead() {
+    var observation = CloudGatewayMacProfileObservation()
+    let connected = macMenuProfile(status: .connected)
+    observation.didRead([connected])
+    observation.didFailRead()
+    #expect(observation.profiles == [connected])
+    #expect(observation.errorMessage == "Unable to read VPN preferences. Try Refresh again")
+    let refreshedInventory = macMenuState(options: [macMenuOption(clientId: "client")],
+        profiles: observation.profiles, hasError: observation.errorMessage != nil)
+    #expect(refreshedInventory.hasActiveTunnel)
+    #expect(refreshedInventory.statusTitle == "VPN connected")
+    #expect(refreshedInventory.canTurnOff)
+    observation.didFailRead()
+    #expect(observation.profiles == [connected])
+    #expect(observation.errorMessage != nil)
+    observation.didRead([])
+    #expect(observation.profiles.isEmpty)
+    #expect(observation.errorMessage == nil)
+}
+
 @Test func macOfflineInventoryUsesOnlyCurrentAccountsMatchingInstalledReferences() {
     let other = macMenuConfig(accountId: "other", clientId: "secret-client")
     let state = macMenuState(configs: [macMenuConfig(), other], profiles: [macMenuProfile(status: .disconnected)], offline: true)
@@ -131,12 +162,14 @@ private func macMenuState(
     configs: [CloudGatewayMacInstalledConfig] = [],
     profiles: [CloudGatewayMacInstalledProfile] = [],
     busy: Bool = false,
+    inventoryBusy: Bool = false,
     offline: Bool = false,
     hasError: Bool = false,
     hasRetainedSession: Bool = false
 ) -> CloudGatewayMacMenuState {
     CloudGatewayMacMenuState(accountId: accountId, setupState: setup, onlineOptions: options, cachedConfigs: configs,
                              profiles: profiles, commandInFlight: busy, isOffline: offline,
+                             inventoryInFlight: inventoryBusy,
                              hasError: hasError, hasRetainedSession: hasRetainedSession)
 }
 
