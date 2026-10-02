@@ -21,6 +21,7 @@ public actor CloudGatewayMacSecretService {
         now = { origin.duration(to: clock.now) }
     }
 
+    // periphery:ignore - Injected storage and time isolate host-free authorization tests
     init(store: any CloudGatewayMacSecretStoring, now: @escaping @Sendable () -> Duration = {
         .nanoseconds(Int64(DispatchTime.now().uptimeNanoseconds))
     }) {
