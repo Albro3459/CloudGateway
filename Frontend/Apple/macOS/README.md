@@ -58,6 +58,10 @@ Refresh Apple preferences/status asynchronously on launch, menu opening,
 preference changes, and commands. Observe status events for app-owned managers.
 The icon may indicate a hidden active tunnel without exposing client details.
 Launch at Login starts the menu app without connecting.
+Readiness requires the running extension's build and marketing versions to
+match the embedded copy. A mismatch exposes Update VPN Extension and disables
+new connections until explicit replacement and verification succeed. Increase
+the build number when releasing extension changes.
 
 ## Implementation And Validation
 

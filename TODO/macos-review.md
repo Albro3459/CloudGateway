@@ -1,6 +1,7 @@
 # macOS implementation review
 
-Status: agreed fixes implemented and validated, 2026-10-02.
+Status: all five findings implemented and validated, 2026-10-02. Previous fixes
+are committed as `4795d1e`; MAC-01 is complete.
 Review baseline: branch `apple` at `88508d0`.
 
 Scope: macOS menu app, browser authentication, offline inventory, VPN profile
@@ -24,7 +25,7 @@ verified findings, and consolidated overlapping setup issues.
 | Priority | Finding | Status | Detail |
 |---|---|---|---|
 | P1 | Known admin downgrade still permits fallback to other owners' cached configs | Resolved | [MENU-01](macos-review-menu.md) |
-| P2 | Existing extension hides the upgrade path | Deferred by user | MAC-01 below |
+| P2 | Existing extension hides the upgrade path | Resolved | MAC-01 below |
 | P2 | Refresh clears a required-restart state | Resolved | MAC-02 below |
 | P2 | Failed session restoration offers no Sign Out/account-switch action | Resolved | [Auth review](macos-review-auth.md) |
 | P3 | Accepted install payload can become an unreadable Keychain record | Resolved | [SEC-01](macos-review-security.md) |
@@ -32,7 +33,8 @@ verified findings, and consolidated overlapping setup issues.
 MENU-01 now invalidates old admin access before another inventory request and
 records the role authorizing each cache. The other agreed changes preserve
 restart state, expose retained-session logout, and enforce write/read record
-bounds. MAC-01 is deferred because no previous macOS app has been released.
+bounds. The user subsequently authorized MAC-01 so future releases can replace
+an existing extension through the menu.
 
 The architecture fits the intended scope: a thin AppKit menu, host-free
 coordinators, extension-owned secrets, authenticated IPC, and fenced auth/tunnel
@@ -43,8 +45,15 @@ findings. The gaps are in integration state and cache authorization.
 
 ### MAC-01: Existing extension hides the upgrade path (P2)
 
-* Resolution: deferred by the user. The first release has no previous app or
-  extension to upgrade. Version-aware update handling is future release work
+* Resolution: implemented and validated. Authenticated XPC readiness
+  reports the running extension's build and marketing versions. The app reads
+  the embedded extension's own metadata and requires both values to match.
+  A mismatched version or an older version-less reply shows Update VPN
+  Extension and prevents new connections. Replacement remains an explicit
+  activation action, and completion rechecks the responding version
+* Coverage: readiness for matching, changed build/release, and legacy replies;
+  version reply codec, invalid bundled metadata, and disabled connection rows
+  while an update is required
 * Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayExtensionActivationCoordinator.swift:14-27`
   and `CloudGatewayMacAppController.swift:385-388`
 * Trigger: launch an updated containing app while an older signed extension
@@ -79,8 +88,7 @@ findings. The gaps are in integration state and cache authorization.
   before the replacement extension is active
 * Fix: retain the restart requirement for the current app session. A generic
   readiness ping or another activation request must not clear it. After reboot,
-  the app starts a fresh readiness check. Version-aware upgrade handling is
-  deferred because no previous app version has been released
+  the app starts a fresh version-aware readiness check
 * Evidence: source control flow and Apple's activation documentation confirmed
   the transition. No live reboot-required installation was attempted
 
@@ -103,12 +111,19 @@ and transport fallback, persisted/cancelled invalidation, retained-session logou
 restart policy, and the encoded-record boundary. A bounded follow-up review
 confirmed the integration and cancellation correction without remaining blockers.
 
+MAC-01 passed `./scripts/test.sh apple` with 260 shared, 31 Firebase adapter,
+and 90 macOS tests, all five Periphery scans, both unsigned builds, and macOS
+packaging verification. Log: `/tmp/cloudgateway-macos-extension-update.log`.
+A GPT 6.1 Sol High review confirmed version comparison, legacy compatibility,
+menu gating, explicit activation, and restart fencing without blockers.
+
 Findings are source-confirmed. SEC-01 also has a synthetic JSON size calculation.
 No live role downgrade, extension replacement, or native auth/VPN action was
 performed. Signed activation, real XPC/System Keychain access, native Firebase
 persistence, cross-process/user VPN commands, and networking remain runtime
 gates. No keys, configs, tokens, or traffic were logged.
 
-The agreed production fixes and regression tests are in the working tree. The
-git index remains unchanged. Resolved hypotheses and the existing backend
+The earlier production fixes and regressions are committed as `4795d1e`.
+MAC-01 includes its version-handshake and menu-gating regressions. Resolved
+hypotheses and the existing backend
 access-policy consistency question remain in the component notes for follow-up.

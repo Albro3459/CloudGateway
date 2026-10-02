@@ -37,6 +37,10 @@ the project basename and scheme set, without the project's full path; see its
 The macOS scan now uses both `CloudGateway` and `CloudGatewayTunnel` schemes,
 keeping its cache separate from iOS. A regression check protects that distinction.
 
+The follow-up access/session guards and extension-version check passed
+`./scripts/test.sh apple`, including 90 macOS tests, all five strict Apple
+Periphery scans, both unsigned builds, and macOS packaging verification.
+
 Signed macOS builds remain blocked by missing
 matching Mac development profiles and a registered development Mac. Activation,
 real System Keychain/XPC behavior, native browser session persistence, and live
@@ -72,6 +76,18 @@ The app reports pending approval, failure, and a required reboot. A preferences
 save is not evidence that the provider started.
 When activation requires a restart, Refresh and repeat activation cannot clear
 the warning during the current app session.
+
+Readiness compares the running extension's build and marketing versions,
+returned over authenticated XPC, with the copy embedded in the app. A mismatch
+or an older reply without version metadata shows Update VPN Extension and
+disables new connections. Choosing that action submits the activation request;
+opening or refreshing the menu only checks readiness. A missing or invalid
+embedded extension requires reinstalling the app. Existing VPNs are retained
+until an explicit command or macOS replacement changes them.
+
+Increment the macOS project build number for every release that changes the
+extension, keeping app and extension versions consistent. The handshake cannot
+distinguish different binaries deliberately shipped with identical versions.
 
 The extension belongs at
 `Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.

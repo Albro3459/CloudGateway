@@ -17,6 +17,8 @@ import Testing
 @Test func macConnectNeedsReadySetupAndNoCommandInFlight() {
     let option = macMenuOption(clientId: "client")
     #expect(macMenuState(setup: .required, options: [option]).groups.first?.rows.first?.isEnabled == false)
+    #expect(macMenuState(setup: .updateRequired, options: [option]).groups.first?.rows.first?.isEnabled == false)
+    #expect(macMenuState(setup: .invalidBundle, options: [option]).groups.first?.rows.first?.isEnabled == false)
     #expect(macMenuState(options: [option], busy: true).groups.first?.rows.first?.isEnabled == false)
     #expect(macMenuState(options: [option]).groups.first?.rows.first?.isEnabled == true)
 }

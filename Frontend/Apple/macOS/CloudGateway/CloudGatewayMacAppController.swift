@@ -406,7 +406,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         }
         if activation.state != .ready {
             add(activation.state.title)
-            add("Set Up VPN…", #selector(setUp), enabled: activation.state.canActivate)
+            add(activation.state == .updateRequired ? "Update VPN Extension…" : "Set Up VPN…",
+                #selector(setUp), enabled: activation.state.canActivate)
         }
         menu.addItem(.separator())
         add("Open Website", #selector(openWebsite))

@@ -14,11 +14,12 @@ private struct SecretRequest: Codable, Sendable {
     var config: String?
 }
 
-private struct SecretReply: Codable, Sendable {
+struct SecretReply: Codable, Sendable {
     var reference: String?
     var isAvailable: Bool?
     var grant: String?
     var error: CloudGatewayMacSecretError?
+    var extensionVersion: CloudGatewayMacExtensionVersion?
 }
 
 public enum CloudGatewayMacPeerRequirement {
@@ -94,7 +95,11 @@ private final class SecretEndpoint: NSObject, CloudGatewayMacSecretXPC, Sendable
                     guard request.config == nil, request.reference == nil else {
                         throw CloudGatewayMacSecretError.invalidRequest
                     }
-                    result = SecretReply()
+                    guard let info = Bundle.main.infoDictionary,
+                          let version = CloudGatewayMacExtensionVersion(infoDictionary: info) else {
+                        throw CloudGatewayMacSecretError.storageFailure
+                    }
+                    result = SecretReply(extensionVersion: version)
                 case .install:
                     guard let config = request.config, request.reference == nil else {
                         throw CloudGatewayMacSecretError.invalidRequest
@@ -145,8 +150,8 @@ public final class CloudGatewayMacXPCSecretClient: CloudGatewayMacSecretClient, 
         )
     }
 
-    public func ping() async throws {
-        _ = try await send(SecretRequest(action: .ping, configId: "readiness"))
+    public func ping() async throws -> CloudGatewayMacExtensionVersion? {
+        try await send(SecretRequest(action: .ping, configId: "readiness")).extensionVersion
     }
 
     public func install(configId: String, config: CloudGatewayWireGuardConfig) async throws -> CloudGatewayMacSecretReference {
