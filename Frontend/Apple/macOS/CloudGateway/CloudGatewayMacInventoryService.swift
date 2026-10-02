@@ -12,6 +12,7 @@ final class CloudGatewayMacInventoryService {
     private let auth: CloudGatewayFirebaseAuthAdapter
     private let database: Firestore
     private let session: URLSession
+    private let controlPlane: CloudGatewayControlPlaneClient
 
     init(auth: CloudGatewayFirebaseAuthAdapter, database: Firestore) {
         self.auth = auth
@@ -22,7 +23,9 @@ final class CloudGatewayMacInventoryService {
         configuration.waitsForConnectivity = false
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
-        session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        self.session = session
+        controlPlane = CloudGatewayControlPlaneClient(originHost: "gocloudlaunch.com", session: session)
     }
 
     func checkAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
@@ -86,6 +89,35 @@ final class CloudGatewayMacInventoryService {
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         let regionsById = Dictionary(uniqueKeysWithValues: regions.map { ($0.regionId, $0) })
         return clients.map { CloudGatewayClientOption(client: $0, region: regionsById[$0.regionId]) }
+    }
+
+    func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion] {
+        guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
+        let regions = try await controlPlane.fetchRegions()
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        let token: String
+        do { token = try await auth.idToken(forceRefresh: false) }
+        catch { throw Failure.classify(error) }
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        let regionsWithCapacity = await controlPlane.addCapacity(to: regions, idToken: token)
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        return regionsWithCapacity
+    }
+
+    func createClient(regionId: String, clientName: String, for user: AuthenticatedUser) async throws -> String {
+        guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
+        let token: String
+        do { token = try await auth.idToken(forceRefresh: false) }
+        catch { throw Failure.classify(error) }
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        let response = try await controlPlane.createClient(regionId: regionId, clientName: clientName, idToken: token)
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        return response.clientName
     }
 
     private func documents(_ query: Query) async throws -> QuerySnapshot {

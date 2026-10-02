@@ -162,6 +162,12 @@ role require an online refresh. Successful refresh prunes
 removed clients and outdated config hashes. No cache file contains a full
 config, private key, Firebase session, or pending device secret.
 
+The signed-in menu offers Add Client. It loads enabled regions and current
+capacity when selected, then creates the named client through the regional API.
+Creation does not install or connect the new profile. A successful API response
+followed by a failed inventory refresh tells the user to refresh before trying
+again, preventing accidental duplicate clients.
+
 Removed client history is excluded from the live inventory cap. Temporary
 Firebase token-verification service failures return a retryable error, preserving
 the native session and cached metadata without authorizing fresh online inventory.

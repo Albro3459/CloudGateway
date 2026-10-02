@@ -30,12 +30,12 @@ Tests and docs land with each logical checkpoint, followed by review and cleanup
 | GUI | `NSStatusItem`, `NSMenu`, `LSUIElement`, no dashboard window |
 | Tunnel | `NEPacketTunnelProvider` packaged as a system extension |
 | Auth | Default browser, deployed device-auth flow, Firebase custom-token session |
-| Inventory | Existing authorized clients, grouped by region |
+| Inventory | Authorized clients grouped by region, with online client creation |
 | VPN | Select to install/connect/switch, separate Turn Off |
 | Offline | Current account's previously authorized installed configs |
 | Launch at Login | Optional, off initially, starts the app without connecting |
 | Sign Out / Quit | Retain the running VPN, profiles, secrets, and cloud clients |
-| Admin/account/client management | Website or mobile app |
+| Admin/account management and client deletion | Website or mobile app |
 | Distribution | Eventual direct ZIP, Developer ID signing and notarization |
 
 macOS 26 and arm64 are the initial implementation choice within the user's
@@ -43,9 +43,9 @@ accepted range. Revisit older OS or Intel support only for a concrete need.
 
 No blackout detection, traffic probes, runtime-counter polling, automatic
 blackout recovery, health snapshots, notifications, native provider login,
-client creation/deletion, dashboard, automatic VPN connection, updater, or
-release hosting work. Keep normal WireGuard network-change and sleep/wake
-handling. [CLI work remains deferred](macos-cli-deferred.md).
+client deletion, dashboard, automatic VPN connection, updater, or release
+hosting work. Keep normal WireGuard network-change and sleep/wake handling.
+[CLI work remains deferred](macos-cli-deferred.md).
 
 ## Identifiers And Capabilities
 

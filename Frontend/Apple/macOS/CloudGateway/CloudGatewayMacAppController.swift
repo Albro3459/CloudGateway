@@ -371,6 +371,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         (user != nil ? profileObservation.errorMessage : nil) ?? errorMessage
     }
 
+    private var canStartClientCreation: Bool {
+        user != nil && !isOffline && inventoryTask == nil && commandTask == nil
+            && cancellationTask == nil && !isShuttingDown
+    }
+
     private func render() {
         guard !isShuttingDown else { return }
         let state = presentation
@@ -417,6 +422,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 item.submenu = submenu
                 menu.addItem(item)
             }
+            add("Add Client…", #selector(addClient), enabled: canStartClientCreation)
             if state.canTurnOff { add("Turn Off", #selector(turnOff)) }
             add("Refresh", #selector(refresh), enabled: state.canRefresh && inventoryTask == nil)
             add("Sign Out", #selector(signOut), enabled: state.canSignOut)
@@ -503,6 +509,126 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
         render()
+    }
+
+    @objc private func addClient() {
+        guard canStartClientCreation, let account = user else { return }
+        let epoch = sessionEpoch
+        let token = sessionFence.currentToken
+        commandTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if sessionEpoch == epoch { commandTask = nil; render() } }
+            var createdClientName: String?
+            var creationAttempted = false
+            do {
+                try requireCurrent(epoch, token: token)
+                let enabledRegions = try await inventory.fetchCreateRegions(for: account)
+                try requireCurrent(epoch, token: token)
+                let creatableRegions = CloudGatewayConfigSelection.sortedRegions(enabledRegions.filter {
+                    $0.enabled && $0.capacity?.isKnown == true && $0.capacity?.isAtCapacity == false
+                })
+                guard !creatableRegions.isEmpty else {
+                    if enabledRegions.isEmpty {
+                        errorMessage = "No enabled regions are available"
+                    } else if enabledRegions.contains(where: { $0.capacity?.isKnown != true }) {
+                        errorMessage = "Unable to check region capacity. Try Add Client again"
+                    } else {
+                        errorMessage = "No region currently has available client capacity"
+                    }
+                    return
+                }
+                guard let request = promptForClient(in: creatableRegions, account: account, epoch: epoch) else {
+                    render()
+                    return
+                }
+                try requireCurrent(epoch, token: token)
+                let role = try await inventory.checkAccess(for: account)
+                try requireCurrent(epoch, token: token)
+                try await observeRole(role, accountId: account.uid)
+                try requireCurrent(epoch, token: token)
+                creationAttempted = true
+                let created = try await inventory.createClient(
+                    regionId: request.regionId, clientName: request.clientName, for: account
+                )
+                try requireCurrent(epoch, token: token)
+                createdClientName = created
+
+                let fetched = try await inventory.fetchOptions(for: account, role: role)
+                try requireCurrent(epoch, token: token)
+                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
+                try requireCurrent(epoch, token: token)
+                let saved = try await cache.load(accountId: account.uid)
+                try requireCurrent(epoch, token: token)
+                options = fetched
+                installed = saved.configs
+                lastSelectedIdentifier = saved.selectedIdentifier
+                errorMessage = nil
+            } catch CloudGatewayMacInventoryService.Failure.accessDenied {
+                guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                try? await cache.deny(accountId: account.uid)
+                guard sessionEpoch == epoch, !Task.isCancelled, auth.currentUser?.uid == account.uid else { return }
+                signOut()
+                errorMessage = "Account access was denied. Sign in again after access is restored"
+            } catch CloudGatewayAppError.accessDenied(let message) {
+                guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                errorMessage = message
+            } catch {
+                guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                if let createdClientName {
+                    errorMessage = "\(createdClientName) was created, but the client list could not refresh. Choose Refresh before trying again"
+                } else if creationAttempted {
+                    errorMessage = "Could not confirm whether the client was created. Refresh the client list before trying again"
+                } else {
+                    errorMessage = "Unable to load available regions. Refresh and try again"
+                }
+            }
+        }
+        render()
+    }
+
+    private func promptForClient(
+        in regions: [CloudGatewayRegion], account: AuthenticatedUser, epoch: UInt64
+    ) -> (regionId: String, clientName: String)? {
+        let regionPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+        for region in regions {
+            let item = NSMenuItem(title: "\(region.displayName) · \(region.capacity?.displayText ?? "Capacity unavailable")",
+                                  action: nil, keyEquivalent: "")
+            item.representedObject = region.regionId
+            regionPicker.menu?.addItem(item)
+        }
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        nameField.placeholderString = "For example, Work Mac"
+        let stack = NSStackView(views: [
+            NSTextField(labelWithString: "Region"), regionPicker,
+            NSTextField(labelWithString: "Display name"), nameField
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        NSLayoutConstraint.activate([
+            regionPicker.widthAnchor.constraint(equalToConstant: 320),
+            nameField.widthAnchor.constraint(equalToConstant: 320)
+        ])
+        stack.setFrameSize(stack.fittingSize)
+
+        let alert = NSAlert()
+        alert.messageText = "Add VPN Client"
+        alert.informativeText = "Create a client in the selected region. The new client will not connect automatically."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = nameField
+        guard alert.runModal() == .alertFirstButtonReturn,
+              sessionEpoch == epoch, !isShuttingDown, user?.uid == account.uid,
+              auth.currentUser?.uid == account.uid,
+              sessionFence.currentToken?.accountId == account.uid else { return nil }
+        let clientName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientName.isEmpty, clientName.unicodeScalars.count <= 80,
+              let regionId = regionPicker.selectedItem?.representedObject as? String else {
+            errorMessage = "Enter a client name with 1 to 80 characters and choose a region"
+            return nil
+        }
+        return (regionId, clientName)
     }
 
     @objc private func turnOff() {
