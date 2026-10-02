@@ -183,7 +183,7 @@ metadata, in any mode.
 ## Packaging
 
 `CloudGatewayCLICore` should be a SwiftPM library so the CLI is `swift test`-able
-with no Xcode, no signing, and no device, matching how `./scripts/test.sh apple`
+with no Xcode, no signing, and no device, matching how `./scripts/test.sh ios`
 already avoids `xcodebuild` for unit tests. Only the thin dispatch lives in the
 app target.
 

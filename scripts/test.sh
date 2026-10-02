@@ -6,11 +6,13 @@
 #   ./scripts/test.sh            # run everything (Apple builds unsigned)
 #   ./scripts/test.sh --signed   # run everything with signed Apple builds
 #   ./scripts/test.sh api        # API only
-#   ./scripts/test.sh apple      # Apple tests + unsigned no-device iOS build
-#   ./scripts/test.sh apple --signed  # Apple tests + signed no-device iOS build
+#   ./scripts/test.sh ios        # iOS tests + unsigned no-device iOS build
+#   ./scripts/test.sh ios --signed  # iOS tests + signed no-device iOS build
 #   ./scripts/test.sh macos      # macOS tests + unsigned arm64 app/extension build
 #   ./scripts/test.sh macos --signed  # signed macOS build + entitlement/profile checks
-#   ./scripts/test.sh web infra  # any combination of: api web infra apple macos firebase
+#   ./scripts/test.sh apple      # both iOS and macOS, with shared tests run once
+#   ./scripts/test.sh apple --signed  # both iOS and macOS with signed builds
+#   ./scripts/test.sh web infra  # any combination of: api web infra ios macos apple firebase
 #
 # One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
@@ -24,6 +26,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
 API_PYTHON_TOOLS_READY=0
 APPLE_SIGNED=0
+APPLE_SHARED_TEST_STATUS=-1
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
@@ -175,7 +178,22 @@ scan_apple_dead_code() {
   return "$failed"
 }
 
-test_apple() {
+test_apple_shared_packages() {
+  if [[ "$APPLE_SHARED_TEST_STATUS" -ne -1 ]]; then
+    return "$APPLE_SHARED_TEST_STATUS"
+  fi
+  cd "$ROOT" || return 1
+  APPLE_SHARED_TEST_STATUS=0
+  run_check "Apple Kit and AppCore package tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayKit ||
+    APPLE_SHARED_TEST_STATUS=1
+  run_check "Apple Firebase auth adapter tests" \
+    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+    APPLE_SHARED_TEST_STATUS=1
+  return "$APPLE_SHARED_TEST_STATUS"
+}
+
+test_ios() {
   cd "$ROOT" || return 1
 
   local failed=0
@@ -186,11 +204,7 @@ test_apple() {
   run_check "Apple release script syntax" \
     bash -n scripts/ios-release.sh ||
     failed=1
-  run_check "Apple Kit and AppCore package tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayKit ||
-    failed=1
-  run_check "Apple Firebase auth adapter tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+  test_apple_shared_packages ||
     failed=1
   run_check "Apple iOS project list" \
     xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj ||
@@ -245,11 +259,17 @@ scan_macos_dead_code() {
     return 0
   fi
   local failed=0
+  # Periphery keys its cache by project and scheme names, without the full path
+  # Keep this scheme set distinct from iOS to avoid mixing both tunnel indexes
   run_check "macOS dead code: app and extension" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/macOS/.periphery.yml" \
       --project "$ROOT/Frontend/Apple/macOS/CloudGateway.xcodeproj" \
-      --schemes CloudGateway --report-include "**/macOS/**" ||
+      --schemes CloudGateway --schemes CloudGatewayTunnel \
+      --report-include "**/macOS/**" \
+      --report-include "**/CloudGatewayDeviceAuthClient.swift" \
+      --report-include "**/CloudGatewayCustomTokenAuthServicing.swift" \
+      --report-include "**/CloudGatewayFirebaseCustomTokenSession.swift" ||
     failed=1
   run_check "macOS dead code: host-free tests" \
     periphery scan --quiet --strict \
@@ -271,11 +291,7 @@ test_macos() {
   run_check "macOS packaging verifier tests" \
     python3 -m unittest scripts/test_verify_macos_build.py ||
     failed=1
-  run_check "macOS Kit and AppCore package tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayKit ||
-    failed=1
-  run_check "macOS Firebase auth adapter tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+  test_apple_shared_packages ||
     failed=1
   run_check "macOS host-free core and IPC tests" \
     swift test --package-path Frontend/Apple/macOS/CloudGatewayMacCore ||
@@ -316,6 +332,8 @@ test_macos() {
 
 test_infra() {
   cd "$ROOT" || return 1
+
+  run_check "Test runner routing and failure handling" python3 -m unittest scripts/test_test_runner.py
 
   if [[ ! -d Infrastructure/OCI/terraform/.terraform || ! -f Infrastructure/OCI/terraform/.terraform.lock.hcl ]]; then
     echo "Initializing Terraform providers"
@@ -401,28 +419,42 @@ targets=()
 for arg in "$@"; do
   case "$arg" in
     --signed) APPLE_SIGNED=1 ;;
-    *) targets+=("$arg") ;;
+    api|web|app|ios|macos|apple|infra|firebase) targets+=("$arg") ;;
+    *)
+      echo "Unknown target: $arg (expected: api, web, ios, macos, apple, infra, firebase; optional flag: --signed)" >&2
+      exit 2
+      ;;
   esac
 done
 
 if [[ ${#targets[@]} -eq 0 ]]; then
   # Apple builds run last and unsigned by default; pass --signed to sign.
   # Non-macOS/CI runners should pass explicit targets instead.
-  targets=(api web infra firebase macos apple)
+  targets=(api web infra firebase apple)
 fi
 
+expanded_targets=()
 for target in "${targets[@]}"; do
   case "$target" in
+    apple) expanded_targets+=(ios macos) ;;
+    app) expanded_targets+=(web) ;;
+    *) expanded_targets+=("$target") ;;
+  esac
+done
+
+completed_targets=" "
+for target in "${expanded_targets[@]}"; do
+  if [[ "$completed_targets" == *" $target "* ]]; then
+    continue
+  fi
+  completed_targets+="$target "
+  case "$target" in
     api) run_step "API tests (pyright + pytest + compile)" test_api ;;
-    web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
-    apple) run_step "Apple tests + no-device iOS build" test_apple ;;
+    web) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
+    ios) run_step "iOS tests + no-device iOS build" test_ios ;;
     macos) run_step "macOS tests + arm64 app and system extension build" test_macos ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     firebase) run_step "Firebase schema, rules and API exchange tests (emulators)" test_firebase ;;
-    *)
-      echo "Unknown target: $target (expected: api, web, apple, macos, infra, firebase; optional flag: --signed)" >&2
-      exit 2
-      ;;
   esac
 done
 

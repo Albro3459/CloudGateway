@@ -143,15 +143,16 @@ until a later refresh provides a known capacity below the region limit.
 From the repo root:
 
 ```sh
-./scripts/test.sh apple
-./scripts/test.sh apple --signed
+./scripts/test.sh ios
+./scripts/test.sh ios --signed
 ```
 
-The unsigned Apple target validates the release-script syntax, runs the
+The unsigned iOS target validates the release-script syntax, runs the
 CloudGatewayKit/AppCore package tests, runs the Firebase-auth-adapter package
 tests, lists the Xcode project, and performs the no-device app build. The signed
 variant replaces only the unsigned build with explicit provisioning for the app
-and tunnel extension.
+and tunnel extension. Use `./scripts/test.sh apple` to validate both iOS and
+macOS, with shared package tests run once.
 
 Signed builds and archives use your login keychain. If it is locked, unlock it
 first with a command that omits the password so macOS prompts for it:

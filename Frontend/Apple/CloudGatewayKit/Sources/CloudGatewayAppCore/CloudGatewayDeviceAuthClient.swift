@@ -15,6 +15,7 @@ public struct CloudGatewayDeviceSecret: Sendable {
         self.bytes = bytes
     }
 
+    // periphery:ignore - Deterministic bytes verify device-secret encoding in host-free tests
     init(bytes: Data) throws {
         guard bytes.count == 32 else { throw CloudGatewayDeviceAuthError.invalidResponse }
         self.bytes = bytes

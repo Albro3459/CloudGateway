@@ -264,9 +264,10 @@ account isolation, stale work, denial versus transport errors, and command order
 
 ### 5. Final Integration And Docs
 
-* Run `./scripts/test.sh macos apple`, then the full `./scripts/test.sh` after
-  integration. Existing iOS/shared tests, dead-code scans, and unsigned iOS build
-  remain regression gates. No unrelated API/web/Firebase changes are expected.
+* Run `./scripts/test.sh apple` for both iOS and macOS, then the full
+  `./scripts/test.sh` after integration. Existing iOS/shared tests, dead-code
+  scans, and unsigned iOS build remain regression gates. No unrelated
+  API/web/Firebase changes are expected.
 * Complete signed macOS 26 arm64 checks: clean activation, delayed/denied
   approval, replacement/reboot, user isolation, repeated sessions, sleep/wake,
   network changes, offline use, and account/app lifecycle cases.

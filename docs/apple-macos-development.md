@@ -6,10 +6,13 @@ silicon. Build and test from the repository root:
 ```sh
 ./scripts/test.sh macos
 ./scripts/test.sh macos --signed
-./scripts/test.sh macos apple
+./scripts/test.sh ios
+./scripts/test.sh apple
 ```
 
-The default suite includes macOS. Automated checks do not activate extensions,
+The `ios` and `macos` targets select each platform. `apple` runs both, and the
+default suite runs every target. Shared package tests and repeated targets run
+once per invocation. Automated checks do not activate extensions,
 install VPN profiles, or change the running VPN. Unsigned builds prove
 compilation and packaging. Signed builds also inspect signatures, embedded
 profiles, and entitlements. Neither proves activation, authenticated IPC,
@@ -17,17 +20,24 @@ System Keychain access, or networking on a real machine.
 
 ## Validation checkpoint (2026-10-02)
 
-The full `./scripts/test.sh` run passed API, web, infrastructure, Firebase
-emulator, and iOS gates. Its macOS scan exposed compile/dead-code findings,
-which were fixed. The affected `./scripts/test.sh macos` rerun passed:
+The final no-argument `./scripts/test.sh` run exited successfully with
+`All checks passed.` It covered API, web, infrastructure, Firebase emulator,
+iOS, and macOS gates, including:
 
 * 260 shared Kit/AppCore tests, 31 Firebase adapter tests, and 73 macOS
   core/IPC tests, plus packaging-verifier tests
-* Strict app/extension and host-free test Periphery scans
-* Unsigned arm64 app/extension compilation and bundle packaging inspection
+* All five strict Apple Periphery scans
+* Unsigned iOS device and macOS arm64 app/extension builds
+* macOS bundle packaging inspection and test-runner routing/failure checks
 
-The iOS regression run passed its three strict Periphery scans, shared/adapter
-tests, and unsigned device build. Signed macOS builds remain blocked by missing
+An earlier run reproduced macOS dead-code findings from a Periphery cache
+containing both iOS and macOS indexes. Periphery derives its cache identity from
+the project basename and scheme set, without the project's full path; see its
+[cache implementation](https://github.com/peripheryapp/periphery/blob/3.7.4/Sources/XcodeSupport/Xcodebuild.swift).
+The macOS scan now uses both `CloudGateway` and `CloudGatewayTunnel` schemes,
+keeping its cache separate from iOS. A regression check protects that distinction.
+
+Signed macOS builds remain blocked by missing
 matching Mac development profiles and a registered development Mac. Activation,
 real System Keychain/XPC behavior, native browser session persistence, and live
 VPN/network checks are deferred for local approval. No validation activated the

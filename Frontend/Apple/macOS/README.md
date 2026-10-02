@@ -65,8 +65,9 @@ development profiles and local macOS approval are available.
 
 Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
 and packaging checks. Use `./scripts/test.sh macos --signed` for signed builds and
-profile/entitlement inspection. Keep `apple` as the iOS/shared regression gate.
-The default suite includes both. Automated checks do not activate extensions
+profile/entitlement inspection. Use `ios` for the iOS regression gate and
+`apple` for both platforms. The default suite runs every target. Shared package
+tests run once per invocation. Automated checks do not activate extensions
 or change the running VPN.
 
 Signed checks cover activation/replacement, root/user isolation, repeated
