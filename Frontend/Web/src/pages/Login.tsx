@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { User } from "firebase/auth";
 import { Eye, EyeOff } from "lucide-react";
 import { auth, onAuthStateChanged, sendPasswordResetEmail, signInWithApple, signInWithEmailAndPassword, signInWithGoogle, signOut } from "../firebase";
@@ -8,9 +8,16 @@ import packageJson from "../../package.json";
 import { AppNav } from "../components/AppNav";
 import { DisabledAccountMessage, NoRegionsMessage, SUPPORT_EMAIL } from "../components/AccessMessages";
 import { fetchOciRegions, useOciRegionsStore } from "../stores/ociRegionsStore";
+import { parseDeviceApprovalRoute } from "../helpers/deviceAuthHelper";
 
 const Login: React.FC = () => {
     const navigate = useNavigate();
+    const location = useLocation();
+    const approvalReturn = parseDeviceApprovalRoute(
+        location.state && typeof location.state === "object" && "returnTo" in location.state
+            ? (location.state as { returnTo?: unknown }).returnTo
+            : null,
+    );
     
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -109,6 +116,7 @@ const Login: React.FC = () => {
         user: User,
         showAccessError = false,
         isCurrent: () => boolean = () => true,
+        returnPath: string | null = null,
     ) => {
         try {
             const token = await user.getIdToken();
@@ -136,22 +144,24 @@ const Login: React.FC = () => {
                 return;
             }
 
-            await fetchOciRegions(token, true);
-            if (!isCurrent()) return;
-            const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
-
-            if (regionsError) {
-                throw new Error(regionsError);
-            }
-
-            if (!ociRegions?.length) {
+            if (!returnPath) {
+                await fetchOciRegions(token, true);
                 if (!isCurrent()) return;
-                await signOut(auth);
-                if (!isCurrent()) return;
-                if (showAccessError) {
-                    setError(getNoRegionsMessage());
+                const { ociRegions, error: regionsError } = useOciRegionsStore.getState();
+
+                if (regionsError) {
+                    throw new Error(regionsError);
                 }
-                return;
+
+                if (!ociRegions?.length) {
+                    if (!isCurrent()) return;
+                    await signOut(auth);
+                    if (!isCurrent()) return;
+                    if (showAccessError) {
+                        setError(getNoRegionsMessage());
+                    }
+                    return;
+                }
             }
         } catch {
             if (!isCurrent()) return;
@@ -163,7 +173,7 @@ const Login: React.FC = () => {
             return;
         }
 
-        if (isCurrent()) navigate("/home", { replace: true });
+        if (isCurrent()) navigate(returnPath || "/home", { replace: true });
     }, [navigate]);
 
     // Observer-driven provisioning, shared by the live callback and by the
@@ -177,11 +187,11 @@ const Login: React.FC = () => {
         if (!isCurrentObserver()) return;
         setSigningIn(true);
         try {
-            await navigateProvisionedUser(user, true, isCurrentObserver);
+            await navigateProvisionedUser(user, true, isCurrentObserver, approvalReturn?.path || null);
         } finally {
             if (isCurrentObserver()) setSigningIn(false);
         }
-    }, [navigateProvisionedUser]);
+    }, [navigateProvisionedUser, approvalReturn?.path]);
 
     // Starting an attempt supersedes every older one: a captured attempt id can
     // never be current again once this runs.
@@ -218,7 +228,7 @@ const Login: React.FC = () => {
         if (auth.currentUser && auth.currentUser.uid !== user.uid) {
             attemptStateRef.current.manualInvalidated = true;
         }
-        await navigateProvisionedUser(user, true, () => isCurrentManualAttempt(attempt, user.uid));
+        await navigateProvisionedUser(user, true, () => isCurrentManualAttempt(attempt, user.uid), approvalReturn?.path || null);
     };
 
     // An observer event that arrives mid-attempt is deferred rather than acted

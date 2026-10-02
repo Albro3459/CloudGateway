@@ -32,7 +32,7 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 [src/App.tsx](src/App.tsx)
 
 * HashRouter route map for GitHub Pages.
-* Routes login, home/dashboard, about, password reset, and admin user creation pages.
+* Routes login, home/dashboard, about, password reset, device approval, and admin user creation pages.
 
 [src/firebase.ts](src/firebase.ts)
 
@@ -52,6 +52,12 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 * Typed fetch wrapper for apex and regional FastAPI calls.
 * Adds Firebase bearer auth where required, sends JSON, and normalizes FastAPI error responses.
+
+[src/pages/DeviceApproval.tsx](src/pages/DeviceApproval.tsx) and [src/helpers/deviceAuthHelper.ts](src/helpers/deviceAuthHelper.ts)
+
+* `/#/auth/code?deviceRequestId=<32 lowercase hex>&userCode=<6 digits>` verifies and approves or denies an existing device request through the apex API.
+* Approval requires a signed-in account with access, shows the device description as unverified, and asks for confirmation before sending a decision.
+* Login accepts only that validated internal return route and skips regional inventory checks on the approval path. Ordinary login and password reset keep their existing routes.
 
 [src/helpers/apiEndpoints.ts](src/helpers/apiEndpoints.ts)
 
@@ -78,6 +84,8 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 * The apex FastAPI host owns global/read API calls:
   * `GET /api/regions`
   * `POST /api/auth/check-access`
+  * `POST /api/device/verify`
+  * `POST /api/device/approve`
 * Regional FastAPI hosts own protected regional calls:
   * `GET /api/capacity`
   * `POST /api/clients`

@@ -30,6 +30,7 @@ export type ApiHelperFailure = {
     errorCode?: string;
     requestId?: string;
     status?: number;
+    retryAfter?: string;
     data?: unknown;
     failureType?: "incompatible-response" | "sync-in-progress";
 };
@@ -204,7 +205,7 @@ const getFastApiError = (result: unknown) => {
     return null;
 };
 
-const getApiFailure = (result: unknown, status: number): ApiHelperFailure => {
+const getApiFailure = (result: unknown, status: number, retryAfter?: string): ApiHelperFailure => {
     const apiError = getFastApiError(result);
     if (apiError) {
         return {
@@ -212,6 +213,7 @@ const getApiFailure = (result: unknown, status: number): ApiHelperFailure => {
             error: apiError.message || apiError.code || `Error ${status}`,
             errorCode: apiError.code,
             requestId: apiError.requestId,
+            ...(retryAfter ? { retryAfter } : {}),
             status,
             data: result,
         };
@@ -220,6 +222,7 @@ const getApiFailure = (result: unknown, status: number): ApiHelperFailure => {
     return {
         success: false,
         error: typeof result === "string" && result ? result : `Error ${status}`,
+        ...(retryAfter ? { retryAfter } : {}),
         status,
         data: result,
     };
@@ -237,7 +240,7 @@ type SendJsonRequestOptions = {
     timeoutMs?: number;
 };
 
-const sendJsonRequest = async <TResponse>(
+export const sendJsonRequest = async <TResponse>(
     endpoint: string,
     token: string,
     method: "GET" | "POST" | "DELETE",
@@ -260,7 +263,7 @@ const sendJsonRequest = async <TResponse>(
         const result = await parseApiResponse(response);
 
         if (!response.ok) {
-            return getApiFailure(result, response.status);
+            return getApiFailure(result, response.status, response.headers?.get?.("Retry-After") || undefined);
         }
 
         return {
