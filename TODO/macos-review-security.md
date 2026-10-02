@@ -1,67 +1,55 @@
-# macOS security and tunnel lifecycle review
+# macOS security and tunnel review
 
-Review complete on branch `apple`, 2026-10-02. SEC-01 is resolved and validated.
+Baseline: `8cc964a`, 2026-10-02
+Status: fresh source review complete, signed runtime checks remain pending
 
 ## Confirmed findings
 
-### SEC-01, P3: accepted payload can become an unreadable Keychain record
+- [ ] **SEC1 · P2: Propagate WireGuard backend startup failures before reporting a connected VPN**
+  - Trigger: Start a valid config whose explicit `ListenPort` is already occupied, or encounter another UDP bind/open failure
+  - Source: `Frontend/Apple/wireguard-apple/Sources/WireGuardKitGo/api-apple.go:119` ignores `dev.Up()`'s error, then registers and returns a successful handle at lines 132–133. The macOS project pins this same `d03db4a` dependency. `Frontend/Apple/macOS/CloudGatewayTunnel/PacketTunnelProvider.swift:106` trusts the resulting adapter success
+  - Evidence: `/Users/alexbrodsky/go/pkg/mod/golang.zx2c4.com/wireguard@v0.0.0-20230209153558-1e2c3e5a3c14/device/device.go:150` falls back to the Down state when `upLocked` fails. `upLocked` returns `BindUpdate` errors at line 170, and `BindUpdate` returns socket-open errors at line 480. `Up()` returns that error at line 207. This module matches the fork's `go.mod` pin. The shared parser accepts an explicit `ListenPort`, although the current backend-generated client config omits it
+  - Impact: NetworkExtension receives a successful tunnel start while WireGuard stays down. The menu can show connected while routed traffic cannot reach the server, and the app has no macOS health monitor to correct that status
+  - Fix: Handle `dev.Up()` errors in the WireGuard fork, close the created device on failure, return a failed handle, and pin the corrected revision. Keep logs suppressed and surface a sanitized backend-start failure
+  - Validation: Confirmed by tracing pinned source. No live VPN or port-conflict reproduction performed
+  - Scope: The same dependency serves iOS, so its remediation needs both platform gates
 
-Status: implemented and validated. The store now encodes and bounds the
-complete record before either add or update opens the Keychain. Both writes use
-the same size limit as reads, so an oversized envelope fails with `invalidRequest`
-before a secret is persisted. Host-free regression coverage checks small-record
-round trips and an escaped valid config whose request fits but record does not.
-No real Keychain access occurs in these tests.
-Root passed both the Apple gate and final macOS rerun with the new boundary
-and committed/uncommitted round-trip regressions.
+- [ ] **SEC2 · P2: Keep the system stop completion pending until the backend actually stops**
+  - Trigger: Stop a tunnel while the adapter's serial work queue remains busy for more than five seconds, or while backend shutdown is delayed
+  - Source: `Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacIPC/CloudGatewayMacTunnelLifecycle.swift:105` schedules an unconfirmed stop deadline. `finishStop` at line 144 invokes all stop completions for both confirmed and unconfirmed results. `Frontend/Apple/macOS/CloudGatewayTunnel/PacketTunnelProvider.swift:63` forwards that completion to NetworkExtension
+  - Evidence: [Apple's stop callback contract](https://developer.apple.com/documentation/networkextension/nepackettunnelprovider/stoptunnel%28with%3Acompletionhandler%3A%29) requires completion after the tunnel fully stops. The current host-free `macTunnelStopDeadlineCompletesOnceAndBlocksStartUntilConfirmedStop` test explicitly expects completion at the unconfirmed deadline
+  - Impact: The provider signals that stop finished while its backend is still unconfirmed. The app's `MacVPNStopWaiter` accepts `.disconnected` as confirmation and can proceed with a profile replacement or switch. The instance-local lifecycle fence cannot communicate its uncertainty to that app workflow
+  - Fix: Retain the NetworkExtension stop completion until the adapter reports a real stop, or prove the backend has been forcibly torn down before completion. Keep timeout diagnostics separate from stop confirmation
+  - Validation: Confirmed callback-contract violation by source and existing test review. Actual OS cleanup, replacement-provider behavior, and overlapping backends remain unverified, so this finding does not claim that overlap has been reproduced
 
-* Location: `Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacIPC/CloudGatewayMacSystemKeychainStore.swift:28-30`
-* Related paths: the add operation encodes records at line 11;
-  `CloudGatewayMacXPC.swift:83-85,184-187` bounds the request;
-  `CloudGatewayMacSecretService.swift:34-46` bounds the raw config and stores it
-* Trigger: a valid WireGuard configuration with heavily escaped comment text
-  makes its install request approach the 96 KiB request limit. The stored JSON
-  replaces the action field with `ownerUserId` and `isCommitted`, adding bytes.
-  WireGuard parsing discards comments but preserves them in `rawValue`, so the
-  64 KiB raw-config bound does not prevent this case.
-* Impact: install successfully writes a provisional secret. Subsequent reads
-  reject its larger stored envelope, so commit, availability, rollback, and
-  start fail with `storageFailure`. Rollback cannot remove the orphaned secret
-  because it first reads the record. Generated production configs are small,
-  so normal configurations do not reach this boundary.
-* Smallest fix: define and enforce a separate encoded-record bound on both
-  write and read, sized for the bounded raw config plus JSON escaping and
-  metadata. Alternatively reject an oversized encoded record before adding it.
-* Evidence: source trace plus a standalone JSON size calculation with synthetic
-  all-zero test key material and ignored comment bytes. A 16,454-byte raw config
-  produced a 98,304-byte request and a 98,323-byte record using compact JSON.
-  Swift's slash escaping can shift both sizes equally; it does not remove the
-  envelope difference. This was not exercised against a signed extension or
-  the real System Keychain.
-
-## Resolved hypotheses
-
-* Concurrent active adapters were considered because the provider lifecycle is
-  instance-local and WireGuardKit scans the process for a utun descriptor and
-  installs a global log callback. Apple's
-  [NETunnelProviderManager configuration model](https://developer.apple.com/documentation/networkextension/netunnelprovidermanager)
-  allows only one enterprise VPN configuration to be enabled system-wide.
-  Concurrent container apps alone do not establish concurrent active providers.
-  This is not a confirmed finding. Repeated-session and provider teardown
-  behavior still require the existing signed runtime checks.
+- [ ] **SEC3 · P2: Fail tunnel startup when network settings remain unconfirmed**
+  - Trigger: macOS delays the `setTunnelNetworkSettings` callback beyond five seconds or never calls it. A late callback can also report a settings error after the start already succeeded
+  - Source: `Frontend/Apple/wireguard-apple/Sources/WireGuardKit/WireGuardAdapter.swift:439` logs the timeout and returns normally. Startup continues at lines 295–300 and reports success. `Frontend/Apple/macOS/CloudGatewayTunnel/PacketTunnelProvider.swift:106` forwards that successful adapter result
+  - Evidence: [Apple's start callback contract](https://developer.apple.com/documentation/networkextension/nepackettunnelprovider/starttunnel%28options%3Acompletionhandler%3A%29) requires waiting for network settings to complete before reporting that the provider is ready. A late settings callback only updates captured state inside `setNetworkSettings`, and cannot retract the completed start
+  - Impact: The menu can show connected without confirmed tunnel routes or DNS settings. No macOS health monitor detects this uncertain startup. Routing behavior and traffic bypass have not been observed and are not asserted here
+  - Fix: Treat an unconfirmed settings deadline as a sanitized startup failure, stop any started resources, and fence late settings callbacks so they cannot apply stale settings to a later session
+  - Validation: Confirmed by tracing the pinned dependency and Apple callback requirements. Runtime reproduction remains pending. The same dependency serves iOS
 
 ## Evidence and limits
 
-Source review confirms bidirectional code-signing requirements, caller macOS UID
-ownership, configuration identity binding, request-size bounds, single-use
-30-second start grants, and suppressed WireGuard payload logging. System Keychain
-items use an extension-only trusted-application ACL and explicitly select the
-System keychain. No exposed keys or auth tokens were found in these sources.
+Reviewed `CloudGatewayMacIPC`, macOS packet-provider composition, profile adapter
+boundaries, shared WireGuard parsing, the pinned WireGuard adapter/Go bridge,
+and existing authorization/lifecycle tests. No production code changed. No
+tests, builds, live Keychain, extension activation, or VPN actions were run.
 
-No project tests or live VPN actions were run by this reviewer. Signed activation, real
-XPC/System Keychain access, ACL persistence across extension upgrades, and live
-networking remain runtime validation gates.
+The listener authenticates the exact signed app identity before accepting a
+connection and checks identity on incoming messages. The client authenticates
+the exact signed extension identity. Local macOS SDK `NSXPCConnection.h`
+documents these checks. OS-derived non-root UID, stored UID/config ownership,
+bounded request/record sizes, canonical UUID handles, and bounded monotonic
+single-use start grants are present. No XPC method returns private material.
+WireGuard payload logging is discarded, and provider errors use fixed messages.
+Source review found no confirmed secret exposure or cross-user authorization
+bypass.
 
-Apple's [Network Extension Provider Packaging guidance](https://developer.apple.com/forums/thread/800887)
-supports the System Keychain and privileged Mach-service design and documents
-the shared system-extension process and simultaneous container-app users.
+Signed runtime checks still need to prove System Keychain sandbox access,
+trusted-application ACL persistence after extension replacement, incorrect
+signatures and cross-user rejection, and real stop/start behavior under delayed
+DNS/network-settings callbacks. These are verification gaps, not confirmed
+vulnerabilities. Current source intentionally retains committed secrets across
+replacement, sign-out, quit, and profile changes.

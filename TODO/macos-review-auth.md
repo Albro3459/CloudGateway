@@ -1,35 +1,82 @@
-# macOS Auth Review Findings
+# macOS authentication review
 
-Review date: 2026-10-02. Scope: browser device auth, shared device client,
-macOS Firebase adapter/session cleanup, controller auth integration, and API
-contract. Includes follow-up fixes. The git index remains unchanged.
+Baseline: `8cc964a`, 2026-10-02
+Status: fresh source review complete, 2 open P2 findings
 
-## Confirmed Findings
+## Confirmed findings
 
-### P2: A session that cannot restore has no sign-out or account-switch action
+### AUTH-1 (P2): Removed client history eventually blocks every online config
 
-- Resolution: implemented and validated. Menu state distinguishes a
-  retained Firebase session from a restored account. The signed-out menu offers
-  Sign Out during restoration and after restoration fails. The existing action
-  cancels stale work and clears Firebase without stopping the retained VPN
-- Coverage: a host-free menu regression verifies logout remains available while
-  restoring or showing an error, with inventory and VPN controls still hidden
-- Validation: root passed the combined Apple gate and final macOS rerun,
-  including the retained-session menu regression
-- Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift:343-357`, `:488-494`, `:181-206`
-- Trigger: Firebase has a persisted user, but startup access verification fails because the API is unavailable, or the device is offline with no usable account cache
-- Impact: `user` remains nil while `auth.currentUser` remains present. The menu offers Sign In and Refresh Session, but both retry restoration. Sign Out appears only in the authenticated presentation or the unsettled-exchange cleanup case. The user cannot discard this retained session or start browser sign-in for another account from the app
-- Smallest fix: Offer Sign Out whenever a retained Firebase user exists, including the signed-out presentation with a failed restoration. Reuse the existing sign-out action to cancel restoration and clear the SDK session
-- Evidence: Source-confirmed control flow. `restoreSession` keeps the Firebase user on offline/unavailable failures, the `user == nil` menu omits Sign Out, and `signIn` retries restoration whenever `auth.currentUser` exists. No runtime or live Firebase check performed
+- Trigger: an account has 1,001 readable `Instances` documents, even when only
+  one is active. For admins, this count includes every owner's removed clients.
+- Evidence: `CloudGatewayMacInventoryService.swift:78-79` queries all Instances
+  with only an owner filter for users. The mapper preserves `removed` rows
+  (`CloudGatewayAppServiceFacade.swift:330-348`).
+  `CloudGatewayMacAccountCache.swift:108` rejects the entire options array above
+  1,000 before `:117` filters usable configs and enabled regions.
+  Backend deletion retains each document with `status=removed`
+  (`Backend/API/src/firebase.py:742`, `:864-874`).
+- Impact: a full inventory refresh throws `invalidMetadata`, and the controller
+  clears both online options and installed rows in its generic failure handler
+  (`CloudGatewayMacAppController.swift:268-272`). Current active configs become
+  unavailable until old cloud documents are removed. Refresh cannot recover.
+  This can happen through ordinary create/delete history without exceeding a
+  region's active capacity.
+- Fix: discard removed history before enforcing the bounded authorization
+  inventory limit. Keep the installed cache limit and fail closed on duplicate
+  identifiers or invalid active config material. Bound/page the Firestore read
+  separately if fleet history also needs a download limit.
+- Validation: source trace only. No code changes or tests run.
 
-## Review Notes
+### AUTH-2 (P2): A Firebase verification outage signs out valid accounts and clears offline inventory
 
-- Browser links require the configured HTTPS origin, exact approval fragment, expected request ID/code, and no credentials/query. The device secret stays in POST bodies and process memory
-- Polling uses a monotonic deadline and validates every late result before exchange. Cancellation fences old attempts
-- The Firebase custom-token session hides an exchange while pending, blocks new exchanges until late callbacks settle, signs out stale callbacks, and retains a cleanup marker on failed sign-out for relaunch cleanup
-- Existing host-free tests cover these intended guards using fakes. They do not establish Firebase SDK callback/persistence ordering or deployed endpoint behavior
-- Existing API policy difference: `/auth/check-access` checks Firebase token validity and `UserRoles` but does not read `Users` existence/disabled (`Backend/API/src/auth.py:51-57`, `Backend/API/src/firebase.py:115-121`). Device authorization and Firestore rules require both. Normal online macOS inventory still fails closed when the Firestore rules deny access. No new macOS authorization bypass established by this review. This shared backend policy merits separate review if product denial through `Users.disabled` must govern every API
+- Trigger: the regional API remains reachable, but Firebase certificate fetch
+  or revocation/user lookup fails temporarily during `/api/auth/check-access`.
+- Evidence: `Backend/API/src/firebase.py:90-94` catches every exception from
+  `verify_id_token(..., check_revoked=True)` as `AuthRequiredError`.
+  `Backend/API/src/errors.py:5` maps that error to HTTP 401.
+  `CloudGatewayMacInventoryService.swift:65` treats every 401 as confirmed
+  access denial. Restoration and refresh then persist `cache.deny` and sign out
+  (`CloudGatewayMacAppController.swift:204-210`, `:260-267`).
+  The installed Firebase Admin SDK distinguishes `CertificateFetchError` from
+  invalid tokens (`firebase_admin/_token_gen.py:404-405`), and revocation checks
+  call `get_user` (`firebase_admin/_auth_client.py:756-761`). These are actual
+  upstream operations, not solely local token parsing.
+- Impact: a temporary infrastructure failure removes the valid local session
+  and its offline config metadata. Profiles and secrets remain installed. The
+  user must finish browser sign-in again, and a later online selection installs
+  fresh metadata/profile state because the installed cache was cleared. The
+  displayed claim that account access was denied is false for this trigger.
+- Scope: the root cause is shared API error handling. The macOS-specific
+  consequence is destructive denial handling during restoration and refresh.
+- Fix: return a retryable service error for certificate/transport/backend
+  failures. Reserve 401 for invalid, expired, revoked, disabled, or deleted
+  identities. macOS should keep its session/cache when the check is unavailable
+  and expose a retry without treating that response as authorization success.
+- Validation: repository and installed dependency source trace only. No outage
+  was induced, and no live auth or tests were run.
 
-## Pending Suspicions
+## Evidence and limits
 
-None. Source review complete. Native Firebase persistence, signed app behavior, and live device-auth flow remain untested in this review.
+- Reviewed the device secret generator and HTTP client, exact approval URL
+  validation, redirects, response bounds/status mapping, monotonic polling,
+  expiry, backoff, cancellation, and late response fences.
+- Reviewed Firebase custom-token session publication, exchange/sign-out
+  generations, failed cleanup quarantine, startup marker handling, auth
+  listeners, and controller sign-in/restoration/sign-out integration.
+- Reviewed UID/session fences, role downgrade persistence, owner filtering,
+  online authorization/config hashes, installed selection, per-account cache
+  storage, and transport-only offline fallback.
+- Traced device-auth request creation, approval, secret binding, atomic token
+  consumption, product access checks, API verification, and Firestore rules.
+- Read existing browser, device-client, Firebase exchange, and account-cache
+  tests as evidence. They cover cancellation, late SDK completion, cleanup
+  failure, role downgrade, and account isolation through fakes. They do not
+  cover the two integration failures recorded above.
+- No severe auth bypass, exposed auth token, or device-secret leak confirmed
+  within this review scope. No unresolved source hypothesis is presented as a
+  finding.
+- No code changes, builds, tests, live sign-in, endpoint requests, or VPN
+  actions. Actual Firebase SDK listener/keychain persistence ordering,
+  abrupt process-exit marker durability, signed macOS runtime behavior, and
+  deployed approval/Firestore contracts still require runtime verification.
