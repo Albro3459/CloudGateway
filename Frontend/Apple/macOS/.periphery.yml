@@ -1,0 +1,6 @@
+# Objective-C entry points are called by AppKit, NetworkExtension, and XPC
+retain_objc_accessible: true
+retain_codable_properties: true
+# Shared Kit/AppCore APIs also support iOS
+# Revisit redundant public analysis after both clients ship
+disable_redundant_public_analysis: true

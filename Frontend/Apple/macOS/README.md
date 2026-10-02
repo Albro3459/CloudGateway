@@ -1,8 +1,9 @@
 # CloudGateway macOS
 
-Planned minimal menu bar app and packet-tunnel system extension. Native targets
-do not exist yet. See [TODO/macos-app.md](../../../TODO/macos-app.md) for the
-implementation checkpoints, identifiers, and signed validation gates.
+Native menu bar app and packet-tunnel system extension. See
+[TODO/macos-app.md](../../../TODO/macos-app.md) for the implementation checkpoints
+and [development runbook](../../../docs/apple-macos-development.md) for signing,
+installation, storage boundaries, and runtime checks.
 
 The initial app targets macOS 26 on Apple silicon. Shared Kit/AppCore floors
 stay unchanged. It uses `NSStatusItem` and `NSMenu` as an `LSUIElement` agent,
@@ -59,9 +60,10 @@ Build the thin app and extension together. Prove signed activation, authenticate
 IPC, System Keychain storage, and a tunnel before adding auth and daily-use
 inventory. Add tests/docs with each logical checkpoint and review completed work.
 
-Add `./scripts/test.sh macos` when targets land, covering host-free tests,
-Periphery, unsigned arm64 builds, and optional signed builds. Keep `apple`
-as the iOS/shared regression gate. Automated checks do not activate extensions
+Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
+and packaging checks. Use `./scripts/test.sh macos --signed` for signed builds and
+profile/entitlement inspection. Keep `apple` as the iOS/shared regression gate.
+The default suite includes both. Automated checks do not activate extensions
 or change the running VPN.
 
 Signed checks cover activation/replacement, root/user isolation, repeated

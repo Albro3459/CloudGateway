@@ -1,0 +1,13 @@
+{
+  "pins": [
+    {
+      "identity": "wireguard-apple",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/Albro3459/wireguard-apple",
+      "state": {
+        "revision": "d03db4ab36fd564c0b0e6eabe098fb8972f26229"
+      }
+    }
+  ],
+  "version": 3
+}

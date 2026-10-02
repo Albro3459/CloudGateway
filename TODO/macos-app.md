@@ -1,11 +1,17 @@
 # macOS Menu Bar Implementation Plan
 
-Status: ready for implementation. Native macOS targets do not exist yet. The
+Status: implementation in progress. Native macOS targets, authenticated IPC,
+System Keychain storage, and automated validation are implemented. The
 API and React device-auth flow is deployed. Live browser approval, Firebase
 custom-token sign-in, authenticated API access, cross-region polling, and
 dashboard anti-framing headers were verified on 2026-10-01. Deployed Firestore
 rules and active TTL policies still need operator verification. See the
 [device-auth runbook](../docs/device-auth.md).
+
+The user is remote and deferred signed activation and live VPN checks until
+they can handle macOS approval. Continue implementation and automated builds,
+recording those runtime gates as pending. See the
+[macOS development runbook](../docs/apple-macos-development.md).
 
 Build a thin menu app and packet-tunnel system extension together. Prove the
 signed tunnel before adding auth and daily-use inventory. Keep the UI plain.
@@ -303,14 +309,14 @@ every OS crash has that cause. Record sanitized errors and report OS crashes.
 ## Delegation, Review, And Commits
 
 The main agent owns architecture, security boundaries, contracts, integration,
-review, the index, and local commits when authorized. Use `gpt-6-luna` helpers
-at high or xHigh effort as needed during implementation, with bounded tasks and
+review, the index, and local commits when authorized. Use `gpt-6.1-sol` helpers
+at high effort as requested, with bounded tasks and
 file ownership. Helpers do not stage, commit, push, deploy, activate extensions,
 or change the running VPN. Keep shared files under one owner.
 
 Hold review until a logical checkpoint is complete. Review its diff/evidence,
-delegate bounded fixes and cleanup, and repeat affected validation until
-material findings are resolved. Use a Luna xHigh review helper for substantial
+delegate bounded fixes and cleanup, and use at most two review rounds per chunk
+with affected validation. Use a Sol High review helper for substantial
 XPC/Keychain, lifecycle, or auth changes when useful. Finish with an integrated
 review across checkpoints.
 
