@@ -2,6 +2,11 @@ import CloudGatewayKit
 import CryptoKit
 import Foundation
 
+public enum CloudGatewayMacAccountRole: String, Codable, Sendable {
+    case user
+    case admin
+}
+
 public struct CloudGatewayMacAccountCacheSnapshot: Codable, Equatable, Sendable {
     public var configs: [CloudGatewayMacInstalledConfig]
     public var selectedIdentifier: String?
@@ -26,6 +31,7 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
         let accountId: String
         var snapshot: CloudGatewayMacAccountCacheSnapshot
         var authorizedConfigHashes: [String: String]
+        var authorizedRole: CloudGatewayMacAccountRole? = nil
     }
 
     private let directory: URL
@@ -55,6 +61,9 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
             let payload = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: path))
             guard payload.version == 1, payload.accountId == accountId,
                   payload.snapshot.configs.count <= 1000 else { throw CloudGatewayMacCacheError.invalidMetadata }
+            guard payload.authorizedRole != nil else {
+                return Payload(version: 1, accountId: accountId, snapshot: .init(), authorizedConfigHashes: [:])
+            }
             for config in payload.snapshot.configs {
                 try validate(config, accountId: accountId)
                 guard payload.authorizedConfigHashes[config.identifier] == config.snapshot.configHash else {
@@ -85,10 +94,21 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
         try write(payload)
     }
 
-    public func authorize(accountId: String, options: [CloudGatewayClientOption]) throws {
+    public func observeRole(accountId: String, role: CloudGatewayMacAccountRole) throws {
+        // A confirmed downgrade must persist even when the caller quits
+        try validate(accountId: accountId)
+        if role == .user, (try? loadPayload(accountId: accountId))?.authorizedRole != .user {
+            try deny(accountId: accountId)
+        }
+    }
+
+    public func authorize(accountId: String, role: CloudGatewayMacAccountRole, options: [CloudGatewayClientOption]) throws {
         try Task.checkCancellation()
         try validate(accountId: accountId)
         guard options.count <= 1000 else { throw CloudGatewayMacCacheError.invalidMetadata }
+        guard role == .admin || options.allSatisfy({ $0.client.ownerUid == accountId }) else {
+            throw CloudGatewayMacCacheError.accessDenied
+        }
         var payload = (try? loadPayload(accountId: accountId)) ?? Payload(
             version: 1, accountId: accountId, snapshot: .init(), authorizedConfigHashes: [:]
         )
@@ -120,6 +140,7 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
             payload.snapshot.selectedIdentifier = nil
         }
         payload.snapshot.accessAllowed = true
+        payload.authorizedRole = role
         try write(payload)
         deniedAccounts.remove(accountId)
     }

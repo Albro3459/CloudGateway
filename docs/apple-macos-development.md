@@ -70,6 +70,8 @@ Run the signed app from `/Applications/CloudGateway.app`. Keep SIP enabled.
 Choose Setup VPN explicitly and handle macOS approval in System Settings.
 The app reports pending approval, failure, and a required reboot. A preferences
 save is not evidence that the provider started.
+When activation requires a restart, Refresh and repeat activation cannot clear
+the warning during the current app session.
 
 The extension belongs at
 `Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.
@@ -110,10 +112,17 @@ SDK exchange is fenced and cleaned up even if its completion arrives after
 sign-out. A metadata-only unsettled-exchange marker causes local cleanup on
 relaunch after an interrupted exchange. Failed cleanup keeps the session hidden
 until local sign-out succeeds. Product-access checks precede menu inventory.
+Sign Out remains available for a retained session while restoration is pending
+or has failed, so the user can clear it and sign in to another account.
 
 Firestore uses memory-only SDK caching and explicit server reads. The app keeps
 a separate metadata-only installed cache and last selection per Firebase UID.
-Known access denial prevents offline fallback. Successful refresh prunes
+Known access denial prevents offline fallback. Cache authorization records the
+role that permitted its inventory. A confirmed admin-to-user change clears the
+admin cache before fetching inventory. If invalidation cannot persist, local
+sign-out prevents restoring stale access after relaunch. An online refresh
+rebuilds access under the current role. Caches without a recorded
+role require an online refresh. Successful refresh prunes
 removed clients and outdated config hashes. No cache file contains a full
 config, private key, Firebase session, or pending device secret.
 
@@ -131,6 +140,8 @@ references when preference inspection proves no profile uses them. A failed
 commit, ambiguous preferences result, or metadata persistence failure retains
 the secret for recovery. Replacing a profile retains its prior committed secret.
 Sign-out, quit, and XPC disconnection never delete committed secrets.
+The encoded secret record is size-checked before add/update with the same bound
+used for reads, so an accepted write cannot create an oversized unreadable item.
 
 A signed app obtains a short-lived, single-use start grant bound to its macOS
 user, config, and opaque reference. The provider consumes that grant before

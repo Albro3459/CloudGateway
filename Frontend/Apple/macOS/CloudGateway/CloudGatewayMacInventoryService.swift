@@ -37,7 +37,7 @@ final class CloudGatewayMacInventoryService {
         session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
-    func checkAccess(for user: AuthenticatedUser) async throws -> String {
+    func checkAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
         guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
         let token: String
         do { token = try await auth.idToken(forceRefresh: false) }
@@ -66,17 +66,17 @@ final class CloudGatewayMacInventoryService {
         guard response.statusCode == 200, data.count <= 64 * 1024,
               let result = try? JSONDecoder().decode(CloudGatewayAccessCheck.self, from: data),
               result.userId == user.uid,
-              result.role == "user" || result.role == "admin" else { throw Failure.unavailable }
-        return result.role
+              let role = CloudGatewayMacAccountRole(rawValue: result.role) else { throw Failure.unavailable }
+        return role
     }
 
-    func fetchOptions(for user: AuthenticatedUser, role: String) async throws -> [CloudGatewayClientOption] {
-        guard auth.currentUser?.uid == user.uid, role == "user" || role == "admin" else {
+    func fetchOptions(for user: AuthenticatedUser, role: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption] {
+        guard auth.currentUser?.uid == user.uid else {
             throw Failure.accessDenied
         }
         let regionQuery = database.collection("Regions").whereField("enabled", isEqualTo: true)
         var clientQuery: Query = database.collectionGroup("Instances")
-        if role != "admin" { clientQuery = clientQuery.whereField("ownerUid", isEqualTo: user.uid) }
+        if role != .admin { clientQuery = clientQuery.whereField("ownerUid", isEqualTo: user.uid) }
         let regions = try await documents(regionQuery).documents.compactMap { document -> CloudGatewayRegion? in
             let data = document.data()
             guard data["enabled"] as? Bool == true,
@@ -91,7 +91,7 @@ final class CloudGatewayMacInventoryService {
             if let timestamp = data["updatedAt"] as? Timestamp { data["updatedAt"] = timestamp.dateValue() }
             guard let client = CloudGatewayFirestoreClientMapper.client(
                 documentId: document.documentID, regionFallback: document.reference.parent.parent?.documentID, data: data
-            ), role == "admin" || client.ownerUid == user.uid else { return nil }
+            ), role == .admin || client.ownerUid == user.uid else { return nil }
             return client
         }
         try Task.checkCancellation()

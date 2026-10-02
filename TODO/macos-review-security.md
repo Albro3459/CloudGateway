@@ -1,10 +1,19 @@
 # macOS security and tunnel lifecycle review
 
-Review complete on branch `apple`, 2026-10-02. Production files remain unchanged.
+Review complete on branch `apple`, 2026-10-02. SEC-01 is resolved and validated.
 
 ## Confirmed findings
 
 ### SEC-01, P3: accepted payload can become an unreadable Keychain record
+
+Status: implemented and validated. The store now encodes and bounds the
+complete record before either add or update opens the Keychain. Both writes use
+the same size limit as reads, so an oversized envelope fails with `invalidRequest`
+before a secret is persisted. Host-free regression coverage checks small-record
+round trips and an escaped valid config whose request fits but record does not.
+No real Keychain access occurs in these tests.
+Root passed both the Apple gate and final macOS rerun with the new boundary
+and committed/uncommitted round-trip regressions.
 
 * Location: `Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacIPC/CloudGatewayMacSystemKeychainStore.swift:28-30`
 * Related paths: the add operation encodes records at line 11;

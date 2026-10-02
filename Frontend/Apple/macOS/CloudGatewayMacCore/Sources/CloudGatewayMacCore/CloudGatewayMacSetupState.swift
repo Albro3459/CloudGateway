@@ -8,9 +8,11 @@ public enum CloudGatewayMacSetupState: Equatable, Sendable {
     case failed(code: Int)
     case unavailable
 
+    public var canRefreshReadiness: Bool { self != .awaitingRestart }
+
     public var canActivate: Bool {
         switch self {
-        case .activating, .awaitingApproval, .checkingConnection: false
+        case .activating, .awaitingApproval, .awaitingRestart, .checkingConnection: false
         default: true
         }
     }

@@ -21,6 +21,19 @@ import Testing
     #expect(macMenuState(options: [option]).groups.first?.rows.first?.isEnabled == true)
 }
 
+@Test func retainedSessionCanSignOutWhileRestoringWithoutExposingVPNControls() {
+    for busy in [false, true] {
+        let state = macMenuState(accountId: nil, options: [macMenuOption(clientId: "visible")],
+            configs: [macMenuConfig()], profiles: [macMenuProfile(status: .connected)],
+            busy: busy, hasError: true, hasRetainedSession: true)
+        #expect(state.canSignOut)
+        #expect(state.groups.isEmpty)
+        #expect(!state.canTurnOff)
+        #expect(!state.canRefresh)
+        #expect(state.hasActiveTunnel)
+    }
+}
+
 @Test func macTurnOffWorksWithSignedInActiveTunnelEvenWhenSetupIsUnavailable() {
     let state = macMenuState(setup: .required, profiles: [macMenuProfile(status: .connected)])
     #expect(state.canTurnOff)
@@ -117,10 +130,12 @@ private func macMenuState(
     profiles: [CloudGatewayMacInstalledProfile] = [],
     busy: Bool = false,
     offline: Bool = false,
-    hasError: Bool = false
+    hasError: Bool = false,
+    hasRetainedSession: Bool = false
 ) -> CloudGatewayMacMenuState {
     CloudGatewayMacMenuState(accountId: accountId, setupState: setup, onlineOptions: options, cachedConfigs: configs,
-                             profiles: profiles, commandInFlight: busy, isOffline: offline, hasError: hasError)
+                             profiles: profiles, commandInFlight: busy, isOffline: offline,
+                             hasError: hasError, hasRetainedSession: hasRetainedSession)
 }
 
 private func macMenuOption(

@@ -22,6 +22,7 @@ public struct CloudGatewayMacMenuState: Sendable {
     private let commandInFlight: Bool
     private let isOffline: Bool
     private let hasError: Bool
+    private let hasRetainedSession: Bool
 
     public init(
         accountId: String?,
@@ -31,7 +32,8 @@ public struct CloudGatewayMacMenuState: Sendable {
         profiles: [CloudGatewayMacInstalledProfile],
         commandInFlight: Bool,
         isOffline: Bool,
-        hasError: Bool = false
+        hasError: Bool = false,
+        hasRetainedSession: Bool = false
     ) {
         self.accountId = accountId
         self.setupState = setupState
@@ -41,10 +43,11 @@ public struct CloudGatewayMacMenuState: Sendable {
         self.commandInFlight = commandInFlight
         self.isOffline = isOffline
         self.hasError = hasError
+        self.hasRetainedSession = hasRetainedSession
     }
 
     public var canRefresh: Bool { accountId != nil && !commandInFlight }
-    public var canSignOut: Bool { accountId != nil }
+    public var canSignOut: Bool { accountId != nil || hasRetainedSession }
     public var canTurnOff: Bool {
         accountId != nil && !commandInFlight && profiles.contains(where: \.needsConfirmedStop)
     }

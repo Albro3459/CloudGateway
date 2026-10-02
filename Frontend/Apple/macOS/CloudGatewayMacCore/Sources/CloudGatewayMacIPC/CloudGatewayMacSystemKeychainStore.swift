@@ -5,10 +5,11 @@ final class CloudGatewayMacSystemKeychainStore: CloudGatewayMacSecretStoring {
     private let service = "com.gocloudlaunch.gateway.tunnel.macos.configs"
 
     func add(_ record: CloudGatewayMacStoredSecret, reference: CloudGatewayMacSecretReference) throws {
+        let data = try Self.encodeRecord(record)
         var attributes = try query(reference: reference)
         attributes.removeValue(forKey: kSecMatchSearchList as String)
         attributes[kSecUseKeychain as String] = try systemKeychain()
-        attributes[kSecValueData as String] = try JSONEncoder().encode(record)
+        attributes[kSecValueData as String] = data
         attributes[kSecAttrLabel as String] = "CloudGateway VPN configuration"
         var trustedApplication: SecTrustedApplication?
         guard SecTrustedApplicationCreateFromPath(nil, &trustedApplication) == errSecSuccess,
@@ -38,9 +39,18 @@ final class CloudGatewayMacSystemKeychainStore: CloudGatewayMacSecretStoring {
     }
 
     func update(_ record: CloudGatewayMacStoredSecret, reference: CloudGatewayMacSecretReference) throws {
+        let data = try Self.encodeRecord(record)
         try check(SecItemUpdate(try query(reference: reference) as CFDictionary, [
-            kSecValueData as String: try JSONEncoder().encode(record)
+            kSecValueData as String: data
         ] as CFDictionary))
+    }
+
+    static func encodeRecord(_ record: CloudGatewayMacStoredSecret) throws -> Data {
+        let data = try JSONEncoder().encode(record)
+        guard data.count <= CloudGatewayMacSecretBounds.requestBytes else {
+            throw CloudGatewayMacSecretError.invalidRequest
+        }
+        return data
     }
 
     func remove(reference: CloudGatewayMacSecretReference) throws {

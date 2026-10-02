@@ -2,12 +2,20 @@
 
 Review date: 2026-10-02. Scope: browser device auth, shared device client,
 macOS Firebase adapter/session cleanup, controller auth integration, and API
-contract. Review only. Production files and git index remain unchanged.
+contract. Includes follow-up fixes. The git index remains unchanged.
 
 ## Confirmed Findings
 
 ### P2: A session that cannot restore has no sign-out or account-switch action
 
+- Resolution: implemented and validated. Menu state distinguishes a
+  retained Firebase session from a restored account. The signed-out menu offers
+  Sign Out during restoration and after restoration fails. The existing action
+  cancels stale work and clears Firebase without stopping the retained VPN
+- Coverage: a host-free menu regression verifies logout remains available while
+  restoring or showing an error, with inventory and VPN controls still hidden
+- Validation: root passed the combined Apple gate and final macOS rerun,
+  including the retained-session menu regression
 - Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift:343-357`, `:488-494`, `:181-206`
 - Trigger: Firebase has a persisted user, but startup access verification fails because the API is unavailable, or the device is offline with no usable account cache
 - Impact: `user` remains nil while `auth.currentUser` remains present. The menu offers Sign In and Refresh Session, but both retry restoration. Sign Out appears only in the authenticated presentation or the unsettled-exchange cleanup case. The user cannot discard this retained session or start browser sign-in for another account from the app
@@ -25,4 +33,3 @@ contract. Review only. Production files and git index remain unchanged.
 ## Pending Suspicions
 
 None. Source review complete. Native Firebase persistence, signed app behavior, and live device-auth flow remain untested in this review.
-

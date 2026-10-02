@@ -12,7 +12,7 @@ final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtens
     private var readinessTask: Task<Void, Never>?
 
     func refreshReadiness() {
-        guard request == nil, readinessTask == nil else { return }
+        guard request == nil, readinessTask == nil, state.canRefreshReadiness else { return }
         state = .checkingConnection
         readinessTask = Task { @MainActor [weak self] in
             guard let self else { return }

@@ -42,11 +42,15 @@ Use memory-only Firestore SDK caching and persist metadata-only offline
 inventory/selection per Firebase UID. Keep raw `wireGuardConfig` documents and
 keys out of files. Another account's cache and retained system profiles never
 become the current inventory. Admin visibility follows backend authorization.
+The cache records its authorization role. A confirmed admin-to-user change
+invalidates the admin cache before inventory requests, and a full online refresh
+rebuilds the permitted inventory. Role-less caches require that refresh too.
 
 Selection explicitly connects or switches. Turn Off retains configs/secrets
 and cloud clients. Sign Out hides inventory and ends the local Firebase session,
 retaining VPN, profiles, secrets, and account caches. Quit exits only the menu
-app. Signed-out menus expose no configs or VPN controls. System Settings can
+app. Signed-out menus expose no configs or VPN controls. Sign Out remains
+available when a retained Firebase session cannot restore. System Settings can
 stop retained profiles and display their status. Starting requires the
 authenticated menu app, which supplies a single-use start grant.
 

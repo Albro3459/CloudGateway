@@ -1,11 +1,12 @@
 # macOS implementation review
 
-Status: source review complete, branch `apple` at `88508d0`, 2026-10-02.
+Status: agreed fixes implemented and validated, 2026-10-02.
+Review baseline: branch `apple` at `88508d0`.
 
 Scope: macOS menu app, browser authentication, offline inventory, VPN profile
 coordination, packet-tunnel extension, authenticated IPC, System Keychain,
-packaging, and shared macOS-only code. This review records findings without
-changing production code or activating the extension/VPN.
+packaging, and shared macOS-only code. Follow-up fixes address the agreed
+findings. No extension/VPN activation is part of this work.
 
 ## Review notes
 
@@ -20,18 +21,18 @@ verified findings, and consolidated overlapping setup issues.
 
 ## Confirmed findings
 
-| Priority | Finding | Detail |
-|---|---|---|
-| P1 | Known admin downgrade still permits fallback to other owners' cached configs | [MENU-01](macos-review-menu.md) |
-| P2 | Existing extension hides the upgrade path | MAC-01 below |
-| P2 | Refresh clears a required-restart state | MAC-02 below |
-| P2 | Failed session restoration offers no Sign Out/account-switch action | [Auth review](macos-review-auth.md) |
-| P3 | Accepted install payload can become an unreadable Keychain record | [SEC-01](macos-review-security.md) |
+| Priority | Finding | Status | Detail |
+|---|---|---|---|
+| P1 | Known admin downgrade still permits fallback to other owners' cached configs | Resolved | [MENU-01](macos-review-menu.md) |
+| P2 | Existing extension hides the upgrade path | Deferred by user | MAC-01 below |
+| P2 | Refresh clears a required-restart state | Resolved | MAC-02 below |
+| P2 | Failed session restoration offers no Sign Out/account-switch action | Resolved | [Auth review](macos-review-auth.md) |
+| P3 | Accepted install payload can become an unreadable Keychain record | Resolved | [SEC-01](macos-review-security.md) |
 
-Resolve MENU-01 before release. Cache authorization must reflect a known role
-reduction before a later inventory failure can select offline fallback. The
-other findings need version-aware setup state, a retained-session sign-out
-action, and consistent encoded-record bounds.
+MENU-01 now invalidates old admin access before another inventory request and
+records the role authorizing each cache. The other agreed changes preserve
+restart state, expose retained-session logout, and enforce write/read record
+bounds. MAC-01 is deferred because no previous macOS app has been released.
 
 The architecture fits the intended scope: a thin AppKit menu, host-free
 coordinators, extension-owned secrets, authenticated IPC, and fenced auth/tunnel
@@ -42,6 +43,8 @@ findings. The gaps are in integration state and cache authorization.
 
 ### MAC-01: Existing extension hides the upgrade path (P2)
 
+* Resolution: deferred by the user. The first release has no previous app or
+  extension to upgrade. Version-aware update handling is future release work
 * Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayExtensionActivationCoordinator.swift:14-27`
   and `CloudGatewayMacAppController.swift:385-388`
 * Trigger: launch an updated containing app while an older signed extension
@@ -61,6 +64,10 @@ findings. The gaps are in integration state and cache authorization.
 
 ### MAC-02: Refresh clears the required-restart state (P2)
 
+* Resolution: implemented and validated on 2026-10-02. The setup policy
+  blocks readiness refresh and activation while awaiting restart. The
+  coordinator checks this policy before changing setup state. Host-free tests
+  cover both blocked actions and allowed retries from ordinary setup states
 * Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayExtensionActivationCoordinator.swift:14-25,60-67`
   and `CloudGatewayMacAppController.swift:513-516`
 * Trigger: activation completes with `willCompleteAfterReboot`, then the user
@@ -70,19 +77,31 @@ findings. The gaps are in integration state and cache authorization.
   a failed ping changes it to `required`
 * Impact: the restart instruction disappears and the UI can enable connection
   before the replacement extension is active
-* Fix: retain the restart requirement until the expected extension version is
-  confirmed active after reboot. A generic readiness ping must not clear it
+* Fix: retain the restart requirement for the current app session. A generic
+  readiness ping or another activation request must not clear it. After reboot,
+  the app starts a fresh readiness check. Version-aware upgrade handling is
+  deferred because no previous app version has been released
 * Evidence: source control flow and Apple's activation documentation confirmed
   the transition. No live reboot-required installation was attempted
 
 ## Validation
 
-The preceding full `./scripts/test.sh` run passed at this revision. During this
+The preceding full `./scripts/test.sh` run passed at the review baseline. During this
 review, `./scripts/test.sh macos` also exited 0 with `All checks passed.` Its
 log is `/tmp/cloudgateway-macos-review-validation.log`. It covered 260 shared
 Kit/AppCore tests, 31 Firebase adapter tests, 73 macOS core/IPC tests, packaging
 tests, both strict macOS Periphery scans, the unsigned arm64 build, and bundle
 inspection. Existing tests do not cover the confirmed integration failures.
+
+Follow-up validation passed `./scripts/test.sh apple`, covering both platforms
+and all five Periphery scans. After the final cancellation correction,
+`./scripts/test.sh macos` passed again with 260 shared, 31 Firebase adapter, and
+85 macOS tests, both macOS Periphery scans, unsigned build, and packaging checks.
+Logs: `/tmp/cloudgateway-macos-review-fixes-apple.log` and
+`/tmp/cloudgateway-macos-review-fixes-final.log`. New regressions cover downgrade
+and transport fallback, persisted/cancelled invalidation, retained-session logout,
+restart policy, and the encoded-record boundary. A bounded follow-up review
+confirmed the integration and cancellation correction without remaining blockers.
 
 Findings are source-confirmed. SEC-01 also has a synthetic JSON size calculation.
 No live role downgrade, extension replacement, or native auth/VPN action was
@@ -90,6 +109,6 @@ performed. Signed activation, real XPC/System Keychain access, native Firebase
 persistence, cross-process/user VPN commands, and networking remain runtime
 gates. No keys, configs, tokens, or traffic were logged.
 
-Production code and the git index remain unchanged. Only these review notes
-were added. Resolved hypotheses and the existing backend access-policy
-consistency question remain in the component notes for follow-up.
+The agreed production fixes and regression tests are in the working tree. The
+git index remains unchanged. Resolved hypotheses and the existing backend
+access-policy consistency question remain in the component notes for follow-up.

@@ -68,7 +68,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             checkAccess: { [weak self] candidate in
                 guard let self else { return false }
                 do {
-                    _ = try await inventory.checkAccess(for: candidate)
+                    let role = try await inventory.checkAccess(for: candidate)
+                    try Task.checkCancellation()
+                    guard auth.currentUser?.uid == candidate.uid else { throw CancellationError() }
+                    try await observeRole(role, accountId: candidate.uid)
+                    try Task.checkCancellation()
                     return true
                 } catch CloudGatewayMacInventoryService.Failure.accessDenied {
                     try? await cache.deny(accountId: candidate.uid)
@@ -171,7 +175,10 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 if sessionEpoch == epoch { restorationTask = nil; render() }
             }
             do {
-                _ = try await inventory.checkAccess(for: candidate)
+                let role = try await inventory.checkAccess(for: candidate)
+                try requireCurrent(epoch)
+                guard auth.currentUser?.uid == candidate.uid else { return }
+                try await observeRole(role, accountId: candidate.uid)
                 try requireCurrent(epoch)
                 guard auth.currentUser?.uid == candidate.uid else { return }
                 user = candidate
@@ -221,9 +228,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             do {
                 let role = try await inventory.checkAccess(for: account)
                 try requireCurrent(epoch, token: token)
+                try await observeRole(role, accountId: account.uid)
+                try requireCurrent(epoch, token: token)
                 let fetched = try await inventory.fetchOptions(for: account, role: role)
                 try requireCurrent(epoch, token: token)
-                try await cache.authorize(accountId: account.uid, options: fetched)
+                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
                 try requireCurrent(epoch, token: token)
                 let saved = try await cache.load(accountId: account.uid)
                 try requireCurrent(epoch, token: token)
@@ -264,6 +273,17 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
         render()
+    }
+
+    private func observeRole(_ role: CloudGatewayMacAccountRole, accountId: String) async throws {
+        do {
+            try await cache.observeRole(accountId: accountId, role: role)
+        } catch {
+            guard auth.currentUser?.uid == accountId else { throw CancellationError() }
+            // Failed invalidation must not restore stale privileges after relaunch
+            try? auth.signOut()
+            throw error
+        }
     }
 
     private func refreshProfiles() {
@@ -330,7 +350,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private var presentation: CloudGatewayMacMenuState {
         CloudGatewayMacMenuState(accountId: user?.uid, setupState: activation.state,
             onlineOptions: options, cachedConfigs: installed, profiles: profileSnapshot,
-            commandInFlight: commandTask != nil || cancellationTask != nil || inventoryTask != nil, isOffline: isOffline, hasError: errorMessage != nil)
+            commandInFlight: commandTask != nil || cancellationTask != nil || inventoryTask != nil, isOffline: isOffline,
+            hasError: errorMessage != nil, hasRetainedSession: auth.currentUser != nil)
     }
 
     private func render() {
@@ -352,6 +373,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 add(restorationTask == nil ? "Sign In…" : "Restoring session…", #selector(signIn),
                     enabled: restorationTask == nil && !auth.isCustomTokenSignInSettling)
                 if auth.currentUser != nil { add("Refresh Session", #selector(refresh)) }
+                if state.canSignOut { add("Sign Out", #selector(signOut)) }
                 if auth.isCustomTokenSignInSettling {
                     add("Sign-in cleanup is still pending")
                     add("Retry Sign-in Cleanup", #selector(signOut))

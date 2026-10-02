@@ -1,16 +1,17 @@
 # macOS menu, inventory, and config review
 
-Status: source review complete on branch `apple`, 2026-10-02
+Status: MENU-01 resolved and validated, 2026-10-02
 
 Scope: menu composition, Firebase inventory, account metadata cache, VPN profile
-adapter, config installation/switching, and setup state. Review only, no
-production edits or live VPN commands.
+adapter, config installation/switching, and setup state. The review produced
+MENU-01, and its cache fix is now implemented. No live VPN commands run.
 
 ## Confirmed findings
 
 ### MENU-01, P1: known admin downgrade still restores other owners' cached configs
 
-* Location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift:222`
+* Status: cache and controller integration implemented and validated
+* Original location: `Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift:222`
   and `:235-244`,
   `Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift:5-13`
 * Trigger: an admin previously installs another owner's client. The account
@@ -32,9 +33,22 @@ production edits or live VPN commands.
   for `user`, and `:94` checks the same ownership after mapping. The controller
   loses that distinction in its transport-failure path. Cache snapshots only
   retain the installing account and `accessAllowed`. Source trace confirmed,
-  no live role change or VPN start performed. Existing offline tests cover
-  denial versus transport, but do not cover a known role downgrade followed
-  by a transport failure
+  no live role change or VPN start performed. The original tests omitted a
+  known role downgrade followed by a transport failure
+* Implementation: authorization records the explicit `user` or `admin` role.
+  `observeRole` clears admin/unknown-role caches when `user` is confirmed,
+  before inventory fetches. Failed metadata reads also count as unknown,
+  and denial remains effective in memory if writing fails. Complete user
+  authorization requires every option's owner UID to match the account.
+  Legacy records without a role remain unavailable until a full refresh
+* Integration: browser access checks, session restoration, and inventory refresh
+  all observe the role before continuing. Failed invalidation signs out the
+  matching native account so an old disk cache cannot restore after relaunch.
+  The known downgrade must finish even if its caller is cancelled during quit
+* Added coverage: downgrade followed by transport fallback and cache reopen,
+  rejected late install, unchanged user/admin roles, safe user-to-admin
+  observation, legacy-role cutoff, foreign-owner rejection, and failed
+  denial persistence, and cancellation after the role is handed to the cache
 
 ## Reviewed behavior
 
@@ -57,8 +71,12 @@ production edits or live VPN commands.
 
 ## Validation
 
-Source and existing host-free tests reviewed. No builds, tests, or live VPN
-actions run by this review agent. Root agent owns validation.
+Source and existing host-free tests reviewed. Meaningful cache regressions
+added for MENU-01. No builds, tests, or live VPN actions run by this agent.
+Root agent owns integration validation.
+Root passed `./scripts/test.sh apple` and the final `./scripts/test.sh macos`
+rerun with 85 macOS tests, Periphery, build, and packaging checks. The follow-up
+source review confirmed the failed-persistence/cancellation cleanup path.
 
 Cross-process/macOS-user command ordering remains a signed runtime limit.
 The coordinator serializes one actor, and the system extension owns one shared
