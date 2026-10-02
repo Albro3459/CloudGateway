@@ -49,7 +49,7 @@ def main() -> int:
         "deviceName": args.device_name,
     })
     if status != 201:
-        print("Could not start device authorization. Check enablement and creation limits.")
+        print("Could not start device authorization. Check API configuration and creation limits.")
         return 1
     print(f"Code: {created['userCode']}")
     print(f"Open: {created['verificationUriComplete']}")

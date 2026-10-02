@@ -108,7 +108,6 @@ def build_client(
     *,
     store: StubDeviceAuthStore | None = None,
     admin: StubDeviceAuthAdmin | None = None,
-    enabled: bool = True,
     peer_host: str = "127.0.0.1",
     random_bytes=None,
 ) -> tuple[TestClient, StubDeviceAuthStore, StubDeviceAuthAdmin]:
@@ -125,7 +124,6 @@ def build_client(
     settings = Settings(
         region_id="us-test-1",
         dashboard_cors_origin="https://gocloudlaunch.com",
-        device_auth_enabled=enabled,
     )
     app = create_app(
         settings=settings,
@@ -242,12 +240,6 @@ def test_pending_poll_and_all_device_errors_are_no_store():
     assert unauthenticated.status_code == 401
     assert unauthenticated.json()["error"]["code"] == "AUTH_REQUIRED"
     assert unauthenticated.headers["cache-control"] == "no-store"
-
-    disabled, _, _ = build_client(enabled=False)
-    unavailable = disabled.post("/device/code", json=_code_body())
-    assert unavailable.status_code == 503
-    assert unavailable.json()["error"]["code"] == "DEVICE_AUTH_UNAVAILABLE"
-    assert unavailable.headers["cache-control"] == "no-store"
 
 
 def test_retry_after_and_external_failures_are_sanitized():
@@ -383,7 +375,7 @@ def test_signing_failure_consumes_request_and_replay_does_not_sign_again():
 def test_browser_access_failures_use_safe_existing_or_device_errors():
     unprovisioned = FakeRepository()
     verifier = FakeTokenVerifier({"user-token": AuthenticatedUser(uid="user-1")})
-    settings = Settings(device_auth_enabled=True)
+    settings = Settings()
     store = StubDeviceAuthStore()
     admin = StubDeviceAuthAdmin()
     app = create_app(

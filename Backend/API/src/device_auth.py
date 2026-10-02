@@ -139,7 +139,6 @@ class DeviceAuthService:
         self._random_bytes = random_bytes or secrets.token_bytes
 
     def create(self, *, device_secret_hash: str, device_name: str | None, source_ip: str) -> dict[str, object]:
-        self._ensure_enabled()
         if not _SECRET_HASH_PATTERN.fullmatch(device_secret_hash):
             raise DeviceAuthInvalidError()
         origin = self._dashboard_origin()
@@ -181,7 +180,6 @@ class DeviceAuthService:
         }
 
     def verify(self, *, user: AuthenticatedUser, device_request_id: str, user_code: str) -> DeviceAuthResult:
-        self._ensure_enabled()
         _validate_device_request_id(device_request_id)
         self._require_browser_access(user.uid)
         try:
@@ -206,7 +204,6 @@ class DeviceAuthService:
         user_code: str,
         decision: str,
     ) -> DeviceAuthResult:
-        self._ensure_enabled()
         _validate_device_request_id(device_request_id)
         self._require_browser_access(user.uid)
         try:
@@ -225,7 +222,6 @@ class DeviceAuthService:
         return result
 
     def exchange(self, *, device_request_id: str, device_secret: str) -> DeviceAuthResult | str:
-        self._ensure_enabled()
         _validate_device_request_id(device_request_id)
         secret_bytes = _decode_device_secret(device_secret)
         device_secret_hash = hashlib.sha256(secret_bytes).hexdigest()
@@ -315,10 +311,6 @@ class DeviceAuthService:
         ):
             raise DeviceAuthUnavailableError()
         return f"{parsed.scheme}://{parsed.netloc}"
-
-    def _ensure_enabled(self) -> None:
-        if not self._settings.device_auth_enabled:
-            raise DeviceAuthUnavailableError()
 
     def _now(self) -> datetime:
         value = self._clock()

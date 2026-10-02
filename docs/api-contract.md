@@ -89,8 +89,8 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 Device authorization runs on the apex API. FastAPI routes are `/device/*`; Caddy strips the public
 `/api` prefix from `POST /api/device/code`, `POST /api/device/verify`,
 `POST /api/device/approve`, and `POST /api/device/token`. Every response from these routes, including
-validation failures and errors while the feature is disabled, carries `Cache-Control: no-store`.
-The API rollout toggle is `CLOUDGATEWAY_DEVICE_AUTH_ENABLED` and defaults to `false`.
+validation failures and dependency errors, carries `Cache-Control: no-store`.
+Device authorization is available when this API version is deployed.
 
 The flow uses a fresh 32-byte device secret for each attempt. The client sends its lowercase
 SHA-256 hex hash at creation, encoded secret only in token-poll bodies, and never puts either value
@@ -207,7 +207,7 @@ Controlled device failures use the standard API error envelope. Request validati
 request/proof mismatches share `400 DEVICE_AUTH_INVALID`; a wrong proof does not reveal stored
 state. Expiry is `410 DEVICE_AUTH_EXPIRED`, denial is `403 DEVICE_AUTH_DENIED`, consumed requests
 are `409 DEVICE_AUTH_CONSUMED`, and first-decision conflicts are `409 DEVICE_AUTH_CONFLICT`.
-Persistent rate limits return `429 DEVICE_AUTH_THROTTLED` with an integer `Retry-After`. Disabled
+Persistent rate limits return `429 DEVICE_AUTH_THROTTLED` with an integer `Retry-After`. Invalid
 configuration, Firestore failure, Auth lookup failure, or custom-token signing failure return
 `503 DEVICE_AUTH_UNAVAILABLE`. Browser bearer authentication keeps the existing `401 AUTH_REQUIRED`
 and `403 USER_NOT_PROVISIONED` responses.
@@ -593,7 +593,7 @@ All controlled failures return this shape:
     `DEVICE_AUTH_CONSUMED`, `DEVICE_AUTH_CONFLICT`).
   - `410`: expired device authorization (`DEVICE_AUTH_EXPIRED`).
   - `429`: device authorization rate limits (`DEVICE_AUTH_THROTTLED`), with integer `Retry-After`.
-  - `503`: disabled or unavailable device authorization dependencies (`DEVICE_AUTH_UNAVAILABLE`).
+  - `503`: unavailable device authorization dependencies (`DEVICE_AUTH_UNAVAILABLE`).
   - `500`: host mutation failures, missing/malformed role defaults, an unusable account-slot
     counter, and unexpected failures (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
     `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`).

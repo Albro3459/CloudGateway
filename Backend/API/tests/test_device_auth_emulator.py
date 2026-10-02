@@ -140,7 +140,6 @@ def _new_app(
     random_bytes: Callable[[int], bytes] | None = None,
 ):
     settings = Settings(
-        device_auth_enabled=True,
         dashboard_cors_origin="https://dashboard.example.test",
         wg_server_public_key=base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
         wg_dns_ipv4="10.0.0.1",

@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     api_hostname: str = ""
     # Exact dashboard URL; also rendered in user access emails.
     dashboard_cors_origin: str = ""
-    device_auth_enabled: bool = False
     firebase_credentials_file: str = "/tmp/cloudgateway-firebase-credentials.json"
     wg_interface: str = "wg0"
     wg_server_public_key: str = "local-server-public-key"

@@ -1,7 +1,7 @@
 # Device Auth Implementation Plan
 
 Status: implemented and verified locally on 2026-10-01. Device authorization
-remains disabled by default. Deployment and staging verification are pending,
+is available when deployed. Deployment and staging verification are pending,
 including real Firebase signing, active TTL policies, provider login, and the
 Cloudflare/Caddy boundary. Follow the [operator runbook](../docs/device-auth.md)
 before returning to the [macOS app plan](macos-app.md).
@@ -213,8 +213,7 @@ Python conventions. Reuse the standard error envelope and Firebase initializer.
 Inject test dependencies through `create_app` without extending every existing
 WireGuard fake or changing provisioning behavior.
 
-Add an explicit enable setting, default off, for rollout and rollback. Bound
-inputs and device names, allow only recognized decisions, and normalize codes
+Bound inputs and device names, allow only recognized decisions, and normalize codes
 without dropping leading zeros. Add shared rate-limit and authorization checks
 before expensive work. Use the configured origin to build approval links.
 
@@ -229,9 +228,9 @@ verifiers, tokens, and approval identities out of access logs and exception
 messages. Existing API logging uses method/path/correlation/status. Ensure
 new Firebase/signing errors are sanitized before generic exception logging.
 
-Scope infrastructure changes to the enable setting, trusted source boundary,
-and proxy response behavior actually needed. Update bootstrap/runtime env and
-operations docs together when they change. Device auth performs no WireGuard
+Scope infrastructure changes to the trusted source boundary and proxy response
+behavior actually needed. Update bootstrap/runtime env and operations docs
+together when they change. Device auth performs no WireGuard
 peer mutation and requires no new service or auth framework.
 
 ## React Work
@@ -359,19 +358,20 @@ Update `docs/api-contract.md`, the API/Firebase/Web READMEs, index/TTL operation
 notes, and deployment instructions with the corresponding behavior. Add an
 operator runbook at `docs/device-auth.md` covering constants, trusted source
 handling, signing credentials, emulator commands, failure recovery, retention,
-enablement, verification, and rollback. Keep the macOS plan linked here.
+deployment, verification, and rollback. Keep the macOS plan linked here.
 
 After implementation and local review, release proceeds as a separate authorized
 operator action:
 
-1. Confirm the existing staging Firebase credentials and dashboard/API origins.
+1. Back up Firestore before deployment. Confirm the existing staging Firebase
+   credentials and dashboard/API origins.
    Verify real custom-token sign-in as part of the deployed end-to-end flow.
    No new signing or hashing key is assumed.
 2. Deploy Firebase rules/index/TTL configuration. Verify policies are active and
    direct client access is denied. Existing product rules remain intact.
-3. Deploy backend and any required host/proxy configuration with device auth
-   disabled initially. Enable in staging, verify exact origin/CORS and no-store
-   behavior, then approve production enablement.
+3. Deploy backend and any required host/proxy configuration. Device auth is
+   available immediately. Verify exact origin/CORS and no-store behavior in staging
+   before production deployment.
 4. Deploy React after the API is ready. Exercise each login provider, pending,
    approval, denial, expiry, throttling, account switching, concurrent redemption,
    and the resulting Firebase UID/product permissions using a test device client.
@@ -382,9 +382,8 @@ Existing deployment wrappers can push commits/tags or publish the site. Do not
 invoke them during planning or local implementation without explicit deployment
 authorization. Never push as part of the requested logical local commits.
 
-Rollback disables new device authorization and restores the prior site/API as
-needed. Temporary requests expire without a data migration. Already established
-Firebase sessions follow existing account/session policy. Do not revoke every
+Rollback restores the prior site/API versions. Temporary requests expire without
+a data migration. Already established Firebase sessions follow existing account/session policy. Do not revoke every
 device's sessions as an automatic rollback or local sign-out action.
 
 Done means the reviewed flow works against deployed Firebase/API/React, all

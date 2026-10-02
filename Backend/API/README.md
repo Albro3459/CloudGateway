@@ -122,7 +122,6 @@ Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefi
 * `CLOUDGATEWAY_REGION_ID`
 * `CLOUDGATEWAY_API_PORT`
 * `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN`
-* `CLOUDGATEWAY_DEVICE_AUTH_ENABLED` (defaults to `false`; enable only after the dashboard and Firebase rules are deployed)
 * `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
 * `CLOUDGATEWAY_WG_INTERFACE`
 * `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`

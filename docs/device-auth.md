@@ -68,7 +68,7 @@ Records are created lazily. No user migration or empty documents are needed.
 
 Both collections use TTL on `expiresAt`, with an index exemption for that field.
 Deploy the existing Firebase index configuration and verify both TTL policies
-are active before enablement. See [Firebase operations](../Backend/Firebase/README.md).
+are active before API deployment. See [Firebase operations](../Backend/Firebase/README.md).
 TTL deletion is asynchronous. The API checks expiry itself and never relies on
 cleanup for authorization. Limit records remain through the last attempt's
 rolling window.
@@ -103,26 +103,24 @@ The client polls, exchanges the custom token with Firebase, and reports success
 without printing or persisting tokens. Stop it to cancel polling. The request
 expires normally. Use a staging origin and its matching public Firebase API key.
 
-## Enablement and release
+## Deployment and release
 
 Local implementation does not authorize deployment. Deployment wrappers can
 push commits or tags and publish the dashboard, so use them only for a separately
 authorized release.
 
-1. Run the local validation gates and review the final API/UI contract.
+1. Run the local validation gates and review the final API/UI contract. Back up
+   Firestore before deployment.
 2. Deploy Firebase rules and indexes. Verify both TTL policies are active and
    direct client get/list/writes are denied. Keep existing product rules intact.
-3. Deploy the API and updated Caddy/systemd configuration with
-   `CLOUDGATEWAY_DEVICE_AUTH_ENABLED=false`. Bootstrap writes this default.
+3. Deploy the API and updated Caddy/systemd configuration. Device authorization
+   is available immediately, with no feature flag or legacy compatibility path.
 4. Confirm `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` is the exact dashboard origin.
    Keep the existing Firebase service-account file outside git, root-owned,
    readable by the API, and capable of signing Firebase custom tokens. No new
    hashing or signing secret is required. Production services must not set
    `FIREBASE_AUTH_EMULATOR_HOST` or `FIRESTORE_EMULATOR_HOST`.
-5. Set `CLOUDGATEWAY_DEVICE_AUTH_ENABLED=true` in the mode-0600
-   `/etc/cloudgateway/api.env` on staging and restart the API service. Deploy
-   the dashboard after the endpoints are ready. Bootstrap reruns restore the
-   disabled default, so re-enable deliberately after checking the new host.
+5. Deploy the dashboard after the API endpoints are ready.
 6. Complete creation, browser approval, redemption, and Firebase custom-token
    sign-in with the real staging credentials. Verify the resulting UID and
    product permissions. Check email, Apple, and Google return paths.
@@ -131,8 +129,8 @@ authorized release.
    `Retry-After`, exact-origin CORS, and the trusted source boundary through the
    actual Cloudflare/Caddy path. Do not enable a Cloudflare cache rule for these
    endpoints. Check logs without printing secrets or tokens.
-8. Record staging evidence and separately approve production enablement. Only
-   after the deployed flow works should macOS development resume.
+8. Record staging evidence before production deployment. Only after the deployed
+   flow works should macOS development resume.
 
 ## Recovery and rollback
 
@@ -141,7 +139,6 @@ start a new attempt with a new secret. If the store or signing credentials fail,
 fix the dependency and start a fresh attempt. Do not fall back to in-memory
 limits, persist custom tokens, or reopen the old request.
 
-Rollback sets `CLOUDGATEWAY_DEVICE_AUTH_ENABLED=false` and restores the prior
-site/API versions if needed. Temporary requests expire without a migration.
-Already established Firebase sessions follow existing session policy. Do not
+Rollback restores the prior site/API versions. Temporary requests expire without
+a migration. Already established Firebase sessions follow existing session policy. Do not
 revoke every account's sessions as an automatic rollback action.
