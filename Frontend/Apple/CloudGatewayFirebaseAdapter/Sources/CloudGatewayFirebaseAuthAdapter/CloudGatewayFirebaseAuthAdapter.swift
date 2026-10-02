@@ -5,28 +5,74 @@ import Foundation
 @MainActor
 public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     private let auth: Auth
+    #if os(macOS)
+    private lazy var customTokenSession = CloudGatewayFirebaseCustomTokenSession(
+        backend: FirebaseCustomTokenBackend(auth: auth), marker: CloudGatewayFirebaseDefaultsExchangeMarker()
+    )
+    private var customTokenListeners = [UUID: (AuthenticatedUser?) -> Void]()
+    #endif
 
     public init() {
         auth = Auth.auth()
     }
 
     public var currentUser: AuthenticatedUser? {
+        #if os(macOS)
+        customTokenSession.currentUser
+        #else
         auth.currentUser.map(Self.user)
+        #endif
     }
+
+    #if os(macOS)
+    public var isCustomTokenSignInSettling: Bool { customTokenSession.isSettling }
+    #endif
 
     public func addAuthStateListener(
         _ listener: @escaping (AuthenticatedUser?) -> Void
     ) -> CloudGatewayAuthStateListenerRegistration {
+        #if os(macOS)
+        let id = UUID()
+        customTokenListeners[id] = listener
+        let handle = auth.addStateDidChangeListener { [weak self] _, _ in
+            guard let self else { return }
+            listener(self.currentUser)
+        }
+        return CloudGatewayAuthStateListenerRegistration { [weak self, auth] in
+            auth.removeStateDidChangeListener(handle)
+            self?.customTokenListeners.removeValue(forKey: id)
+        }
+        #else
         let handle = auth.addStateDidChangeListener { _, user in
             listener(user.map(Self.user))
         }
         return CloudGatewayAuthStateListenerRegistration { [auth] in
             auth.removeStateDidChangeListener(handle)
         }
+        #endif
     }
 
+    #if os(macOS)
+    public func signIn(customToken: String) async throws -> AuthenticatedUser {
+        defer { notifyCustomTokenListeners() }
+        return try await customTokenSession.signIn(customToken: customToken)
+    }
+
+    public func cancelCustomTokenSignIn() throws {
+        defer { notifyCustomTokenListeners() }
+        try customTokenSession.cancel()
+    }
+
+    private func notifyCustomTokenListeners() {
+        for listener in customTokenListeners.values { listener(currentUser) }
+    }
+    #endif
+
     public func signIn(email: String, password: String) async throws -> AuthenticatedUser {
-        try await withCheckedThrowingContinuation { continuation in
+        #if os(macOS)
+        guard !customTokenSession.isSettling else { throw CloudGatewayDeviceAuthError.unavailable }
+        #endif
+        return try await withCheckedThrowingContinuation { continuation in
             auth.signIn(withEmail: email, password: password) { result, error in
                 if let error {
                     continuation.resume(throwing: Self.mapSignInError(error))
@@ -42,6 +88,9 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     }
 
     public func signInWithApple(idToken: String, rawNonce: String) async throws -> AuthenticatedUser {
+        #if os(macOS)
+        guard !customTokenSession.isSettling else { throw CloudGatewayDeviceAuthError.unavailable }
+        #endif
         let credential = OAuthProvider.appleCredential(
             withIDToken: idToken,
             rawNonce: rawNonce,
@@ -53,6 +102,9 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     public func signInWithGoogle(
         credentials: CloudGatewayGoogleCredentials
     ) async throws -> AuthenticatedUser {
+        #if os(macOS)
+        guard !customTokenSession.isSettling else { throw CloudGatewayDeviceAuthError.unavailable }
+        #endif
         let credential = GoogleAuthProvider.credential(
             withIDToken: credentials.idToken,
             accessToken: credentials.accessToken
@@ -61,7 +113,10 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     }
 
     public func providerIds() -> [String] {
-        auth.currentUser?.providerData.map(\.providerID) ?? []
+        #if os(macOS)
+        guard currentUser != nil else { return [] }
+        #endif
+        return auth.currentUser?.providerData.map(\.providerID) ?? []
     }
 
     public func linkEmailPassword(
@@ -151,10 +206,18 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     }
 
     public func signOut() throws {
+        #if os(macOS)
+        defer { notifyCustomTokenListeners() }
+        try customTokenSession.signOut()
+        #else
         try auth.signOut()
+        #endif
     }
 
     public func idToken(forceRefresh: Bool) async throws -> String {
+        #if os(macOS)
+        guard currentUser != nil else { throw CloudGatewayAppError.missingCurrentUser }
+        #endif
         guard let user = auth.currentUser else {
             throw CloudGatewayAppError.missingCurrentUser
         }
@@ -265,7 +328,10 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
     }
 
     private func currentGuardedUser() -> CloudGatewayFirebaseGuardedUser? {
-        auth.currentUser.map(FirebaseGuardedUser.init)
+        #if os(macOS)
+        guard currentUser != nil else { return nil }
+        #endif
+        return auth.currentUser.map(FirebaseGuardedUser.init)
     }
 
     private struct FirebaseGuardedUser: CloudGatewayFirebaseGuardedUser {
@@ -357,6 +423,20 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         AuthenticatedUser(uid: user.uid, email: user.email)
     }
 
+    #if os(macOS)
+    private struct FirebaseCustomTokenBackend: CloudGatewayFirebaseCustomTokenBackend {
+        let auth: Auth
+
+        var currentUser: AuthenticatedUser? { auth.currentUser.map(CloudGatewayFirebaseAuthAdapter.user) }
+
+        func signIn(customToken: String) async throws -> AuthenticatedUser {
+            CloudGatewayFirebaseAuthAdapter.user(try await auth.signIn(withCustomToken: customToken).user)
+        }
+
+        func signOut() throws { try auth.signOut() }
+    }
+    #endif
+
     private static func mapAuthError(_ error: Error) -> Error {
         authError(forRawCode: rawCode(for: error)) ?? error
     }
@@ -370,6 +450,10 @@ public final class CloudGatewayFirebaseAuthAdapter: CloudGatewayAuthServicing {
         return AuthErrorCode(_bridgedNSError: nsError)?.code.rawValue ?? nsError.code
     }
 }
+
+#if os(macOS)
+extension CloudGatewayFirebaseAuthAdapter: CloudGatewayCustomTokenAuthServicing {}
+#endif
 
 // Seam over the signed-in Firebase user used only by the Google link/reauth
 // guard. Production wraps `FirebaseAuth.User`; tests inject a fake so the guard
