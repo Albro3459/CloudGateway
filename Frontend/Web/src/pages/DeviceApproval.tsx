@@ -49,7 +49,15 @@ const getDeviceState = (state: DeviceAuthState): ViewState => {
     return "ready";
 };
 
-const DeviceApproval: React.FC = () => {
+const isTopLevelWindow = (): boolean => {
+    try {
+        return typeof window !== "undefined" && window.top === window;
+    } catch {
+        return false;
+    }
+};
+
+const DeviceApprovalPage: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const route = parseDeviceApprovalRoute(`/auth/code${location.search}`);
@@ -225,13 +233,16 @@ const DeviceApproval: React.FC = () => {
                 )}
 
                 {canDecide && (
-                    <div className="flex gap-3">
-                        <button type="button" className="rounded-lg bg-primary px-4 py-2 text-white" onClick={() => void submitDecision("approve")}>
-                            Approve device
-                        </button>
-                        <button type="button" className="rounded-lg border border-edge px-4 py-2 text-content" onClick={() => void submitDecision("deny")}>
-                            Deny device
-                        </button>
+                    <div>
+                        <p className="mb-4 text-sm text-content-secondary">Only approve if you started this request and this code matches the code on your device.</p>
+                        <div className="flex gap-3">
+                            <button type="button" className="rounded-lg bg-primary px-4 py-2 text-white" onClick={() => void submitDecision("approve")}>
+                                Approve device
+                            </button>
+                            <button type="button" className="rounded-lg border border-edge px-4 py-2 text-content" onClick={() => void submitDecision("deny")}>
+                                Deny device
+                            </button>
+                        </div>
                     </div>
                 )}
 
@@ -240,6 +251,13 @@ const DeviceApproval: React.FC = () => {
             </section>
         </main>
     );
+};
+
+const DeviceApproval: React.FC = () => {
+    if (!isTopLevelWindow()) {
+        return <p role="status">Open this page directly to authorize a device.</p>;
+    }
+    return <DeviceApprovalPage />;
 };
 
 export default DeviceApproval;

@@ -3,6 +3,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import pytest
 from fastapi.testclient import TestClient
 from google.api_core.exceptions import Aborted
 
@@ -109,6 +110,7 @@ def build_client(
     store: StubDeviceAuthStore | None = None,
     admin: StubDeviceAuthAdmin | None = None,
     peer_host: str = "127.0.0.1",
+    dashboard_origin: str = "https://gocloudlaunch.com",
     random_bytes=None,
 ) -> tuple[TestClient, StubDeviceAuthStore, StubDeviceAuthAdmin]:
     store = store or StubDeviceAuthStore()
@@ -123,7 +125,7 @@ def build_client(
     )
     settings = Settings(
         region_id="us-test-1",
-        dashboard_cors_origin="https://gocloudlaunch.com",
+        dashboard_cors_origin=dashboard_origin,
     )
     app = create_app(
         settings=settings,
@@ -194,6 +196,52 @@ def test_device_http_flow_preserves_code_and_returns_only_custom_token():
     assert exchanged.headers["cache-control"] == "no-store"
     assert admin.issued_uids == ["user-1"]
     assert store.claim_calls[0]["device_request_id"] == "00" * 16
+
+
+@pytest.mark.parametrize("origin", [
+    "https://gocloudlaunch.com",
+    "https://dashboard.example.test:8443",
+    "https://gocloudlaunch.com/",
+    "http://localhost:3000",
+    "http://LOCALHOST:3000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.2:3000",
+    "http://[::1]:3000",
+])
+def test_creation_links_require_https_except_for_local_dashboard_origins(origin):
+    client, store, _ = build_client(dashboard_origin=origin)
+    response = client.post("/device/code", json=_code_body())
+    assert response.status_code == 201
+    assert response.json()["verificationUri"] == origin.rstrip("/") + "/#/auth/code"
+    assert len(store.create_calls) == 1
+
+@pytest.mark.parametrize("origin", [
+    "http://gocloudlaunch.com",
+    "http://localhost.example.com",
+    "http://example.localhost",
+    "http://127.0.0.1.example.com",
+    "http://192.168.1.10:3000",
+    "http://0.0.0.0:3000",
+    "http://[::]:3000",
+    "https://user:password@gocloudlaunch.com",
+    "http://localhost@example.com",
+    "https://gocloudlaunch.com/path",
+    "https://gocloudlaunch.com?redirect=example.com",
+    "https://gocloudlaunch.com/#/auth/code",
+    "https://gocloudlaunch.com:invalid",
+    "https://gocloudlaunch.com:65536",
+    "https://:443",
+    "https://[::1",
+    "ftp://localhost",
+    "",
+])
+def test_invalid_dashboard_origins_fail_before_creating_device_requests(origin):
+    client, store, _ = build_client(dashboard_origin=origin)
+    response = client.post("/device/code", json=_code_body())
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DEVICE_AUTH_UNAVAILABLE"
+    assert response.headers["cache-control"] == "no-store"
+    assert not store.create_calls
 
 
 def test_user_codes_use_unbiased_rejection_and_request_ids_retry_collisions():

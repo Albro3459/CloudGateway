@@ -56,7 +56,8 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 [src/pages/DeviceApproval.tsx](src/pages/DeviceApproval.tsx) and [src/helpers/deviceAuthHelper.ts](src/helpers/deviceAuthHelper.ts)
 
 * `/#/auth/code?deviceRequestId=<32 lowercase hex>&userCode=<6 digits>` verifies and approves or denies an existing device request through the apex API.
-* Approval requires a signed-in account with access, shows the device description as unverified, and asks for confirmation before sending a decision.
+* Approval requires a signed-in account with access, shows the device description as unverified, and asks the user to match the code on their device before sending a decision.
+* Framed pages stop before mounting the approval flow or contacting the API. Configure the dashboard response headers using the [Cloudflare anti-framing rule](../../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule).
 * Login accepts only that validated internal return route and skips regional inventory checks on the approval path. Ordinary login and password reset keep their existing routes.
 
 [src/helpers/apiEndpoints.ts](src/helpers/apiEndpoints.ts)

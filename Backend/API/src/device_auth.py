@@ -299,10 +299,21 @@ class DeviceAuthService:
             raise DeviceAuthUnavailableError()
 
     def _dashboard_origin(self) -> str:
-        parsed = urlsplit(self._settings.dashboard_cors_origin.strip())
+        try:
+            parsed = urlsplit(self._settings.dashboard_cors_origin.strip())
+            hostname = parsed.hostname
+            parsed.port  # Validate malformed and out-of-range ports
+        except ValueError:
+            raise DeviceAuthUnavailableError() from None
+        is_local = hostname == "localhost"
+        if hostname and not is_local:
+            try:
+                is_local = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                pass
         if (
-            parsed.scheme not in {"https", "http"}
-            or not parsed.netloc
+            not (parsed.scheme == "https" or (parsed.scheme == "http" and is_local))
+            or not hostname
             or parsed.username is not None
             or parsed.password is not None
             or parsed.path not in {"", "/"}

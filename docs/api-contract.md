@@ -90,7 +90,9 @@ Device authorization runs on the apex API. FastAPI routes are `/device/*`; Caddy
 `/api` prefix from `POST /api/device/code`, `POST /api/device/verify`,
 `POST /api/device/approve`, and `POST /api/device/token`. Every response from these routes, including
 validation failures and dependency errors, carries `Cache-Control: no-store`.
-Device authorization is available when this API version is deployed.
+Device authorization is available when this API version is deployed. Approval links use the
+configured HTTPS dashboard origin. HTTP is allowed only for `localhost` or literal loopback IPs
+for development. Binding a dev server to `0.0.0.0` does not make it a valid HTTP dashboard origin.
 
 The flow uses a fresh 32-byte device secret for each attempt. The client sends its lowercase
 SHA-256 hex hash at creation, encoded secret only in token-poll bodies, and never puts either value

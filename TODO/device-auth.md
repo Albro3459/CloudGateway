@@ -8,10 +8,16 @@ before returning to the [macOS app plan](macos-app.md).
 
 Completed Firebase schema/rules/TTL definitions, transactional API authorization,
 React approval/login returns, the test device client, and emulator integration.
-The full `./scripts/test.sh` passed, including the unsigned iOS build. After adding
-product/Auth deletion coverage, `./scripts/test.sh api firebase` passed with 571
-API tests, 47 rules tests, and 13 emulator tests. Web coverage has 294 passing tests.
-No macOS or iOS implementation was needed.
+The full `./scripts/test.sh` passed, including the unsigned iOS build. After
+security hardening, the `api`, `web`, and `firebase` targets passed with 597 API
+tests, 298 web tests, 47 rules tests, and 13 emulator tests. Browser inspection
+confirmed that single and nested frames cannot expose approval controls, and
+that a cross-origin parent cannot replace the approval window's `top` property.
+No macOS or iOS implementation was needed. Security hardening blocks framed
+approval, asks users to compare device codes, and requires HTTPS dashboard links
+except for literal localhost/loopback development origins. Configure the
+[Cloudflare anti-framing rule](../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule)
+and verify the deployed HTML headers before the test release.
 
 ## Outcome And Scope
 

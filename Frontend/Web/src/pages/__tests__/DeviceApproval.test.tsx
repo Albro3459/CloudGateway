@@ -44,6 +44,7 @@ describe("DeviceApproval", () => {
         jest.clearAllMocks();
         mockRouteSearch = "";
         mockCurrentUser = user;
+        Object.defineProperty(window, "top", { configurable: true, value: window });
         user.getIdToken.mockResolvedValue("firebase-token");
         const { onAuthStateChanged } = require("../../firebase");
         onAuthStateChanged.mockImplementation((_auth: unknown, callback: (user: unknown) => void) => {
@@ -67,6 +68,7 @@ describe("DeviceApproval", () => {
 
         await screen.findByText("Unverified laptop");
         expect(screen.getByText("person@example.com")).toBeTruthy();
+        expect(screen.getByText("Only approve if you started this request and this code matches the code on your device.")).toBeTruthy();
         expect(decideDeviceRequest).not.toHaveBeenCalled();
 
         const approveButton = screen.getByRole("button", { name: "Approve device" });
@@ -77,6 +79,46 @@ describe("DeviceApproval", () => {
         ));
         expect(decideDeviceRequest).toHaveBeenCalledTimes(1);
         expect(await screen.findByText("Device approved. You can return to it now.")).toBeTruthy();
+    });
+
+    it.each([
+        ["signed-in", user],
+        ["signed-out", null],
+    ])("blocks a %s session in a nested frame before auth or device requests", (_session, currentUser) => {
+        mockCurrentUser = currentUser;
+        Object.defineProperty(window, "top", { configurable: true, value: {} });
+        const { onAuthStateChanged } = require("../../firebase");
+        const { verifyDeviceRequest, decideDeviceRequest } = require("../../helpers/deviceAuthHelper");
+
+        renderApproval();
+
+        expect(screen.getByRole("status").textContent).toBe("Open this page directly to authorize a device.");
+        expect(onAuthStateChanged).not.toHaveBeenCalled();
+        expect(user.getIdToken).not.toHaveBeenCalled();
+        expect(verifyDeviceRequest).not.toHaveBeenCalled();
+        expect(decideDeviceRequest).not.toHaveBeenCalled();
+        expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["missing", () => Object.defineProperty(window, "top", { configurable: true, value: undefined })],
+        ["throwing", () => Object.defineProperty(window, "top", {
+            configurable: true,
+            get: () => { throw new Error("top is unavailable"); },
+        })],
+    ])("fails closed when the top window is %s", (_case, setUnknownTop) => {
+        setUnknownTop();
+        const { onAuthStateChanged } = require("../../firebase");
+        const { verifyDeviceRequest, decideDeviceRequest } = require("../../helpers/deviceAuthHelper");
+
+        renderApproval();
+
+        expect(screen.getByRole("status").textContent).toBe("Open this page directly to authorize a device.");
+        expect(onAuthStateChanged).not.toHaveBeenCalled();
+        expect(user.getIdToken).not.toHaveBeenCalled();
+        expect(verifyDeviceRequest).not.toHaveBeenCalled();
+        expect(decideDeviceRequest).not.toHaveBeenCalled();
+        expect(mockNavigate).not.toHaveBeenCalled();
     });
 
     it("sends an explicit deny decision", async () => {

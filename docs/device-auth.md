@@ -22,8 +22,13 @@ Never bundle it, derive it from a device ID, reuse it, or put it in a URL.
 The complete verification link contains the request ID and code in the site's
 hash fragment. It never contains the device secret or a Firebase token.
 Device names are unverified descriptions. Approval always requires a click by
-the signed-in user. An approval login checks account access without depending
-on region availability or free VPN slots.
+the signed-in user and asks them to match the displayed code on their device.
+Framed pages stop before mounting the approval flow or contacting the API.
+Approval links require an HTTPS dashboard origin. HTTP is allowed only for
+`localhost` or literal loopback IPs during development. A dev server can bind to
+`0.0.0.0` while its configured dashboard origin uses `http://localhost:<port>`.
+An approval login checks account access without depending on region availability
+or free VPN slots.
 
 A pending request can become approved or denied. The first decision wins.
 An approved request is claimed as consumed in a Firestore transaction before
@@ -115,12 +120,15 @@ authorized release.
    direct client get/list/writes are denied. Keep existing product rules intact.
 3. Deploy the API and updated Caddy/systemd configuration. Device authorization
    is available immediately, with no feature flag or legacy compatibility path.
-4. Confirm `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` is the exact dashboard origin.
+4. Confirm `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` is the exact HTTPS dashboard origin.
    Keep the existing Firebase service-account file outside git, root-owned,
    readable by the API, and capable of signing Firebase custom tokens. No new
    hashing or signing secret is required. Production services must not set
    `FIREBASE_AUTH_EMULATOR_HOST` or `FIRESTORE_EMULATOR_HOST`.
-5. Deploy the dashboard after the API endpoints are ready.
+5. Configure the [Cloudflare dashboard anti-framing rule](../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule)
+   and deploy the dashboard after the API endpoints are ready. Check the actual
+   HTML response headers in browser DevTools, then verify that a framed approval
+   page cannot render controls or send API requests.
 6. Complete creation, browser approval, redemption, and Firebase custom-token
    sign-in with the real staging credentials. Verify the resulting UID and
    product permissions. Check email, Apple, and Google return paths.

@@ -62,6 +62,42 @@ files and reloading Caddy).
    cert via the origin-pull CA the bootstrap installs at
    `/etc/caddy/cloudflare-origin-pull-ca.pem`.
 
+## Dashboard anti-framing rule
+
+The React dashboard is served by GitHub Pages through Cloudflare. Before
+releasing device authorization, add a **Response Header Transform Rule** for the
+dashboard hostname. In **Rules -> Overview -> Create rule**, choose
+**Response Header Transform Rule** and name it `Block dashboard framing`.
+
+Use this custom filter expression for the production dashboard. Use the matching
+hostname for staging:
+
+```text
+http.host eq "gocloudlaunch.com"
+```
+
+Add these response header operations:
+
+| Operation | Header | Value |
+|---|---|---|
+| Set static | `Content-Security-Policy` | `frame-ancestors 'none'` |
+| Set static | `X-Frame-Options` | `DENY` |
+
+Set static adds the header if absent and replaces existing values. If the
+dashboard already has a CSP, preserve its other directives and include
+`frame-ancestors 'none'` in the value. Enable the rule and confirm its status is
+**Enabled** before checking the headers. This requires no Worker. Follow the [Cloudflare rule instructions](https://developers.cloudflare.com/rules/transform/response-header-modification/create-dashboard/).
+
+Match the entire dashboard hostname. The `/#/auth/code` fragment is never sent
+in an HTTP request, so a path filter for `/auth/code` will not cover this page.
+The API's Caddy headers do not affect the GitHub Pages HTML response. A CSP meta
+tag cannot enforce `frame-ancestors`.
+
+After deploying the rule, inspect the dashboard HTML response in browser
+DevTools and confirm both enforced headers are present. Verify the browser
+blocks the dashboard in an iframe. The React approval page also refuses frames
+before mounting its auth flow, including when served directly without Cloudflare.
+
 ## DNS records
 
 See `example.gocloudlaunch.com.txt` for the full set. Summary:
