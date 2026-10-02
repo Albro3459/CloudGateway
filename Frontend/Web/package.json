@@ -1,7 +1,7 @@
 {
   "name": "cloud-gateway",
   "homepage": "https://gocloudlaunch.com",
-  "version": "1.0.48",
+  "version": "1.0.49",
   "private": true,
   "dependencies": {
     "@tailwindcss/cli": "^4.0.14",
