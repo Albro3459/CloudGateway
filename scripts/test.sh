@@ -98,6 +98,7 @@ test_web() {
 }
 
 test_firebase() {
+  ensure_api_python_tools || return 1
   cd "$ROOT/Backend/Firebase" || return 1
 
   if [[ ! -d node_modules ]]; then
@@ -106,16 +107,19 @@ test_firebase() {
   fi
 
   run_check "Firebase schema and tests typecheck" npm run typecheck
+  run_pyright "Device auth tools pyright" scripts/device-auth-client.py scripts/test_device_auth_client.py scripts/test_firebase_emulators.py
+  cd "$ROOT" || return 1
+  run_check "Device auth test client" Backend/API/.venv/bin/python -m unittest scripts/test_device_auth_client.py
+  cd "$ROOT/Backend/Firebase" || return 1
 
-  run_firestore_rules_tests() {
-    env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only firestore --project demo-cloudgateway "npm test" 2> >(
+  run_firebase_emulator_tests() {
+    env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only auth,firestore --project demo-cloudgateway "../API/.venv/bin/python ../../scripts/test_firebase_emulators.py" 2> >(
       grep -Ev "^(lsof: WARNING: can't stat\\(\\)|      Output information may be incomplete\\.|      assuming \"dev=)" >&2
     )
   }
 
-  # emulators:exec boots the Firestore emulator, runs the rules tests, and tears
-  # it down. A demo- project keeps it fully offline (no credentials).
-  run_check "Firestore rules tests" run_firestore_rules_tests
+  # Both suites share one offline demo-project emulator lifetime
+  run_check "Firebase rules and API exchange tests" run_firebase_emulator_tests
 }
 
 check_apple_signing_prerequisites() {
@@ -324,7 +328,7 @@ for target in "${targets[@]}"; do
     web|app) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
     apple) run_step "Apple tests + no-device iOS build" test_apple ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
-    firebase) run_step "Firestore rules tests (emulator)" test_firebase ;;
+    firebase) run_step "Firebase schema, rules and API exchange tests (emulators)" test_firebase ;;
     *)
       echo "Unknown target: $target (expected: api, web, apple, infra, firebase; optional flag: --signed)" >&2
       exit 2

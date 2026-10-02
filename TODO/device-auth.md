@@ -1,8 +1,17 @@
 # Device Auth Implementation Plan
 
-Status: planned, implementation not started. This commit adds the plan only.
-Implement and verify Firebase, API, and React device authorization before
-returning to the [macOS app plan](macos-app.md).
+Status: implemented and verified locally on 2026-10-01. Device authorization
+remains disabled by default. Deployment and staging verification are pending,
+including real Firebase signing, active TTL policies, provider login, and the
+Cloudflare/Caddy boundary. Follow the [operator runbook](../docs/device-auth.md)
+before returning to the [macOS app plan](macos-app.md).
+
+Completed Firebase schema/rules/TTL definitions, transactional API authorization,
+React approval/login returns, the test device client, and emulator integration.
+The full `./scripts/test.sh` passed, including the unsigned iOS build. After adding
+product/Auth deletion coverage, `./scripts/test.sh api firebase` passed with 571
+API tests, 47 rules tests, and 13 emulator tests. Web coverage has 294 passing tests.
+No macOS or iOS implementation was needed.
 
 ## Outcome And Scope
 
@@ -312,7 +321,7 @@ and each supported provider without printing secrets or tokens.
 Before release run `./scripts/test.sh api web firebase`, plus `infra` if touched.
 Run the full `./scripts/test.sh` after final integration to catch existing Apple
 and infrastructure regressions. Document any unavailable prerequisite as a
-failed release gate. No validation scripts run in this plan-only commit.
+failed release gate. Local validation is recorded in the status above.
 
 ## Logical Commits And Delegation
 

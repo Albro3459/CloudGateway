@@ -118,7 +118,7 @@ The regional API lazily creates `DeviceAuthRequests` documents with a 32-charact
 
 `DeviceAuthLimits/{scopeId}` stores a `scope` of `creation` or `guesses`, a bounded array of Firestore timestamps in `attempts`, and an `expiresAt` timestamp. Both collections are API-only. Direct client access stays denied for anonymous users, normal users, approving users, and admins; trusted server access uses the Admin SDK.
 
-Firestore TTL policies use `expiresAt` in both collections. TTL deletion is asynchronous and can take up to 24 hours, so API authorization always checks the request expiry itself. Retain temporary request and limit records only through their TTL cleanup window. The recursive backup may include these documents; do not restore expired device authorization requests or rate-limit budgets as live state. A restored request must never become redeemable again.
+Firestore TTL policies use `expiresAt` in both collections. TTL deletion is asynchronous and typically happens within 24 hours, so API authorization always checks the request expiry itself. Retain temporary request and limit records only through their TTL cleanup window. The recursive backup may include these documents; do not restore expired device authorization requests or rate-limit budgets as live state. A restored request must never become redeemable again.
 
 ## Limits
 
@@ -148,3 +148,17 @@ private keys. `Backend/Firebase/backups/` is intentionally ignored by git. Backu
 contain temporary device authorization records. Exclude `DeviceAuthRequests` and
 `DeviceAuthLimits` when restoring; expired requests must never become valid again, and abuse
 budgets are short-lived operational state rather than recovery data.
+
+## Local validation
+
+Run `./scripts/test.sh firebase` from the repo root. It checks schema/test types,
+runs the test-client checks, and starts Auth and Firestore emulators together
+for client rules tests and API exchange/concurrency tests. Both suites use
+`demo-cloudgateway`, with no real credentials. API dev dependencies are synced
+when this target runs alone.
+
+The `api` target excludes tests marked `emulator`. The Firebase target selects
+those tests and fails if either local emulator is unavailable. Auth emulator
+checks cannot prove production token signing, and Firestore emulator checks
+cannot prove TTL deletion or deployed indexes. Follow the
+[device authorization runbook](../../docs/device-auth.md) for the release checks.

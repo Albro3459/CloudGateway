@@ -68,7 +68,7 @@ At the moment there are no required composite indexes for the current Firestore 
 empty array, which exempts these cleanup timestamps from single-field indexing. No request or
 limit query needs an index on `expiresAt`; the API reads each record by document ID.
 
-TTL is asynchronous and may take up to 24 hours to delete expired documents. The API must
+TTL deletion is asynchronous and typically occurs within 24 hours after expiry. The API must
 enforce `expiresAt` on every operation and must not rely on TTL for authorization. After
 deploying the index configuration, verify both collection-group TTL policies show as enabled
 in Firestore before enabling device authorization. See the [Firebase reference](./README.md#device-authorization-records)

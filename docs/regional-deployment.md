@@ -173,3 +173,14 @@ systemctl status unbound
 6. Confirm a known ad/tracker test domain is blocked by the AdGuard DNS filter, then remove the test client.
 
 The region is live. Leave `enabled: true` on the region doc.
+
+## Device authorization rollout
+
+Device authorization is disabled by default. Deploy the API with the updated
+Caddy template and Uvicorn `--no-proxy-headers` before enabling it. Caddy replaces
+`X-CloudGateway-Client-IP` from Cloudflare, while the API remains loopback-only.
+Set `CLOUDGATEWAY_DEVICE_AUTH_ENABLED=true` in the root-owned, mode-0600
+`/etc/cloudgateway/api.env` only after Firebase rules and TTL policies are ready.
+A bootstrap rerun resets this setting to false. Follow the
+[device authorization runbook](device-auth.md) for staging verification,
+production enablement, and rollback.
