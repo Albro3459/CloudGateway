@@ -103,6 +103,11 @@ The extension belongs at
 `Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.
 Its `NetworkExtension` dictionary declares the packet provider and exact Mach
 service name. It starts through `NEProvider.startSystemExtensionMode()`.
+The extension's Info.plist also includes a nonempty
+`NSSystemExtensionUsageDescription` explaining the VPN's purpose. macOS checks
+this during activation category validation, before approval. Omitting it caused
+error 9 on the first live setup attempt. Both packaging verification modes now
+reject a missing or invalid description.
 Package dependencies must be statically linked or embedded inside the extension.
 The installed system extension cannot depend on the original build directory or
 the containing app's Frameworks directory.

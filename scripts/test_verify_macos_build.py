@@ -123,14 +123,15 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             with self.subTest(is_extension=is_extension), patch.object(verifier, "command", side_effect=fake_command):
                 verifier.verify_signature(self.bundle, bundle_id, is_extension)
 
-    def test_valid_packaged_fixture_and_duplicate_embedding(self) -> None:
+    def test_packaged_fixture_rejects_invalid_description_and_duplicate_embedding(self) -> None:
         app = Path(self.temporary.name) / "CloudGateway.app"
         extension = app / "Contents" / "Library" / "SystemExtensions" / f"{verifier.EXTENSION_ID}.systemextension"
         common = {"LSMinimumSystemVersion": "26.0", "CloudGatewayTeamIdentifier": verifier.TEAM_ID,
                   "CFBundleExecutable": "Executable"}
         for bundle, info in [
             (app, dict(common, CFBundleIdentifier=verifier.APP_ID, LSUIElement=True)),
-            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID, NetworkExtension={
+            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID,
+                             NSSystemExtensionUsageDescription="Connect to your configured networks", NetworkExtension={
                 "NEMachServiceName": f"{verifier.APP_GROUP}.tunnel",
                 "NEProviderClasses": {"com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"},
             })),
@@ -150,6 +151,18 @@ class MacOSBuildVerificationTests(unittest.TestCase):
 
         with patch.object(verifier, "command", side_effect=fake_command):
             verifier.verify_bundle(app, False)
+            info_path = extension / "Contents" / "Info.plist"
+            valid_info = verifier.read_plist(info_path)
+            for description in (None, "", "   ", 17):
+                invalid_info = dict(valid_info)
+                if description is None:
+                    invalid_info.pop("NSSystemExtensionUsageDescription")
+                else:
+                    invalid_info["NSSystemExtensionUsageDescription"] = description
+                info_path.write_bytes(plistlib.dumps(invalid_info))
+                with self.subTest(description=description), self.assertRaisesRegex(ValueError, "usage description"):
+                    verifier.verify_bundle(app, False)
+            info_path.write_bytes(plistlib.dumps(valid_info))
             (app / "CloudGateway.app" / "Tunnel.systemextension").mkdir(parents=True)
             with self.assertRaises(ValueError):
                 verifier.verify_bundle(app, False)

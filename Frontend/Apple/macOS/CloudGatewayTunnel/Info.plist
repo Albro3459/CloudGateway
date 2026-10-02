@@ -24,6 +24,8 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>CloudGatewayTeamIdentifier</key>
 	<string>$(DEVELOPMENT_TEAM)</string>
+	<key>NSSystemExtensionUsageDescription</key>
+	<string>CloudGateway uses this VPN extension to connect your Mac to your configured networks.</string>
 	<key>NetworkExtension</key>
 	<dict>
 		<key>NEProviderClasses</key>

@@ -170,6 +170,9 @@ def verify_bundle(app: Path, signed: bool) -> None:
     require(app_info.get("LSUIElement") is True, "Menu app must be an LSUIElement agent")
     require(extension_info.get("CFBundleIdentifier") == EXTENSION_ID, "Extension identifier mismatch")
     require("NSExtension" not in extension_info, "System extension has app-extension metadata")
+    usage_description = extension_info.get("NSSystemExtensionUsageDescription")
+    require(isinstance(usage_description, str) and bool(usage_description.strip()),
+            "System extension usage description missing or invalid")
     network = extension_info.get("NetworkExtension", {})
     require(network.get("NEMachServiceName") == f"{APP_GROUP}.tunnel", "Mach service mismatch")
     require(network.get("NEProviderClasses") == {
