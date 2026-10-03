@@ -75,6 +75,9 @@ until a successful read. Inventory refresh does not disable the local disconnect
 action. Account switching waits for cancelled commands and required installation
 cleanup before enabling another command.
 Launch at Login starts the menu app without connecting.
+Setup instructions appear once. Setup and update actions appear only when
+activation can proceed. The approval prompt opens Login Items & Extensions
+in System Settings.
 Readiness requires the running extension's build and marketing versions to
 match the embedded copy. A mismatch exposes Update VPN Extension and disables
 new connections until explicit replacement and verification succeed. Increase

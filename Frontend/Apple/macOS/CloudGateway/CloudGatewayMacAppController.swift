@@ -392,10 +392,14 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let state = presentation
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
         menu.removeAllItems()
-        let toggle = add(state.statusTitle, #selector(toggleVPN), enabled: state.canToggleVPN)
-        toggle.state = user != nil && state.hasActiveTunnel ? .on : .off
+        let status = add(state.statusTitle, #selector(toggleVPN), enabled: state.canToggleVPN)
+        if activation.state == .awaitingApproval, state.statusTitle == activation.state.title {
+            status.action = #selector(openLoginItemsSettings)
+            status.isEnabled = true
+        }
+        status.state = user != nil && state.hasActiveTunnel ? .on : .off
         if state.canToggleVPN {
-            toggle.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
+            status.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
         }
         if let visibleErrorMessage { add(visibleErrorMessage) }
         if user == nil {
@@ -442,9 +446,14 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             add("Sign Out", #selector(signOut), enabled: state.canSignOut)
         }
         if activation.state != .ready {
-            add(activation.state.title)
-            add(activation.state == .updateRequired ? "Update VPN Extension…" : "Set Up VPN…",
-                #selector(setUp), enabled: activation.state.canActivate)
+            if state.statusTitle != activation.state.title {
+                add(activation.state.title,
+                    activation.state == .awaitingApproval ? #selector(openLoginItemsSettings) : nil)
+            }
+            if activation.state.canActivate {
+                add(activation.state == .updateRequired ? "Update VPN Extension…" : "Set Up VPN…",
+                    #selector(setUp))
+            }
         }
         menu.addItem(.separator())
         add("Open Website", #selector(openWebsite))
@@ -640,7 +649,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Add VPN Client"
-        alert.informativeText = "Create a client in the selected region. The new client will not connect automatically."
+        alert.informativeText = "Create a client in the selected region."
         alert.accessoryView = stack
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
@@ -693,6 +702,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         render()
     }
     @objc private func openSignInBrowser() { browser.openBrowser() }
+    @objc private func openLoginItemsSettings() { SMAppService.openSystemSettingsLoginItems() }
     @objc private func setUp() { activation.activate() }
     @objc private func openWebsite() { NSWorkspace.shared.open(dashboard) }
     @objc private func quitApp() { quit() }
