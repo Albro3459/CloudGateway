@@ -2,64 +2,43 @@ import AppKit
 import CloudGatewayKit
 
 @MainActor
-final class CloudGatewayMacClientCreationDialog: NSObject, NSWindowDelegate {
+final class CloudGatewayMacClientCreationDialog: NSObject, NSTextFieldDelegate {
     typealias Request = (regionId: String, clientName: String)
 
-    private let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
-    private let regionPicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let nameField = NSTextField()
-    private let statusLabel = NSTextField(wrappingLabelWithString: "Loading available regions…")
-    private let createButton = NSButton(title: "Create", target: nil, action: nil)
+    private let alert = NSAlert()
+    private let regionPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+    private let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
     private var continuation: CheckedContinuation<Request?, Error>?
     private var regionsTask: Task<Void, Never>?
+    private var modalTask: Task<Void, Never>?
+    private var modalSession: NSApplication.ModalSession?
 
     override init() {
         super.init()
-        panel.title = "Add VPN Client"
-        panel.isReleasedWhenClosed = false
-        panel.hidesOnDeactivate = false
-        panel.delegate = self
-        regionPicker.addItem(withTitle: "Choose a region")
+        alert.messageText = "Add VPN Client"
+        alert.informativeText = "Create a client in the selected region."
+        alert.addButton(withTitle: "Create").isEnabled = false
+        alert.addButton(withTitle: "Cancel")
+        regionPicker.addItem(withTitle: "Loading regions…")
         regionPicker.isEnabled = false
         nameField.placeholderString = "For example, Work Mac"
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.maximumNumberOfLines = 2
-        createButton.target = self
-        createButton.action = #selector(createClient)
-        createButton.keyEquivalent = "\r"
-        createButton.isEnabled = false
-        panel.defaultButtonCell = createButton.cell as? NSButtonCell
-        let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
-        cancelButton.keyEquivalent = "\u{1b}"
-        let buttons = NSView()
-        for button in [cancelButton, createButton] {
-            button.translatesAutoresizingMaskIntoConstraints = false
-            buttons.addSubview(button)
-        }
+        nameField.toolTip = "Enter a client name with 1 to 80 characters"
+        nameField.delegate = self
         let stack = NSStackView(views: [
             NSTextField(labelWithString: "Region"), regionPicker,
-            NSTextField(labelWithString: "Display name"), nameField, statusLabel, buttons
+            NSTextField(labelWithString: "Display name"), nameField
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         NSLayoutConstraint.activate([
             regionPicker.widthAnchor.constraint(equalToConstant: 320),
-            nameField.widthAnchor.constraint(equalToConstant: 320),
-            statusLabel.widthAnchor.constraint(equalToConstant: 320),
-            statusLabel.heightAnchor.constraint(equalToConstant: 36),
-            buttons.widthAnchor.constraint(equalToConstant: 320),
-            buttons.heightAnchor.constraint(equalToConstant: 32),
-            createButton.trailingAnchor.constraint(equalTo: buttons.trailingAnchor),
-            createButton.centerYAnchor.constraint(equalTo: buttons.centerYAnchor),
-            cancelButton.trailingAnchor.constraint(equalTo: createButton.leadingAnchor, constant: -8),
-            cancelButton.centerYAnchor.constraint(equalTo: buttons.centerYAnchor)
+            nameField.widthAnchor.constraint(equalToConstant: 320)
         ])
         stack.setFrameSize(stack.fittingSize)
-        panel.contentView = stack
-        panel.setContentSize(stack.fittingSize)
-        panel.initialFirstResponder = nameField
+        alert.accessoryView = stack
+        alert.layout()
+        alert.window.initialFirstResponder = nameField
     }
 
     func prompt(loadRegions: @escaping @MainActor () async throws -> [CloudGatewayRegion]) async throws -> Request? {
@@ -67,10 +46,22 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSWindowDelegate {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
-                panel.center()
                 NSApplication.shared.activate()
-                panel.makeKeyAndOrderFront(nil)
-                panel.makeFirstResponder(nameField)
+                modalSession = NSApplication.shared.beginModalSession(for: alert.window)
+                alert.window.makeFirstResponder(nameField)
+                modalTask = Task { [weak self] in
+                    guard let self else { return }
+                    while let session = modalSession, !Task.isCancelled {
+                        let response = NSApplication.shared.runModalSession(session)
+                        guard response == .continue else {
+                            complete(response)
+                            return
+                        }
+                        // Yield between event passes so region loading can update the native alert
+                        do { try await Task.sleep(for: .milliseconds(16)) }
+                        catch { return }
+                    }
+                }
                 regionsTask = Task { [weak self] in
                     guard let self else { return }
                     do {
@@ -88,10 +79,7 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        cancel()
-        return false
-    }
+    func controlTextDidChange(_ notification: Notification) { updateCreateButton() }
 
     private func populateRegions(_ regions: [CloudGatewayRegion]) {
         guard continuation != nil else { return }
@@ -100,11 +88,14 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSWindowDelegate {
         })
         guard !available.isEmpty else {
             if regions.isEmpty {
-                statusLabel.stringValue = "No enabled regions are available"
+                regionPicker.item(at: 0)?.title = "No enabled regions"
+                regionPicker.toolTip = "No enabled regions are available"
             } else if regions.contains(where: { $0.capacity?.isKnown != true }) {
-                statusLabel.stringValue = "Unable to check region capacity. Cancel and try Add Client again"
+                regionPicker.item(at: 0)?.title = "Capacity unavailable"
+                regionPicker.toolTip = "Unable to check region capacity. Cancel and try Add Client again"
             } else {
-                statusLabel.stringValue = "No region currently has available client capacity"
+                regionPicker.item(at: 0)?.title = "No available capacity"
+                regionPicker.toolTip = "No region currently has available client capacity"
             }
             return
         }
@@ -117,31 +108,41 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSWindowDelegate {
         }
         regionPicker.selectItem(at: 0)
         regionPicker.isEnabled = true
-        createButton.isEnabled = true
-        statusLabel.stringValue = ""
+        updateCreateButton()
     }
 
-    @objc private func createClient() {
-        guard createButton.isEnabled, let regionId = regionPicker.selectedItem?.representedObject as? String else { return }
+    private func updateCreateButton() {
+        guard regionPicker.isEnabled else { return }
+        let clientName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        alert.buttons[0].isEnabled = !clientName.isEmpty && clientName.unicodeScalars.count <= 80
+    }
+
+    private func complete(_ response: NSApplication.ModalResponse) {
+        guard response == .alertFirstButtonReturn, alert.buttons[0].isEnabled,
+              let regionId = regionPicker.selectedItem?.representedObject as? String else {
+            finish(.success(nil))
+            return
+        }
         let clientName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clientName.isEmpty, clientName.unicodeScalars.count <= 80 else {
-            statusLabel.stringValue = "Enter a client name with 1 to 80 characters"
-            statusLabel.textColor = .systemRed
-            panel.makeFirstResponder(nameField)
+            finish(.success(nil))
             return
         }
         finish(.success((regionId, clientName)))
     }
-
-    @objc private func cancel() { finish(.success(nil)) }
 
     private func finish(_ result: Result<Request?, Error>) {
         guard let continuation else { return }
         self.continuation = nil
         regionsTask?.cancel()
         regionsTask = nil
-        panel.delegate = nil
-        panel.orderOut(nil)
+        modalTask?.cancel()
+        modalTask = nil
+        if let modalSession {
+            NSApplication.shared.endModalSession(modalSession)
+            self.modalSession = nil
+        }
+        alert.window.orderOut(nil)
         continuation.resume(with: result)
     }
 }
