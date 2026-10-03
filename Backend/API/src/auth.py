@@ -32,7 +32,7 @@ class AuthenticatedUser:
 class TokenVerifier(ABC):
     @abstractmethod
     def verify_token(self, token: str) -> AuthenticatedUser:
-        """Return the authenticated user or raise AuthRequiredError."""
+        """Return the user or raise an authentication denial or availability error."""
 
 
 def bearer_token(request: Request) -> str:

@@ -1285,6 +1285,20 @@ final class CloudGatewayViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.regions.map(\.regionId), ["us-sanjose-1"])
     }
 
+    func testRefreshSignsOutWhenAPIAccessDenied() async {
+        let service = signedInService()
+        service.enabledRegions = [TestFixtures.region("us-sanjose-1")]
+        service.checkAccessError = CloudGatewayAppError.apiAccessDenied("No access")
+        let viewModel = makeViewModel(service)
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(service.signOutCallCount, 1)
+        XCTAssertFalse(viewModel.isSignedIn)
+        XCTAssertEqual(viewModel.appMode, .guest)
+        XCTAssertEqual(viewModel.errorText, "No access")
+    }
+
     func testRefreshKeepsSessionOnTransientAPIError() async {
         let service = signedInService()
         service.enabledRegions = [TestFixtures.region("us-sanjose-1")]

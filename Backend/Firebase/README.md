@@ -20,6 +20,8 @@ All JSON and Firestore field naming is camelCase. The client identifier field is
 * User role assignment documents: `UserRoles/{uid}`
 * Account-scoped ACL policy status documents: `Policy/{regionId}`
 * Account slot counter document: `Counters/accountSlots`
+* Temporary device authorization requests: `DeviceAuthRequests/{deviceRequestId}`
+* Temporary device authorization limits: `DeviceAuthLimits/{scopeId}`
 
 Region documents are **self-seeded by each host** at the end of bootstrap
 (`cloudgateway-register-region`): it upserts `Regions/{regionId}` with the live IP, server
@@ -104,8 +106,19 @@ Enforced by [firestore.rules](firestore.rules):
 * Admins can read all user, role default, role assignment, and client documents.
 * Admins can read `Policy/{regionId}` status documents. Write is Admin-SDK only.
 * No client, including admins, may read or write `Counters/{counterId}` documents.
+* No client, including admins, may read or write `DeviceAuthRequests/{deviceRequestId}` or `DeviceAuthLimits/{scopeId}`. The regional API uses the Admin SDK for these records.
 * Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
 * Frontend clients cannot write `Regions`, `Users`, `UserRoles`, `Roles`, or client documents directly. Admin and operational mutation goes through trusted backend/Admin SDK paths.
+
+## Device Authorization Records
+
+The regional API lazily creates `DeviceAuthRequests` documents with a 32-character lowercase hexadecimal ID (128 random bits). A request stores lowercase SHA-256 hex verifiers in `deviceSecretHash` and `userCodeHash`, a sanitized `deviceName` capped at 80 characters, and Firestore timestamps `createdAt`, `expiresAt`, and `nextPollAt`. The six-digit user code may repeat because requests are found by their random document ID.
+
+`state` is `pending`, `approved`, `denied`, or `consumed`. Pending requests have no decision fields. Approved and denied requests have `decidedUid` and `decidedAt`; approved requests also have `approvedUid`, which matches `decidedUid`. Consumed requests retain those approval fields and add `consumedAt`. The API does not expose stored identities in verification responses.
+
+`DeviceAuthLimits/{scopeId}` stores a `scope` of `creation` or `guesses`, a bounded array of Firestore timestamps in `attempts`, and an `expiresAt` timestamp. Both collections are API-only. Direct client access stays denied for anonymous users, normal users, approving users, and admins; trusted server access uses the Admin SDK.
+
+Firestore TTL policies use `expiresAt` in both collections. TTL deletion is asynchronous and typically happens within 24 hours, so API authorization always checks the request expiry itself. Retain temporary request and limit records only through their TTL cleanup window. The recursive backup may include these documents; do not restore expired device authorization requests or rate-limit budgets as live state. A restored request must never become redeemable again.
 
 ## Limits
 
@@ -131,4 +144,21 @@ ls -lh Backend/Firebase/backups
 
 Backups are written to `Backend/Firebase/backups/backup-<timestamp>.json`. Treat these files as
 secret material because client documents can contain full WireGuard configs and client
-private keys. `Backend/Firebase/backups/` is intentionally ignored by git.
+private keys. `Backend/Firebase/backups/` is intentionally ignored by git. Backups can also
+contain temporary device authorization records. Exclude `DeviceAuthRequests` and
+`DeviceAuthLimits` when restoring; expired requests must never become valid again, and abuse
+budgets are short-lived operational state rather than recovery data.
+
+## Local validation
+
+Run `./scripts/test.sh firebase` from the repo root. It checks schema/test types,
+runs the test-client checks, and starts Auth and Firestore emulators together
+for client rules tests and API exchange/concurrency tests. Both suites use
+`demo-cloudgateway`, with no real credentials. API dev dependencies are synced
+when this target runs alone.
+
+The `api` target excludes tests marked `emulator`. The Firebase target selects
+those tests and fails if either local emulator is unavailable. Auth emulator
+checks cannot prove production token signing, and Firestore emulator checks
+cannot prove TTL deletion or deployed indexes. Follow the
+[device authorization runbook](../../docs/device-auth.md) for the release checks.

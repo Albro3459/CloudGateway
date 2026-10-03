@@ -14,6 +14,7 @@ ${API_HOSTNAME}, api.gocloudlaunch.com {
 	}
 
 	@api path /api /api/*
+	@device_auth path /api/device/*
 	@api_preflight {
 		method OPTIONS
 		path /api /api/*
@@ -30,9 +31,12 @@ ${API_HOSTNAME}, api.gocloudlaunch.com {
 		Access-Control-Allow-Origin "${DASHBOARD_CORS_ORIGIN}"
 		Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS"
 		Access-Control-Allow-Headers "Authorization, Content-Type"
+		Access-Control-Expose-Headers "Retry-After, X-Request-Id"
 		Access-Control-Max-Age "3600"
 		Vary "Origin"
 	}
+
+	header @device_auth Cache-Control "no-store"
 
 	handle @api_preflight {
 		respond "" 204
@@ -48,7 +52,9 @@ ${API_HOSTNAME}, api.gocloudlaunch.com {
 		}
 
 		uri strip_prefix /api
-		reverse_proxy 127.0.0.1:${FASTAPI_PORT}
+		reverse_proxy 127.0.0.1:${FASTAPI_PORT} {
+			header_up X-CloudGateway-Client-IP {http.request.header.CF-Connecting-IP}
+		}
 	}
 
 	respond 404

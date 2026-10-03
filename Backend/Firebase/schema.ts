@@ -168,6 +168,54 @@ export type FirebaseCounterDoc = {
     updatedAt: FirestoreTimestamp;
 };
 
+type FirebaseDeviceAuthRequestFields = {
+    deviceSecretHash: string;
+    userCodeHash: string;
+    // Sanitized by the API and limited to 80 characters.
+    deviceName: string;
+    createdAt: FirestoreTimestamp;
+    expiresAt: FirestoreTimestamp;
+    nextPollAt: FirestoreTimestamp;
+};
+
+export type FirebaseDeviceAuthRequestDoc =
+    | (FirebaseDeviceAuthRequestFields & {
+        state: "pending";
+        decidedUid?: never;
+        decidedAt?: never;
+        approvedUid?: never;
+        consumedAt?: never;
+    })
+    | (FirebaseDeviceAuthRequestFields & {
+        state: "approved";
+        decidedUid: string;
+        decidedAt: FirestoreTimestamp;
+        approvedUid: string;
+        consumedAt?: never;
+    })
+    | (FirebaseDeviceAuthRequestFields & {
+        state: "denied";
+        decidedUid: string;
+        decidedAt: FirestoreTimestamp;
+        approvedUid?: never;
+        consumedAt?: never;
+    })
+    | (FirebaseDeviceAuthRequestFields & {
+        state: "consumed";
+        decidedUid: string;
+        decidedAt: FirestoreTimestamp;
+        approvedUid: string;
+        consumedAt: FirestoreTimestamp;
+    });
+
+export type FirebaseDeviceAuthLimitScope = "creation" | "guesses";
+
+export type FirebaseDeviceAuthLimitDoc = {
+    scope: FirebaseDeviceAuthLimitScope;
+    attempts: FirestoreTimestamp[];
+    expiresAt: FirestoreTimestamp;
+};
+
 export type FirebaseDocumentTree = {
     Regions: {
         "{regionId}": FirebaseRegionDoc & {
@@ -193,5 +241,11 @@ export type FirebaseDocumentTree = {
     };
     Counters: {
         accountSlots: FirebaseCounterDoc;
+    };
+    DeviceAuthRequests: {
+        "{deviceRequestId}": FirebaseDeviceAuthRequestDoc;
+    };
+    DeviceAuthLimits: {
+        "{scopeId}": FirebaseDeviceAuthLimitDoc;
     };
 };

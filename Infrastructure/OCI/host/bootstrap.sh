@@ -800,7 +800,7 @@ ConditionPathExists=/opt/cloudgateway/api/.venv/bin/uvicorn
 User=root
 WorkingDirectory=/opt/cloudgateway/api
 EnvironmentFile=/etc/cloudgateway/api.env
-ExecStart=/opt/cloudgateway/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port \$CLOUDGATEWAY_API_PORT
+ExecStart=/opt/cloudgateway/api/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --no-proxy-headers --port \$CLOUDGATEWAY_API_PORT
 Restart=on-failure
 RestartSec=5
 

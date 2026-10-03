@@ -1,146 +1,112 @@
 # CloudGateway macOS
 
-Future native macOS app project home.
+Native menu bar app and packet-tunnel system extension. See
+[TODO/macos-app.md](../../../TODO/macos-app.md) for the implementation checkpoints
+and [development runbook](../../../docs/apple-macos-development.md) for signing,
+installation, storage boundaries, and runtime checks.
 
-No macOS app or packet-tunnel targets exist yet.
+The initial app targets macOS 26 on Apple silicon. Shared Kit/AppCore floors
+stay unchanged. It uses `NSStatusItem` and `NSMenu` as an `LSUIElement` agent,
+with setup and device-code status in the menu and no dashboard. The
+[device-auth flow](../../../docs/device-auth.md) is deployed and its live
+approval/sign-in path has been verified.
 
-The future macOS GUI app should import `CloudGatewayAppCore` for Firebase-free
-app workflows and presentation refresh, and `CloudGatewayKit` for VPN/config,
-cache, Keychain, and tunnel-health consumption. It supplies native lifecycle,
-UI, Firebase/Firestore, provider-presentation, notification, and identifier
-adapters; it should not compile iOS app sources.
+## Shared Core And Native Composition
 
-The macOS packet-tunnel extension imports `CloudGatewayKit`, not AppCore. It
-should instantiate
-`CloudGatewayTunnelHealthMonitor`, which encapsulates the shared coordinator,
-artifact driver, and effect-submission arbiter. The extension also reuses the
-notification-registration fence, `CloudGatewayTunnelHealthTiming`,
-`CloudGatewayTunnelHealthStore`, and the shared notification contract without
-forking the iOS detector or adding another health timer.
+Reuse Kit configuration parsing/models, selection, snapshots, VPN preferences,
+and suitable lifecycle helpers. Reuse AppCore HTTP/document mapping and session
+contracts where useful. Keep macOS menu state separate from the full iOS view
+model. Neither target compiles iOS sources. Preserve iOS contracts and behavior.
 
-## GUI App Dependency Boundary
+The app owns browser auth, Firebase session, authorized inventory, account-scoped
+offline metadata, activation, VPN commands, XPC client, status observation,
+and optional launch at login. The menu target includes native Firebase
+configuration and Keychain Sharing. Add Client is available in the macOS menu;
+account and admin management stay on the site or mobile app. There is no native
+provider login UI.
 
-| Workflow | Reusable product | Native macOS composition |
-|---|---|---|
-| Auth and account actions | `CloudGatewayAppCore` contracts/facade plus the macOS-compatible `CloudGatewayFirebaseAuthAdapter` package | Firebase startup, Sign in with Apple request UI, Google credential presentation, and provider callback routing |
-| Roles and clients | AppCore repository contract (now also `fetchMeshRegions`, `fetchMeshDocs`, `setRegionMeshEnabled`, `fetchPolicyDocs`) and pure Firestore document mappers (mesh and Policy) | A macOS repository; Firebase 11.15 advertises macOS support, but this refactor did not compile or integration-test a macOS Firestore conformer |
-| Apex and regional APIs | `CloudGatewayControlPlaneClient`, DTOs, URL validation, error mapping, and bounded session from `CloudGatewayAppCore` | Inject the origin host; no platform HTTP client rewrite |
-| App state and commands | `CloudGatewayViewModel`, `CloudGatewayAppServiceFacade`, and passive contracts from `CloudGatewayAppCore` | Construct them in a native composition root with macOS adapters |
-| VPN/config and offline install state | Config manager, VPN manager, selection/models, app-group cache, Keychain secret store, and parser from `CloudGatewayKit` | Inject macOS app/provider/group/Keychain identifiers and entitlements |
-| Health presentation | AppCore presentation refresh and health-reader contract plus Kit health store/snapshot types | A native reader adapter wraps the Kit store; native notification authorization and app lifecycle invoke/cancel the shared operations |
-| Server Health (admin) | `CloudGatewayServerHealthViewModel`, `CloudGatewayMeshStatus`, and `CloudGatewayPolicyStatus` derivation, plus the Mesh/Policy Firestore mappers and repository contract (including `fetchPolicyDocs`) in `CloudGatewayAppCore` | A macOS Firestore adapter conforming to the repository contract (including `fetchPolicyDocs`) and a native SwiftUI/AppKit Server Health UI - neither exists yet |
+The tunnel links Kit, the existing WireGuard fork/Go bridge, and necessary Apple
+frameworks. It has no AppCore, Firebase, Google Sign-In, AppKit, SwiftUI, UIKit,
+or User Notifications dependency. No blackout monitor, traffic probes, health
+IPC, automatic blackout recovery, or notifications run on macOS.
 
-SwiftUI/AppKit views, navigation, menu-bar behavior, settings, scene lifecycle,
-window ownership, and launch-at-login policy remain native and are not shared.
+## Storage And Lifecycle
 
-## Packet-Tunnel Dependency Boundary
+The root system extension owns full configs in the System Keychain. The user
+app transfers installation material through authenticated XPC and retains
+opaque references. App Group containers and user Keychain items do not cross
+the root/user boundary. The synchronous iOS secret adapter is not the Mac
+adapter. See the plan's
+[storage boundary](../../../TODO/macos-app.md#storage-and-account-boundaries).
 
-The macOS packet-tunnel target should link only `CloudGatewayKit`, WireGuardKit,
-and the Apple `NetworkExtension`, `Network`, `UserNotifications`, and `os`
-frameworks. It must not link `CloudGatewayAppCore`, Firebase, Google Sign-In,
-SwiftUI, UIKit, or AppKit.
+Use memory-only Firestore SDK caching and persist metadata-only offline
+inventory/selection per Firebase UID. Keep raw `wireGuardConfig` documents and
+keys out of files. Another account's cache and retained system profiles never
+become the current inventory. Admin visibility follows backend authorization.
+The cache records its authorization role. A confirmed admin-to-user change
+invalidates the admin cache and clears the menu inventory and last-used selection
+before further requests. Failed client creation or refresh keeps connections
+unavailable until a full online refresh rebuilds the permitted inventory.
+Role-less caches require that refresh too.
+Authorization rejections from client creation or regional capacity checks clear
+the inventory, invalidate cached access, and sign out. Capacity limits and
+validation errors keep the account signed in.
+Removed client history does not count toward the live inventory limit.
+Temporary Firebase verification outages retain the native session and cache,
+while fresh online inventory stays unavailable until access can be checked.
 
-The current iOS provider is the behavior reference, not a source directory for
-the macOS target. Reuse happens through named shared modules; the macOS target
-must not compile files from `Frontend/Apple/iOS/`.
+Selection explicitly connects or switches. The top status row toggles the VPN,
+with a native checkmark reflecting the observed connection state. Clicking
+VPN connected disconnects, and VPN off reconnects the last-used usable client.
+Connecting and disconnecting disable the toggle. Without a usable last-used
+client, the row says Choose a client to connect. Disconnecting retains
+configs/secrets and cloud clients. Sign Out hides inventory and ends the local Firebase session,
+retaining VPN, profiles, secrets, and account caches. Quit exits only the menu
+app. Signed-out menus expose no configs or VPN controls. Sign Out remains
+available when a retained Firebase session cannot restore. System Settings can
+stop retained profiles and display their status. Starting requires the
+authenticated menu app, which supplies a single-use start grant.
 
-| Boundary | Reuse on macOS | Initial macOS ownership |
-|---|---|---|
-| Detection and recovery | Instantiate the public `CloudGatewayTunnelHealthMonitor`. It encapsulates the coordinator, evaluator/recovery/path/persistence policies, artifact driver, and effect arbiter; inject shared scheduling and timing APIs only when production defaults are unsuitable. | No second detector, policy graph, or health timer. |
-| Runtime | Reuse `CloudGatewayTunnelHealthRuntimeAdapter`, recovery result/capability types, and `CloudGatewayTunnelRuntimeStats.parse`. | A small WireGuardKit adapter maps runtime reads and binding refresh callbacks. Backend restart reports `unsupported` until the fork exposes and device-tests a public macOS entry point. |
-| Persistence | Reuse `CloudGatewayTunnelHealthStore` and its FIFO `CloudGatewayTunnelHealthStoreAdapter`. | Supply macOS app-group identifiers and matching entitlements. Persist only the outward health snapshot. |
-| Notifications | Reuse `CloudGatewayTunnelHealthNotification`, the adapter contract, and `CloudGatewayTunnelHealthNotificationRegistrationFence`. | An extension adapter owns `UNUserNotificationCenter` authorization observation, request creation, pending/delivered reconciliation, and removal. The containing app owns permission requests and foreground presentation. |
-| Start and stop | Reuse `CloudGatewayTunnelPendingStartBarrier`, `CloudGatewayTunnelStartStopJoin`, `CloudGatewayTunnelStopSubmission`, `CloudGatewayTunnelStopCompletion`, and monitor stop tokens. | The `NEPacketTunnelProvider` subclass owns callbacks, provider lifecycle, adapter stop submission, the five-second physical-stop deadline, and target-specific capabilities. |
-| Path changes | Reuse `CloudGatewayTunnelPathDescriptor` and shared path policy. | A macOS `NWPathMonitor` source deduplicates meaningful fingerprints and emits monotonically increasing route generations. |
-| Configuration | Reuse provider-configuration keys, Keychain secret references/store, raw WireGuard models, and the parser. | The provider reads its injected identifiers and maps parsed values to WireGuardKit types. Full configs remain in shared Keychain storage, never app-group files. |
+Refresh Apple preferences/status asynchronously on launch, menu opening,
+preference changes, and commands. Observe status events for app-owned managers.
+The icon may indicate a hidden active tunnel without exposing client details.
+Failed preference reads retain the last observed status and the existing error
+until a successful read. Inventory refresh does not disable the local disconnect
+action. Account switching waits for cancelled commands and required installation
+cleanup before enabling another command.
+Launch at Login starts the menu app without connecting.
+Readiness requires the running extension's build and marketing versions to
+match the embedded copy. A mismatch exposes Update VPN Extension and disables
+new connections until explicit replacement and verification succeed. Increase
+the build number when releasing extension changes.
 
-## Code That Remains Platform-Owned
+## Implementation And Validation
 
-The following iOS-private implementations in
-`CloudGatewayTunnel/PacketTunnelProvider.swift` describe adapter roles, not
-types to copy into a shared target:
+The menu, browser auth, account-scoped inventory, packet provider, and
+authenticated IPC are implemented. Automated validation covers host-free
+workflows, race handling, dead code, compilation, and bundle packaging.
+Signed activation, live Keychain/IPC, and VPN networking remain pending until
+development profiles and local macOS approval are available.
 
-* `PacketTunnelProvider` owns the iOS Network Extension entry points,
-  WireGuard adapter construction, provider-configuration access, OS logging,
-  queues, and stop deadline;
-* `IOSTunnelHealthRuntimeAdapter` is the iOS WireGuardKit callback bridge;
-* `IOSTunnelHealthNotificationAdapter` and
-  `IOSTunnelHealthNotificationReconciliation` are the iOS User Notifications
-  bridge;
-* iOS target Info.plist, entitlements, app/provider identifiers, provisioning,
-  and WireGuard Go linkage remain iOS-only.
+Both Apple projects build the existing `../wireguard-apple` submodule. Its
+startup checks fail when the backend cannot start or network settings remain
+unconfirmed. A settings timeout fences that adapter against another startup.
+Provider stop completion waits for actual backend shutdown, including after
+the stop deadline. The app reports a stop timeout instead of starting a replacement.
 
-The macOS target supplies corresponding native implementations with macOS
-identifiers, entitlements, signing, and capabilities. It does not reuse iOS
-production identifiers.
+Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
+and packaging checks. Use `./scripts/test.sh macos --signed` for signed builds and
+profile/entitlement inspection. Use `ios` for the iOS regression gate and
+`apple` for both platforms. The default suite runs every target. Shared package
+tests run once per invocation. Automated checks do not activate extensions
+or change the running VPN.
 
-## Extraction Candidates After A Second Consumer Exists
+Signed checks cover activation/replacement, root/user isolation, repeated
+sessions, sleep/wake, network changes, offline use, account switching, status
+changes through macOS controls, retained VPN after sign-out/quit, and launch
+at login. See the plan's
+[Apple trap checklist](../../../TODO/macos-app.md#apple-traps-and-prevention).
+Run the containing app from `/Applications` with SIP enabled.
 
-Do not extract these merely to shorten the iOS provider. First implement and
-device-test the macOS equivalent, then share only the proven common contract:
-
-* `IOSTunnelHealthLifecycle`, which currently combines start identity,
-  monitor/path ownership, and joined stop behavior with concrete iOS adapters;
-* `IOSTunnelHealthStopDeadline`, if macOS proves the identical callback-loss and
-  five-second stop contract;
-* `IOSTunnelHealthPathSession` and `HealthPathFingerprint`, after macOS
-  sleep/wake and interface behavior verifies the same status, interface,
-  gateway, IPv4, IPv6, and DNS fingerprint;
-* parsed-config-to-WireGuardKit mapping, in a support module that may depend on
-  WireGuardKit but never makes WireGuardKit a `CloudGatewayKit` dependency.
-
-## Required Ordering And Safety Invariants
-
-The macOS implementation is not equivalent until it preserves all of these:
-
-1. Every start attempt has an identity. Stop synchronously prevents a pending
-   start or monitor from installing, every completion path closes the pending
-   start, and joined stop waits for both pending start and monitor cleanup.
-2. Runtime, recovery, persistence, and notification operations remain
-   callback-driven and logically bounded. Missing callbacks cannot block the
-   monitor; late or duplicate callbacks are session-qualified and harmless.
-3. Start identity, monitor generation, path route generation, artifact
-   generation, effect admission, and notification epoch all reject stale work.
-   An old clear or withdrawal cannot erase replacement-session state.
-4. Normal stop closes effect admission, cancels the path source, drains already
-   admitted FIFO effects, and then submits adapter stop. The five-second
-   deadline cancels queued effects, reaches adapter stop, performs idempotent
-   best-effort cleanup, and completes exactly once even when callbacks vanish.
-5. Detection never automatically disconnects the VPN or introduces a traffic
-   probe/fallback. Do not log raw runtime counters, keys, endpoints, configs,
-   tokens, DNS queries, packet metadata, or destination metadata.
-6. Exactly one shared `CloudGatewayTunnelHealthMonitor` owns detection for the
-   active tunnel. No macOS-specific detector or polling timer is allowed.
-
-The GUI app will request notification authorization and read the shared health
-snapshot. Detection remains in the future packet extension so it continues
-while the GUI is backgrounded, closed, or signed out. Bundle, provider,
-app-group, and Keychain identifiers remain injected platform configuration.
-
-WireGuardKit stays outside `CloudGatewayKit`. The pinned fork exposes binding
-refresh on macOS, but its public backend-restart entry point is currently
-iOS-only. The initial macOS runtime adapter should report backend restart as
-unsupported; the shared bounded recovery policy will still confirm and notify.
-Exposing macOS backend restart in the fork is a separate implementation and
-device-validation task.
-
-## Validation Before Claiming macOS Parity
-
-On a signed Mac and extension, verify:
-
-* the pinned WireGuard fork and Go bridge link for the target architecture, and
-  runtime-read and binding-refresh callbacks complete correctly;
-* `NWPath` fingerprints and route generations across sleep/wake, Wi-Fi,
-  Ethernet, DNS/gateway changes, and interface churn;
-* pending/delivered notification reconciliation plus containing-app
-  authorization and foreground presentation;
-* app-group snapshot and shared Keychain access under real entitlements;
-* start/stop ordering, callback loss, stale sessions, and the bounded stop
-  deadline with deliberately late or missing callbacks.
-
-Simulator behavior is not evidence for these extension, entitlement, sleep,
-WireGuard, notification, or deadline contracts.
-
-Remaining macOS work includes app and extension targets, entitlements, signing,
-UI/Firebase composition, adapter compile tests, and the signed real-device
-matrix. None of that work was implemented or verified by this extraction.
+Direct ZIP distribution is planned. Developer ID export, notarization, clean
+release installation, and hosting remain separate release work.

@@ -402,11 +402,11 @@ When adding macOS, keep platform-specific behavior in composition/configuration 
 
 ## Validation
 
-Docs-only changes can be manually reviewed. Apple code changes should use the existing Apple validation path:
+Docs-only changes can be manually reviewed. iOS code changes should use the iOS validation path:
 
 ```sh
-./scripts/test.sh apple
-./scripts/test.sh apple --signed
+./scripts/test.sh ios
+./scripts/test.sh ios --signed
 ```
 
 The unsigned gate checks release-script syntax, runs `CloudGatewayKit` and
@@ -414,7 +414,8 @@ The unsigned gate checks release-script syntax, runs `CloudGatewayKit` and
 tests, lists the Xcode project, and builds the full iOS app and extension graph
 for a generic device without signing. The `--signed` variant validates generic
 device provisioning, but no signed build or real-device check was performed as
-part of this refactor.
+part of this refactor. Use `./scripts/test.sh apple` for both iOS and macOS,
+or no targets for every suite. Shared package tests run once per invocation.
 
 Signed real-device validation remains outstanding for Network Extension
 installation, App Group and Keychain Sharing entitlements, provider sign-in UI,

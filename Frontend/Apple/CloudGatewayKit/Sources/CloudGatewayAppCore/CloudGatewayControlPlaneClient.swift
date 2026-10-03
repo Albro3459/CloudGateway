@@ -252,9 +252,11 @@ public final class CloudGatewayControlPlaneClient: CloudGatewayControlPlaneServi
     private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
         let (data, httpResponse) = try await sendTransport(request)
         guard (200..<300).contains(httpResponse.statusCode) else {
-            throw CloudGatewayAppError.accessDenied(
-                apiErrorMessage(from: data) ?? "CloudGateway API request failed."
-            )
+            let message = apiErrorMessage(from: data) ?? "CloudGateway API request failed."
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw CloudGatewayAppError.apiAccessDenied(message)
+            }
+            throw CloudGatewayAppError.accessDenied(message)
         }
         do {
             return try JSONDecoder.gatewayAPI.decode(Response.self, from: data)
