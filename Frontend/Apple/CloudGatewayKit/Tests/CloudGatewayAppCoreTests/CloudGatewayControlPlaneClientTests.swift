@@ -160,6 +160,64 @@ import CloudGatewayKit
     }
 }
 
+@Test(arguments: [401, 403])
+func controlPlaneClientCreationDistinguishesAPIAccessDenial(statusCode: Int) async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(statusCode, #"{"error":{"code":"AUTH_REQUIRED","message":"No access"}}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    do {
+        _ = try await client.createClient(regionId: "us-a", clientName: "Mac", idToken: "token")
+        Issue.record("Expected API access denial")
+    } catch CloudGatewayAppError.apiAccessDenied(let message) {
+        #expect(message == "No access")
+        #expect(CloudGatewayAppError.apiAccessDenied(message).localizedDescription == message)
+    } catch {
+        Issue.record("Expected API access denial, got \(type(of: error))")
+    }
+}
+
+@Test(arguments: [401, 403])
+func controlPlaneCapacityDistinguishesAPIAccessDenial(statusCode: Int) async {
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(statusCode, #"{"error":{"message":"No access"}}"#),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    do {
+        _ = try await client.fetchCapacity(regionId: "us-a", idToken: "token")
+        Issue.record("Expected API access denial")
+    } catch CloudGatewayAppError.apiAccessDenied(let message) {
+        #expect(message == "No access")
+    } catch {
+        Issue.record("Expected API access denial, got \(type(of: error))")
+    }
+}
+
+@Test(arguments: [
+    (400, "Enter a client name"),
+    (409, "Server capacity reached"),
+    (409, "Client limit reached"),
+    (503, "Authentication is temporarily unavailable"),
+])
+func controlPlaneClientCreationPreservesOtherAPIFailures(statusCode: Int, message: String) async {
+    let body = "{\"error\":{\"message\":\"\(message)\"}}"
+    let session = RecordingControlPlaneSession(stubs: [
+        .http(statusCode, body),
+    ])
+    let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)
+
+    do {
+        _ = try await client.createClient(regionId: "us-a", clientName: "Mac", idToken: "token")
+        Issue.record("Expected the API failure")
+    } catch CloudGatewayAppError.accessDenied(let actualMessage) {
+        #expect(actualMessage == message)
+    } catch {
+        Issue.record("Expected ordinary API failure, got \(type(of: error))")
+    }
+}
+
 @Test func controlPlaneRejectsPathInjectionBeforeSendingARequest() async {
     let session = RecordingControlPlaneSession(stubs: [])
     let client = CloudGatewayControlPlaneClient(originHost: "example.com", session: session)

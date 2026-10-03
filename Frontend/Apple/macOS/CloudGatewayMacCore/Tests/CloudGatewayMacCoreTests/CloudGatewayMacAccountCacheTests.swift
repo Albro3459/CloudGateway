@@ -176,7 +176,7 @@ import Testing
     try await cache.authorize(accountId: "user-a", role: .admin, options: [option])
     try await cache.save(config)
     try await cache.select(identifier: config.identifier, accountId: "user-a")
-    try await cache.observeRole(accountId: "user-a", role: .user)
+    #expect(try await cache.observeRole(accountId: "user-a", role: .user))
     let denied = try await cache.load(accountId: "user-a")
     #expect(denied.configs.isEmpty)
     #expect(denied.selectedIdentifier == nil)
@@ -196,7 +196,7 @@ func observingUnchangedRolePreservesOfflineInventory(role: CloudGatewayMacAccoun
     try await cache.save(config)
     try await cache.select(identifier: config.identifier, accountId: "user-a")
     let saved = try await cache.load(accountId: "user-a")
-    try await cache.observeRole(accountId: "user-a", role: role)
+    #expect(try await cache.observeRole(accountId: "user-a", role: role) == false)
     #expect(try await cache.load(accountId: "user-a") == saved)
     #expect(CloudGatewayMacOfflinePolicy.canUseCache(after: .transport, cache: saved))
 }
@@ -209,9 +209,9 @@ func observingUnchangedRolePreservesOfflineInventory(role: CloudGatewayMacAccoun
     try await cache.save(config)
     let observation = Task {
         withUnsafeCurrentTask { $0?.cancel() }
-        try await cache.observeRole(accountId: "user-a", role: .user)
+        return try await cache.observeRole(accountId: "user-a", role: .user)
     }
-    try await observation.value
+    #expect(try await observation.value)
     let reopened = try await CloudGatewayMacAccountCache(directory: directory).load(accountId: "user-a")
     #expect(reopened.configs.isEmpty)
     #expect(!CloudGatewayMacOfflinePolicy.canUseCache(after: .transport, cache: reopened))
@@ -223,7 +223,7 @@ func observingUnchangedRolePreservesOfflineInventory(role: CloudGatewayMacAccoun
     try await cache.authorize(accountId: "user-a", role: .user, options: [option])
     try await cache.save(config)
     let saved = try await cache.load(accountId: "user-a")
-    try await cache.observeRole(accountId: "user-a", role: .admin)
+    #expect(try await cache.observeRole(accountId: "user-a", role: .admin) == false)
     #expect(try await cache.load(accountId: "user-a") == saved)
 }
 

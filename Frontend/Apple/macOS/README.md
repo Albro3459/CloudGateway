@@ -44,8 +44,13 @@ inventory/selection per Firebase UID. Keep raw `wireGuardConfig` documents and
 keys out of files. Another account's cache and retained system profiles never
 become the current inventory. Admin visibility follows backend authorization.
 The cache records its authorization role. A confirmed admin-to-user change
-invalidates the admin cache before inventory requests, and a full online refresh
-rebuilds the permitted inventory. Role-less caches require that refresh too.
+invalidates the admin cache and clears the menu inventory and last-used selection
+before further requests. Failed client creation or refresh keeps connections
+unavailable until a full online refresh rebuilds the permitted inventory.
+Role-less caches require that refresh too.
+Authorization rejections from client creation or regional capacity checks clear
+the inventory, invalidate cached access, and sign out. Capacity limits and
+validation errors keep the account signed in.
 Removed client history does not count toward the live inventory limit.
 Temporary Firebase verification outages retain the native session and cache,
 while fresh online inventory stays unavailable until access can be checked.

@@ -1278,7 +1278,7 @@ public final class CloudGatewayViewModel: ObservableObject {
 
     private func shouldSignOut(after error: CloudGatewayAppError) -> Bool {
         switch error {
-        case .accessDenied(_), .noEnabledRegions:
+        case .accessDenied(_), .apiAccessDenied(_), .noEnabledRegions:
             return true
         case .missingCurrentUser, .missingSelectedRegion, .invalidAPIResponse, .cancelled, .appleSignInFailed, .requiresRecentLogin, .credentialAlreadyInUse, .providerAlreadyLinked, .invalidEmail, .weakPassword, .invalidSignInCredentials, .wrongPassword:
             return false

@@ -101,9 +101,27 @@ final class CloudGatewayMacInventoryService {
         catch { throw Failure.classify(error) }
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        let regionsWithCapacity = await controlPlane.addCapacity(to: regions, idToken: token)
-        try Task.checkCancellation()
-        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        var regionsWithCapacity: [CloudGatewayRegion] = []
+        for region in regions {
+            let capacity: CloudGatewayRegionCapacity
+            do {
+                let response = try await controlPlane.fetchCapacity(regionId: region.regionId, idToken: token)
+                capacity = response.regionId == region.regionId
+                    ? .known(limit: response.capacityLimit, allocated: response.allocatedClientCount) : .unknown
+            } catch CloudGatewayAppError.apiAccessDenied(_) {
+                try Task.checkCancellation()
+                guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+                throw Failure.accessDenied
+            } catch {
+                capacity = .unknown
+            }
+            try Task.checkCancellation()
+            guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+            regionsWithCapacity.append(CloudGatewayRegion(
+                regionId: region.regionId, displayName: region.displayName,
+                enabled: region.enabled, displayOrder: region.displayOrder, capacity: capacity
+            ))
+        }
         return regionsWithCapacity
     }
 

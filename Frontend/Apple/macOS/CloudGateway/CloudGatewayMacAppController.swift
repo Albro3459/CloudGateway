@@ -287,13 +287,24 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         try Task.checkCancellation()
         guard auth.currentUser?.uid == accountId else { throw CancellationError() }
         do {
-            try await cache.observeRole(accountId: accountId, role: role)
+            let invalidated = try await cache.observeRole(accountId: accountId, role: role)
+            guard auth.currentUser?.uid == accountId else { throw CancellationError() }
+            if invalidated { clearInventoryPresentation(for: accountId) }
         } catch {
             guard auth.currentUser?.uid == accountId else { throw CancellationError() }
+            clearInventoryPresentation(for: accountId)
             // Failed invalidation must not restore stale privileges after relaunch
             try? auth.signOut()
             throw error
         }
+    }
+
+    private func clearInventoryPresentation(for accountId: String) {
+        guard user?.uid == accountId else { return }
+        options = []
+        installed = []
+        lastSelectedIdentifier = nil
+        render()
     }
 
     private func refreshProfiles() {
@@ -578,8 +589,9 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 installed = saved.configs
                 lastSelectedIdentifier = saved.selectedIdentifier
                 errorMessage = nil
-            } catch CloudGatewayMacInventoryService.Failure.accessDenied {
+            } catch CloudGatewayMacInventoryService.Failure.accessDenied, CloudGatewayAppError.apiAccessDenied(_) {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                clearInventoryPresentation(for: account.uid)
                 try? await cache.deny(accountId: account.uid)
                 guard sessionEpoch == epoch, !Task.isCancelled, auth.currentUser?.uid == account.uid else { return }
                 signOut()

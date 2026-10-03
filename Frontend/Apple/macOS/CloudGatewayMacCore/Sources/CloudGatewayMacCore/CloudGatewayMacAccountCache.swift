@@ -94,12 +94,15 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
         try write(payload)
     }
 
-    public func observeRole(accountId: String, role: CloudGatewayMacAccountRole) throws {
+    @discardableResult
+    public func observeRole(accountId: String, role: CloudGatewayMacAccountRole) throws -> Bool {
         // A confirmed downgrade must persist even when the caller quits
         try validate(accountId: accountId)
         if role == .user, (try? loadPayload(accountId: accountId))?.authorizedRole != .user {
             try deny(accountId: accountId)
+            return true
         }
+        return false
     }
 
     public func authorize(accountId: String, role: CloudGatewayMacAccountRole, options: [CloudGatewayClientOption]) throws {
