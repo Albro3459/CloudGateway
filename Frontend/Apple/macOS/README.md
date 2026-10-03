@@ -110,7 +110,7 @@ For a faster local install, quit CloudGateway from its menu, then paste this
 command from the repository root. It builds the signed Release app and extension,
 checks packaging and signing, and copies the app to `/Applications`. It skips
 tests and dead-code scans. If an app is already installed, it moves that copy
-to a temporary backup folder first so removed build files cannot remain in
+to Trash first so removed build files cannot remain in
 the new bundle. It uses the same development signing setup as `macos --signed`.
 
 ```sh
@@ -141,5 +141,8 @@ at login. See the plan's
 [Apple trap checklist](../../../TODO/macos-app.md#apple-traps-and-prevention).
 Run the containing app from `/Applications` with SIP enabled.
 
-Direct ZIP distribution is planned. Developer ID export, notarization, clean
-release installation, and hosting remain separate release work.
+Build a notarized Developer ID DMG with
+`./scripts/macos-release.sh --build <next-build-number>`. See
+[macOS release deployment](../../../docs/apple-macos-release.md) for signing
+setup, prepared artifacts, notarization retries, and installation checks.
+Release hosting remains a separate deployment step.

@@ -252,5 +252,6 @@ Only sanitized activation/setup errors are suitable diagnostics. Discard raw
 WireGuard log payloads. OS crashes should be reported with sanitized context.
 Do not add traffic probes, runtime-counter polling, or automatic recovery.
 
-Developer ID export, notarization, ZIP installation, and release hosting remain
-separate release work.
+Use [macOS release deployment](apple-macos-release.md) to archive, export,
+notarize, and package a signed DMG. Clean release installation and VPN runtime
+checks remain manual gates; release hosting is a separate deployment step.

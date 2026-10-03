@@ -295,6 +295,9 @@ test_macos() {
   run_check "macOS packaging verifier tests" \
     python3 -m unittest scripts/test_verify_macos_build.py ||
     failed=1
+  run_check "macOS release script syntax" bash -n scripts/macos-release.sh || failed=1
+  run_check "macOS release workflow tests" \
+    python3 -m unittest scripts/test_macos_release.py || failed=1
   test_apple_shared_packages ||
     failed=1
   run_check "macOS host-free core and IPC tests" \

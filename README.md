@@ -132,6 +132,7 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 ## More Docs
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
+* macOS release deployment: [docs/apple-macos-release.md](docs/apple-macos-release.md)
 * Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
 * Regional API: [Backend/API/README.md](Backend/API/README.md)
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)

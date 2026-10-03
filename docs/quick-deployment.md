@@ -51,6 +51,25 @@ recreate them.
 
 See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
+## Build notarized macOS DMG
+
+```sh
+./scripts/macos-release.sh --build 2
+```
+
+Use a build number higher than every previous release. Add `--version 1.0.1`
+to override the marketing version. This archives and exports the Developer ID
+app, verifies signing and packaging, notarizes and staples the app, creates a
+signed DMG, then notarizes, staples, and checks that DMG with Gatekeeper. The
+script prints the artifact path and SHA-256 checksum under
+`Frontend/Apple/macOS/.build/releases/`.
+
+Prerequisites: the team's Developer ID Application identity, the two installed
+Developer ID profiles `CloudGateway MacOS` and `CloudGateway-Tunnel MacOS`, and
+saved Keychain credentials `CloudGateway-notary`. See
+[macOS release deployment](apple-macos-release.md) for setup, preparation-only
+builds, resuming pending submissions, installation checks, and distribution.
+
 ## Deploy regional servers
 
 1. Commit and push all your changes.

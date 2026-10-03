@@ -58,7 +58,7 @@ def verify_dynamic_paths(
         is_build_path = "DerivedData" in value or "/.build/" in value
         is_unused_package_path = (
             is_build_path
-            and re.search(r"/Build/Products/(Debug|Release)/PackageFrameworks$", value) is not None
+            and re.search(r"/Build/Products/(Debug|Release|DeveloperID)/PackageFrameworks$", value) is not None
             and all(is_system_library(dependency) for dependency in dependencies)
         )
         if is_unused_package_path:
@@ -105,11 +105,15 @@ def verify_dynamic_libraries(executable: Path, bundle: Path) -> None:
         pending.extend(verify_dynamic_paths(binary, bundle, executable, dependencies, rpaths))
 
 
-def verify_entitlements(entitlements: dict, is_extension: bool) -> None:
+def verify_entitlements(entitlements: dict, is_extension: bool, developer_id: bool = False) -> None:
     require(entitlements.get("com.apple.developer.team-identifier") == TEAM_ID, "Signing team mismatch")
     require(entitlements.get("com.apple.security.application-groups") == [APP_GROUP], "App Group mismatch")
-    require(entitlements.get("com.apple.developer.networking.networkextension") == ["packet-tunnel-provider"],
-            "Development Network Extension entitlement mismatch")
+    tunnel_capability = "packet-tunnel-provider-systemextension" if developer_id else "packet-tunnel-provider"
+    require(entitlements.get("com.apple.developer.networking.networkextension") == [tunnel_capability],
+            "Network Extension entitlement does not match the distribution channel")
+    if developer_id:
+        require(not entitlements.get("com.apple.security.get-task-allow") and not entitlements.get("get-task-allow"),
+                "Developer ID signature must not allow debugging")
     require(entitlements.get("com.apple.security.app-sandbox", False) == is_extension,
             "App/extension sandbox boundary mismatch")
     if is_extension:
@@ -125,7 +129,9 @@ def verify_entitlements(entitlements: dict, is_extension: bool) -> None:
                 "Firebase session Keychain access group mismatch")
 
 
-def verify_profile(profile: dict, bundle_id: str, is_extension: bool, now: datetime.datetime) -> None:
+def verify_profile(
+    profile: dict, bundle_id: str, is_extension: bool, now: datetime.datetime, developer_id: bool = False
+) -> None:
     expiration = profile.get("ExpirationDate")
     require(isinstance(expiration, datetime.datetime), "Profile expiration missing")
     require(expiration.replace(tzinfo=datetime.timezone.utc) > now, "Provisioning profile has expired")
@@ -136,8 +142,13 @@ def verify_profile(profile: dict, bundle_id: str, is_extension: bool, now: datet
             "Profile app identifier mismatch")
     require(APP_GROUP in entitlements.get("com.apple.security.application-groups", []),
             "Profile lacks registered macOS App Group")
-    require("packet-tunnel-provider" in entitlements.get(
-        "com.apple.developer.networking.networkextension", []), "Profile lacks development tunnel capability")
+    tunnel_capability = "packet-tunnel-provider-systemextension" if developer_id else "packet-tunnel-provider"
+    require(tunnel_capability in entitlements.get(
+        "com.apple.developer.networking.networkextension", []), "Profile lacks the distribution channel's tunnel capability")
+    if developer_id:
+        require(profile.get("ProvisionsAllDevices") is True, "Developer ID profile must provision all devices")
+        require(not entitlements.get("com.apple.security.get-task-allow") and not entitlements.get("get-task-allow"),
+                "Developer ID profile must not allow debugging")
     if not is_extension:
         require(entitlements.get("com.apple.developer.system-extension.install") is True,
                 "Profile lacks System Extension installation capability")
@@ -146,22 +157,41 @@ def verify_profile(profile: dict, bundle_id: str, is_extension: bool, now: datet
                 "Profile does not authorize the session Keychain group")
 
 
-def verify_signature(bundle: Path, bundle_id: str, is_extension: bool) -> None:
-    command("/usr/bin/codesign", "--verify", "--strict", str(bundle))
+def verify_signature(bundle: Path, bundle_id: str, is_extension: bool, developer_id: bool = False) -> None:
+    verification_args = ["/usr/bin/codesign", "--verify", "--strict"]
+    if developer_id:
+        verification_args.extend([
+            "--test-requirement",
+            '=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists '
+            f'and certificate leaf[subject.OU] = "{TEAM_ID}"',
+        ])
+    command(*verification_args, str(bundle))
     metadata = command("/usr/bin/codesign", "--display", "--verbose=4", str(bundle)).stderr.decode()
     require(re.search(r"flags=0x[0-9a-f]+\([^)]*runtime", metadata) is not None,
             "Hardened Runtime signature flag missing")
+    if developer_id:
+        authorities = re.findall(r"^Authority=(.+)$", metadata, re.MULTILINE)
+        require(bool(authorities) and re.fullmatch(
+            rf"Developer ID Application: .+ \({TEAM_ID}\)", authorities[0]
+        ) is not None, "Developer ID Application signing authority mismatch")
+        require(re.search(rf"^TeamIdentifier={TEAM_ID}$", metadata, re.MULTILINE) is not None,
+                "Developer ID signing team mismatch")
+        require(re.search(rf"^Identifier={re.escape(bundle_id)}$", metadata, re.MULTILINE) is not None,
+                "Developer ID signed identifier mismatch")
+        require(re.search(r"^Timestamp=\S.+$", metadata, re.MULTILINE) is not None,
+                "Developer ID secure timestamp missing")
     entitlements = plistlib.loads(command(
         "/usr/bin/codesign", "--display", "--entitlements", "-", "--xml", str(bundle)
     ).stdout)
-    verify_entitlements(entitlements, is_extension)
+    verify_entitlements(entitlements, is_extension, developer_id)
     profile_path = bundle / "Contents" / "embedded.provisionprofile"
     require(profile_path.is_file(), "Embedded provisioning profile missing")
     profile = plistlib.loads(command("/usr/bin/security", "cms", "-D", "-i", str(profile_path)).stdout)
-    verify_profile(profile, bundle_id, is_extension, datetime.datetime.now(datetime.timezone.utc))
+    verify_profile(profile, bundle_id, is_extension, datetime.datetime.now(datetime.timezone.utc), developer_id)
 
 
-def verify_bundle(app: Path, signed: bool) -> None:
+def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
+    signed = signed or developer_id
     extension = app / "Contents" / "Library" / "SystemExtensions" / f"{EXTENSION_ID}.systemextension"
     require(list(app.glob("**/*.systemextension")) == [extension], "Unexpected or duplicate system extension embedding")
     app_info = read_plist(app / "Contents" / "Info.plist")
@@ -186,8 +216,8 @@ def verify_bundle(app: Path, signed: bool) -> None:
         require(archs == ["arm64"], "Built product must contain only arm64")
         verify_dynamic_libraries(binary, bundle)
     if signed:
-        verify_signature(app, APP_ID, False)
-        verify_signature(extension, EXTENSION_ID, True)
+        verify_signature(app, APP_ID, False, developer_id)
+        verify_signature(extension, EXTENSION_ID, True, developer_id)
     print("macOS packaging verified; dynamic dependencies resolve inside each bundle or the OS")
     if signed:
         print("Signed entitlements, profiles, and Hardened Runtime verified")
@@ -197,9 +227,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     parser.add_argument("--signed", action="store_true")
+    parser.add_argument("--developer-id", action="store_true", help="Verify Developer ID release signing (implies --signed)")
     args = parser.parse_args()
     try:
-        verify_bundle(args.app, args.signed)
+        verify_bundle(args.app, args.signed, args.developer_id)
     except (ValueError, OSError, plistlib.InvalidFileException) as error:
         raise SystemExit(f"macOS verification failed: {error}") from None
 
