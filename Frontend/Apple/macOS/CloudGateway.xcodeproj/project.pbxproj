@@ -4,6 +4,8 @@
 	classes = {};
 	objectVersion = 56;
 	objects = {
+		A26C0D000000000000000072 /* CloudGatewayMacClientCreationDialog.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacClientCreationDialog.swift; sourceTree = "<group>"; };
+		A26C0D000000000000000073 /* CloudGatewayMacClientCreationDialog.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000072; };
 		A26C0D000000000000000052 /* CloudGatewayMacAppController.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacAppController.swift; sourceTree = "<group>"; };
 		A26C0D000000000000000055 /* CloudGatewayMacAppController.swift in Sources */ = { isa = PBXBuildFile; fileRef = A26C0D000000000000000052; };
 		A26C0D000000000000000053 /* CloudGatewayMacInventoryService.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudGatewayMacInventoryService.swift; sourceTree = "<group>"; };
@@ -39,8 +41,8 @@
 		A26C0D000000000000000007 /* CloudGateway/Info.plist */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A26C0D000000000000000008 /* CloudGateway/CloudGateway.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = CloudGateway.entitlements; sourceTree = "<group>"; };
 		A26C0D000000000000000009 /* CloudGateway/CloudGateway.DeveloperID.entitlements */ = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = CloudGateway.DeveloperID.entitlements; sourceTree = "<group>"; };
-		A26C0D00000000000000000A /* CloudGateway group */ = { isa = PBXGroup; children = (A26C0D000000000000000052, A26C0D000000000000000053, A26C0D000000000000000054, A26C0D000000000000000058, A26C0D000000000000000070, A26C0D000000000000000050, A26C0D000000000000000001, A26C0D000000000000000003, A26C0D000000000000000005, A26C0D000000000000000007, A26C0D000000000000000008, A26C0D000000000000000009); path = CloudGateway; sourceTree = "<group>"; };
-		A26C0D00000000000000000B /* CloudGateway sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000055, A26C0D000000000000000056, A26C0D000000000000000057, A26C0D000000000000000051, A26C0D000000000000000002, A26C0D000000000000000004, A26C0D000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
+		A26C0D00000000000000000A /* CloudGateway group */ = { isa = PBXGroup; children = (A26C0D000000000000000072, A26C0D000000000000000052, A26C0D000000000000000053, A26C0D000000000000000054, A26C0D000000000000000058, A26C0D000000000000000070, A26C0D000000000000000050, A26C0D000000000000000001, A26C0D000000000000000003, A26C0D000000000000000005, A26C0D000000000000000007, A26C0D000000000000000008, A26C0D000000000000000009); path = CloudGateway; sourceTree = "<group>"; };
+		A26C0D00000000000000000B /* CloudGateway sources */ = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000073, A26C0D000000000000000055, A26C0D000000000000000056, A26C0D000000000000000057, A26C0D000000000000000051, A26C0D000000000000000002, A26C0D000000000000000004, A26C0D000000000000000006); runOnlyForDeploymentPostprocessing = 0; };
 		A26C0D00000000000000000C /* CloudGateway resources */ = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A26C0D000000000000000059, A26C0D000000000000000071); runOnlyForDeploymentPostprocessing = 0; };
 		A26C0D00000000000000000D /* CloudGatewayTunnel/main.swift */ = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		A26C0D00000000000000000E /* CloudGatewayTunnel/main.swift build */ = { isa = PBXBuildFile; fileRef = A26C0D00000000000000000D; };

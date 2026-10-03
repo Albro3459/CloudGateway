@@ -21,8 +21,10 @@ model. Neither target compiles iOS sources. Preserve iOS contracts and behavior.
 The app owns browser auth, Firebase session, authorized inventory, account-scoped
 offline metadata, activation, VPN commands, XPC client, status observation,
 and optional launch at login. The menu target includes native Firebase
-configuration and Keychain Sharing. Add Client is available in the macOS menu;
-account and admin management stay on the site or mobile app. There is no native
+configuration and Keychain Sharing. Add Client is available in the macOS menu.
+Its dialog opens before region and capacity requests finish, so you can enter a
+name while availability loads. Create becomes available once a region has room.
+Account and admin management stay on the site or mobile app. There is no native
 provider login UI.
 
 The tunnel links Kit, the existing WireGuard fork/Go bridge, and necessary Apple

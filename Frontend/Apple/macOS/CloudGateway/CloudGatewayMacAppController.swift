@@ -557,25 +557,13 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             var creationAttempted = false
             do {
                 try requireCurrent(epoch, token: token)
-                let enabledRegions = try await inventory.fetchCreateRegions(for: account)
-                try requireCurrent(epoch, token: token)
-                let creatableRegions = CloudGatewayConfigSelection.sortedRegions(enabledRegions.filter {
-                    $0.enabled && $0.capacity?.isKnown == true && $0.capacity?.isAtCapacity == false
-                })
-                guard !creatableRegions.isEmpty else {
-                    if enabledRegions.isEmpty {
-                        errorMessage = "No enabled regions are available"
-                    } else if enabledRegions.contains(where: { $0.capacity?.isKnown != true }) {
-                        errorMessage = "Unable to check region capacity. Try Add Client again"
-                    } else {
-                        errorMessage = "No region currently has available client capacity"
-                    }
-                    return
-                }
-                guard let request = promptForClient(in: creatableRegions, account: account, epoch: epoch) else {
-                    render()
-                    return
-                }
+                let dialog = CloudGatewayMacClientCreationDialog()
+                guard let request = try await dialog.prompt(loadRegions: {
+                    try self.requireCurrent(epoch, token: token)
+                    let regions = try await self.inventory.fetchCreateRegions(for: account)
+                    try self.requireCurrent(epoch, token: token)
+                    return regions
+                }) else { return }
                 try requireCurrent(epoch, token: token)
                 let role = try await inventory.checkAccess(for: account)
                 try requireCurrent(epoch, token: token)
@@ -620,51 +608,6 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
         render()
-    }
-
-    private func promptForClient(
-        in regions: [CloudGatewayRegion], account: AuthenticatedUser, epoch: UInt64
-    ) -> (regionId: String, clientName: String)? {
-        let regionPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
-        for region in regions {
-            let item = NSMenuItem(title: "\(region.displayName) · \(region.capacity?.displayText ?? "Capacity unavailable")",
-                                  action: nil, keyEquivalent: "")
-            item.representedObject = region.regionId
-            regionPicker.menu?.addItem(item)
-        }
-        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        nameField.placeholderString = "For example, Work Mac"
-        let stack = NSStackView(views: [
-            NSTextField(labelWithString: "Region"), regionPicker,
-            NSTextField(labelWithString: "Display name"), nameField
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        NSLayoutConstraint.activate([
-            regionPicker.widthAnchor.constraint(equalToConstant: 320),
-            nameField.widthAnchor.constraint(equalToConstant: 320)
-        ])
-        stack.setFrameSize(stack.fittingSize)
-
-        let alert = NSAlert()
-        alert.messageText = "Add VPN Client"
-        alert.informativeText = "Create a client in the selected region."
-        alert.accessoryView = stack
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = nameField
-        guard alert.runModal() == .alertFirstButtonReturn,
-              sessionEpoch == epoch, !isShuttingDown, user?.uid == account.uid,
-              auth.currentUser?.uid == account.uid,
-              sessionFence.currentToken?.accountId == account.uid else { return nil }
-        let clientName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clientName.isEmpty, clientName.unicodeScalars.count <= 80,
-              let regionId = regionPicker.selectedItem?.representedObject as? String else {
-            errorMessage = "Enter a client name with 1 to 80 characters and choose a region"
-            return nil
-        }
-        return (regionId, clientName)
     }
 
     @objc private func turnOff() {
