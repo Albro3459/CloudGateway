@@ -10,8 +10,6 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSTextFieldDelegate {
     private let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
     private var continuation: CheckedContinuation<Request?, Error>?
     private var regionsTask: Task<Void, Never>?
-    private var modalTask: Task<Void, Never>?
-    private var modalSession: NSApplication.ModalSession?
 
     override init() {
         super.init()
@@ -46,31 +44,23 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSTextFieldDelegate {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
-                NSApplication.shared.activate()
-                modalSession = NSApplication.shared.beginModalSession(for: alert.window)
-                alert.window.makeFirstResponder(nameField)
-                modalTask = Task { [weak self] in
-                    guard let self else { return }
-                    while let session = modalSession, !Task.isCancelled {
-                        let response = NSApplication.shared.runModalSession(session)
-                        guard response == .continue else {
-                            complete(response)
-                            return
+                // Enter AppKit's modal loop outside the main dispatch queue so async loading can run
+                RunLoop.main.perform(inModes: [.default]) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.continuation != nil else { return }
+                        NSApplication.shared.activate()
+                        self.regionsTask = Task { [weak self] in
+                            guard let self else { return }
+                            do {
+                                let regions = try await loadRegions()
+                                try Task.checkCancellation()
+                                populateRegions(regions)
+                            } catch {
+                                guard !Task.isCancelled else { return }
+                                finish(.failure(error))
+                            }
                         }
-                        // Yield between event passes so region loading can update the native alert
-                        do { try await Task.sleep(for: .milliseconds(16)) }
-                        catch { return }
-                    }
-                }
-                regionsTask = Task { [weak self] in
-                    guard let self else { return }
-                    do {
-                        let regions = try await loadRegions()
-                        try Task.checkCancellation()
-                        populateRegions(regions)
-                    } catch {
-                        guard !Task.isCancelled else { return }
-                        finish(.failure(error))
+                        self.complete(self.alert.runModal())
                     }
                 }
             }
@@ -118,6 +108,7 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSTextFieldDelegate {
     }
 
     private func complete(_ response: NSApplication.ModalResponse) {
+        guard continuation != nil else { return }
         guard response == .alertFirstButtonReturn, alert.buttons[0].isEnabled,
               let regionId = regionPicker.selectedItem?.representedObject as? String else {
             finish(.success(nil))
@@ -136,12 +127,7 @@ final class CloudGatewayMacClientCreationDialog: NSObject, NSTextFieldDelegate {
         self.continuation = nil
         regionsTask?.cancel()
         regionsTask = nil
-        modalTask?.cancel()
-        modalTask = nil
-        if let modalSession {
-            NSApplication.shared.endModalSession(modalSession)
-            self.modalSession = nil
-        }
+        if NSApplication.shared.modalWindow === alert.window { NSApplication.shared.abortModal() }
         alert.window.orderOut(nil)
         continuation.resume(with: result)
     }

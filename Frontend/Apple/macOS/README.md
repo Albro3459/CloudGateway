@@ -106,6 +106,34 @@ profile/entitlement inspection. Use `ios` for the iOS regression gate and
 tests run once per invocation. Automated checks do not activate extensions
 or change the running VPN.
 
+For a faster local install, quit CloudGateway from its menu, then paste this
+command from the repository root. It builds the signed Release app and extension,
+checks packaging and signing, and copies the app to `/Applications`. It skips
+tests and dead-code scans. If an app is already installed, it moves that copy
+to a temporary backup folder first so removed build files cannot remain in
+the new bundle. It uses the same development signing setup as `macos --signed`.
+
+```sh
+(
+  set -e
+  xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
+    -scheme CloudGateway -configuration Release \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath Frontend/Apple/macOS/.build/Xcode \
+    ARCHS=arm64 -allowProvisioningUpdates build
+  python3 scripts/verify_macos_build.py \
+    Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed
+  if [ -e /Applications/CloudGateway.app ]; then
+    trash /Applications/CloudGateway.app
+    echo "Trashed previous app"
+  fi
+  ditto Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app \
+    /Applications/CloudGateway.app
+)
+```
+
+Open `/Applications/CloudGateway.app` after the command succeeds.
+
 Signed checks cover activation/replacement, root/user isolation, repeated
 sessions, sleep/wake, network changes, offline use, account switching, status
 changes through macOS controls, retained VPN after sign-out/quit, and launch

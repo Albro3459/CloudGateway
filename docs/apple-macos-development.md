@@ -81,6 +81,8 @@ group. See [Apple packaging guidance](https://developer.apple.com/forums/thread/
 and [TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment).
 
 Run the signed app from `/Applications/CloudGateway.app`. Keep SIP enabled.
+For a build, signing check, and install without the full test suite, use the
+[local install command](../Frontend/Apple/macOS/README.md#implementation-and-validation).
 Choose Setup VPN explicitly and handle macOS approval in System Settings.
 The app reports pending approval, failure, and a required reboot. A preferences
 save is not evidence that the provider started.
