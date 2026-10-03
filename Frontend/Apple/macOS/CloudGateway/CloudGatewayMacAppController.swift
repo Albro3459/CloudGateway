@@ -364,7 +364,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             onlineOptions: options, cachedConfigs: installed, profiles: profileObservation.profiles,
             commandInFlight: commandTask != nil || cancellationTask != nil, isOffline: isOffline,
             inventoryInFlight: inventoryTask != nil,
-            hasError: visibleErrorMessage != nil, hasRetainedSession: auth.currentUser != nil)
+            hasRetainedSession: auth.currentUser != nil, lastSelectedIdentifier: lastSelectedIdentifier)
     }
 
     private var visibleErrorMessage: String? {
@@ -381,7 +381,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let state = presentation
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
         menu.removeAllItems()
-        add(state.statusTitle)
+        let toggle = add(state.statusTitle, #selector(toggleVPN), enabled: state.canToggleVPN)
+        toggle.state = user != nil && state.hasActiveTunnel ? .on : .off
+        if state.canToggleVPN {
+            toggle.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
+        }
         if let visibleErrorMessage { add(visibleErrorMessage) }
         if user == nil {
             switch browser.state {
@@ -423,7 +427,6 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 menu.addItem(item)
             }
             add("Add Client…", #selector(addClient), enabled: canStartClientCreation)
-            if state.canTurnOff { add("Turn Off", #selector(turnOff)) }
             add("Refresh", #selector(refresh), enabled: state.canRefresh && inventoryTask == nil)
             add("Sign Out", #selector(signOut), enabled: state.canSignOut)
         }
@@ -452,7 +455,19 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
 
     @objc private func selectClient(_ item: NSMenuItem) {
-        guard let identifier = item.representedObject as? String, let account = user,
+        guard let identifier = item.representedObject as? String else { return }
+        connectClient(identifier: identifier)
+    }
+
+    @objc private func toggleVPN() {
+        let state = presentation
+        guard state.canToggleVPN else { return }
+        if state.canTurnOff { turnOff() }
+        else if let identifier = state.reconnectIdentifier { connectClient(identifier: identifier) }
+    }
+
+    private func connectClient(identifier: String) {
+        guard let account = user,
               presentation.groups.flatMap(\.rows).contains(where: { $0.identifier == identifier && $0.isEnabled }),
               commandTask == nil, inventoryTask == nil, auth.currentUser?.uid == account.uid else { return }
         let epoch = sessionEpoch

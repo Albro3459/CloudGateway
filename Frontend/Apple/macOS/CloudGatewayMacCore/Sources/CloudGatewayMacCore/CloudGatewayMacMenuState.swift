@@ -22,8 +22,8 @@ public struct CloudGatewayMacMenuState: Sendable {
     private let commandInFlight: Bool
     private let inventoryInFlight: Bool
     private let isOffline: Bool
-    private let hasError: Bool
     private let hasRetainedSession: Bool
+    private let lastSelectedIdentifier: String?
 
     public init(
         accountId: String?,
@@ -34,8 +34,8 @@ public struct CloudGatewayMacMenuState: Sendable {
         commandInFlight: Bool,
         isOffline: Bool,
         inventoryInFlight: Bool = false,
-        hasError: Bool = false,
-        hasRetainedSession: Bool = false
+        hasRetainedSession: Bool = false,
+        lastSelectedIdentifier: String? = nil
     ) {
         self.accountId = accountId
         self.setupState = setupState
@@ -45,8 +45,8 @@ public struct CloudGatewayMacMenuState: Sendable {
         self.commandInFlight = commandInFlight
         self.inventoryInFlight = inventoryInFlight
         self.isOffline = isOffline
-        self.hasError = hasError
         self.hasRetainedSession = hasRetainedSession
+        self.lastSelectedIdentifier = lastSelectedIdentifier
     }
 
     public var canRefresh: Bool { accountId != nil && !commandInFlight && !inventoryInFlight }
@@ -57,6 +57,19 @@ public struct CloudGatewayMacMenuState: Sendable {
 
     public var hasActiveTunnel: Bool {
         profiles.contains { $0.status == .connected || $0.status == .reasserting }
+    }
+
+    public var reconnectIdentifier: String? {
+        guard let lastSelectedIdentifier else { return nil }
+        return groups.flatMap(\.rows).first {
+            $0.identifier == lastSelectedIdentifier && $0.isEnabled
+        }?.identifier
+    }
+
+    public var canToggleVPN: Bool {
+        guard accountId != nil, !commandInFlight,
+              !profiles.contains(where: { $0.status == .connecting || $0.status == .disconnecting }) else { return false }
+        return canTurnOff || reconnectIdentifier != nil
     }
 
     public var groups: [CloudGatewayMacMenuRegion] {
@@ -110,18 +123,18 @@ public struct CloudGatewayMacMenuState: Sendable {
     public var statusTitle: String {
         guard accountId != nil else { return "Signed out" }
         let tunnelTitle: String
-        if profiles.contains(where: { $0.status == .connected || $0.status == .reasserting }) {
-            tunnelTitle = "VPN connected"
-        } else if profiles.contains(where: { $0.status == .connecting }) {
+        if profiles.contains(where: { $0.status == .connecting }) {
             tunnelTitle = "VPN connecting…"
         } else if profiles.contains(where: { $0.status == .disconnecting }) {
             tunnelTitle = "VPN disconnecting…"
+        } else if hasActiveTunnel {
+            tunnelTitle = "VPN connected"
         } else if commandInFlight || inventoryInFlight {
             tunnelTitle = "Working…"
         } else if setupState != .ready {
             return setupState.title
-        } else if hasError {
-            return "Could not complete the action"
+        } else if reconnectIdentifier == nil {
+            tunnelTitle = "Choose a client to connect"
         } else {
             tunnelTitle = "VPN off"
         }

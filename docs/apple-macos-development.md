@@ -173,7 +173,14 @@ Firebase token-verification service failures return a retryable error, preservin
 the native session and cached metadata without authorizing fresh online inventory.
 Invalid, revoked, disabled, or deleted identities still fail as access denial.
 
-Inventory refresh gates new connections but leaves local Turn Off available.
+The top menu row is a native checkmarked VPN toggle. VPN connected disconnects,
+and VPN off reconnects only the current account's last-used usable client.
+Connecting and disconnecting disable the row. Without a usable last-used client,
+the row says Choose a client to connect, and the region/client submenus remain
+the way to choose a connection. The checkmark follows observed Apple VPN status.
+Disconnecting retains profiles, secrets, and cloud clients.
+
+Inventory refresh gates new connections but leaves local disconnect available.
 Account switching keeps commands blocked until prior cancellation and required
 profile/secret recovery finish. Failed VPN preferences reads retain the last
 observed status and show the existing error, which only a successful preferences

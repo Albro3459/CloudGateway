@@ -31,7 +31,7 @@ Tests and docs land with each logical checkpoint, followed by review and cleanup
 | Tunnel | `NEPacketTunnelProvider` packaged as a system extension |
 | Auth | Default browser, deployed device-auth flow, Firebase custom-token session |
 | Inventory | Authorized clients grouped by region, with online client creation |
-| VPN | Select to install/connect/switch, separate Turn Off |
+| VPN | Select to install/connect/switch, top status row toggles off/last-used connection |
 | Offline | Current account's previously authorized installed configs |
 | Launch at Login | Optional, off initially, starts the app without connecting |
 | Sign Out / Quit | Retain the running VPN, profiles, secrets, and cloud clients |
@@ -241,7 +241,8 @@ duplicate actions, cancellation, and late completion fencing.
   CloudGateway tunnel with generic guidance revealing no hidden client details.
   Sign-in, refresh, and menu opening alone never change the running VPN.
 * Show signed-out, setup-required, connecting, connected, disconnecting,
-  offline, and error states. Provide region/client submenus, Turn Off, Refresh,
+  offline, and error states. Provide a checkmarked top-row VPN toggle,
+  region/client submenus, Refresh,
   Open Website, Sign Out, Quit, and optional Launch at Login.
 * Observe Apple status events for app-owned managers. Refresh preferences
   asynchronously at launch, menu opening, preference changes, and commands.
@@ -249,8 +250,8 @@ duplicate actions, cancellation, and late completion fencing.
 * Derive a monochrome template glyph from `cloudgateway.svg`, with distinct
   off/on shapes. An active hidden tunnel may affect the icon, but exposes no
   hidden client name, region, owner, or config. Connected means Apple's status.
-* Signed-out menus expose no configs or VPN controls, including generic Turn
-  Off. Sign-out cancels pending work and clears account presentation, retaining
+* Signed-out menus expose no configs or VPN controls. Sign-out cancels pending
+  work and clears account presentation, retaining
   VPN, profiles, secrets, and account caches. Another account never inherits
   that inventory. Retained profiles remain in System Settings. Quit exits only
   the user app.
@@ -258,7 +259,7 @@ duplicate actions, cancellation, and late completion fencing.
   status/required approval and never start a VPN automatically.
 
 Gate: owned/admin inventory, account-isolated offline fallback, connect/switch/
-Turn Off, status changes through macOS controls, retained VPN after sign-out/
+toggle off/last-used reconnect, status changes through macOS controls, retained VPN after sign-out/
 quit, and launch at login without connecting. Tests cover action availability,
 account isolation, stale work, denial versus transport errors, and command order.
 

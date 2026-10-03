@@ -50,8 +50,12 @@ Removed client history does not count toward the live inventory limit.
 Temporary Firebase verification outages retain the native session and cache,
 while fresh online inventory stays unavailable until access can be checked.
 
-Selection explicitly connects or switches. Turn Off retains configs/secrets
-and cloud clients. Sign Out hides inventory and ends the local Firebase session,
+Selection explicitly connects or switches. The top status row toggles the VPN,
+with a native checkmark reflecting the observed connection state. Clicking
+VPN connected disconnects, and VPN off reconnects the last-used usable client.
+Connecting and disconnecting disable the toggle. Without a usable last-used
+client, the row says Choose a client to connect. Disconnecting retains
+configs/secrets and cloud clients. Sign Out hides inventory and ends the local Firebase session,
 retaining VPN, profiles, secrets, and account caches. Quit exits only the menu
 app. Signed-out menus expose no configs or VPN controls. Sign Out remains
 available when a retained Firebase session cannot restore. System Settings can
@@ -62,7 +66,7 @@ Refresh Apple preferences/status asynchronously on launch, menu opening,
 preference changes, and commands. Observe status events for app-owned managers.
 The icon may indicate a hidden active tunnel without exposing client details.
 Failed preference reads retain the last observed status and the existing error
-until a successful read. Inventory refresh does not hide the local Turn Off
+until a successful read. Inventory refresh does not disable the local disconnect
 action. Account switching waits for cancelled commands and required installation
 cleanup before enabling another command.
 Launch at Login starts the menu app without connecting.

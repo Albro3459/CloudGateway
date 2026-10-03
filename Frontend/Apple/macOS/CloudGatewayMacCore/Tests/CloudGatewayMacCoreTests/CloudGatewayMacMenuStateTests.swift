@@ -8,6 +8,7 @@ import Testing
     let state = macMenuState(accountId: nil, options: [macMenuOption(clientId: "visible")], configs: [macMenuConfig()], profiles: [macMenuProfile(status: .connected)])
     #expect(state.groups.isEmpty)
     #expect(!state.canTurnOff)
+    #expect(!state.canToggleVPN)
     #expect(!state.canRefresh)
     #expect(!state.canSignOut)
     #expect(state.hasActiveTunnel)
@@ -27,7 +28,7 @@ import Testing
     for busy in [false, true] {
         let state = macMenuState(accountId: nil, options: [macMenuOption(clientId: "visible")],
             configs: [macMenuConfig()], profiles: [macMenuProfile(status: .connected)],
-            busy: busy, hasError: true, hasRetainedSession: true)
+            busy: busy, hasRetainedSession: true)
         #expect(state.canSignOut)
         #expect(state.groups.isEmpty)
         #expect(!state.canTurnOff)
@@ -39,6 +40,7 @@ import Testing
 @Test func macTurnOffWorksWithSignedInActiveTunnelEvenWhenSetupIsUnavailable() {
     let state = macMenuState(setup: .required, profiles: [macMenuProfile(status: .connected)])
     #expect(state.canTurnOff)
+    #expect(state.canToggleVPN)
     #expect(state.canRefresh)
     #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true).canTurnOff)
 }
@@ -47,6 +49,7 @@ import Testing
     let state = macMenuState(options: [macMenuOption(clientId: "client")],
         profiles: [macMenuProfile(status: .connected)], inventoryBusy: true)
     #expect(state.canTurnOff)
+    #expect(state.canToggleVPN)
     #expect(!state.canRefresh)
     #expect(state.groups.first?.rows.first?.isEnabled == false)
     #expect(state.statusTitle == "VPN connected")
@@ -62,7 +65,7 @@ import Testing
     #expect(observation.profiles == [connected])
     #expect(observation.errorMessage == "Unable to read VPN preferences. Try Refresh again")
     let refreshedInventory = macMenuState(options: [macMenuOption(clientId: "client")],
-        profiles: observation.profiles, hasError: observation.errorMessage != nil)
+        profiles: observation.profiles)
     #expect(refreshedInventory.hasActiveTunnel)
     #expect(refreshedInventory.statusTitle == "VPN connected")
     #expect(refreshedInventory.canTurnOff)
@@ -116,9 +119,62 @@ import Testing
     #expect(rows.first { $0.identifier.hasSuffix("/client") }?.isEnabled == true)
 }
 
-@Test func macMenuRefreshFailureDoesNotPresentAnyRawError() {
-    #expect(macMenuState(hasError: true).statusTitle == "Could not complete the action")
-    #expect(macMenuState(profiles: [macMenuProfile(status: .connected)], hasError: true).statusTitle == "VPN connected")
+@Test func macToggleReconnectsOnlyTheUsableLastSelectedClient() {
+    let identifier = "account/region/last"
+    let options = [macMenuOption(clientId: "first"), macMenuOption(clientId: "last")]
+    let selected = macMenuState(options: options, lastSelectedIdentifier: identifier)
+    #expect(selected.reconnectIdentifier == identifier)
+    #expect(selected.canToggleVPN)
+    #expect(selected.statusTitle == "VPN off")
+    for selection in [nil, "account/region/removed", "other/region/last"] as [String?] {
+        let state = macMenuState(options: options, lastSelectedIdentifier: selection)
+        #expect(state.reconnectIdentifier == nil)
+        #expect(!state.canToggleVPN)
+        #expect(state.statusTitle == "Choose a client to connect")
+    }
+    for option in [macMenuOption(clientId: "last", status: .creating),
+                   macMenuOption(clientId: "last", status: .removed),
+                   macMenuOption(clientId: "last", regionEnabled: false)] {
+        #expect(!macMenuState(options: [option], lastSelectedIdentifier: identifier).canToggleVPN)
+    }
+    #expect(!macMenuState(options: options, inventoryBusy: true,
+        lastSelectedIdentifier: identifier).canToggleVPN)
+    #expect(!macMenuState(options: options, busy: true,
+        lastSelectedIdentifier: identifier).canToggleVPN)
+    #expect(!macMenuState(setup: .updateRequired, options: options,
+        lastSelectedIdentifier: identifier).canToggleVPN)
+}
+
+@Test func macToggleWaitsForTransitionsAndUsesObservedConnectionState() {
+    for status in [CloudGatewayTunnelStatus.connecting, .disconnecting] {
+        let state = macMenuState(profiles: [macMenuProfile(status: status)])
+        #expect(!state.canToggleVPN)
+        #expect(!state.hasActiveTunnel)
+    }
+    let stopping = macMenuState(profiles: [macMenuProfile(status: .connected),
+        macMenuProfile(identifier: "account/region/other", status: .disconnecting)])
+    #expect(!stopping.canToggleVPN)
+    #expect(stopping.statusTitle == "VPN disconnecting…")
+    #expect(macMenuState(profiles: [macMenuProfile(status: .reasserting)]).canToggleVPN)
+    #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true).canToggleVPN)
+}
+
+@Test func macOfflineToggleRequiresTheLastSelectedAccountsInstalledProfile() {
+    let identifier = "account/region/client"
+    let config = macMenuConfig()
+    let profile = macMenuProfile(status: .disconnected)
+    let state = macMenuState(configs: [config], profiles: [profile], offline: true,
+        lastSelectedIdentifier: identifier)
+    #expect(state.reconnectIdentifier == identifier)
+    #expect(state.canToggleVPN)
+    #expect(state.statusTitle == "Offline · VPN off")
+    #expect(!macMenuState(configs: [config], offline: true,
+        lastSelectedIdentifier: identifier).canToggleVPN)
+    #expect(!macMenuState(configs: [macMenuConfig(accountId: "other")], profiles: [profile],
+        offline: true, lastSelectedIdentifier: "other/region/client").canToggleVPN)
+    let mismatched = macMenuProfile(status: .disconnected, reference: "11111111-1111-1111-1111-111111111111")
+    #expect(!macMenuState(configs: [config], profiles: [mismatched], offline: true,
+        lastSelectedIdentifier: identifier).canToggleVPN)
 }
 
 @Test func macSessionFenceRejectsLateInventoryAndCommandsAcrossSignOutAndAccountChanges() throws {
@@ -164,13 +220,13 @@ private func macMenuState(
     busy: Bool = false,
     inventoryBusy: Bool = false,
     offline: Bool = false,
-    hasError: Bool = false,
-    hasRetainedSession: Bool = false
+    hasRetainedSession: Bool = false,
+    lastSelectedIdentifier: String? = nil
 ) -> CloudGatewayMacMenuState {
     CloudGatewayMacMenuState(accountId: accountId, setupState: setup, onlineOptions: options, cachedConfigs: configs,
                              profiles: profiles, commandInFlight: busy, isOffline: offline,
                              inventoryInFlight: inventoryBusy,
-                             hasError: hasError, hasRetainedSession: hasRetainedSession)
+                             hasRetainedSession: hasRetainedSession, lastSelectedIdentifier: lastSelectedIdentifier)
 }
 
 private func macMenuOption(
