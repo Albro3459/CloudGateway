@@ -141,8 +141,9 @@ at login. See the plan's
 [Apple trap checklist](../../../TODO/macos-app.md#apple-traps-and-prevention).
 Run the containing app from `/Applications` with SIP enabled.
 
-Build a notarized Developer ID DMG with
-`./scripts/macos-release.sh --build <next-build-number>`. See
+Build and publish a notarized Developer ID DMG with
+`./scripts/macos-release.sh --build <next-build-number> --publish`. Omit
+`--publish` to keep the release local. See
 [macOS release deployment](../../../docs/apple-macos-release.md) for signing
-setup, prepared artifacts, notarization retries, and installation checks.
-Release hosting remains a separate deployment step.
+setup, prepared artifacts, notarization retries, publishing existing builds,
+and installation checks.

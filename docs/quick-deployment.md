@@ -51,18 +51,36 @@ recreate them.
 
 See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
-## Build notarized macOS DMG
+## Build and publish notarized macOS DMG
 
 ```sh
-./scripts/macos-release.sh --build 2
+./scripts/macos-release.sh --build 3 --publish
 ```
 
 Use a build number higher than every previous release. Add `--version 1.0.1`
 to override the marketing version. This archives and exports the Developer ID
 app, verifies signing and packaging, notarizes and staples the app, creates a
 signed DMG, then notarizes, staples, and checks that DMG with Gatekeeper. The
-script prints the artifact path and SHA-256 checksum under
-`Frontend/Apple/macOS/.build/releases/`.
+script keeps artifacts and SHA-256 checksums under
+`Frontend/Apple/macOS/.build/releases/`, then publishes the DMG and `SHA256SUMS`
+to GitHub and prints the release and download URLs. Omit `--publish` to keep the
+finished release local for installation checks.
+
+Publish an existing finished release without building or notarizing again:
+
+```sh
+./scripts/macos-release.sh --publish-existing '/absolute/path/to/finished-release'
+```
+
+Publishing verifies signatures, accepted notarization records, stapled tickets,
+Gatekeeper, and existing checksums before any GitHub mutation. It requires an
+authenticated GitHub CLI, a public repository, and the recorded source commit
+already on GitHub. It creates `macos-v<version>-build.<build>` with
+`--latest=true` when publishing the completed draft. Caddy releases use
+`--latest=false` to leave the Latest selection unchanged. Retries retain drafts,
+reuse matching assets, and stop on conflicts. It never pushes or overwrites
+assets. Update `Frontend/Web/src/helpers/macAppRelease.ts` with each published
+Mac release's version, build, and exact DMG URL before deploying the website.
 
 Prerequisites: the team's Developer ID Application identity, the two installed
 Developer ID profiles `CloudGateway MacOS` and `CloudGateway-Tunnel MacOS`, and

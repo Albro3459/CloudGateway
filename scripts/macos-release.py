@@ -1,4 +1,4 @@
-"""Archive, sign, notarize, and package CloudGateway for direct macOS distribution."""
+"""Archive, notarize, and publish CloudGateway for direct macOS distribution."""
 
 import argparse
 import datetime
@@ -9,6 +9,7 @@ import plistlib
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,6 +18,7 @@ RELEASE_ROOT = ROOT / "Frontend/Apple/macOS/.build/releases"
 TEAM_ID = "CRQWDQ7QQR"
 APP_ID = "com.gocloudlaunch.gateway.macos"
 EXTENSION_ID = "com.gocloudlaunch.gateway.tunnel.macos"
+GITHUB_REPOSITORY = "Albro3459/CloudGateway"
 
 
 def command(*args: str, log: Path | None = None, stderr_output: bool = False) -> str:
@@ -239,9 +241,178 @@ def finish(directory: Path) -> Path:
     command("spctl", "--assess", "--type", "open", "--context", "context:primary-signature",
             "--verbose=2", str(dmg))
     checksum = sha256(dmg)
-    (directory / "SHA256SUMS").write_text(f"{checksum}  {dmg.name}\n")
+    checksum_file = directory / "SHA256SUMS"
+    expected_checksum = f"{checksum}  {dmg.name}\n"
+    if checksum_file.exists():
+        if checksum_file.read_text() != expected_checksum:
+            raise ValueError("SHA256SUMS does not match the finished DMG; use a new release build")
+    else:
+        checksum_file.write_text(expected_checksum)
     print(f"Notarized app and DMG verified: {dmg}\nSHA-256: {checksum}", flush=True)
     return dmg
+
+
+def verify_publication(directory: Path) -> tuple[dict, Path]:
+    metadata = json.loads((directory / "release.json").read_text())
+    version, build = metadata["version"], metadata["build"]
+    if metadata.get("team") != TEAM_ID or re.fullmatch(
+        r"[A-Fa-f0-9]{40}", str(metadata.get("signingIdentity", ""))
+    ) is None:
+        raise ValueError("Release signing metadata does not match CloudGateway")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(version)) is None or type(build) is not int or build <= 0:
+        raise ValueError("Invalid release version metadata")
+    if re.fullmatch(r"[a-f0-9]{40}", str(metadata.get("sourceCommit", ""))) is None:
+        raise ValueError("Release metadata must record the exact source commit")
+    app = directory / "export/CloudGateway.app"
+    dmg = directory / f"CloudGateway-{version}-{build}-arm64.dmg"
+    checksum = directory / "SHA256SUMS"
+    if checksum.read_text() != f"{sha256(dmg)}  {dmg.name}\n":
+        raise ValueError("SHA256SUMS does not match the finished DMG; publication will not rewrite it")
+    verify_release_app(app, version, build)
+    command("codesign", "--verify", "--strict", str(dmg))
+    signature = command("codesign", "--display", "--verbose=4", str(dmg), stderr_output=True)
+    for expected in [f"TeamIdentifier={TEAM_ID}", f"Identifier={APP_ID}.dmg"]:
+        if expected not in signature.splitlines():
+            raise ValueError("DMG signing metadata does not match CloudGateway")
+    if re.search(rf"^Authority=Developer ID Application: .+ \({TEAM_ID}\)$", signature, re.MULTILINE) is None:
+        raise ValueError("DMG must have a Developer ID Application signature")
+    command("hdiutil", "verify", str(dmg))
+    for label, artifact in [("app", directory / "CloudGateway-notary.zip"), ("dmg", dmg)]:
+        record = json.loads((directory / f"notary-{label}-submission.json").read_text())
+        status = json.loads((directory / f"notary-{label}-status.json").read_text())
+        ticket = json.loads((directory / f"{label}-stapled.json").read_text())
+        submission_id = record.get("id", "")
+        if re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", submission_id) is None:
+            raise ValueError(f"Invalid {label} notarization submission ID")
+        if status.get("status") != "Accepted" or status.get("id") != submission_id or ticket.get("status") != "stapled":
+            raise ValueError(f"Release has no matching accepted and stapled {label} notarization")
+        if record.get("artifact") != artifact.name:
+            raise ValueError(f"{label} notarization record names a different artifact")
+        if record.get("sha256") != sha256(artifact):
+            if label != "dmg" or not record.get("cdhash") or record["cdhash"] != code_directory_hash(dmg):
+                raise ValueError(f"{label} changed after notarization")
+        command("xcrun", "stapler", "validate", str(app if label == "app" else dmg))
+    command("spctl", "--assess", "--type", "execute", "--verbose=2", str(app))
+    command("spctl", "--assess", "--type", "open", "--context", "context:primary-signature",
+            "--verbose=2", str(dmg))
+    return metadata, dmg
+
+
+def github_api(endpoint: str, *, optional: bool = False, paginate: bool = False):
+    args = ["gh", "api", f"repos/{GITHUB_REPOSITORY}/{endpoint}"]
+    if paginate:
+        args.extend(["--paginate", "--slurp"])
+    try:
+        return json.loads(command(*args))
+    except subprocess.CalledProcessError as error:
+        if optional and "(HTTP 404)" in (error.stderr or ""):
+            return None
+        raise
+
+
+def github_tag_commit(tag: str) -> str | None:
+    reference = github_api(f"git/ref/tags/{tag}", optional=True)
+    if reference is None:
+        return None
+    target = reference["object"]
+    for _ in range(5):
+        if target["type"] == "commit":
+            return target["sha"]
+        if target["type"] != "tag":
+            break
+        target = github_api(f"git/tags/{target['sha']}")["object"]
+    raise ValueError("Release tag does not resolve to a commit")
+
+
+def github_release(tag: str) -> dict | None:
+    pages = github_api("releases?per_page=100", paginate=True)
+    matches = [item for page in pages for item in page if item["tag_name"] == tag]
+    if len(matches) > 1:
+        raise ValueError("More than one GitHub release has the requested tag")
+    return matches[0] if matches else None
+
+
+def publication_assets(record: dict, artifacts: list[Path]) -> list[Path]:
+    pages = github_api(f"releases/{record['id']}/assets?per_page=100", paginate=True)
+    assets = [asset for page in pages for asset in page]
+    expected = {artifact.name: artifact for artifact in artifacts}
+    names = [asset["name"] for asset in assets]
+    if len(set(names)) != len(names) or set(names) - expected.keys():
+        raise ValueError("Existing GitHub release has unexpected or duplicate assets")
+    for asset in assets:
+        artifact = expected[asset["name"]]
+        if asset.get("state") != "uploaded" or asset.get("size") != artifact.stat().st_size or asset.get("digest") != f"sha256:{sha256(artifact)}":
+            raise ValueError(f"Existing GitHub asset differs from the local artifact: {artifact.name}; refusing to overwrite")
+    return [artifact for artifact in artifacts if artifact.name not in names]
+
+
+def publish(directory: Path) -> None:
+    metadata, dmg = verify_publication(directory)
+    version, build, source = metadata["version"], metadata["build"], metadata["sourceCommit"]
+    tag = f"macos-v{version}-build.{build}"
+    title = f"CloudGateway for Mac {version} (build {build})"
+    repository = json.loads(command("gh", "repo", "view", GITHUB_REPOSITORY, "--json", "isPrivate"))
+    if repository.get("isPrivate") is not False:
+        raise ValueError("GitHub repository must be public for the website's Mac download")
+    remote_commit = github_api(f"commits/{source}", optional=True)
+    if remote_commit is None or remote_commit.get("sha") != source:
+        raise ValueError(f"Source commit {source} is absent from GitHub; publish it separately before retrying")
+    target = github_tag_commit(tag)
+    if target is not None and target != source:
+        raise ValueError("Existing release tag points to a different source commit")
+    record = github_release(tag)
+    artifacts = [dmg, directory / "SHA256SUMS"]
+    if record is not None:
+        if record.get("name") != title or record.get("prerelease") or (
+            target is None and (not record.get("draft") or record.get("target_commitish") != source)
+        ):
+            raise ValueError("Existing GitHub release does not match this release's title and source commit")
+        missing = publication_assets(record, artifacts)
+        if missing and not record.get("draft"):
+            raise ValueError("Published GitHub release has missing assets; refusing to modify it")
+    else:
+        notes = directory / "github-release-notes.md"
+        notes.write_text(
+            f"CloudGateway {version} (build {build}) for Apple silicon, macOS 26 or later.\n\n"
+            "Developer ID signed, notarized, and stapled. Drag CloudGateway into Applications to install.\n\n"
+            f"Source commit: `{source}`\n"
+            f"Working tree had local changes when archived: {str(bool(metadata.get('workingTreeDirty'))).lower()}.\n\n"
+            "Verify the DMG against the attached SHA256SUMS file.\n"
+        )
+        command("gh", "release", "create", tag, "--repo", GITHUB_REPOSITORY,
+                "--target", source, "--title", title, "--notes-file", str(notes), "--draft", "--latest=false")
+        for attempt in range(4):
+            record = github_release(tag)
+            if record is not None:
+                break
+            if attempt < 3:
+                time.sleep(1)
+        if record is None:
+            raise ValueError("Created GitHub draft is not visible yet; retry --publish-existing to resume it")
+        if not record.get("draft") or record.get("target_commitish") != source:
+            raise ValueError("Created GitHub draft does not match the source commit")
+        missing = publication_assets(record, artifacts)
+    if missing:
+        command("gh", "release", "upload", tag, *(str(artifact) for artifact in missing), "--repo", GITHUB_REPOSITORY)
+    if publication_assets(record, artifacts):
+        raise ValueError("GitHub draft is missing release assets")
+    if record.get("draft"):
+        target = github_tag_commit(tag)
+        if target is not None and target != source:
+            raise ValueError("Release tag changed before publication")
+        command("gh", "release", "edit", tag, "--repo", GITHUB_REPOSITORY, "--draft=false", "--latest=true")
+    published = github_release(tag)
+    if published is None or published.get("draft") or github_tag_commit(tag) != source:
+        raise ValueError("GitHub publication could not be verified")
+    if publication_assets(published, artifacts):
+        raise ValueError("Published GitHub release is missing assets")
+    url = f"https://github.com/{GITHUB_REPOSITORY}/releases/tag/{tag}"
+    asset_url = f"https://github.com/{GITHUB_REPOSITORY}/releases/download/{tag}/{dmg.name}"
+    write_json(directory / "publication.json", {
+        "repository": GITHUB_REPOSITORY, "tag": tag, "sourceCommit": source,
+        "releaseURL": url, "assetURL": asset_url, "sha256": sha256(dmg),
+    })
+    print(f"Published macOS release: {url}\nDMG download: {asset_url}", flush=True)
 
 
 def main() -> None:
@@ -251,28 +422,45 @@ def main() -> None:
     parser.add_argument("--prepare-only", action="store_true", help="archive and verify without uploading to Apple")
     parser.add_argument("--notarize", type=Path, help="notarize or resume an existing prepared release directory")
     parser.add_argument("--recover-submission", help="record a confirmed app=<id> or dmg=<id> after an interrupted upload")
+    parser.add_argument("--publish", action="store_true", help="publish the finished release to GitHub after notarizing")
+    parser.add_argument("--publish-existing", type=Path, help="verify and publish an existing finished release without building or notarizing")
     parser.add_argument("--keychain-profile", default=os.environ.get("CLOUDGATEWAY_NOTARY_PROFILE", "CloudGateway-notary"))
     args = parser.parse_args()
+    if args.publish_existing is not None and (
+        args.build is not None or args.version or args.prepare_only or args.notarize is not None
+        or args.recover_submission or args.publish
+    ):
+        parser.error("--publish-existing cannot be combined with build/version/preparation/notarization options or --publish")
+    if args.publish and args.prepare_only:
+        parser.error("--publish cannot be combined with --prepare-only")
     if args.notarize is not None and (args.build is not None or args.version or args.prepare_only):
         parser.error("--notarize cannot be combined with build/version/preparation options")
-    if args.notarize is None and (args.build is None or args.build <= 0):
+    if args.notarize is None and args.publish_existing is None and (args.build is None or args.build <= 0):
         parser.error("provide a positive --build number for a new release")
     if args.recover_submission and args.notarize is None:
         parser.error("--recover-submission requires --notarize")
-    directory = args.notarize.resolve() if args.notarize is not None else None
+    existing = args.publish_existing or args.notarize
+    directory = existing.resolve() if existing is not None else None
     try:
+        if args.publish_existing is not None:
+            publish(directory)
+            return
         if directory is None:
             directory = prepare(args.build, args.version, args.keychain_profile)
         if args.recover_submission:
             recover_submission(directory, args.recover_submission)
         if not args.prepare_only:
             finish(directory)
+        if args.publish:
+            publish(directory)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         print(f"macOS release failed: {error}", flush=True)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr.strip(), flush=True)
         if directory is not None:
-            print(f"Artifacts retained at {directory}\nResume: ./scripts/macos-release.sh --notarize '{directory}'", flush=True)
+            resume = "--publish-existing" if args.publish_existing is not None else "--notarize"
+            publish_option = " --publish" if args.publish else ""
+            print(f"Artifacts retained at {directory}\nResume: ./scripts/macos-release.sh {resume} '{directory}'{publish_option}", flush=True)
         raise SystemExit(1) from None
 
 

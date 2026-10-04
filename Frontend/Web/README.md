@@ -24,6 +24,7 @@ React dashboard
 * Create and remove WireGuard clients by calling the regional API with a Firebase bearer token.
 * Show stored WireGuard configs from Firebase with QR, copy, and download actions.
 * Provide admin-only user creation and cross-user client visibility/removal where the Firebase role allows it.
+* Offer the Mac app download from the navbar before and after sign-in, with platform requirements and installation steps in a confirmation dialog.
 
 The frontend never creates, updates, or deletes VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK. See [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md) for Firestore paths, rules, and indexes, and [../../Backend/API/README.md](../../Backend/API/README.md) for the API control plane.
 
@@ -150,6 +151,18 @@ The generated stylesheet is [src/output.css](src/output.css), built from [src/in
 cd Frontend/Web
 npm run deploy # deploys to gh-pages branch
 ```
+
+## Mac app download
+
+The shared navbar links directly to a public, notarized macOS DMG on GitHub
+Releases. [src/helpers/macAppRelease.ts](src/helpers/macAppRelease.ts) pins the
+version, build, and asset URL. Update it after publishing a new macOS release,
+then deploy the website. The exact asset URL keeps each website deployment
+linked to its selected build. New macOS releases receive GitHub's Latest badge;
+Caddy releases leave that selection unchanged.
+
+See [macOS release deployment](../../docs/apple-macos-release.md) for publishing
+a new build or the existing notarized DMG.
 
 ## Related Docs
 
