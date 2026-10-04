@@ -26,7 +26,7 @@
 #### macOS App
 
 <div style="display: flex; justify-content: center; align-items: center;">
-  <img src="docs/images/macos-menu.png" alt="CloudGateway macOS menu with a connected VPN and region controls" height="400"/>
+  <img src="https://github.com/user-attachments/assets/8023a276-da32-4822-87b0-621578094f08" alt="MacOS Menu Bar App" height="400"/>
 </div>
 
 #### Website
