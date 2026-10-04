@@ -1,7 +1,7 @@
 # CloudGateway Apple Shared Packages
 
-This package exports two products for the CloudGateway iOS app and future macOS
-app. They deliberately share workflows and VPN behavior without sharing app UI:
+This package exports two products for the CloudGateway iOS and macOS
+apps. They deliberately share workflows and VPN behavior without sharing app UI:
 
 * `CloudGatewayKit` owns VPN/configuration, app-group cache metadata, Keychain
   config secrets, and packet-tunnel health. Both containing apps and both
@@ -47,8 +47,8 @@ Snapshot writes and clears enqueue on one private FIFO persistence lane and are
 retried toward desired state after failures. Notification registration uses an
 epoch fence across authorization and add callbacks so stop, withdrawal, and a
 replacement session invalidate stale work synchronously.
-The package builds for iOS 17 and macOS 14; that compatibility does not imply a
-macOS app integration exists.
+The package builds for iOS 17 and macOS 14. The initial macOS app targets
+macOS 26 and Apple silicon.
 
 ## CloudGatewayAppCore
 
@@ -60,6 +60,10 @@ Current shared app responsibilities:
 * `CloudGatewayControlPlaneClient` owns apex/regional URL construction, DTO
   encoding and decoding, authenticated request plumbing, error mapping, and
   bounded URL sessions.
+* `CloudGatewayDeviceAuthClient` implements macOS browser device-code requests
+  and token polling with ephemeral HTTP storage, approval URL validation, and
+  bounded requests. `CloudGatewayCustomTokenAuthServicing` adds custom-token
+  exchange without expanding the existing iOS auth protocol.
 * `CloudGatewayAppServiceFacade` composes auth, client persistence, control-plane
   access, and provider presentation behind the service consumed by the model.
 * `CloudGatewayViewModel` owns guest/authenticated startup, role/access and
@@ -91,14 +95,19 @@ Firebase belongs behind containing-app adapters:
 * iOS app: configures Firebase, composes the shared AppCore workflows with the
   local Firebase Auth package, iOS Firestore repository, and iOS Google
   presenter, and maps remote config data into Kit VPN/config types.
-* Future macOS app: imports both shared products and supplies native Firebase,
-  provider-presentation, lifecycle, notification, and UI composition.
+* macOS app: a menu bar agent with browser sign-in and native session,
+  account-scoped inventory, lifecycle, Apple VPN status, and IPC adapters. It
+  does not instantiate the blackout monitor or implement notifications. See the
+  [macOS plan](../../../TODO/macos-app.md).
 * Packet tunnel extension: stays VPN-only and must not link Firebase unless a later product decision explicitly requires it.
 
-Platform packet-tunnel extensions retain only lifecycle, WireGuardKit mapping,
-`NWPathMonitor` fingerprinting, app-group store construction, User
-Notifications mapping, and bounded stop composition. They must not duplicate
-the evaluator/recovery state machine or add a second polling timer.
+Platform packet-tunnel extensions retain lifecycle, WireGuardKit mapping,
+network-change handling, storage adapters, and bounded start/stop composition.
+iOS additionally composes the shared health monitor and notification adapters.
+The macOS system extension requires root-aware storage and IPC; iOS App Group
+files and shared user Keychain access are not macOS adapters. macOS reuses
+VPN/config APIs without enabling health monitoring. Keep existing iOS contracts
+and behavior unchanged when adding macOS seams.
 
 The shared config manager lives in CloudGatewayKit and depends on small
 protocols instead of concrete Firebase types. AppCore depends on those Kit APIs

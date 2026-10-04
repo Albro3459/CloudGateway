@@ -3,6 +3,7 @@ from .enums import ErrorCode
 
 HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.AUTH_REQUIRED: 401,
+    ErrorCode.AUTH_UNAVAILABLE: 503,
     ErrorCode.ADMIN_REQUIRED: 403,
     ErrorCode.USER_NOT_PROVISIONED: 403,
     ErrorCode.INVALID_REQUEST: 400,
@@ -19,6 +20,13 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.FIREBASE_WRITE_FAILED: 500,
     ErrorCode.ROLE_DEFAULT_MISSING: 500,
     ErrorCode.ACCOUNT_SLOT_UNAVAILABLE: 500,
+    ErrorCode.DEVICE_AUTH_INVALID: 400,
+    ErrorCode.DEVICE_AUTH_EXPIRED: 410,
+    ErrorCode.DEVICE_AUTH_DENIED: 403,
+    ErrorCode.DEVICE_AUTH_CONSUMED: 409,
+    ErrorCode.DEVICE_AUTH_CONFLICT: 409,
+    ErrorCode.DEVICE_AUTH_THROTTLED: 429,
+    ErrorCode.DEVICE_AUTH_UNAVAILABLE: 503,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 
@@ -39,6 +47,11 @@ class ApiError(Exception):
 class AuthRequiredError(ApiError):
     code = ErrorCode.AUTH_REQUIRED
     default_message = "Authentication required."
+
+
+class AuthUnavailableError(ApiError):
+    code = ErrorCode.AUTH_UNAVAILABLE
+    default_message = "Authentication is temporarily unavailable. Try again shortly."
 
 
 class AdminRequiredError(ApiError):
@@ -135,3 +148,46 @@ class AccountSlotUnavailableError(ApiError):
 class InternalError(ApiError):
     code = ErrorCode.INTERNAL_ERROR
     default_message = "Unexpected error."
+
+
+class DeviceAuthError(ApiError):
+    retry_after: int | None = None
+
+
+class DeviceAuthInvalidError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_INVALID
+    default_message = "Device authorization request is invalid."
+
+
+class DeviceAuthExpiredError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_EXPIRED
+    default_message = "Device authorization request has expired."
+
+
+class DeviceAuthDeniedError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_DENIED
+    default_message = "Device authorization was denied."
+
+
+class DeviceAuthConsumedError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_CONSUMED
+    default_message = "Device authorization has already been consumed."
+
+
+class DeviceAuthConflictError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_CONFLICT
+    default_message = "Device authorization has already been decided."
+
+
+class DeviceAuthThrottledError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_THROTTLED
+    default_message = "Device authorization is temporarily rate limited."
+
+    def __init__(self, retry_after: int):
+        self.retry_after = max(1, retry_after)
+        super().__init__()
+
+
+class DeviceAuthUnavailableError(DeviceAuthError):
+    code = ErrorCode.DEVICE_AUTH_UNAVAILABLE
+    default_message = "Device authorization is temporarily unavailable."

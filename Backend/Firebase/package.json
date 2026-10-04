@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Firestore security-rules tests run against the Firebase emulator.",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^4.0.1",

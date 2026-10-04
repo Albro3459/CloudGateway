@@ -24,6 +24,7 @@ React dashboard
 * Create and remove WireGuard clients by calling the regional API with a Firebase bearer token.
 * Show stored WireGuard configs from Firebase with QR, copy, and download actions.
 * Provide admin-only user creation and cross-user client visibility/removal where the Firebase role allows it.
+* Offer the Mac app download from the navbar before and after sign-in, with platform requirements and installation steps in a confirmation dialog.
 
 The frontend never creates, updates, or deletes VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK. See [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md) for Firestore paths, rules, and indexes, and [../../Backend/API/README.md](../../Backend/API/README.md) for the API control plane.
 
@@ -32,7 +33,7 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 [src/App.tsx](src/App.tsx)
 
 * HashRouter route map for GitHub Pages.
-* Routes login, home/dashboard, about, password reset, and admin user creation pages.
+* Routes login, home/dashboard, about, password reset, device approval, and admin user creation pages.
 
 [src/firebase.ts](src/firebase.ts)
 
@@ -52,6 +53,13 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 
 * Typed fetch wrapper for apex and regional FastAPI calls.
 * Adds Firebase bearer auth where required, sends JSON, and normalizes FastAPI error responses.
+
+[src/pages/DeviceApproval.tsx](src/pages/DeviceApproval.tsx) and [src/helpers/deviceAuthHelper.ts](src/helpers/deviceAuthHelper.ts)
+
+* `/#/auth/code?deviceRequestId=<32 lowercase hex>&userCode=<6 digits>` verifies and approves or denies an existing device request through the apex API.
+* Approval requires a signed-in account with access, shows the device description as unverified, and asks the user to match the code on their device before sending a decision.
+* Framed pages stop before mounting the approval flow or contacting the API. Configure the dashboard response headers using the [Cloudflare anti-framing rule](../../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule).
+* Login accepts only that validated internal return route and skips regional inventory checks on the approval path. Ordinary login and password reset keep their existing routes.
 
 [src/helpers/apiEndpoints.ts](src/helpers/apiEndpoints.ts)
 
@@ -78,6 +86,8 @@ The frontend never creates, updates, or deletes VPN client documents directly. A
 * The apex FastAPI host owns global/read API calls:
   * `GET /api/regions`
   * `POST /api/auth/check-access`
+  * `POST /api/device/verify`
+  * `POST /api/device/approve`
 * Regional FastAPI hosts own protected regional calls:
   * `GET /api/capacity`
   * `POST /api/clients`
@@ -141,6 +151,18 @@ The generated stylesheet is [src/output.css](src/output.css), built from [src/in
 cd Frontend/Web
 npm run deploy # deploys to gh-pages branch
 ```
+
+## Mac app download
+
+The shared navbar links directly to a public, notarized macOS DMG on GitHub
+Releases. [src/helpers/macAppRelease.ts](src/helpers/macAppRelease.ts) pins the
+version, build, and asset URL. Update it after publishing a new macOS release,
+then deploy the website. The exact asset URL keeps each website deployment
+linked to its selected build. New macOS releases receive GitHub's Latest badge;
+Caddy releases leave that selection unchanged.
+
+See [macOS release deployment](../../docs/apple-macos-release.md) for publishing
+a new build or the existing notarized DMG.
 
 ## Related Docs
 

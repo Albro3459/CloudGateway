@@ -84,6 +84,148 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 }
 ```
 
+### Device authorization
+
+Device authorization runs on the apex API. FastAPI routes are `/device/*`; Caddy strips the public
+`/api` prefix from `POST /api/device/code`, `POST /api/device/verify`,
+`POST /api/device/approve`, and `POST /api/device/token`. Every response from these routes, including
+validation failures and dependency errors, carries `Cache-Control: no-store`.
+Device authorization is available when this API version is deployed. Approval links use the
+configured HTTPS dashboard origin. HTTP is allowed only for `localhost` or literal loopback IPs
+for development. Binding a dev server to `0.0.0.0` does not make it a valid HTTP dashboard origin.
+
+The flow uses a fresh 32-byte device secret for each attempt. The client sends its lowercase
+SHA-256 hex hash at creation, encoded secret only in token-poll bodies, and never puts either value
+in a URL. The secret encoding is canonical unpadded base64url (43 characters); the server hashes
+the decoded 32 bytes. A six-digit user code is a string, so leading zeroes are significant. The
+server stores only the code hash. Request IDs are 32 lowercase hexadecimal characters.
+
+#### `POST /device/code`
+
+Unauthenticated. Request:
+
+```json
+{
+  "deviceSecretHash": "64 lowercase hexadecimal characters",
+  "deviceName": "Living room player"
+}
+```
+
+`deviceName` is optional, trimmed, has control characters removed, and is limited to 80 characters
+after sanitization. It describes the requesting device and is unverified. The API returns `201`:
+
+```json
+{
+  "deviceRequestId": "0123456789abcdef0123456789abcdef",
+  "userCode": "004281",
+  "verificationUri": "https://gocloudlaunch.com/#/auth/code",
+  "verificationUriComplete": "https://gocloudlaunch.com/#/auth/code?deviceRequestId=0123456789abcdef0123456789abcdef&userCode=004281",
+  "expiresIn": 300,
+  "interval": 5
+}
+```
+
+Both URLs use the configured dashboard origin. The complete link passes request ID and code in the
+URL fragment; it contains no device secret or Firebase token. The request expires 300 seconds after
+creation. Verification, decisions, polling, and retries do not extend that time.
+
+#### `POST /device/verify`
+
+Requires a Firebase bearer ID token for an enabled Auth user with an enabled `Users/{uid}` record
+and a recognized `UserRoles/{uid}` role. The request ID and code are both required:
+
+```json
+{
+  "deviceRequestId": "0123456789abcdef0123456789abcdef",
+  "userCode": "004281"
+}
+```
+
+Response `200` contains only display context and state. It never includes an approving UID or
+device secret:
+
+```json
+{
+  "deviceName": "Living room player",
+  "userCode": "004281",
+  "state": "pending",
+  "expiresAt": "2026-10-01T12:05:00Z"
+}
+```
+
+`state` is `pending`, `approved`, `denied`, or `consumed`. The API checks the fixed expiry before
+returning a stored state.
+
+#### `POST /device/approve`
+
+Requires the same Firebase bearer and product-access checks as `/device/verify`. Request:
+
+```json
+{
+  "deviceRequestId": "0123456789abcdef0123456789abcdef",
+  "userCode": "004281",
+  "decision": "approve"
+}
+```
+
+`decision` is exactly `approve` or `deny`. Response `200` is `{ "state": "approved" }` or
+`{ "state": "denied" }`. The first valid decision wins atomically. Repeating the same decision
+by the same account is idempotent; another account or a conflicting decision receives
+`DEVICE_AUTH_CONFLICT`.
+
+#### `POST /device/token`
+
+Unauthenticated Firebase-wise; proves device possession with the secret from creation. Request:
+
+```json
+{
+  "deviceRequestId": "0123456789abcdef0123456789abcdef",
+  "deviceSecret": "43-character canonical unpadded base64url secret"
+}
+```
+
+A valid pending poll returns `202`:
+
+```json
+{ "state": "pending", "interval": 5 }
+```
+
+Polling more often than once every five seconds returns `429 DEVICE_AUTH_THROTTLED` with integer
+`Retry-After`. The approved account's Auth user must still exist and be enabled before redemption;
+the API then transactionally rechecks the product user and role records and claims the request as
+consumed. Only the winning request signs a Firebase custom token, outside the Firestore
+transaction. Success returns `200`:
+
+```json
+{ "customToken": "Firebase custom token" }
+```
+
+The token is returned once and never persisted. A signing failure or lost response leaves the
+request consumed; the device starts a new authorization flow.
+
+#### Device authorization errors
+
+Controlled device failures use the standard API error envelope. Request validation and unknown
+request/proof mismatches share `400 DEVICE_AUTH_INVALID`; a wrong proof does not reveal stored
+state. Expiry is `410 DEVICE_AUTH_EXPIRED`, denial is `403 DEVICE_AUTH_DENIED`, consumed requests
+are `409 DEVICE_AUTH_CONSUMED`, and first-decision conflicts are `409 DEVICE_AUTH_CONFLICT`.
+Persistent rate limits return `429 DEVICE_AUTH_THROTTLED` with an integer `Retry-After`. Invalid
+configuration, Firestore failure, Auth lookup failure, or custom-token signing failure return
+`503 DEVICE_AUTH_UNAVAILABLE`. Browser bearer authentication keeps the existing `401 AUTH_REQUIRED`
+and `403 USER_NOT_PROVISIONED` responses.
+
+The API stores device requests in `DeviceAuthRequests/{deviceRequestId}` and shared limit windows in
+`DeviceAuthLimits/{scopeId}`. Browser code/request mismatches are limited to three attempts per UID
+per rolling five minutes; creation is limited to five requests per trusted source per rolling five
+minutes; attempts exactly 300 seconds old have expired. A valid request poll is limited to one every
+five seconds. These budgets are transactional and shared across API instances. Expired request IDs
+and wrong proofs do not alter polling state. Creation source identity comes from the replaced
+`X-CloudGateway-Client-IP` header only when the API's direct peer is loopback; direct non-loopback
+requests use the peer address and ignore forwarded headers. Source addresses are stored as
+short-lived SHA-256 digests; this is pseudonymous personal data, not anonymization. The API access
+log excludes request bodies and query strings, and device errors do not include secret-bearing
+exception text.
+
 ### `POST /clients`
 
 - Requires Firebase bearer auth. Creates a client only for the authenticated user.
@@ -438,16 +580,22 @@ All controlled failures return this shape:
 - Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
   `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
   `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `SYNC_IN_PROGRESS`, `WIREGUARD_APPLY_FAILED`,
-  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`.
+  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`,
+  `DEVICE_AUTH_INVALID`, `DEVICE_AUTH_EXPIRED`, `DEVICE_AUTH_DENIED`, `DEVICE_AUTH_CONSUMED`,
+  `DEVICE_AUTH_CONFLICT`, `DEVICE_AUTH_THROTTLED`, `DEVICE_AUTH_UNAVAILABLE`, `INTERNAL_ERROR`.
 - HTTP status mapping:
   - `401`: auth failures (`AUTH_REQUIRED`).
-  - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`).
+  - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `DEVICE_AUTH_DENIED`).
   - `400`: invalid request and region errors (`INVALID_REQUEST`, `REGION_DISABLED`,
-    `REGION_MISMATCH`).
+    `REGION_MISMATCH`, `DEVICE_AUTH_INVALID`).
   - `404`: missing clients (`CLIENT_NOT_FOUND`).
   - `409`: duplicate email, disabled account, capacity/limit failures, and a sync already running
-    on the region (`DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`,
-    `SYNC_IN_PROGRESS`).
+    on the region, or a consumed/conflicting device authorization (`DUPLICATE_EMAIL`,
+    `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `SYNC_IN_PROGRESS`,
+    `DEVICE_AUTH_CONSUMED`, `DEVICE_AUTH_CONFLICT`).
+  - `410`: expired device authorization (`DEVICE_AUTH_EXPIRED`).
+  - `429`: device authorization rate limits (`DEVICE_AUTH_THROTTLED`), with integer `Retry-After`.
+  - `503`: unavailable device authorization dependencies (`DEVICE_AUTH_UNAVAILABLE`).
   - `500`: host mutation failures, missing/malformed role defaults, an unusable account-slot
     counter, and unexpected failures (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
     `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`).

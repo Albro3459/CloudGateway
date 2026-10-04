@@ -3,6 +3,7 @@ import { Activity, ArrowLeft, Home, Info, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { ThemeToggle } from "./ThemeToggle";
+import { MacAppDownloadButton } from "./MacAppDownloadButton";
 
 type AppNavProps = {
     subtitle?: string | null;
@@ -101,6 +102,7 @@ export const AppNav: React.FC<AppNavProps> = ({
                             <Activity size={19} aria-hidden="true" />
                         </button>
                     )}
+                    <MacAppDownloadButton className={navButtonClasses} />
                     <ThemeToggle />
                     {homePath && (
                         <button

@@ -33,6 +33,8 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = '-m "not emulator"'
+markers = ["emulator: requires local Firebase Auth and Firestore emulators"]
 
 [tool.vulture]
 paths = ["src", "tests", "vulture_whitelist.py"]
@@ -42,6 +44,9 @@ ignore_decorators = ["@router.*", "@app.*", "@pytest.fixture", "@field_validator
 # vulture_whitelist.py for entries that need executable stand-ins instead.
 ignore_names = [
     "model_config",
+    "expires_in",
+    "interval",
+    "pytestmark",
     "deleted_client_count",
     "no_changes",
     "health_status",

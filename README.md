@@ -23,6 +23,12 @@
   <img src="https://github.com/user-attachments/assets/e8fe3bf2-fe29-4c92-857e-0b30b449dbc2" alt="Login" height="400"/>
 </div>
 
+#### macOS App
+
+<div style="display: flex; justify-content: center; align-items: center;">
+  <img src="https://github.com/user-attachments/assets/8023a276-da32-4822-87b0-621578094f08" alt="MacOS Menu Bar App" height="400"/>
+</div>
+
 #### Website
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
@@ -53,8 +59,9 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 ### Components
 
 * <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
-* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and future macOS apps.
+* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and macOS.
 * <b>iOS app</b> (`Frontend/Apple/iOS/`): CloudGateway app and packet tunnel extension. It uses Firebase Auth/Firestore to list owned configs and installs the user-selected config internally.
+* <b>macOS app</b> (`Frontend/Apple/macOS/`): menu bar VPN client with browser sign-in, client inventory, client creation, and local VPN controls.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
@@ -131,6 +138,8 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 ## More Docs
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
+* macOS release deployment: [docs/apple-macos-release.md](docs/apple-macos-release.md)
+* macOS menu screenshot: [docs/apple-macos-screenshots.md](docs/apple-macos-screenshots.md)
 * Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
 * Regional API: [Backend/API/README.md](Backend/API/README.md)
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)

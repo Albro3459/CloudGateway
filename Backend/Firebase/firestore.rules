@@ -71,6 +71,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Device authorization records are accessed only by the regional API via
+    // the Admin SDK, which bypasses these rules.
+    match /DeviceAuthRequests/{deviceRequestId} {
+      allow read, write: if false;
+    }
+
+    match /DeviceAuthLimits/{scopeId} {
+      allow read, write: if false;
+    }
+
     match /Users/{userId} {
       allow get: if isOwnerOrAdmin(userId);
       allow list: if isAdmin();

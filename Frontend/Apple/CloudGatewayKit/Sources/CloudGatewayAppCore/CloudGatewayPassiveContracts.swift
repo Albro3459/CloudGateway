@@ -50,6 +50,7 @@ public enum CloudGatewayAppError: LocalizedError {
     case missingSelectedRegion
     case invalidAPIResponse
     case accessDenied(String)
+    case apiAccessDenied(String)
     case cancelled
     case appleSignInFailed
     case requiresRecentLogin
@@ -70,7 +71,7 @@ public enum CloudGatewayAppError: LocalizedError {
             "Choose a region first."
         case .invalidAPIResponse:
             "CloudGateway returned an invalid response."
-        case .accessDenied(let message):
+        case .accessDenied(let message), .apiAccessDenied(let message):
             message
         case .cancelled:
             "Sign in was cancelled."

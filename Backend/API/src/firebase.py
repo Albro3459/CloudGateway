@@ -12,6 +12,7 @@ from .enums import ClientStatus, Role
 from .errors import (
     AccountDisabledError,
     AuthRequiredError,
+    AuthUnavailableError,
     ClientNotFoundError,
     DuplicateEmailError,
     FirebaseWriteFailedError,
@@ -87,11 +88,15 @@ class FirebaseTokenVerifier(TokenVerifier):
     def verify_token(self, token: str) -> AuthenticatedUser:
         from firebase_admin import auth
 
-        _firebase_app(self._settings)
+        if not token:
+            raise AuthRequiredError("Invalid or expired token.")
         try:
+            _firebase_app(self._settings)
             decoded = auth.verify_id_token(token, check_revoked=True)
-        except Exception as exc:
+        except (auth.InvalidIdTokenError, auth.UserDisabledError, auth.UserNotFoundError) as exc:
             raise AuthRequiredError("Invalid or expired token.") from exc
+        except Exception as exc:
+            raise AuthUnavailableError() from exc
         uid = decoded.get("uid")
         if not uid:
             raise AuthRequiredError("Invalid or expired token.")

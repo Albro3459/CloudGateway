@@ -3,7 +3,7 @@ import json
 import re
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Annotated, TypeVar
+from typing import Annotated, Literal, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request as URLRequest
@@ -12,6 +12,7 @@ from urllib.request import urlopen
 from fastapi import APIRouter, BackgroundTasks, Depends, Path, Request, Response
 
 from .auth import AuthenticatedUser, bearer_token, get_current_user, require_admin_user, require_provisioned_user, require_role_or_disable_unprovisioned
+from .device_auth import DeviceAuthResult, trusted_source_ip
 from .enums import ClientStatus, ErrorCode, Event, MeshPeerStatus, OperationResult, Role
 from .errors import (
     ApiError,
@@ -37,6 +38,15 @@ from .models import (
     DeleteAccountResponse,
     DeleteClientRequest,
     DeleteClientResponse,
+    DeviceApproveRequest,
+    DeviceCodeRequest,
+    DeviceCodeResponse,
+    DeviceDecisionResponse,
+    DeviceTokenPendingResponse,
+    DeviceTokenRequest,
+    DeviceTokenResponse,
+    DeviceVerifyResponse,
+    DeviceAuthLookupRequest,
     HealthResponse,
     RegionSummary,
     RegionsResponse,
@@ -72,6 +82,73 @@ POLICY_POKE_TIMEOUT_SECONDS = 5
 # A region ID becomes the leftmost label of a regional API hostname, so it is
 # constrained to the OCI region-id charset before any URL interpolation.
 _REGION_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
+
+
+@router.post("/device/code", response_model=DeviceCodeResponse, status_code=201)
+def create_device_auth_code(request: Request, body: DeviceCodeRequest) -> DeviceCodeResponse:
+    peer_host = request.client.host if request.client is not None else None
+    source_ip = trusted_source_ip(
+        peer_host=peer_host,
+        custom_header=request.headers.get("X-CloudGateway-Client-IP"),
+    )
+    result = request.app.state.device_auth_service.create(
+        device_secret_hash=body.device_secret_hash,
+        device_name=body.device_name,
+        source_ip=source_ip,
+    )
+    return DeviceCodeResponse.model_validate(result)
+
+
+@router.post("/device/verify", response_model=DeviceVerifyResponse)
+def verify_device_auth(
+    request: Request,
+    body: DeviceAuthLookupRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeviceVerifyResponse:
+    result: DeviceAuthResult = request.app.state.device_auth_service.verify(
+        user=user,
+        device_request_id=body.device_request_id,
+        user_code=body.user_code,
+    )
+    assert result.state is not None and result.expires_at is not None
+    return DeviceVerifyResponse(
+        device_name=result.device_name,
+        user_code=body.user_code,
+        state=cast(Literal["pending", "approved", "denied", "consumed"], result.state),
+        expires_at=result.expires_at,
+    )
+
+
+@router.post("/device/approve", response_model=DeviceDecisionResponse)
+def decide_device_auth(
+    request: Request,
+    body: DeviceApproveRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> DeviceDecisionResponse:
+    result: DeviceAuthResult = request.app.state.device_auth_service.decide(
+        user=user,
+        device_request_id=body.device_request_id,
+        user_code=body.user_code,
+        decision=body.decision,
+    )
+    assert result.state in {"approved", "denied"}
+    return DeviceDecisionResponse(state=cast(Literal["approved", "denied"], result.state))
+
+
+@router.post("/device/token", response_model=DeviceTokenPendingResponse | DeviceTokenResponse)
+def exchange_device_auth_token(
+    request: Request,
+    body: DeviceTokenRequest,
+    response: Response,
+) -> DeviceTokenPendingResponse | DeviceTokenResponse:
+    result = request.app.state.device_auth_service.exchange(
+        device_request_id=body.device_request_id,
+        device_secret=body.device_secret,
+    )
+    if isinstance(result, DeviceAuthResult):
+        response.status_code = 202
+        return DeviceTokenPendingResponse()
+    return DeviceTokenResponse(custom_token=result)
 
 
 @router.get("/health", response_model=HealthResponse)

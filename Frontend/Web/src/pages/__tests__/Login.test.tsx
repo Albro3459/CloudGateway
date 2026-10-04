@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mockNavigate = jest.fn();
+let mockLocationState: unknown = null;
 
 jest.mock("react-router-dom", () => ({
     useNavigate: () => mockNavigate,
+    useLocation: () => ({ state: mockLocationState }),
 }), { virtual: true });
 
 jest.mock("../../firebase", () => ({
@@ -67,6 +69,7 @@ describe("Login", () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
+        mockLocationState = null;
         setCurrentUser(null);
         user.getIdToken.mockResolvedValue("firebase-token");
         const { onAuthStateChanged, signInWithEmailAndPassword, signInWithGoogle, signInWithApple, signOut } = require("../../firebase");
@@ -1107,5 +1110,89 @@ describe("Login", () => {
             expect(screen.getByRole("link", { name: "Contact an admin" }).getAttribute("href"))
                 .toBe("mailto:Brodsky.Alex22@gmail.com");
         });
+    });
+
+    it.each(["Google", "Apple"]) ("returns %s sign-in to a validated device approval without loading regions", async (provider) => {
+        const { signInWithGoogle, signInWithApple } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        const providerSignIn = provider === "Google" ? signInWithGoogle : signInWithApple;
+        const route = "/auth/code?deviceRequestId=0123456789abcdef0123456789abcdef&userCode=000042";
+        mockLocationState = { returnTo: route };
+        providerSignIn.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
+        const { default: Login } = require("../Login");
+
+        render(<Login />);
+        fireEvent.click(screen.getByRole("button", { name: new RegExp(`Sign in with ${provider}`) }));
+
+        await waitFor(() => {
+            expect(checkAccountAccess).toHaveBeenCalledWith("firebase-token", null);
+            expect(mockNavigate).toHaveBeenCalledWith(route, { replace: true });
+        });
+        expect(fetchOciRegions).not.toHaveBeenCalled();
+    });
+
+    it("returns email sign-in to a validated device approval without loading regions", async () => {
+        const { signInWithEmailAndPassword } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        const route = "/auth/code?deviceRequestId=0123456789abcdef0123456789abcdef&userCode=000042";
+        mockLocationState = { returnTo: route };
+        signInWithEmailAndPassword.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
+        const { default: Login } = require("../Login");
+
+        render(<Login />);
+        fireEvent.change(screen.getByPlaceholderText("Enter your email"), { target: { value: "user@example.com" } });
+        fireEvent.change(screen.getByPlaceholderText("Enter your password"), { target: { value: "Password1!" } });
+        fireEvent.click(screen.getByRole("button", { name: "Login" }));
+
+        await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith(route, { replace: true }));
+        expect(fetchOciRegions).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unsafe login return path and keeps ordinary login behavior", async () => {
+        const { signInWithGoogle } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        mockLocationState = { returnTo: "https://attacker.example/" };
+        signInWithGoogle.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
+        const { default: Login } = require("../Login");
+
+        render(<Login />);
+        fireEvent.click(screen.getByRole("button", { name: /Sign in with Google/ }));
+
+        await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true }));
+        expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
+    });
+
+    it("keeps the normal region gate when an internal device return path is malformed", async () => {
+        const { signInWithGoogle } = require("../../firebase");
+        const { checkAccountAccess } = require("../../helpers/APIHelper");
+        const { fetchOciRegions } = require("../../stores/ociRegionsStore");
+        mockLocationState = { returnTo: "/auth/code?deviceRequestId=bad&userCode=1" };
+        signInWithGoogle.mockImplementation(signInResolvingAs(user));
+        checkAccountAccess.mockResolvedValue({
+            success: true,
+            data: { userId: "user-1", email: "user@example.com", role: "user" },
+        });
+        const { default: Login } = require("../Login");
+
+        render(<Login />);
+        fireEvent.click(screen.getByRole("button", { name: /Sign in with Google/ }));
+
+        await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/home", { replace: true }));
+        expect(fetchOciRegions).toHaveBeenCalledWith("firebase-token", true);
     });
 });

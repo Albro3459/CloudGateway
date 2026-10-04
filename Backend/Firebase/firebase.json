@@ -4,7 +4,12 @@
     "indexes": "firestore.indexes.json"
   },
   "emulators": {
-    "firestore": { "port": 8080 },
-    "singleProjectMode": true
+    "firestore": {
+      "port": 8080
+    },
+    "singleProjectMode": true,
+    "auth": {
+      "port": 9099
+    }
   }
 }

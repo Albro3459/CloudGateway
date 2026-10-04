@@ -6,6 +6,8 @@
 #      extension, the App Store screenshots target, and all shared packages with
 #      public-API analysis enabled. No tests in scope, so production code kept
 #      alive only by its own tests is still reported.
+#      Excludes the local WireGuard fork's external library API, matching the
+#      scope used when the same dependency was a remote package
 #   2. SPM scan rooted at CloudGatewayKit, report-filtered to **/Tests/**:
 #      reports dead code in CloudGatewayKitTests/CloudGatewayAppCoreTests.
 #   3. SPM scan rooted at CloudGatewayFirebaseAdapter, same Tests filter:

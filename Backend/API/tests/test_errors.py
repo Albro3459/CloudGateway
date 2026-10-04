@@ -18,6 +18,7 @@ def assert_error_shape(payload, code):
 
 def test_status_mapping_matches_contract():
     assert HTTP_STATUS_BY_CODE[ErrorCode.AUTH_REQUIRED] == 401
+    assert HTTP_STATUS_BY_CODE[ErrorCode.AUTH_UNAVAILABLE] == 503
     assert HTTP_STATUS_BY_CODE[ErrorCode.ADMIN_REQUIRED] == 403
     assert HTTP_STATUS_BY_CODE[ErrorCode.INVALID_REQUEST] == 400
     assert HTTP_STATUS_BY_CODE[ErrorCode.REGION_DISABLED] == 400

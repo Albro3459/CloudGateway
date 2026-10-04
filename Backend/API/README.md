@@ -20,7 +20,7 @@ Dashboard
       -> local WireGuard commands
 ```
 
-Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/account`, `/users`, and `/auth/check-access`.
+Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/account`, `/users`, `/auth/check-access`, and `/device/*`.
 
 ## Runtime Model
 
@@ -35,6 +35,7 @@ See [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md) for Terra
 * Verify Firebase bearer tokens on protected requests.
 * Enforce provisioned-user and admin-only access rules.
 * Read users, roles, regions, and client documents from Firestore, including unauthenticated display-safe region discovery through the apex host.
+* Run short-lived device authorization with transactional Firestore state and limits, then issue a Firebase custom token for the approved existing account.
 * Reserve client IDs, tunnel IPs, and regional capacity in Firestore transactions.
 * Generate per-client WireGuard keypairs and client config text.
 * Apply live `wg0` peer changes with `wg set` under a local lock.
@@ -72,6 +73,11 @@ Firebase is the product source of truth for users, regions, roles, limits, store
 * Firebase Admin SDK adapter.
 * Verifies ID tokens, creates Auth users, and implements Firestore-backed repository operations.
 
+[src/device_auth.py](src/device_auth.py), [src/device_auth_firebase.py](src/device_auth_firebase.py)
+
+* Own the device authorization protocol, transactional Firestore request and rate-limit records, Auth enabled checks, and custom-token signing.
+* Device authorization never changes WireGuard state. Requests and limits are in private Firestore collections and are accessible only through the Admin SDK.
+
 [src/repository.py](src/repository.py)
 
 * Domain model and repository interface.
@@ -100,10 +106,16 @@ All request/response JSON uses camelCase.
 * `GET /health`: unauthenticated health check for the regional API.
 * `GET /regions`: unauthenticated apex route returning enabled region names and display order only.
 * `POST /auth/check-access`: apex route that verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
+* `POST /device/code`, `/device/verify`, `/device/approve`, and `/device/token`: apex device authorization flow. All responses use `Cache-Control: no-store`; polling and abuse budgets are shared across API instances.
 * `GET /capacity`: returns local regional capacity, counting `creating` plus `active` client docs.
 * `POST /clients`: creates one WireGuard client for the authenticated user in this region.
 * `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
 * `DELETE /account`: deletes the authenticated user's account and associated client documents after removing any live regional peers.
+
+Firebase certificate or verification-backend failures return a retryable 503,
+so clients can retain their session and retry. Invalid, expired, revoked,
+disabled, or deleted identities return 401. A service outage does not confirm
+product access and must not be treated as a successful authorization check.
 * `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
 
 For the full route, URL, and error contract, see [docs/api-contract.md](../../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Backend/Firebase/README.md](../Firebase/README.md).
@@ -114,7 +126,7 @@ Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefi
 
 * `CLOUDGATEWAY_REGION_ID`
 * `CLOUDGATEWAY_API_PORT`
-* `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN`
+* `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` (HTTPS dashboard origin; HTTP is allowed only for `localhost` or literal loopback IPs)
 * `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
 * `CLOUDGATEWAY_WG_INTERFACE`
 * `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
@@ -160,6 +172,10 @@ cd Backend/API
 ./.venv/bin/vulture
 ./.venv/bin/python -m pytest
 ```
+
+The default API suite excludes tests marked `emulator`. The root `./scripts/test.sh firebase` target
+runs those API integration tests alongside the Firestore rules tests with Auth and Firestore
+emulators active. Device authorization API tests do not need Firebase credentials or emulators.
 
 The placeholder `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY` above is only for local startup/health checks. Local WireGuard operations need a real WireGuard interface and real keys. Most route and domain checks should use the test fakes instead of touching host WireGuard.
 

@@ -273,6 +273,7 @@ SHA-256: ${CADDY_SHA256}"
 echo "==> Creating GitHub release ${CADDY_TAG}"
 gh release create "$CADDY_TAG" "$ARTIFACT" \
   --target "$BRANCH" \
+  --latest=false \
   --title "Caddy v${RELEASE_VERSION}" \
   --notes "$RELEASE_NOTES"
 
