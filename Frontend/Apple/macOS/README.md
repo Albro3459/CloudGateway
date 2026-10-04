@@ -5,6 +5,10 @@ Native menu bar app and packet-tunnel system extension. See
 and [development runbook](../../../docs/apple-macos-development.md) for signing,
 installation, storage boundaries, and runtime checks.
 
+Capture a clean menu image with `swift scripts/macos-menu-screenshot.swift`
+from the repository root. See the
+[screenshot instructions](../../../docs/apple-macos-screenshots.md) for setup.
+
 The initial app targets macOS 26 on Apple silicon. Shared Kit/AppCore floors
 stay unchanged. It uses `NSStatusItem` and `NSMenu` as an `LSUIElement` agent,
 with setup and device-code status in the menu and no dashboard. The

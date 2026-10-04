@@ -23,6 +23,12 @@
   <img src="https://github.com/user-attachments/assets/e8fe3bf2-fe29-4c92-857e-0b30b449dbc2" alt="Login" height="400"/>
 </div>
 
+#### macOS App
+
+<div style="display: flex; justify-content: center; align-items: center;">
+  <img src="docs/images/macos-menu.png" alt="CloudGateway macOS menu with a connected VPN and region controls" height="400"/>
+</div>
+
 #### Website
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
@@ -133,6 +139,7 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
 * macOS release deployment: [docs/apple-macos-release.md](docs/apple-macos-release.md)
+* macOS menu screenshot: [docs/apple-macos-screenshots.md](docs/apple-macos-screenshots.md)
 * Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
 * Regional API: [Backend/API/README.md](Backend/API/README.md)
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)
