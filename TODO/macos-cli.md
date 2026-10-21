@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **macOS service extraction in progress, background launch pending signed runtime proof**.
+Status: **macOS service extraction built and reviewed, background launch pending signed runtime proof**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -460,17 +460,25 @@ state. None is an automatic fallback authorized by this plan.
 
 ### 0. Extract services without disturbing the installed app
 
-- [ ] Extract a Foundation-only macOS controller with injected dependencies,
+- [x] Extract a Foundation-only macOS controller with injected dependencies,
   sanitized snapshots, and explicit lifecycle, separate from menu presentation
-- [ ] Host it in the menu process for this structural checkpoint. This is not
+- [x] Host it in the menu process for this structural checkpoint. This is not
   the background launch mechanism or proof of independent process lifetime
-- [ ] Move browser opening and Add Client dialogs into the menu client. Keep
+- [x] Move browser opening and Add Client dialogs into the menu client. Keep
   service tasks and account/session fencing inside the controller
-- [ ] Validate with host-free tests, dead-code scans, and builds, without
+- [x] Validate with host-free tests, dead-code scans, and builds, without
   launching another auth owner or changing the currently running VPN
-- [ ] Bump the app version independently. Change extension versions only when
+- [x] Bump the app version independently. Change extension versions only when
   its binary or protocol changes require replacement
-- [ ] Review and commit logical checkpoints before the signed runtime session
+- [x] Review and commit logical checkpoints before the signed runtime session
+
+On 2026-10-21, `./scripts/test.sh macos` passed with 112 macOS core/IPC tests,
+both strict macOS dead-code scans, and the unsigned arm64 build/packaging checks.
+Two Sol review rounds finished without remaining confirmed issues. The signed
+gate reached `codesign` but failed with `errSecInternalComponent`. Resolve
+signing-key access and rerun it before runtime testing. No new app/controller
+was launched, and the installed app, profiles, Firebase session, and VPN were
+left intact. This does not establish background-process or SSH behavior.
 
 The development machine currently runs the existing menu app and an active
 VPN. Keep that installation, process, session, and profiles intact during

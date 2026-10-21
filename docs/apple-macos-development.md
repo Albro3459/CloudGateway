@@ -18,6 +18,40 @@ compilation and packaging. Signed builds also inspect signatures, embedded
 profiles, and entitlements. Neither proves activation, authenticated IPC,
 System Keychain access, or networking on a real machine.
 
+## Controller extraction checkpoint
+
+The menu now delegates service ownership to `CloudGatewayMacController` in the
+macOS core. The controller has injected auth, inventory, preferences, cache,
+and config services. The app composition layer creates the real adapters, and
+the menu handles presentation, browser opening, dialogs, and extension activation.
+Its snapshots contain no full VPN configs, auth tokens, or secret references.
+
+This checkpoint still hosts the controller in the menu process. The signed
+launch/Keychain proof must select the background launch mechanism before the
+menu moves to frontend IPC. See the [controller plan](../TODO/macos-cli.md).
+Shared Kit/AppCore, the Firebase adapter, and iOS are outside this refactor.
+
+Keep the installed menu app and active VPN running during host-free tests and
+builds. Do not launch another real controller alongside the old app: both would
+own Firebase session recovery. A later planned session will replace the app and
+exercise the menu before adding CLI commands. Test retained profiles first,
+then perform any agreed clean-setup checks. A build does not authorize profile
+deletion, extension replacement, or a reboot.
+
+The app's project defaults are `1.1.0` build `3`. The extension stays at
+`1.0.0` build `2`, matching the installed release. Release build/version
+overrides now apply only to the app. Readiness continues to compare the running
+extension with its embedded counterpart, independently of the app version.
+
+Validation on 2026-10-21: `./scripts/test.sh macos` passed, including 112 macOS
+core/IPC tests, both strict macOS Periphery scans, unsigned arm64 builds, and
+packaging inspection. The shared Kit/AppCore and Firebase adapter tests also
+passed. Two Sol reviews found no remaining confirmed issues. The signed gate
+passed identity discovery but failed when signing the extension with
+`errSecInternalComponent`. Signing-key access still needs resolution before
+the signed gate and runtime checks can finish. Neither the installed app nor
+the running extension was replaced or launched by validation.
+
 ## Validation checkpoint (2026-10-02)
 
 The final no-argument `./scripts/test.sh` run exited successfully with
@@ -97,9 +131,11 @@ opening or refreshing the menu only checks readiness. A missing or invalid
 embedded extension requires reinstalling the app. Existing VPNs are retained
 until an explicit command or macOS replacement changes them.
 
-Increment the macOS project build number for every release that changes the
-extension, keeping app and extension versions consistent. The handshake cannot
-distinguish different binaries deliberately shipped with identical versions.
+Increment the extension's project build number whenever its implementation or
+linked code changes. App-only releases can keep the extension version. The
+handshake cannot distinguish different binaries deliberately shipped with
+identical extension versions. Rebuilding and signing an unchanged extension
+does not guarantee a byte-identical artifact.
 
 The extension belongs at
 `Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.

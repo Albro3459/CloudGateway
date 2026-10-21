@@ -6,20 +6,28 @@ root after the required validation passes:
 
 ```sh
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 3 --publish
+./scripts/macos-release.sh --build 4 --publish
 ```
 
-Choose a build number higher than the project and every previous distributed
-release. `--build` applies to both the app and extension. The marketing version
-comes from the project unless supplied explicitly:
+Choose an app build number higher than `CLOUDGATEWAY_APP_BUILD` in the project
+and every previous distributed app release. `--build` overrides only
+`CLOUDGATEWAY_APP_BUILD`. The app marketing version comes from
+`CLOUDGATEWAY_APP_VERSION` unless `--version` overrides it:
 
 ```sh
-./scripts/macos-release.sh --build 4 --version 1.0.1 --publish
+./scripts/macos-release.sh --build 5 --version 1.1.1 --publish
 ```
 
-Build and version overrides apply to the archive. Project versions and Git
-staging stay unchanged. Release metadata records the source commit and whether
-the working tree had changes. Commit the reviewed release work separately.
+App build and version overrides apply to the archive. The VPN extension keeps
+its explicit `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION` from the project.
+Keep each target's versions consistent across Debug, Release, and DeveloperID.
+Bump the extension's project versions when its code or packaged dependencies
+change. An app-only release can keep extension 1.0.0 (build 2) while releasing
+app 1.1.0 with a higher app build.
+
+Project versions and Git staging stay unchanged. Release metadata records both
+targets' versions, the source commit, and whether the working tree had changes.
+Commit the reviewed release work separately.
 
 ## Signing prerequisites
 
@@ -61,7 +69,7 @@ The script archives with the DeveloperID configuration, exports with manual
 distribution profiles, and validates both bundles before any software upload.
 Checks cover the signing team and Developer ID Application certificate,
 Hardened Runtime, secure timestamps, release entitlements, embedded profiles,
-matching app/extension versions, architecture, and packaged dependencies.
+each bundle's expected version and build, architecture, and packaged dependencies.
 
 It submits an app ZIP to Apple, saves the submission ID and log, and staples the
 accepted ticket to the app. It then builds a signed DMG containing the app and
@@ -78,7 +86,7 @@ metadata, notarization submission records, notary logs, and `SHA256SUMS`.
 To build and inspect artifacts before submitting software:
 
 ```sh
-./scripts/macos-release.sh --prepare-only --build 2
+./scripts/macos-release.sh --prepare-only --build 4
 ```
 
 Continue with the directory printed by that command:
@@ -91,6 +99,13 @@ Each wait lasts at most 20 minutes. If Apple still reports In Progress, use the
 same `--notarize` command later. Existing submission IDs are reused; changed
 artifacts cannot reuse an earlier submission. Partial work remains available
 for diagnosis and retry.
+
+Preparation saves the app's `version` and `build` and the extension's
+`extensionVersion` and `extensionBuild` in `release.json`. Both `--notarize` and
+`--publish-existing` check the exported bundles against those saved versions,
+even if the project versions have since changed. Older metadata without either
+extension field expects the extension to match the app's version and build.
+Partially present or malformed extension fields stop the release.
 
 If an upload is interrupted before its submission ID is saved, the script
 refuses to upload it again automatically. Match the artifact and attempt time

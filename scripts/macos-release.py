@@ -56,15 +56,27 @@ def signing_identity() -> str:
     return matches[0]
 
 
-def release_version(build: int, version: str | None) -> str:
+def project_versions(bundle_id: str, build_setting: str, version_setting: str) -> tuple[str, int]:
     project = (PROJECT / "project.pbxproj").read_text()
-    builds = set(re.findall(r"\bCURRENT_PROJECT_VERSION = (\d+);", project))
-    versions = set(re.findall(r"\bMARKETING_VERSION = ([0-9.]+);", project))
-    if len(builds) != 1 or len(versions) != 1:
-        raise ValueError("App and extension project versions must match before releasing")
-    if build <= int(next(iter(builds))):
-        raise ValueError("--build must exceed the project's current build number; also use a number higher than every previous release")
-    selected = version or next(iter(versions))
+    configurations = [settings for settings in re.findall(r"\bbuildSettings\s*=\s*\{([^{}]*)\}", project)
+                      if re.search(rf"\bPRODUCT_BUNDLE_IDENTIFIER\s*=\s*{re.escape(bundle_id)};", settings)]
+    values = set()
+    for settings in configurations:
+        build = re.search(rf"\b{build_setting}\s*=\s*([0-9]+);", settings)
+        version = re.search(rf"\b{version_setting}\s*=\s*([0-9]+\.[0-9]+\.[0-9]+);", settings)
+        if build is None or version is None or int(build[1]) <= 0:
+            raise ValueError(f"{bundle_id} requires explicit {build_setting} and {version_setting} in every configuration")
+        values.add((version[1], int(build[1])))
+    if len(values) != 1:
+        raise ValueError(f"{bundle_id} project versions must be consistent across configurations")
+    return next(iter(values))
+
+
+def release_version(build: int, version: str | None) -> str:
+    project_version, project_build = project_versions(APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION")
+    if build <= project_build:
+        raise ValueError("--build must exceed the app project's current build number; also use a number higher than every previous release")
+    selected = version or project_version
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected) is None:
         raise ValueError("--version must have the form major.minor.patch")
     return selected
@@ -74,16 +86,30 @@ def verify_app(app: Path) -> None:
     command("python3", str(ROOT / "scripts/verify_macos_build.py"), str(app), "--developer-id")
 
 
-def verify_release_app(app: Path, version: str, build: int) -> None:
+def release_versions(metadata: dict) -> tuple[str, int, str, int]:
+    version, build = metadata.get("version"), metadata.get("build")
+    if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None or type(build) is not int or build <= 0:
+        raise ValueError("Invalid release version metadata")
+    if "extensionVersion" not in metadata and "extensionBuild" not in metadata:
+        return version, build, version, build
+    extension_version, extension_build = metadata.get("extensionVersion"), metadata.get("extensionBuild")
+    if not isinstance(extension_version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", extension_version) is None or type(extension_build) is not int or extension_build <= 0:
+        raise ValueError("Invalid release extension version metadata")
+    return version, build, extension_version, extension_build
+
+
+def verify_release_app(app: Path, version: str, build: int, extension_version: str, extension_build: int) -> None:
     verify_app(app)
-    for bundle in [app, app / "Contents/Library/SystemExtensions" / f"{EXTENSION_ID}.systemextension"]:
+    extension = app / "Contents/Library/SystemExtensions" / f"{EXTENSION_ID}.systemextension"
+    for bundle, expected_version, expected_build in [(app, version, build), (extension, extension_version, extension_build)]:
         info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-        if str(info.get("CFBundleVersion")) != str(build) or info.get("CFBundleShortVersionString") != version:
-            raise ValueError("Exported app and extension do not match the requested release version")
+        if str(info.get("CFBundleVersion")) != str(expected_build) or info.get("CFBundleShortVersionString") != expected_version:
+            raise ValueError(f"Exported {bundle.name} does not match the requested release version {expected_version} ({expected_build})")
 
 
 def prepare(build: int, version: str | None, keychain_profile: str) -> Path:
     version = release_version(build, version)
+    extension_version, extension_build = project_versions(EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION")
     identity = signing_identity()
     # Validate access before spending time archiving; this does not upload software
     command("xcrun", "notarytool", "history", "--keychain-profile", keychain_profile,
@@ -106,18 +132,19 @@ def prepare(build: int, version: str | None, keychain_profile: str) -> Path:
             "-derivedDataPath", str(ROOT / "Frontend/Apple/macOS/.build/DeveloperID"),
             "-archivePath", str(archive), "ARCHS=arm64", f"DEVELOPMENT_TEAM={TEAM_ID}",
             "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={identity}",
-            f"CURRENT_PROJECT_VERSION={build}", f"MARKETING_VERSION={version}",
+            f"CLOUDGATEWAY_APP_BUILD={build}", f"CLOUDGATEWAY_APP_VERSION={version}",
             f"CLOUDGATEWAY_APP_PROFILE={app_profile}", f"CLOUDGATEWAY_TUNNEL_PROFILE={tunnel_profile}",
             "OTHER_CODE_SIGN_FLAGS=--timestamp", "archive", log=directory / "archive.log")
     command("xcodebuild", "-exportArchive", "-archivePath", str(archive),
             "-exportOptionsPlist", str(options_path), "-exportPath", str(directory / "export"),
             log=directory / "export.log")
     app = directory / "export/CloudGateway.app"
-    verify_release_app(app, version, build)
+    verify_release_app(app, version, build, extension_version, extension_build)
     command("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app),
             str(directory / "CloudGateway-notary.zip"))
     write_json(directory / "release.json", {
         "version": version, "build": build, "team": TEAM_ID, "signingIdentity": identity,
+        "extensionVersion": extension_version, "extensionBuild": extension_build,
         "keychainProfile": keychain_profile, "appProfile": app_profile, "tunnelProfile": tunnel_profile,
         "sourceCommit": command("git", "-C", str(ROOT), "rev-parse", "HEAD").strip(),
         "workingTreeDirty": bool(command("git", "-C", str(ROOT), "status", "--porcelain").strip()),
@@ -205,12 +232,10 @@ def finish(directory: Path) -> Path:
     identity = metadata["signingIdentity"]
     if metadata.get("team") != TEAM_ID or re.fullmatch(r"[A-Fa-f0-9]{40}", identity) is None:
         raise ValueError("Release signing metadata does not match CloudGateway")
-    version, build = metadata["version"], metadata["build"]
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(version)) is None or not isinstance(build, int) or build <= 0:
-        raise ValueError("Invalid release version metadata")
+    version, build, extension_version, extension_build = release_versions(metadata)
     app = directory / "export/CloudGateway.app"
     profile = metadata["keychainProfile"]
-    verify_release_app(app, version, build)
+    verify_release_app(app, version, build, extension_version, extension_build)
     app_ticket = directory / "app-stapled.json"
     if not app_ticket.exists():
         notarize_artifact(directory / "CloudGateway-notary.zip", directory, "app", profile)
@@ -254,13 +279,11 @@ def finish(directory: Path) -> Path:
 
 def verify_publication(directory: Path) -> tuple[dict, Path]:
     metadata = json.loads((directory / "release.json").read_text())
-    version, build = metadata["version"], metadata["build"]
+    version, build, extension_version, extension_build = release_versions(metadata)
     if metadata.get("team") != TEAM_ID or re.fullmatch(
         r"[A-Fa-f0-9]{40}", str(metadata.get("signingIdentity", ""))
     ) is None:
         raise ValueError("Release signing metadata does not match CloudGateway")
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(version)) is None or type(build) is not int or build <= 0:
-        raise ValueError("Invalid release version metadata")
     if re.fullmatch(r"[a-f0-9]{40}", str(metadata.get("sourceCommit", ""))) is None:
         raise ValueError("Release metadata must record the exact source commit")
     app = directory / "export/CloudGateway.app"
@@ -268,7 +291,7 @@ def verify_publication(directory: Path) -> tuple[dict, Path]:
     checksum = directory / "SHA256SUMS"
     if checksum.read_text() != f"{sha256(dmg)}  {dmg.name}\n":
         raise ValueError("SHA256SUMS does not match the finished DMG; publication will not rewrite it")
-    verify_release_app(app, version, build)
+    verify_release_app(app, version, build, extension_version, extension_build)
     command("codesign", "--verify", "--strict", str(dmg))
     signature = command("codesign", "--display", "--verbose=4", str(dmg), stderr_output=True)
     for expected in [f"TeamIdentifier={TEAM_ID}", f"Identifier={APP_ID}.dmg"]:
@@ -417,8 +440,8 @@ def publish(directory: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", type=int, help="build number higher than the project and every previous release")
-    parser.add_argument("--version", help="marketing version override, for example 1.0.1")
+    parser.add_argument("--build", type=int, help="app build number higher than the app project and every previous app release")
+    parser.add_argument("--version", help="app marketing version override, for example 1.1.1")
     parser.add_argument("--prepare-only", action="store_true", help="archive and verify without uploading to Apple")
     parser.add_argument("--notarize", type=Path, help="notarize or resume an existing prepared release directory")
     parser.add_argument("--recover-submission", help="record a confirmed app=<id> or dmg=<id> after an interrupted upload")

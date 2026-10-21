@@ -3,7 +3,6 @@
 import importlib.util
 import json
 import plistlib
-import re
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +16,30 @@ release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
 SUBMISSION_ID = "00000000-0000-0000-0000-000000000001"
+INVALID_EXTENSION_METADATA = [
+    {"extensionVersion": "1.0.0"},
+    {"extensionBuild": 2},
+    {"extensionVersion": None, "extensionBuild": None},
+    {"extensionVersion": "1.0", "extensionBuild": 2},
+    {"extensionVersion": "../1.0.0", "extensionBuild": 2},
+    {"extensionVersion": 1, "extensionBuild": 2},
+    {"extensionVersion": ["1.0.0"], "extensionBuild": 2},
+    {"extensionVersion": "1.0.0", "extensionBuild": None},
+    {"extensionVersion": "1.0.0", "extensionBuild": "2"},
+    {"extensionVersion": "1.0.0", "extensionBuild": True},
+    {"extensionVersion": "1.0.0", "extensionBuild": 2.0},
+    {"extensionVersion": "1.0.0", "extensionBuild": 0},
+    {"extensionVersion": "1.0.0", "extensionBuild": -1},
+]
+
+
+def write_app(app: Path, version: str, build: int, extension_version: str, extension_build: int) -> None:
+    extension = app / "Contents/Library/SystemExtensions" / f"{release.EXTENSION_ID}.systemextension"
+    for bundle, bundle_version, bundle_build in [(app, version, build), (extension, extension_version, extension_build)]:
+        (bundle / "Contents").mkdir(parents=True, exist_ok=True)
+        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
+        }))
 
 
 class ReleaseTests(unittest.TestCase):
@@ -26,6 +49,21 @@ class ReleaseTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
         self.artifact = self.directory / "app.zip"
         self.artifact.write_bytes(b"signed app archive")
+        self.project = self.directory / "CloudGateway.xcodeproj"
+        self.project.mkdir()
+        self.project_file = self.project / "project.pbxproj"
+        self.project_file.write_text("\n".join(
+            f"buildSettings = {{PRODUCT_BUNDLE_IDENTIFIER = {bundle_id}; {settings}}};"
+            for bundle_id, settings in [
+                (release.APP_ID, 'CLOUDGATEWAY_APP_BUILD = 3; CLOUDGATEWAY_APP_VERSION = 1.1.0; '
+                 'CURRENT_PROJECT_VERSION = "$(CLOUDGATEWAY_APP_BUILD)"; '
+                 'MARKETING_VERSION = "$(CLOUDGATEWAY_APP_VERSION)";'),
+                (release.EXTENSION_ID, "CURRENT_PROJECT_VERSION = 2; MARKETING_VERSION = 1.0.0;"),
+            ] for _ in range(3)
+        ))
+        patcher = mock.patch.object(release, "PROJECT", self.project)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_rejected_notarization_retains_id_and_fetches_log(self) -> None:
         def command(*args: str, **kwargs: object) -> str:
@@ -140,14 +178,83 @@ class ReleaseTests(unittest.TestCase):
             submit.assert_not_called()
 
     def test_version_selection_rejects_existing_build_and_malformed_version(self) -> None:
-        build = int(next(iter(re.findall(
-            r"\bCURRENT_PROJECT_VERSION = (\d+);", (release.PROJECT / "project.pbxproj").read_text()
-        ))))
-        with self.assertRaisesRegex(ValueError, "must exceed"):
-            release.release_version(build, None)
+        for build in [2, 3]:
+            with self.subTest(build=build), self.assertRaisesRegex(ValueError, "must exceed"):
+                release.release_version(build, None)
         with self.assertRaisesRegex(ValueError, "major.minor.patch"):
-            release.release_version(build + 1, "../unexpected")
-        self.assertEqual(release.release_version(build + 1, "1.2.3"), "1.2.3")
+            release.release_version(4, "../unexpected")
+        self.assertEqual(release.release_version(4, "1.2.3"), "1.2.3")
+        self.assertEqual(release.release_version(4, None), "1.1.0")
+
+    def test_project_versions_require_consistent_values_in_every_configuration(self) -> None:
+        original = self.project_file.read_text()
+        for setting, replacement, bundle_id, build_setting, version_setting in [
+            ("CLOUDGATEWAY_APP_BUILD = 3;", "CLOUDGATEWAY_APP_BUILD = 4;",
+             release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
+            ("CLOUDGATEWAY_APP_VERSION = 1.1.0;", "CLOUDGATEWAY_APP_VERSION = 1.2.0;",
+             release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
+            ("CLOUDGATEWAY_APP_BUILD = 3;", "",
+             release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
+            ("CLOUDGATEWAY_APP_VERSION = 1.1.0;", "CLOUDGATEWAY_APP_VERSION = 1.1;",
+             release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
+            ("CURRENT_PROJECT_VERSION = 2;", "CURRENT_PROJECT_VERSION = 3;",
+             release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"),
+            ("MARKETING_VERSION = 1.0.0;", "",
+             release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"),
+        ]:
+            with self.subTest(setting=setting, replacement=replacement):
+                self.project_file.write_text(original.replace(setting, replacement, 1))
+                with self.assertRaises(ValueError):
+                    release.project_versions(bundle_id, build_setting, version_setting)
+
+    def test_prepare_overrides_only_app_versions_and_snapshots_extension(self) -> None:
+        def command(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("xcodebuild", "-exportArchive"):
+                app = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
+                write_app(app, "1.2.0", 4, "1.0.0", 2)
+            return ""
+
+        with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
+                mock.patch.object(release, "signing_identity", return_value="A" * 40), \
+                mock.patch.object(release, "command", side_effect=command) as commands, \
+                mock.patch.object(release, "verify_app"):
+            directory = release.prepare(4, "1.2.0", "profile")
+        archive = next(call.args for call in commands.call_args_list if "archive" in call.args)
+        self.assertIn("CLOUDGATEWAY_APP_BUILD=4", archive)
+        self.assertIn("CLOUDGATEWAY_APP_VERSION=1.2.0", archive)
+        self.assertFalse(any(arg.startswith(("CURRENT_PROJECT_VERSION=", "MARKETING_VERSION=")) for arg in archive))
+        metadata = json.loads((directory / "release.json").read_text())
+        self.assertEqual(release.release_versions(metadata), ("1.2.0", 4, "1.0.0", 2))
+
+    def test_prepare_rejects_an_export_with_wrong_extension_version_before_packaging(self) -> None:
+        def command(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("xcodebuild", "-exportArchive"):
+                app = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
+                write_app(app, "1.1.0", 4, "1.1.0", 4)
+            return ""
+
+        with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
+                mock.patch.object(release, "signing_identity", return_value="A" * 40), \
+                mock.patch.object(release, "command", side_effect=command) as commands, \
+                mock.patch.object(release, "verify_app"):
+            with self.assertRaisesRegex(ValueError, "systemextension.*requested release version"):
+                release.prepare(4, None, "profile")
+        self.assertFalse(any(call.args[0] == "ditto" for call in commands.call_args_list))
+        self.assertFalse(list(self.directory.glob("releases/*/release.json")))
+
+    def test_invalid_extension_metadata_stops_resume_before_commands(self) -> None:
+        for extension_metadata in INVALID_EXTENSION_METADATA:
+            with self.subTest(metadata=extension_metadata):
+                release.write_json(self.directory / "release.json", {
+                    "version": "1.1.0", "build": 4, "team": release.TEAM_ID,
+                    "signingIdentity": "A" * 40, "keychainProfile": "profile", **extension_metadata,
+                })
+                with mock.patch.object(release, "command") as command, \
+                        mock.patch.object(release, "notarize_artifact") as notarize:
+                    with self.assertRaisesRegex(ValueError, "extension version metadata"):
+                        release.finish(self.directory)
+                    command.assert_not_called()
+                    notarize.assert_not_called()
 
 
 class PublicationTests(unittest.TestCase):
@@ -168,6 +275,7 @@ class PublicationTests(unittest.TestCase):
             "signingIdentity": "A" * 40, "sourceCommit": self.source,
             "workingTreeDirty": True,
         })
+        write_app(self.directory / "export/CloudGateway.app", "1.0.0", 2, "1.0.0", 2)
         for label, artifact in [("app", self.zip), ("dmg", self.dmg)]:
             release.write_json(self.directory / f"notary-{label}-submission.json", {
                 "id": SUBMISSION_ID, "sha256": release.sha256(artifact),
@@ -185,7 +293,7 @@ class PublicationTests(unittest.TestCase):
         self.commit_exists = True
         self.fail_upload_once = False
         self.hidden_draft_reads = 0
-        patcher = mock.patch.object(release, "verify_release_app")
+        patcher = mock.patch.object(release, "verify_app")
         self.verify_app = patcher.start()
         self.addCleanup(patcher.stop)
         patcher = mock.patch.object(release, "command", side_effect=self.command)
@@ -288,6 +396,77 @@ class PublicationTests(unittest.TestCase):
         notes = (self.directory / "github-release-notes.md").read_text()
         self.assertIn("local changes when archived: true", notes)
         self.assertEqual([asset["name"] for asset in self.assets], [self.dmg.name, "SHA256SUMS"])
+
+    def test_finish_and_publication_resume_with_snapshotted_extension_versions(self) -> None:
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update({"extensionVersion": "0.9.0", "extensionBuild": 1, "keychainProfile": "profile"})
+        release.write_json(metadata_path, metadata)
+        write_app(self.directory / "export/CloudGateway.app", "1.0.0", 2, "0.9.0", 1)
+        with mock.patch.object(release, "project_versions", side_effect=AssertionError("must use release snapshot")), \
+                mock.patch.object(release, "notarize_artifact") as notarize:
+            self.assertEqual(release.finish(self.directory), self.dmg)
+            release.publish(self.directory)
+            self.calls = []
+            release.publish(self.directory)
+            notarize.assert_not_called()
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual(json.loads(metadata_path.read_text()), metadata)
+
+    def test_resume_checks_app_and_extension_versions_independently(self) -> None:
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update({"extensionVersion": "0.9.0", "extensionBuild": 1, "keychainProfile": "profile"})
+        release.write_json(metadata_path, metadata)
+        for versions in [
+            ("1.1.0", 2, "0.9.0", 1),
+            ("1.0.0", 3, "0.9.0", 1),
+            ("1.0.0", 2, "1.0.0", 1),
+            ("1.0.0", 2, "0.9.0", 2),
+        ]:
+            write_app(self.directory / "export/CloudGateway.app", *versions)
+            for resume in [release.finish, release.publish]:
+                with self.subTest(versions=versions, resume=resume.__name__), \
+                        mock.patch.object(release, "notarize_artifact") as notarize:
+                    self.calls = []
+                    with self.assertRaisesRegex(ValueError, "requested release version"):
+                        resume(self.directory)
+                    self.assertEqual(self.calls, [])
+                    notarize.assert_not_called()
+
+    def test_legacy_metadata_requires_the_extension_to_match_the_app(self) -> None:
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["keychainProfile"] = "profile"
+        release.write_json(metadata_path, metadata)
+        self.assertEqual(release.finish(self.directory), self.dmg)
+        release.verify_publication(self.directory)
+        self.assertEqual(release.release_versions(metadata), ("1.0.0", 2, "1.0.0", 2))
+        write_app(self.directory / "export/CloudGateway.app", "1.0.0", 2, "0.9.0", 1)
+        for resume in [release.finish, release.publish]:
+            with self.subTest(resume=resume.__name__), self.assertRaisesRegex(ValueError, "systemextension"):
+                resume(self.directory)
+
+    def test_invalid_extension_metadata_stops_publication_before_commands(self) -> None:
+        metadata_path = self.directory / "release.json"
+        original = json.loads(metadata_path.read_text())
+        for extension_metadata in INVALID_EXTENSION_METADATA:
+            with self.subTest(metadata=extension_metadata):
+                release.write_json(metadata_path, {**original, **extension_metadata})
+                with self.assertRaisesRegex(ValueError, "extension version metadata"):
+                    release.publish(self.directory)
+                self.assertEqual(self.calls, [])
+
+    def test_invalid_app_metadata_stops_finish_and_publication(self) -> None:
+        metadata_path = self.directory / "release.json"
+        original = json.loads(metadata_path.read_text())
+        for version, build in [(None, 2), ("1.0", 2), ("1.0.0", True), ("1.0.0", "2"), ("1.0.0", 0)]:
+            release.write_json(metadata_path, {**original, "version": version, "build": build})
+            for resume in [release.finish, release.publish]:
+                with self.subTest(version=version, build=build, resume=resume.__name__):
+                    with self.assertRaisesRegex(ValueError, "Invalid release version metadata"):
+                        resume(self.directory)
+                    self.assertEqual(self.calls, [])
 
     def test_new_build_publishes_only_after_finish(self) -> None:
         with mock.patch("sys.argv", [str(SCRIPT), "--build", "3", "--publish"]), \
