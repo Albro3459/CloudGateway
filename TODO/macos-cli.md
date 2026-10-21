@@ -474,11 +474,15 @@ state. None is an automatic fallback authorized by this plan.
 
 On 2026-10-21, `./scripts/test.sh macos` passed with 112 macOS core/IPC tests,
 both strict macOS dead-code scans, and the unsigned arm64 build/packaging checks.
-Two Sol review rounds finished without remaining confirmed issues. The signed
-gate reached `codesign` but failed with `errSecInternalComponent`. Resolve
-signing-key access and rerun it before runtime testing. No new app/controller
-was launched, and the installed app, profiles, Firebase session, and VPN were
-left intact. This does not establish background-process or SSH behavior.
+Two Sol review rounds finished without remaining confirmed issues. The user
+also passed `./scripts/test.sh macos --signed` over SSH after unlocking the login
+Keychain in that session. The agent independently verified the resulting signed
+Release bundle. Its separate remote session had reported the Keychain locked
+and signing failed with `errSecInteractionNotAllowed`, surfaced by `codesign`
+as `errSecInternalComponent`. Account for the security session when diagnosing
+credential access. No new app/controller was launched, and the installed app,
+profiles, Firebase session, and VPN were left intact. This does not establish
+background-controller launch or Firebase Data Protection Keychain behavior.
 
 The development machine currently runs the existing menu app and an active
 VPN. Keep that installation, process, session, and profiles intact during
@@ -550,9 +554,9 @@ permission to remove every account's profiles or cached data.
 - [ ] Add targeted host-free coverage for parsing/output, account and role
   isolation, offline policy, login cancellation, singleton races, command
   ownership, idempotency, switching, and IPC validation
-- [ ] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
+- [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
-- [ ] Run `./scripts/test.sh macos --signed` for signing/profile checks
+- [x] Run `./scripts/test.sh macos --signed` for signing/profile checks
 - [ ] Manually verify the signed runtime matrix: Terminal, local agent,
   noninteractive SSH, reboot before desktop login, desktop plus SSH, final SSH
   disconnect, lock/logout, sleep/wake, network loss, account switch, and app update

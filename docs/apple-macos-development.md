@@ -46,11 +46,19 @@ extension with its embedded counterpart, independently of the app version.
 Validation on 2026-10-21: `./scripts/test.sh macos` passed, including 112 macOS
 core/IPC tests, both strict macOS Periphery scans, unsigned arm64 builds, and
 packaging inspection. The shared Kit/AppCore and Firebase adapter tests also
-passed. Two Sol reviews found no remaining confirmed issues. The signed gate
-passed identity discovery but failed when signing the extension with
-`errSecInternalComponent`. Signing-key access still needs resolution before
-the signed gate and runtime checks can finish. Neither the installed app nor
-the running extension was replaced or launched by validation.
+passed. Two Sol reviews found no remaining confirmed issues. The user then ran
+`./scripts/test.sh macos --signed` successfully over SSH after unlocking the
+login Keychain in that same session. The agent independently verified the
+resulting Release bundle's packaging, signatures, entitlements, profiles, and
+Hardened Runtime.
+
+The agent's separate remote security session reported the login Keychain locked,
+and its signing logs showed `errSecInteractionNotAllowed` behind the initial
+`errSecInternalComponent` failure. Treat Keychain unlock/access as dependent on
+the execution session. Certificate discovery alone does not prove private-key
+access. This signing result does not establish Firebase Data Protection
+Keychain access in the future controller's launch context. Neither the installed
+app nor the running extension was replaced or launched by validation.
 
 ## Validation checkpoint (2026-10-02)
 
