@@ -18,7 +18,7 @@ compilation and packaging. Signed builds also inspect signatures, embedded
 profiles, and entitlements. Neither proves activation, authenticated IPC,
 System Keychain access, or networking on a real machine.
 
-## Controller extraction checkpoint
+## Background controller checkpoint
 
 The menu now delegates service ownership to `CloudGatewayMacController` in the
 macOS core. The controller has injected auth, inventory, preferences, cache,
@@ -26,10 +26,29 @@ and config services. The app composition layer creates the real adapters, and
 the menu handles presentation, browser opening, dialogs, and extension activation.
 Its snapshots contain no full VPN configs, auth tokens, or secret references.
 
-This checkpoint still hosts the controller in the menu process. The signed
-launch/Keychain proof must select the background launch mechanism before the
-menu moves to frontend IPC. See the [controller plan](../TODO/macos-cli.md).
+The menu now communicates with a separate controller through authenticated XPC.
+The private `--controller` entry point starts Foundation event processing without
+creating `NSApplication`. It acquires the per-user ownership lock before the
+real adapters initialize Firebase. Both sides require the same non-root UID,
+exact app signing identity/team, protocol version, and app version/build.
+Snapshots exclude secrets. Add Client retains its account/session fencing.
 Shared Kit/AppCore, the Firebase adapter, and iOS are outside this refactor.
+
+The launch candidate uses a launchd Mach service in `user/<uid>`. Registration
+requires the canonical `/Applications/CloudGateway.app` executable, with a
+private generated plist and stable ownership lock under
+`~/Library/Application Support/CloudGateway/macOS`. Startup waits are bounded.
+The menu polls snapshots and reconnects after transport loss. It never starts
+another Firebase owner as a fallback. Incompatible app builds show a recovery
+message instead of sharing state. Close the menu, let accepted work finish and
+the 60-second idle grace period expire, then reopen the installed app.
+
+The controller stays alive while requests or core work are pending. After 60
+idle seconds it exits; launchd can start it on demand again. It does not replay
+commands across controller restarts. The signed pre-desktop SSH/Keychain proof
+still gates the CLI. This implementation is a launch candidate, not proof that
+every macOS security session permits its auth and VPN APIs. See the
+[controller plan](../TODO/macos-cli.md).
 
 Keep the installed menu app and active VPN running during host-free tests and
 builds. Do not launch another real controller alongside the old app: both would
@@ -38,12 +57,19 @@ exercise the menu before adding CLI commands. Test retained profiles first,
 then perform any agreed clean-setup checks. A build does not authorize profile
 deletion, extension replacement, or a reboot.
 
-The app's project defaults are `1.1.0` build `3`. The extension stays at
+The background checkpoint passed `./scripts/test.sh macos` on 2026-10-21:
+139 macOS host-free tests, both strict Periphery scans, unsigned arm64
+app/extension builds, and packaging inspection. Shared Kit/AppCore and Firebase
+adapter tests passed. Main and Secure Codex accounts split implementation and
+review, with no remaining findings after fixes. Signing and live runtime checks
+were skipped as requested. The installed app and active VPN stayed untouched.
+
+The app's project defaults are `1.1.0` build `4`. The extension stays at
 `1.0.0` build `2`, matching the installed release. Release build/version
 overrides now apply only to the app. Readiness continues to compare the running
 extension with its embedded counterpart, independently of the app version.
 
-Validation on 2026-10-21: `./scripts/test.sh macos` passed, including 112 macOS
+Earlier extraction validation on 2026-10-21: `./scripts/test.sh macos` passed, including 112 macOS
 core/IPC tests, both strict macOS Periphery scans, unsigned arm64 builds, and
 packaging inspection. The shared Kit/AppCore and Firebase adapter tests also
 passed. Two Sol reviews found no remaining confirmed issues. The user then ran

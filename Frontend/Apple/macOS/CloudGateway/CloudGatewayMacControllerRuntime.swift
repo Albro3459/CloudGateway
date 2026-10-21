@@ -11,6 +11,11 @@ extension CloudGatewayFirebaseAuthAdapter: @retroactive CloudGatewayMacControlle
 
 @MainActor
 final class CloudGatewayMacControllerRuntime {
+    static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CloudGateway/macOS", isDirectory: true)
+    }
+
     let controller: CloudGatewayMacController
     private let profiles: CloudGatewayMacVPNProfileAdapter
 
@@ -27,9 +32,7 @@ final class CloudGatewayMacControllerRuntime {
         database.settings = settings
         let auth = CloudGatewayFirebaseAuthAdapter()
         let inventory = CloudGatewayMacInventoryService(auth: auth, database: database)
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CloudGateway/macOS", isDirectory: true)
-        let cache = CloudGatewayMacAccountCache(directory: directory)
+        let cache = CloudGatewayMacAccountCache(directory: Self.directory)
         let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
         let secrets: CloudGatewayMacXPCSecretClient
         do { secrets = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier) }

@@ -163,6 +163,19 @@ After creating a draft, the command briefly retries release-list reads while
 GitHub makes it visible. If visibility is still delayed, rerun the same command
 to resume the existing draft.
 
+The app also carries the headless controller entry point. It uses the same
+executable, resources, signing identity, and provisioning profile. There is no
+separate controller binary to sign or copy out of the bundle. The CLI surface
+and its symlink installer are still pending.
+
+Install at `/Applications/CloudGateway.app`, the controller's fixed launch path.
+For the first controller migration, quit the old menu before launching the new
+app so two Firebase owners cannot overlap. For later updates, close the menu
+and allow accepted work plus the controller's 60-second idle grace period to
+finish. A version mismatch asks the user to wait and reopen the installed app.
+Build/signature checks alone do not prove background launch or pre-desktop SSH
+Keychain access. Run those checks in the planned runtime session.
+
 The release directory saves `publication.json` with the release and DMG URLs.
 The command prints both URLs. To make a later build available on the website,
 update the version, build, and exact DMG URL in

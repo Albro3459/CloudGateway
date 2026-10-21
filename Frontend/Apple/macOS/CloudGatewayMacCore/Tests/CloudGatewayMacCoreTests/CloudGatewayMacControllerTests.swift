@@ -72,13 +72,13 @@ import Testing
     try await fixture.start(ready: false)
     defer { fixture.controller.shutdown() }
     #expect(fixture.snapshot.groups.flatMap(\.rows).first?.isEnabled == true)
-    fixture.controller.connectClient(identifier: fixture.config.identifier)
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier))
     #expect(fixture.snapshot.canCreateClient)
     #expect(await fixture.secrets.installCount == 0)
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
 
     fixture.controller.setSetupState(.ready)
-    fixture.controller.connectClient(identifier: fixture.config.identifier)
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier))
     try await controllerWaitUntil { fixture.snapshot.lastSelectedIdentifier == fixture.config.identifier }
     #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
 }
@@ -169,6 +169,9 @@ import Testing
         await frontendLifetime.arriveAndWait()
     }
     try await controllerWaitUntil { await authorization.entered }
+    #expect(fixture.controller.hasPendingWork)
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier))
+    #expect(!fixture.controller.turnOff())
     #expect(notifications > 0)
     fixture.controller.onChange = nil
     frontend.cancel()
@@ -181,6 +184,7 @@ import Testing
     #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
     #expect(try await fixture.cache.load(accountId: "user-a").selectedIdentifier == fixture.config.identifier)
     #expect(fixture.snapshot.errorMessage == nil)
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
 }
 
 @Test @MainActor func macControllerAcceptedCreationSurvivesFrontendCancellationAndObserverRemoval() async throws {
@@ -211,6 +215,18 @@ import Testing
     #expect(fixture.snapshot.groups.flatMap(\.rows).map(\.identifier) == ["user-a/region/created"])
     #expect(fixture.snapshot.errorMessage == nil)
     #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
+}
+
+@Test @MainActor func macControllerReportsConfirmedCreationWhenInventoryRefreshFails() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let context = try #require(fixture.controller.clientCreationContext())
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
+    #expect(fixture.controller.createClient(regionId: "region", clientName: "Work Mac", context: context))
+    try await controllerWaitUntil { fixture.snapshot.canCreateClient }
+    #expect(fixture.inventory.createdNames == ["Work Mac"])
+    #expect(fixture.snapshot.errorMessage == "Client was created, but the client list could not refresh. Choose Refresh before trying again")
 }
 
 @Test @MainActor func macControllerKeepsActiveTunnelDuringDelayedAndFailedProfileReads() async throws {
@@ -436,6 +452,7 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     var accessError: (any Error)?
     var regionsError: (any Error)?
     var createError: (any Error)?
+    var fetchError: (any Error)?
     var regionsGate: MacControllerGate?
     var createGate: MacControllerGate?
     private(set) var accessCount = 0
@@ -452,6 +469,7 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
 
     func fetchOptions(for user: AuthenticatedUser, role _: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption] {
         fetchCount += 1
+        if let fetchError { throw fetchError }
         return options.filter { $0.client.ownerUid == user.uid }
     }
 

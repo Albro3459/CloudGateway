@@ -40,11 +40,21 @@ name while availability loads. Create becomes available once a region has room.
 Account and admin management stay on the site or mobile app. There is no native
 provider login UI.
 
-This extraction checkpoint hosts the controller in the menu process. The
-independent background process, authenticated frontend IPC, and CLI remain
-pending the signed launch/Keychain proof in the plan. Closing a frontend callback
-does not cancel controller work, but exiting this process still ends its owner.
-Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged.
+The menu uses authenticated, versioned XPC to reach a separate controller mode
+of the same bundled executable. The controller acquires per-user ownership
+before initializing Firebase. It owns accepted commands after the menu closes.
+Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged. The CLI
+surface and signed launch/Keychain runtime proof remain pending.
+
+Controller startup requires `/Applications/CloudGateway.app`. The menu registers
+an on-demand launchd job in `user/<uid>`, with its private plist and ownership
+locks under `~/Library/Application Support/CloudGateway/macOS`. Development and
+mounted DMG copies cannot register themselves under the production service name.
+The controller exits after 60 seconds without requests or pending work. Menu
+polling keeps it available while the frontend is open. Reopening the menu starts
+it again without replaying a VPN command. An app/build mismatch requires closing
+the menu, allowing pending work and the idle grace period to finish, then
+reopening the installed app. Never run the old in-process owner alongside it.
 
 The tunnel links Kit, the existing WireGuard fork/Go bridge, and necessary Apple
 frameworks. It has no AppCore, Firebase, Google Sign-In, AppKit, SwiftUI, UIKit,
@@ -109,8 +119,8 @@ the build number when releasing extension changes.
 The menu, browser auth, account-scoped inventory, packet provider, and
 authenticated IPC are implemented. Automated validation covers host-free
 workflows, race handling, dead code, compilation, and bundle packaging.
-Signed activation, live Keychain/IPC, and VPN networking remain pending until
-development profiles and local macOS approval are available.
+The new background controller still needs signed runtime checks for activation,
+live Keychain/XPC access, VPN networking, and pre-desktop SSH use.
 
 Both Apple projects build the existing `../wireguard-apple` submodule. Its
 startup checks fail when the backend cannot start or network settings remain

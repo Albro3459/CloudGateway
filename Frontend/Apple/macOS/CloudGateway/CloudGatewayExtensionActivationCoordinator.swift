@@ -1,4 +1,5 @@
 import CloudGatewayMacCore
+import CloudGatewayMacControllerIPC
 import CloudGatewayMacIPC
 import Foundation
 import SystemExtensions
@@ -6,11 +7,12 @@ import SystemExtensions
 final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtensionRequestDelegate {
     private static let extensionIdentifier = "com.gocloudlaunch.gateway.tunnel.macos"
     var onStatusChange: ((CloudGatewayMacSetupState) -> Void)?
+    var onActivationComplete: (() -> Void)?
     private(set) var state = CloudGatewayMacSetupState.required {
         didSet { onStatusChange?(state) }
     }
     private var request: OSSystemExtensionRequest?
-    private var readinessTask: Task<Void, Never>?
+    private var hasLocalActivationFailure = false
 
     private var bundledVersion: CloudGatewayMacExtensionVersion? {
         let url = Bundle.main.bundleURL.appendingPathComponent(
@@ -20,29 +22,36 @@ final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtens
         return CloudGatewayMacExtensionVersion(infoDictionary: info)
     }
 
-    func refreshReadiness() {
-        guard request == nil, readinessTask == nil, state.canRefreshReadiness else { return }
-        guard let expectedVersion = bundledVersion else {
-            state = .invalidBundle
-            return
+    func updateReadiness(_ readiness: CloudGatewayMacControllerView.SetupState) {
+        guard request == nil, state.canRefreshReadiness else { return }
+        guard !hasLocalActivationFailure || readiness == .ready else { return }
+        hasLocalActivationFailure = false
+        let next: CloudGatewayMacSetupState
+        switch readiness {
+        case .required: next = .required
+        case .updateRequired: next = .updateRequired
+        case .invalidBundle: next = .invalidBundle
+        case .activating: next = .activating
+        case .awaitingApproval: next = .awaitingApproval
+        case .awaitingRestart: next = .awaitingRestart
+        case .checkingConnection: next = .checkingConnection
+        case .ready: next = .ready
+        case .failed(let code): next = .failed(code: code)
+        case .unavailable: next = .unavailable
         }
+        guard state != next else { return }
+        state = next
+    }
+
+    func resetActivationFailure() {
+        guard hasLocalActivationFailure else { return }
+        hasLocalActivationFailure = false
         state = .checkingConnection
-        readinessTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
-                let client = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier)
-                let runningVersion = try await client.ping()
-                state = .readiness(runningVersion: runningVersion, bundledVersion: expectedVersion)
-            } catch {
-                state = .required
-            }
-            readinessTask = nil
-        }
     }
 
     func activate() {
         guard request == nil, state.canActivate else { return }
+        hasLocalActivationFailure = false
         guard bundledVersion != nil else {
             state = .invalidBundle
             return
@@ -79,7 +88,8 @@ final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtens
         self.request = nil
         switch result {
         case .completed:
-            refreshReadiness()
+            state = .checkingConnection
+            onActivationComplete?()
         case .willCompleteAfterReboot:
             state = .awaitingRestart
         @unknown default:
@@ -90,6 +100,7 @@ final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtens
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         guard self.request === request else { return }
         self.request = nil
+        hasLocalActivationFailure = true
         state = .failed(code: (error as NSError).code)
     }
 }

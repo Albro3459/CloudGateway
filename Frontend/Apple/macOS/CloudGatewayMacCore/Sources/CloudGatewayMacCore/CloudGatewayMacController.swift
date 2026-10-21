@@ -89,6 +89,17 @@ public final class CloudGatewayMacController {
         notifyChange()
     }
 
+    public var hasPendingWork: Bool {
+        if inventoryTask != nil || restorationTask != nil || commandTask != nil
+            || cancellationTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
+            return true
+        }
+        switch browser.state {
+        case .requestingCode, .waitingForApproval, .exchangingToken: return true
+        default: return false
+        }
+    }
+
     public func snapshot(setupState: CloudGatewayMacSetupState) -> CloudGatewayMacControllerSnapshot {
         let state = presentation(setupState: setupState)
         let groups = state.groups
@@ -411,10 +422,11 @@ public final class CloudGatewayMacController {
         onChange?()
     }
 
-    public func connectClient(identifier: String) {
+    @discardableResult
+    public func connectClient(identifier: String) -> Bool {
         guard isStarted, !isShuttingDown, setupState == .ready, let account = user,
               presentation(setupState: setupState).groups.flatMap(\.rows).contains(where: { $0.identifier == identifier && $0.isEnabled }),
-              commandTask == nil, inventoryTask == nil, auth.currentUser?.uid == account.uid else { return }
+              commandTask == nil, inventoryTask == nil, auth.currentUser?.uid == account.uid else { return false }
         let epoch = sessionEpoch
         let token = sessionFence.currentToken
         let option = options.first { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
@@ -469,6 +481,7 @@ public final class CloudGatewayMacController {
             }
         }
         notifyChange()
+        return true
     }
 
     public func clientCreationContext() -> CloudGatewayMacClientCreationContext? {
@@ -525,7 +538,7 @@ public final class CloudGatewayMacController {
         commandTask = Task { [weak self] in
             guard let self else { return }
             defer { if sessionEpoch == epoch { commandTask = nil; notifyChange() } }
-            var createdClientName: String?
+            var clientWasCreated = false
             var creationAttempted = false
             do {
                 try requireCurrent(epoch, token: token)
@@ -534,11 +547,11 @@ public final class CloudGatewayMacController {
                 try await observeRole(role, accountId: account.uid)
                 try requireCurrent(epoch, token: token)
                 creationAttempted = true
-                let created = try await inventory.createClient(
+                _ = try await inventory.createClient(
                     regionId: regionId, clientName: clientName, for: account
                 )
                 try requireCurrent(epoch, token: token)
-                createdClientName = created
+                clientWasCreated = true
 
                 let fetched = try await inventory.fetchOptions(for: account, role: role)
                 try requireCurrent(epoch, token: token)
@@ -562,8 +575,8 @@ public final class CloudGatewayMacController {
                 errorMessage = message
             } catch {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                if let createdClientName {
-                    errorMessage = "\(createdClientName) was created, but the client list could not refresh. Choose Refresh before trying again"
+                if clientWasCreated {
+                    errorMessage = "Client was created, but the client list could not refresh. Choose Refresh before trying again"
                 } else if creationAttempted {
                     errorMessage = "Could not confirm whether the client was created. Refresh the client list before trying again"
                 } else {
@@ -575,8 +588,9 @@ public final class CloudGatewayMacController {
         return true
     }
 
-    public func turnOff() {
-        guard isStarted, !isShuttingDown, presentation(setupState: setupState).canTurnOff, commandTask == nil else { return }
+    @discardableResult
+    public func turnOff() -> Bool {
+        guard isStarted, !isShuttingDown, presentation(setupState: setupState).canTurnOff, commandTask == nil else { return false }
         let epoch = sessionEpoch
         let token = sessionFence.currentToken
         commandTask = Task { [weak self] in
@@ -594,6 +608,7 @@ public final class CloudGatewayMacController {
             }
         }
         notifyChange()
+        return true
     }
 
     public func signIn() {

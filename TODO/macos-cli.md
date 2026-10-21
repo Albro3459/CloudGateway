@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **macOS service extraction built and reviewed, background launch pending signed runtime proof**.
+Status: **background controller and menu IPC built and reviewed, signed runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -490,9 +490,28 @@ build-only validation. Plan the quit/replacement/profile cleanup checkpoint
 with the user after the new code is built and reviewed. Do not treat this as
 permission to remove every account's profiles or cached data.
 
+The background-controller checkpoint passed `./scripts/test.sh macos` on
+2026-10-21: 139 macOS host-free tests, both strict macOS Periphery scans, and
+the unsigned arm64 app/extension build and packaging checks. Shared Kit/AppCore
+and Firebase adapter tests passed too. Main and Secure Codex accounts split
+implementation and review. Review fixes cover bounded launch/cancellation,
+installed-path registration, bootstrap retry, activation feedback, display-text
+normalization, and confirmed creation results. No installed app, launchd job,
+Firebase session, profile, or active VPN was changed during validation.
+
+The launch candidate uses `user/<uid>` with a fixed
+`/Applications/CloudGateway.app/Contents/MacOS/CloudGateway` executable and
+private plist/locks in `~/Library/Application Support/CloudGateway/macOS`.
+Ownership precedes Firebase initialization. The menu polls authenticated XPC
+and preserves accepted core work when it closes. After 60 seconds without
+requests or pending work, the controller exits and can start on demand again.
+This is code/build proof only. Signed launch, Keychain access, live menu/VPN
+behavior, and pre-desktop SSH survival remain open. The CLI surface and its
+acceptance/result recovery contract remain subsequent work.
+
 ### 1. Signed runtime proof, before the full command surface
 
-- [ ] Add the minimum headless dispatch and launch harness inside the existing
+- [x] Add the minimum headless dispatch and launch harness inside the existing
   signed app bundle, preserving production identity/entitlements
 - [ ] Record OS build, app/extension versions, signature/profile, launch mechanism,
   UID, session/bootstrap context, and sanitized results for reproducibility
@@ -518,15 +537,15 @@ permission to remove every account's profiles or cached data.
 
 ### 2. Extract the shared owner and frontend protocol
 
-- [ ] Move auth, access/offline policy, inventory, account cache/selection, config
+- [x] Move auth, access/offline policy, inventory, account cache/selection, config
   commands, and observation out of AppKit presentation code
-- [ ] Reuse existing domain protocols, Firebase adapter, device-code flow,
+- [x] Reuse existing domain protocols, Firebase adapter, device-code flow,
   config coordinator, and extension IPC instead of duplicating them
-- [ ] Implement authenticated/versioned/bounded controller IPC and shared snapshots
+- [x] Implement authenticated/versioned/bounded controller IPC and shared snapshots
 - [ ] Add request IDs, acceptance handoff, independent VPN tasks, busy handling,
   latest-result retrieval, restart reconciliation, and client reconnect behavior
-- [ ] Keep explicit account fencing and install commit/rollback recovery intact
-- [ ] Route all existing menu mutations, including Add Client, through the owner
+- [x] Keep explicit account fencing and install commit/rollback recovery intact
+- [x] Route all existing menu mutations, including Add Client, through the owner
 - [ ] Preserve menu setup/update, browser auth, status, logout, quit, launch at
   login, offline behavior, and selection UX
 - [ ] Finish the menu-through-background-controller runtime milestone before

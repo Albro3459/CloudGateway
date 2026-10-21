@@ -1,4 +1,5 @@
 import AppKit
+import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import ServiceManagement
 
@@ -7,46 +8,53 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
     private let activation = CloudGatewayExtensionActivationCoordinator()
-    private let controller: CloudGatewayMacController
+    private let client = CloudGatewayMacMenuClient()
     private let dashboard = URL(string: "https://gocloudlaunch.com")!
-    private var browserState = CloudGatewayMacBrowserAuthState.signedOut
+    private var browserState = CloudGatewayMacControllerView.BrowserState.signedOut
     private var frontendErrorMessage: String?
     private var dialogTask: Task<Void, Never>?
+    private var actionTask: Task<Void, Never>?
     private var isShuttingDown = false
 
-    init(controller: CloudGatewayMacController) {
-        self.controller = controller
+    override init() {
         super.init()
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
-        activation.onStatusChange = { [weak self] state in
-            self?.controller.setSetupState(state)
+        activation.onStatusChange = { [weak self] _ in self?.render() }
+        activation.onActivationComplete = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await actionTask?.value
+                send(.refresh)
+            }
         }
-        controller.onChange = { [weak self] in self?.controllerChanged() }
+        client.onChange = { [weak self] in self?.controllerChanged() }
         render()
-        activation.refreshReadiness()
+        client.start()
     }
 
-    private var snapshot: CloudGatewayMacControllerSnapshot {
-        controller.snapshot(setupState: activation.state)
+    private var snapshot: CloudGatewayMacControllerView {
+        client.snapshot ?? CloudGatewayMacControllerView(statusTitle: "Connecting to controller…",
+                                                       setupState: .checkingConnection)
     }
 
     private func controllerChanged() {
         guard !isShuttingDown else { return }
         let state = snapshot
-        if state.browserState != browserState {
+        if client.snapshot != nil, state.browserState != browserState {
             browserState = state.browserState
             if case .waitingForApproval(_, let url) = browserState {
                 NSWorkspace.shared.open(url)
             }
         }
         if state.accountId == nil { dialogTask?.cancel() }
+        activation.updateReadiness(state.setupState)
         render()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        controller.menuWillOpen()
+        send(.menuWillOpen, clearsError: false)
     }
 
     func shutdown() {
@@ -54,8 +62,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         isShuttingDown = true
         dialogTask?.cancel()
         dialogTask = nil
-        controller.onChange = nil
+        actionTask?.cancel()
+        actionTask = nil
+        client.shutdown()
         activation.onStatusChange = nil
+        activation.onActivationComplete = nil
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
@@ -68,7 +79,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let state = snapshot
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
         menu.removeAllItems()
-        let status = add(state.statusTitle, #selector(toggleVPN), enabled: state.canToggleVPN)
+        let status = add(state.statusTitle, #selector(toggleVPN),
+                         enabled: state.canToggleVPN && (state.canTurnOff || activation.state == .ready))
         if activation.state == .awaitingApproval, state.statusTitle == activation.state.title {
             status.action = #selector(openLoginItemsSettings)
             status.isEnabled = true
@@ -77,7 +89,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         if state.canToggleVPN {
             status.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
         }
-        if let message = state.errorMessage ?? frontendErrorMessage { add(message) }
+        if let message = frontendErrorMessage ?? client.errorMessage ?? state.errorMessage { add(message) }
         if state.accountId == nil {
             switch state.browserState {
             case .requestingCode: add("Requesting sign-in code…"); add("Cancel Sign In", #selector(cancelSignIn))
@@ -109,16 +121,16 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                     let clientItem = NSMenuItem(title: title, action: #selector(selectClient(_:)), keyEquivalent: "")
                     clientItem.target = self
                     clientItem.representedObject = row.identifier
-                    clientItem.isEnabled = row.isEnabled
+                    clientItem.isEnabled = row.isEnabled && actionTask == nil && activation.state == .ready
                     clientItem.state = row.status == .connected || row.status == .reasserting ? .on : .off
                     submenu.addItem(clientItem)
                 }
                 item.submenu = submenu
                 menu.addItem(item)
             }
-            add("Add Client…", #selector(addClient), enabled: state.canCreateClient && dialogTask == nil)
-            add("Refresh", #selector(refresh), enabled: state.canRefresh && !state.inventoryInFlight)
-            add("Sign Out", #selector(signOut), enabled: state.canSignOut)
+            add("Add Client…", #selector(addClient), enabled: state.canCreateClient && dialogTask == nil && actionTask == nil)
+            add("Refresh", #selector(refresh), enabled: state.canRefresh && !state.inventoryInFlight && actionTask == nil)
+            add("Sign Out", #selector(signOut), enabled: state.canSignOut && actionTask == nil)
         }
         if activation.state != .ready {
             if state.statusTitle != activation.state.title {
@@ -145,52 +157,76 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = action == nil ? nil : self
         item.isEnabled = action != nil && enabled
+        let controllerActions = [#selector(toggleVPN), #selector(signIn), #selector(cancelSignIn),
+                                 #selector(signOut), #selector(refresh), #selector(addClient)]
+        if let action, controllerActions.contains(action) {
+            item.isEnabled = item.isEnabled && client.snapshot != nil && actionTask == nil
+        }
         menu.addItem(item)
         return item
     }
 
     @objc private func selectClient(_ item: NSMenuItem) {
         guard let identifier = item.representedObject as? String else { return }
-        frontendErrorMessage = nil
-        controller.connectClient(identifier: identifier)
+        send(.connect, identifier: identifier)
     }
 
     @objc private func toggleVPN() {
         let state = snapshot
         guard state.canToggleVPN else { return }
-        frontendErrorMessage = nil
-        if state.canTurnOff { controller.turnOff() }
-        else if let identifier = state.reconnectIdentifier { controller.connectClient(identifier: identifier) }
+        if state.canTurnOff { send(.turnOff) }
+        else if activation.state == .ready, let identifier = state.reconnectIdentifier {
+            send(.connect, identifier: identifier)
+        }
     }
 
     @objc private func addClient() {
-        guard dialogTask == nil, let context = controller.clientCreationContext() else { return }
+        guard dialogTask == nil, snapshot.canCreateClient else { return }
         frontendErrorMessage = nil
         dialogTask = Task { [weak self] in
             guard let self else { return }
             defer { dialogTask = nil; render() }
             do {
+                var contextId: UUID?
                 let dialog = CloudGatewayMacClientCreationDialog()
-                guard let request = try await dialog.prompt(loadRegions: { [controller] in
-                    try await controller.loadCreateRegions(context: context)
-                }) else { return }
+                guard let request = try await dialog.prompt(loadRegions: { [client] in
+                    let reply = try await client.request(.prepareClient)
+                    guard let creation = reply.creation else { throw CloudGatewayMacControllerFailure.invalidRequest }
+                    contextId = creation.id
+                    return creation.regions
+                }), let contextId else { return }
                 try Task.checkCancellation()
-                if !controller.createClient(regionId: request.regionId, clientName: request.clientName, context: context) {
+                let reply = try await client.request(.createClient, regionId: request.regionId,
+                                                     clientName: request.clientName, contextId: contextId)
+                if reply.accepted != true {
                     frontendErrorMessage = "Account or client list changed. Open Add Client again"
                 }
             } catch is CancellationError {
             } catch {
-                frontendErrorMessage = "Unable to load available regions. Refresh and try again"
+                frontendErrorMessage = client.message(for: error)
             }
         }
         render()
     }
 
-    @objc private func signIn() {
-        frontendErrorMessage = nil
-        controller.signIn()
+    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil,
+                      clearsError: Bool = true) {
+        guard actionTask == nil, !isShuttingDown else { return }
+        if clearsError { frontendErrorMessage = nil }
+        actionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { actionTask = nil; render() }
+            do { _ = try await client.request(action, identifier: identifier) }
+            catch is CancellationError { }
+            catch {
+                if action != .menuWillOpen { frontendErrorMessage = client.message(for: error) }
+            }
+        }
+        render()
     }
-    @objc private func cancelSignIn() { controller.cancelSignIn() }
+
+    @objc private func signIn() { send(.signIn) }
+    @objc private func cancelSignIn() { send(.cancelSignIn) }
     @objc private func openSignInBrowser() {
         guard case .waitingForApproval(_, let url) = snapshot.browserState else { return }
         NSWorkspace.shared.open(url)
@@ -201,15 +237,14 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     @objc private func quitApp() { quit() }
 
     @objc private func signOut() {
-        frontendErrorMessage = nil
         dialogTask?.cancel()
-        controller.signOut()
+        send(.signOut)
     }
 
     @objc private func refresh() {
-        frontendErrorMessage = nil
-        controller.refresh()
-        activation.refreshReadiness()
+        guard actionTask == nil, !isShuttingDown else { return }
+        activation.resetActivationFailure()
+        send(.refresh)
     }
 
     @objc private func toggleLaunchAtLogin() {
