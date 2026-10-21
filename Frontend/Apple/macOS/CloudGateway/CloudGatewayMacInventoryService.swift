@@ -6,7 +6,7 @@ import FirebaseFirestore
 import Foundation
 
 @MainActor
-final class CloudGatewayMacInventoryService {
+final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
     typealias Failure = CloudGatewayMacInventoryError
 
     private let auth: CloudGatewayFirebaseAuthAdapter

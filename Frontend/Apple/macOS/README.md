@@ -1,7 +1,7 @@
 # CloudGateway macOS
 
 Native menu bar app and packet-tunnel system extension. See
-[TODO/macos-app.md](../../../TODO/macos-app.md) for the implementation checkpoints
+[controller plan](../../../TODO/macos-cli.md) for the implementation checkpoints
 and [development runbook](../../../docs/apple-macos-development.md) for signing,
 installation, storage boundaries, and runtime checks.
 
@@ -22,14 +22,29 @@ and suitable lifecycle helpers. Reuse AppCore HTTP/document mapping and session
 contracts where useful. Keep macOS menu state separate from the full iOS view
 model. Neither target compiles iOS sources. Preserve iOS contracts and behavior.
 
-The app owns browser auth, Firebase session, authorized inventory, account-scoped
-offline metadata, activation, VPN commands, XPC client, status observation,
-and optional launch at login. The menu target includes native Firebase
-configuration and Keychain Sharing. Add Client is available in the macOS menu.
+`CloudGatewayMacController` owns device auth, session restoration, authorized
+inventory, account-scoped offline metadata, VPN commands, and status observation.
+It lives in the Foundation-only macOS core with injected services. Its snapshots
+contain presentation data and exclude full configs, tokens, and secret references.
+The app's composition layer initializes Firebase, memory-only Firestore caching,
+the preferences adapter, and the existing extension XPC client.
+
+The menu consumes those snapshots and submits commands. It owns AppKit,
+browser opening, Add Client dialogs, extension activation, Settings navigation,
+and optional launch at login. A dialog captures its account/session context
+before loading regions, so an old dialog cannot create a client after sign-out
+or an account change. The menu target includes native Firebase configuration
+and Keychain Sharing. Add Client is available in the macOS menu.
 Its dialog opens before region and capacity requests finish, so you can enter a
 name while availability loads. Create becomes available once a region has room.
 Account and admin management stay on the site or mobile app. There is no native
 provider login UI.
+
+This extraction checkpoint hosts the controller in the menu process. The
+independent background process, authenticated frontend IPC, and CLI remain
+pending the signed launch/Keychain proof in the plan. Closing a frontend callback
+does not cancel controller work, but exiting this process still ends its owner.
+Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged.
 
 The tunnel links Kit, the existing WireGuard fork/Go bridge, and necessary Apple
 frameworks. It has no AppCore, Firebase, Google Sign-In, AppKit, SwiftUI, UIKit,
@@ -43,7 +58,7 @@ app transfers installation material through authenticated XPC and retains
 opaque references. App Group containers and user Keychain items do not cross
 the root/user boundary. The synchronous iOS secret adapter is not the Mac
 adapter. See the plan's
-[storage boundary](../../../TODO/macos-app.md#storage-and-account-boundaries).
+[ownership boundaries](../../../TODO/macos-cli.md#ownership-and-boundaries).
 
 Use memory-only Firestore SDK caching and persist metadata-only offline
 inventory/selection per Firebase UID. Keep raw `wireGuardConfig` documents and
@@ -142,7 +157,7 @@ Signed checks cover activation/replacement, root/user isolation, repeated
 sessions, sleep/wake, network changes, offline use, account switching, status
 changes through macOS controls, retained VPN after sign-out/quit, and launch
 at login. See the plan's
-[Apple trap checklist](../../../TODO/macos-app.md#apple-traps-and-prevention).
+[runtime proof](../../../TODO/macos-cli.md#1-signed-runtime-proof-before-the-full-command-surface).
 Run the containing app from `/Applications` with SIP enabled.
 
 Build and publish a notarized Developer ID DMG with

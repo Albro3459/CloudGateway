@@ -20,7 +20,7 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
     private let service: any CloudGatewayDeviceAuthServicing
     private let auth: any CloudGatewayCustomTokenAuthServicing
     private let dashboardOrigin: URL
-    private let openURL: (URL) -> Void
+    private let openURL: ((URL) -> Void)?
     private let checkAccess: (AuthenticatedUser) async throws -> Bool
     private let now: @Sendable () -> Duration
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -31,7 +31,7 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         service: any CloudGatewayDeviceAuthServicing,
         auth: any CloudGatewayCustomTokenAuthServicing,
         dashboardOrigin: URL,
-        openBrowser: @escaping (URL) -> Void,
+        openBrowser: ((URL) -> Void)? = nil,
         checkAccess: @escaping (AuthenticatedUser) async throws -> Bool
     ) {
         self.service = service
@@ -72,11 +72,6 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         state = .requestingCode
         task = Task { [weak self] in await self?.run(attempt: id) }
         return true
-    }
-
-    public func openBrowser() {
-        guard case .waitingForApproval(_, let url) = state else { return }
-        openURL(url)
     }
 
     public func cancel() {
@@ -130,7 +125,7 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
             guard now() < deadline else { throw CloudGatewayDeviceAuthError.expired }
             state = .waitingForApproval(userCode: code.userCode, verificationURL: code.verificationURL)
             try ensureCurrent(id)
-            openURL(code.verificationURL)
+            openURL?(code.verificationURL)
             var interval = code.interval
             while true {
                 let remaining = deadline - now()
