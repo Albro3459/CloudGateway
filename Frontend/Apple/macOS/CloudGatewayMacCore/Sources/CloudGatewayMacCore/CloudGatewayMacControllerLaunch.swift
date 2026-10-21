@@ -56,6 +56,7 @@ public struct CloudGatewayMacControllerLauncher: Sendable {
             "Label": Self.serviceName,
             "ProgramArguments": [executableURL.path, "--controller"],
             "MachServices": [Self.serviceName: true],
+            "LimitLoadToSessionType": "Background",
             "RunAtLoad": false,
             "ProcessType": "Background",
         ]

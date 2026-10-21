@@ -50,6 +50,8 @@ Controller startup requires `/Applications/CloudGateway.app`. The menu registers
 an on-demand launchd job in `user/<uid>`, with its private plist and ownership
 locks under `~/Library/Application Support/CloudGateway/macOS`. Development and
 mounted DMG copies cannot register themselves under the production service name.
+The job sets `LimitLoadToSessionType = Background` for the user domain;
+`ProcessType = Background` controls resource limits and does not select the session.
 The controller exits after 60 seconds without requests or pending work. Menu
 polling keeps it available while the frontend is open. Reopening the menu starts
 it again without replaying a VPN command. An app/build mismatch requires closing

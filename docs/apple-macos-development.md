@@ -38,6 +38,10 @@ The launch candidate uses a launchd Mach service in `user/<uid>`. Registration
 requires the canonical `/Applications/CloudGateway.app` executable, with a
 private generated plist and stable ownership lock under
 `~/Library/Application Support/CloudGateway/macOS`. Startup waits are bounded.
+The plist must set `LimitLoadToSessionType = Background` to register in this
+domain. `ProcessType = Background` only selects resource limits. On macOS 26,
+omitting the session type caused `launchctl bootstrap user/<uid>` to fail with
+error 5 before starting the controller.
 The menu polls snapshots and reconnects after transport loss. It never starts
 another Firebase owner as a fallback. Incompatible app builds show a recovery
 message instead of sharing state. Close the menu, let accepted work finish and

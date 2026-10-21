@@ -187,6 +187,7 @@ private final class ControllerEndpoint: NSObject, CloudGatewayMacControllerXPC, 
 
 @MainActor
 public final class CloudGatewayMacControllerClient {
+    private let machServiceName: String
     private let requirement: String
     private let userId: UInt32
     private let appVersion: String
@@ -194,13 +195,21 @@ public final class CloudGatewayMacControllerClient {
     private var pending: [UUID: ControllerPendingReply] = [:]
     private var isInvalidated = false
 
-    public init(teamIdentifier: String, appVersion: String, appBuild: String) throws {
+    public convenience init(teamIdentifier: String, appVersion: String, appBuild: String) throws {
+        try self.init(
+            teamIdentifier: teamIdentifier, appVersion: appVersion, appBuild: appBuild,
+            machServiceName: CloudGatewayMacControllerProtocol.machServiceName
+        )
+    }
+
+    init(teamIdentifier: String, appVersion: String, appBuild: String, machServiceName: String) throws {
         try CloudGatewayMacControllerProtocol.validateVersion(appVersion, build: appBuild)
         userId = geteuid()
         guard ControllerPeerIdentity.accepts(peerUserId: getuid(), ownerUserId: userId) else {
             throw CloudGatewayMacControllerFailure.rejected
         }
         requirement = try ControllerPeerIdentity.requirement(teamIdentifier: teamIdentifier)
+        self.machServiceName = machServiceName
         self.appVersion = appVersion
         self.appBuild = appBuild
     }
@@ -212,7 +221,7 @@ public final class CloudGatewayMacControllerClient {
             throw CloudGatewayMacControllerFailure.busy
         }
         let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
-        let connection = NSXPCConnection(machServiceName: CloudGatewayMacControllerProtocol.machServiceName)
+        let connection = NSXPCConnection(machServiceName: machServiceName)
         connection.setCodeSigningRequirement(requirement)
         connection.remoteObjectInterface = NSXPCInterface(with: CloudGatewayMacControllerXPC.self)
         let peer = ControllerPeerConnection(connection)
@@ -229,11 +238,16 @@ public final class CloudGatewayMacControllerClient {
             try await withCheckedThrowingContinuation { continuation in
                 guard operation.start(continuation) else { return }
                 operation.withTransportSetup {
-                    connection.interruptionHandler = { operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable)) }
-                    connection.invalidationHandler = { operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable)) }
+                    // Foundation invokes these callbacks on the XPC queue, outside MainActor
+                    connection.interruptionHandler = { @Sendable in
+                        operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable))
+                    }
+                    connection.invalidationHandler = { @Sendable in
+                        operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable))
+                    }
                     connection.activate()
                     operation.armTimeout()
-                    guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
+                    guard let proxy = connection.remoteObjectProxyWithErrorHandler({ @Sendable _ in
                         operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable))
                     }) as? any CloudGatewayMacControllerXPC else {
                         operation.finish(.failure(CloudGatewayMacControllerFailure.unavailable))

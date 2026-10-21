@@ -509,6 +509,41 @@ This is code/build proof only. Signed launch, Keychain access, live menu/VPN
 behavior, and pre-desktop SSH survival remain open. The CLI surface and its
 acceptance/result recovery contract remain subsequent work.
 
+The first signed menu launch on 2026-10-21 (app 1.1.0, build 4) crashed before
+controller bootstrap. The crash report identified a MainActor assertion in
+the XPC proxy error callback. Foundation's connection error, interruption,
+and invalidation callbacks now explicitly use `@Sendable` so they can complete
+the lock-protected pending reply on the XPC queue. A real-XPC regression uses
+a unique nonexistent Mach service and retries with the same client; it
+reproduced the same SIGTRAP before the fix. Reinstall and signed runtime
+validation remain required. The existing system extension, credentials,
+profiles, and installed app were unchanged while fixing the crash.
+The follow-up `./scripts/test.sh macos --signed` passed all 140 macOS tests
+and both strict Periphery scans, then failed signing the extension with
+`errSecInternalComponent`. Repeat signed build/install from a session with
+access to the signing private key; this run did not produce a validated
+signed replacement app.
+The follow-up unsigned `./scripts/test.sh macos` passed all checks, including
+140 macOS tests, both strict Periphery scans, the arm64 app/extension build,
+and bundle packaging verification.
+
+The next signed menu launch stayed up but could not find its controller Mach
+service. With the user's approval, read-only launchctl checks confirmed the job
+was absent from both user and GUI domains. Retrying the generated plist in
+`user/501` returned error 5. Adding `LimitLoadToSessionType = Background` to that
+plist made the same bootstrap succeed; launchctl reported the signed controller
+running as UID 501, PID 19906, with no exit. The launcher now generates that
+session setting and its plist regression checks it. `ProcessType = Background`
+alone controls resource limits and does not select a background session.
+The user confirmed the menu recovered, proving the installed frontend reached
+the background controller through authenticated XPC. Firebase credential access
+and the pre-desktop SSH matrix still need confirmation. No VPN
+connect/disconnect command was issued during diagnosis. Rebuild/reinstall the
+app to preserve the generated-plist fix on future registrations.
+The follow-up `./scripts/test.sh macos` passed all checks, including 140 macOS
+tests, both strict Periphery scans, the unsigned arm64 app/extension build,
+and bundle packaging verification.
+
 ### 1. Signed runtime proof, before the full command surface
 
 - [x] Add the minimum headless dispatch and launch harness inside the existing

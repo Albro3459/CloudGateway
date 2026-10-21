@@ -56,6 +56,7 @@ import Testing
     let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as? [String: Any])
     #expect(plist["ProgramArguments"] as? [String] == [executable.path, "--controller"])
     #expect(plist["MachServices"] as? [String: Bool] == [CloudGatewayMacControllerLauncher.serviceName: true])
+    #expect(plist["LimitLoadToSessionType"] as? String == "Background")
     #expect(plist["RunAtLoad"] as? Bool == false)
     #expect(plist["ProcessType"] as? String == "Background")
     #expect(plist["UserName"] == nil)
