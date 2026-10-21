@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **design selected, implementation pending the signed runtime proof below**.
+Status: **macOS service extraction in progress, background launch pending signed runtime proof**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -33,6 +33,14 @@ Do not use its old API support table as proof of SSH compatibility.
 - Include help, doctor, JSON output, stable exit codes, and noninteractive use
 
 ## Scope
+
+Implement the controller and migrate the existing menu app before adding the
+CLI. The menu app is the first client. All its current behavior, including Add
+Client, must work through the controller before the CLI becomes a second client.
+
+Keep `CloudGatewayKit`, shared `CloudGatewayAppCore`, the Firebase adapter, and
+iOS unchanged during this refactor. Compose their existing APIs in the macOS
+layer. Raise a concrete shared-core limitation before expanding that scope.
 
 Initial commands:
 
@@ -450,6 +458,26 @@ state. None is an automatic fallback authorized by this plan.
 
 ## Implementation checklist
 
+### 0. Extract services without disturbing the installed app
+
+- [ ] Extract a Foundation-only macOS controller with injected dependencies,
+  sanitized snapshots, and explicit lifecycle, separate from menu presentation
+- [ ] Host it in the menu process for this structural checkpoint. This is not
+  the background launch mechanism or proof of independent process lifetime
+- [ ] Move browser opening and Add Client dialogs into the menu client. Keep
+  service tasks and account/session fencing inside the controller
+- [ ] Validate with host-free tests, dead-code scans, and builds, without
+  launching another auth owner or changing the currently running VPN
+- [ ] Bump the app version independently. Change extension versions only when
+  its binary or protocol changes require replacement
+- [ ] Review and commit logical checkpoints before the signed runtime session
+
+The development machine currently runs the existing menu app and an active
+VPN. Keep that installation, process, session, and profiles intact during
+build-only validation. Plan the quit/replacement/profile cleanup checkpoint
+with the user after the new code is built and reviewed. Do not treat this as
+permission to remove every account's profiles or cached data.
+
 ### 1. Signed runtime proof, before the full command surface
 
 - [ ] Add the minimum headless dispatch and launch harness inside the existing
@@ -489,6 +517,8 @@ state. None is an automatic fallback authorized by this plan.
 - [ ] Route all existing menu mutations, including Add Client, through the owner
 - [ ] Preserve menu setup/update, browser auth, status, logout, quit, launch at
   login, offline behavior, and selection UX
+- [ ] Finish the menu-through-background-controller runtime milestone before
+  starting CLI commands. Quitting the menu must then detach only its client
 
 ### 3. CLI and diagnostics
 
