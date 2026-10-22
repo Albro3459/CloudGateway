@@ -195,10 +195,10 @@ public actor CloudGatewayMacConfigCoordinator {
     public func restore(_ config: CloudGatewayMacInstalledConfig) async throws {
         try await runCommand { command in
             let reference = try config.reference
-            guard config.snapshot.status == .active,
-                  try await self.secrets.isAvailable(reference: reference, configId: config.identifier) else {
+            guard config.snapshot.status == .active else {
                 throw CloudGatewayMacConfigError.unavailable
             }
+            try await self.requireAvailableSecret(reference: reference, identifier: config.identifier)
             try await self.requireCurrent(command)
             do { try await self.profiles.saveAndReload(config) }
             catch {
@@ -217,9 +217,7 @@ public actor CloudGatewayMacConfigCoordinator {
 
     private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64) async throws {
         let reference = try config.reference
-        guard try await secrets.isAvailable(reference: reference, configId: config.identifier) else {
-            throw CloudGatewayMacConfigError.unavailable
-        }
+        try await requireAvailableSecret(reference: reference, identifier: config.identifier)
         try requireCurrent(command)
         let installedProfiles = try await profiles.installedProfiles()
         try requireCurrent(command)
@@ -246,6 +244,17 @@ public actor CloudGatewayMacConfigCoordinator {
         try await runCommand { command in
             try await self.performTurnOff(command: command)
         }
+    }
+
+    private func requireAvailableSecret(reference: CloudGatewayMacSecretReference, identifier: String) async throws {
+        let available: Bool
+        do {
+            available = try await secrets.isAvailable(reference: reference, configId: identifier)
+        } catch CloudGatewayMacSecretError.storageFailure, CloudGatewayMacSecretError.unavailable {
+            // A saved reference can outlive the extension's Keychain access
+            throw CloudGatewayMacConfigError.unavailable
+        }
+        guard available else { throw CloudGatewayMacConfigError.unavailable }
     }
 
     private func performTurnOff(command: UInt64) async throws {

@@ -258,12 +258,21 @@ refresh or command does not replace VPN off with Working. Cloud transport
 failures use cached inventory without labeling the internet connection offline.
 The Refresh row shows Refreshing clients while inventory is loading.
 Disconnecting retains profiles, secrets, and cloud clients.
+An inventory transport failure does not leave Add Client disabled after the
+refresh ends. The dialog can retry region/capacity requests, and submission
+still checks account access before creating a cloud client. Successful creation
+and inventory reload return presentation to the fresh cloud inventory.
 
 Inventory refresh leaves authorized connections, cached profile restoration,
 and local disconnect available. A connect command cancels the competing refresh;
 its late result cannot replace command state or clear a newer refresh. Restoring
 a missing profile requires this account's authorized metadata and its available
 committed system secret. Previously fetched in-memory configs remain installable.
+A missing or unreadable retained secret can trigger one reinstall from an
+authorized in-memory cloud config during profile restoration or connection.
+Keychain authorization failures do not relax the ACL or delete old secrets.
+Replacement installation finishes before stopping another active VPN; if
+recovery cannot proceed, the current VPN remains connected.
 Cloud access checks have a 10-second deadline, including token retrieval. Region
 and client queries run in parallel with separate 10-second deadlines and removable
 listeners. Only server snapshots count as fresh inventory; completion, timeout,

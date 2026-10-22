@@ -629,6 +629,44 @@ build or replace the bundle while an installed app/controller is running.
 The user confirmed an installed config connects while Refreshing clients is
 shown after the controller restart, providing live proof of the refresh fix.
 
+Add Client still used the cached-inventory transport-failure flag as a creation
+gate after refresh finished. It now allows retrying the dialog while signed in
+and idle. Submission retains its fresh access check and account/context fences;
+a denial signs out and clears cached authorization before any create request.
+Successful creation and inventory reload clear the cached-only presentation
+flag so newly created clients appear. Regression coverage checks successful
+retry and access denial after an inventory transport failure. The installed app
+and controller were not changed for this source fix.
+`./scripts/test.sh macos` passed all checks, including 154 macOS tests, both
+strict Periphery scans, the unsigned arm64 app/extension build, and bundle
+packaging verification. Signed reinstall and live confirmation remain open.
+
+Switching to a config with a missing Apple profile exposed a retained-secret
+recovery gap. The 19:49 capture showed System Keychain access rejected for the
+running extension, with no recorded NetworkExtension preferences error.
+Read-only Security.framework checks confirmed the running extension was signed
+with Developer ID Application while the retained item's ACL required Apple
+Development. Both extension copies still reported 1.0.0 (2), so the version-only
+readiness check could not identify this development signing mismatch.
+
+Availability reads now classify missing or unreadable retained secrets as
+unavailable. Missing-profile restoration shares the existing one-attempt
+reinstall fallback, requiring this account's authorized online config. Cache
+authorization stays outside that fallback; authorization, transport, timeout,
+and cancellation errors do not trigger secret replacement. Old secrets remain
+retained, and another active VPN is not stopped until installation finishes.
+Fresh-install storage failures show a fixed secure-storage message instead of
+suggesting that VPN preferences need refreshing. Signing identities should stay
+consistent across builds, and extension updates need distinct build numbers.
+Regression coverage includes both installed and missing target profiles,
+missing and unreadable secrets, offline/authorization failures, and replacement
+failure while another VPN stays connected. Signed reinstall and live switching
+confirmation remain open.
+`./scripts/test.sh macos` passed with 157 macOS tests, both strict Periphery
+scans, the unsigned arm64 app/extension build, and bundle packaging verification.
+Fresh Sol research confirmed the signing mismatch, and a separate patch review
+reported no blockers. The running installation was not changed.
+
 ### 1. Signed runtime proof, before the full command surface
 
 - [x] Add the minimum headless dispatch and launch harness inside the existing

@@ -37,6 +37,9 @@ or an account change. The menu target includes native Firebase configuration
 and Keychain Sharing. Add Client is available in the macOS menu.
 Its dialog opens before region and capacity requests finish, so you can enter a
 name while availability loads. Create becomes available once a region has room.
+After an inventory transport failure, Add Client remains available once pending
+work finishes so the dialog can retry region/capacity requests. Submission still
+requires a fresh access check; cached inventory does not authorize cloud creation.
 Account and admin management stay on the site or mobile app. There is no native
 provider login UI.
 
@@ -114,6 +117,10 @@ competing refresh and ignores its late result. Cached metadata can recreate a
 missing Apple profile using its existing committed system secret, after checking
 the account's cached authorization. Configs already fetched into memory can also
 be installed during refresh. No raw configs or keys are added to the disk cache.
+If a retained secret is missing or unreadable, an authorized in-memory cloud
+config can reinstall it once, including when its Apple profile is missing.
+Recovery retains the old secret and prepares the replacement before stopping
+another active VPN. Without a usable cloud config, the existing VPN stays on.
 Access checks and server inventory reads each have a 10-second deadline. Region
 and client queries run together, ignore Firestore cache-only snapshots, and
 detach their listeners on completion, cancellation, or timeout. Menu opening

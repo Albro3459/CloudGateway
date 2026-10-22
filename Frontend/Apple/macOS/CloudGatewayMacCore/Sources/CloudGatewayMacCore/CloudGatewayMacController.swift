@@ -1,5 +1,6 @@
 import CloudGatewayAppCore
 import CloudGatewayKit
+import CloudGatewayMacIPC
 import Foundation
 
 @MainActor
@@ -428,7 +429,7 @@ public final class CloudGatewayMacController {
     }
 
     private var canStartClientCreation: Bool {
-        user != nil && !isOffline && inventoryTask == nil && commandTask == nil
+        user != nil && inventoryTask == nil && commandTask == nil
             && cancellationTask == nil && isStarted && !isShuttingDown
             && auth.currentUser?.uid == user?.uid
     }
@@ -468,13 +469,14 @@ public final class CloudGatewayMacController {
                         $0.identifier == saved.identifier && $0.snapshot.configHash == saved.snapshot.configHash
                             && $0.snapshot.secretReference == saved.snapshot.secretReference
                     }) else { throw CloudGatewayMacConfigError.unavailable }
-                    if !savedProfileExists { try await configs.restore(saved) }
                     config = saved
                 } else if let option, !isOffline {
                     config = try await configs.install(option: option, accountId: account.uid)
                 } else { throw CloudGatewayMacConfigError.unavailable }
                 try requireCurrent(epoch, token: token)
                 do {
+                    if config == saved, !savedProfileExists { try await configs.restore(config) }
+                    try requireCurrent(epoch, token: token)
                     try await configs.connect(config)
                 } catch CloudGatewayMacConfigError.unavailable {
                     try requireCurrent(epoch, token: token)
@@ -494,7 +496,13 @@ public final class CloudGatewayMacController {
                 errorMessage = nil
             } catch {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                if error as? CloudGatewayMacSecretError == .storageFailure {
+                    errorMessage = "Unable to access secure VPN storage"
+                    return
+                }
                 switch error as? CloudGatewayMacConfigError {
+                case .unavailable:
+                    errorMessage = "Saved VPN configuration is unavailable. Refresh and try again"
                 case .profileInstallationFailed:
                     errorMessage = "Unable to save the VPN profile. Refresh before trying again"
                 case .secretCommitFailed:
@@ -588,6 +596,7 @@ public final class CloudGatewayMacController {
                 options = fetched
                 installed = saved.configs
                 lastSelectedIdentifier = saved.selectedIdentifier
+                isOffline = false
                 errorMessage = nil
             } catch CloudGatewayMacInventoryError.accessDenied, CloudGatewayAppError.apiAccessDenied(_) {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
