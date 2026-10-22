@@ -1,6 +1,6 @@
 # macOS controller refactor review
 
-Reviewed 2026-10-21. Implementation is in progress. Checked items indicate source
+Reviewed 2026-10-21. Source implementation is complete. Final validation and review are in progress. Checked items indicate source
 changes and automated coverage, while live acceptance remains tracked separately.
 
 Scope: [PR #16](https://github.com/Albro3459/CloudGateway/pull/16), `mac-cli`
@@ -22,10 +22,11 @@ separation is appropriate for a menu app and a future CLI, but the controller/me
 milestone is not finished. Fix the seven defects below and complete the signed
 runtime checks before treating it as stable.
 
-The main rewrite should cover controller lifecycle, request admission/results,
-and extension-update reconciliation. Those policies currently live in an
-app-target service with concrete dependencies, while most tests exercise smaller
-helpers. Moving more code out of the menu alone will not close that gap.
+The implementation moves controller lifecycle, request admission/results, and
+extension-update reconciliation into package components with injected effects.
+The app-target service now owns platform construction and process lifetime.
+Findings below describe the reviewed baseline. The current implementation and
+validation record are tracked here as work completes.
 
 Keep these parts:
 
@@ -42,7 +43,21 @@ Keep these parts:
 Keep the shared Apple packages and iOS outside this cleanup unless a concrete
 limitation requires a separately reviewed change. Do not start CLI commands yet.
 
-## Current defects
+## Implementation checkpoints
+
+- [x] Enforce fresh signed extension builds against a distributed baseline
+- [x] Validate inventory commit/publication, signed-out stop, and bounded preparation
+- [x] Validate the package dispatcher, durable extension transitions, and frontend races
+- [x] Pass unsigned macOS checks, including strict dead-code scans
+- [ ] Pass signed macOS build and entitlement/profile verification
+- [ ] Complete fresh Sol High review rounds and resolve their findings
+- [ ] Complete the live runtime matrix below
+
+The menu and controller remain the implementation scope. CLI commands wait for
+the runtime gate. Checked source tasks do not imply that installed-process,
+reboot, SSH, approval, or replacement scenarios have been exercised.
+
+## Reviewed defects
 
 All seven are P2: concrete conditional failures to fix in this milestone. They
 are supported by source traces, not new live VPN reproductions. The order below
@@ -50,11 +65,11 @@ puts loss of local control and release failures first.
 
 ### F1. Disconnect depends on receipt capacity and disk writes
 
-- [ ] Let an idempotent disconnect proceed when durable receipt admission fails
+- [x] Let an idempotent disconnect proceed when durable receipt admission fails
 
-[Mutation admission](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:145)
+[Mutation admission](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 reserves a receipt before dispatching `turnOff`.
-[Reservation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:216)
+[Reservation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 fails at 64 live receipts or when the receipt file cannot be written. Accepted
 and rejected mutations occupy slots for ten minutes.
 
@@ -74,13 +89,13 @@ are safe, and neither case starts or removes a profile.
 
 ### F2. Update handoff removes status and disconnect from the menu
 
-- [ ] Separate safe inspection/disconnect from current-build mutation admission
+- [x] Separate safe inspection/disconnect from current-build mutation admission
 
-The [menu poll](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacMenuClient.swift:33)
+The [menu poll](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacMenuClient.swift)
 rejects a draining lifecycle and clears the snapshot. Its
-[request gate](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacMenuClient.swift:94)
+[request gate](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacMenuClient.swift)
 then permits only lifecycle requests. The
-[service](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:135)
+[service](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 explicitly permits snapshot and disconnect while draining, but the frontend
 cannot use that exception.
 
@@ -91,7 +106,7 @@ this interval.
 
 **Fix:** retain clearly identified last-observed state during reconnection and
 support compatible live status/disconnect during drain. Coordinate both ends:
-[normal request validation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerContracts.swift:135)
+[normal request validation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerContracts.swift)
 also requires exact build identity, so relaxing only the menu gate will not let a
 new-build frontend inspect an old controller. Define a small authenticated
 compatibility contract for these safe operations. Keep new connects blocked.
@@ -104,9 +119,9 @@ must never be presented as fresh observations.
 
 - [x] Enforce the extension artifact/version relationship during release preparation
 
-The [release archive/export path](/Users/alexbrodsky/GitHub/CloudGateway/scripts/macos-release.py:110)
+The [release archive/export path](/Users/alexbrodsky/GitHub/CloudGateway/scripts/macos-release.py)
 retains the extension's project version while signing/exporting it again.
-[Build identity](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacIPC/CloudGatewayMacBuildIdentity.swift:77)
+[Build identity](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacIPC/CloudGatewayMacBuildIdentity.swift)
 hashes the complete CMS signature as well as the CodeDirectory identity. The
 release verifier checks the requested versions but does not compare against the
 previously distributed extension artifact.
@@ -128,7 +143,7 @@ starts blocked. The equal build also reuses the same Mach endpoint.
 **Fix:** either reuse the exact previously signed extension artifact or require a
 new extension build whenever packaging signs it again. Reject fingerprint drift
 under a reused build before publication. Preserve signer validation. The manual
-warning in the [release guide](/Users/alexbrodsky/GitHub/CloudGateway/docs/apple-macos-release.md:21)
+warning in the [release guide](/Users/alexbrodsky/GitHub/CloudGateway/docs/apple-macos-release.md)
 needs an enforceable packaging rule.
 
 **Done when:** consecutive app-only releases satisfy the chosen artifact policy,
@@ -137,11 +152,11 @@ extension developer mode disabled. That installation consequence remains unteste
 
 ### F4. Connect can use inventory from before a committed refresh
 
-- [ ] Make authorization-cache commit and published inventory coherent at command admission
+- [x] Make authorization-cache commit and published inventory coherent at command admission
 
-[Refresh](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift:282)
+[Refresh](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift)
 persists new cache authorization before publishing its new options and installed
-metadata. [Connect](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift:449)
+metadata. [Connect](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift)
 captures the old option/config and cancels refresh without reconciling a commit
 that has already happened.
 
@@ -149,7 +164,7 @@ that has already happened.
 hash, and Connect runs before the refreshed options publish. A saved A fails its
 authorization check. An unsaved A can reach installation, then fail metadata
 persistence against B's hash. The
-[install sequence](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacConfigCoordinator.swift:159)
+[install sequence](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacConfigCoordinator.swift)
 saves the profile and commits its secret before that metadata check, so failure
 can leave profile/storage changes from obsolete material.
 
@@ -166,11 +181,11 @@ active VPN. Existing stalled-fetch tests do not cover this boundary.
 
 ### F5. A controller restart can require a reboot despite a ready extension
 
-- [ ] Reconcile the expected running extension before keeping an uncertain activation blocked
+- [x] Reconcile the expected running extension before keeping an uncertain activation blocked
 
-[Startup restoration](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:66)
+[Startup restoration](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 changes a saved same-boot `activating` attempt to `restart`.
-[Readiness](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:364)
+[Readiness](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 then returns Awaiting Restart before attempting its authenticated ping.
 
 **Trigger and impact:** macOS finishes activation, but the controller restarts
@@ -189,16 +204,16 @@ explicit `willCompleteAfterReboot` result retains its required semantics.
 
 ### F6. Readiness can discard an attempt before its completion report arrives
 
-- [ ] Use one durable terminal transition for readiness and GUI completion
+- [x] Use one durable terminal transition for readiness and GUI completion
 
-[Successful readiness](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:387)
+[Successful readiness](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 clears `extensionUpdate` without recording its ID in `finishedExtensionUpdates`.
-[Report handling](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:287)
+[Report handling](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
 accepts only an active attempt or a retained terminal receipt.
 
 **Trigger and impact:** polling observes the expected extension before the GUI's
 delayed or retried completion report. That report is rejected. The
-[frontend report loop](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift:330)
+[frontend report loop](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift)
 stops retrying and displays the generic account/client-change error even though
 setup succeeded.
 
@@ -213,17 +228,17 @@ acknowledge success without changing newer state.
 
 ### F7. Add Client preparation can outlive its transport deadline
 
-- [ ] Bound aggregate region preparation and cancel abandoned read-only work
+- [x] Bound aggregate region preparation and cancel abandoned read-only work
 
-[Preparation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift:185)
-holds the RPC until [all serial capacity reads finish](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacInventoryService.swift:103).
+[Preparation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
+holds the RPC until [all serial capacity reads finish](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacInventoryService.swift).
 Each HTTP request can take ten seconds, Firebase token retrieval has no enclosing
 preparation deadline, and the
-[transport times out after 30 seconds](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerXPC.swift:358).
+[transport times out after 30 seconds](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerXPC.swift).
 
 **Trigger and impact:** several unavailable regions consume the deadline even
 when another region has capacity. The dialog closes and discards the eventual
-result. The [server task survives disconnection](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerXPC.swift:202),
+result. The [server task survives disconnection](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerXPC.swift),
 so abandoned preparation also holds an active request and can delay controller
 handoff.
 
@@ -241,17 +256,17 @@ the app during preparation does not leave the controller draining indefinitely.
 
 ### R1. Put production orchestration under tests
 
-- [ ] Extract the service's lifecycle, admission, receipt, and activation policies
+- [x] Extract the service's lifecycle, admission, receipt, and activation policies
   into a macOS package component with injected effects
-- [ ] Keep Firebase construction, launchd, Security.framework, NetworkExtension,
+- [x] Keep Firebase construction, launchd, Security.framework, NetworkExtension,
   OS extension requests, and process exit in thin adapters
-- [ ] Inject the clock, persistence, installed-identity probe, tunnel observation,
+- [x] Inject the clock, persistence, installed-identity probe, tunnel observation,
   and transport so tests can pause the real production transitions
 
-The [package manifest](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Package.swift:17)
+The [package manifest](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Package.swift)
 does not include the app-target service, menu client, or activation coordinator in
 its host-free test targets. Current lifecycle tests cover the small
-[update helper](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacUpdateLifecycle.swift:3),
+[update helper](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacUpdateLifecycle.swift),
 wire validation, and storage utilities. They do not exercise the production
 prepare/start/report/ping/restart sequence that contains F5 and F6.
 
@@ -261,13 +276,13 @@ rewrite to make because it supports the remaining fixes.
 
 ### R2. Give extension updates one state machine
 
-- [ ] Replace string phases and scattered nullable fields with typed states and
+- [x] Replace string phases and scattered nullable fields with typed states and
   explicit transitions
-- [ ] Distinguish prepared-but-not-submitted, submitted, approval pending,
+- [x] Distinguish prepared-but-not-submitted, submitted, approval pending,
   outcome unknown, OS-confirmed reboot required, and completed
-- [ ] Centralize persistence and terminal receipt handling, with target/attempt
+- [x] Centralize persistence and terminal receipt handling, with target/attempt
   fencing for delayed callbacks and readiness responses
-- [ ] Keep status observation, local stop permission, and permission for a new
+- [x] Keep status observation, local stop permission, and permission for a new
   start separate from update presentation
 
 Reconcile observed extension identity after interruptions. Do not infer readiness
@@ -278,41 +293,41 @@ losing the frontend or controller.
 
 These are agreed design gaps, not additional newly introduced menu regressions.
 
-- [ ] Replace UI-derived command authorization with explicit domain preconditions.
-  [Current stop admission](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift:627)
+- [x] Replace UI-derived command authorization with explicit domain preconditions.
+  [Current stop admission](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift)
   uses the menu's `canTurnOff`, which requires a signed-in account and an active
   observation. The agreed contract requires signed-out `down` and idempotent
   success when no owned tunnel is active. Preserve logout's running VPN
-- [ ] Publish a sanitized domain snapshot with separate auth/access, inventory
+- [x] Publish a sanitized domain snapshot with separate auth/access, inventory
   freshness, local installation, observed VPN, setup, and operation state.
-  [The current wire view](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerView.swift:4)
+  [The current wire view](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerView.swift)
   primarily contains menu titles, groups, and enabled flags. Keep menu wording
   and browser-opening decisions in the frontend
-- [ ] Implement accepted/running/completed/failed/unknown operation state with a
+- [x] Implement accepted/running/completed/failed/unknown operation state with a
   bounded active/latest result. The current receipt stores `accepted`, not the
   result of the VPN command. A reconnect cannot recover start submission or
   failure by operation ID. Preserve the no-history and no-crash-replay policy
-- [ ] Define and test the acceptance handoff before route-changing work begins.
+- [x] Define and test the acceptance handoff before route-changing work begins.
   Owning a detached task does not by itself prove the response reached the client
-- [ ] Make lifecycle compatibility independent of normal protocol-version
+- [x] Make lifecycle compatibility independent of normal protocol-version
   validation. Today the validator rejects a different schema/protocol before
   applying the lifecycle exception. Existing tests vary app/build identities,
   not protocol versions. This is a future upgrade gap, not a current version-1
   interoperability failure
-- [ ] Give the frontend explicit connected, reconnecting, draining, and incompatible
+- [x] Give the frontend explicit connected, reconnecting, draining, and incompatible
   states. Use request/snapshot generations and controller instance identity to
   prevent old responses from restoring stale state
 
 ### R4. Make failures diagnosable and simplify the plan
 
-- [ ] Preserve bounded, sanitized launch/bootstrap failure categories and exit
-  status. The [launcher](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacControllerLaunch.swift:111)
+- [x] Preserve bounded, sanitized launch/bootstrap failure categories and exit
+  status. The [launcher](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacControllerLaunch.swift)
   discards all subprocess output, while bootstrap's false result is ignored by
   the menu retry loop. Distinguish an already registered job from a real failure
-- [ ] Use operation-specific errors. An extension attempt rejection should not
+- [x] Use operation-specific errors. An extension attempt rejection should not
   tell the user that their account/client list changed
-- [ ] After fixes, reconcile the current milestone checklist in
-  [the CLI plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli.md:1).
+- [x] After fixes, reconcile the current milestone checklist in
+  [the CLI plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli.md).
   Keep historical troubleshooting as evidence, but make current blockers and
   completed runtime proofs easy to find
 
@@ -354,7 +369,31 @@ Required live evidence:
 - [ ] Sleep/wake and multiple desktop/SSH clients. Treat fast user switching as a
   separate check because a per-user controller is not a machine-wide VPN lock
 
-## Review validation and limits
+## Implementation validation
+
+`./scripts/test.sh macos` passed with 246 macOS package tests, both strict
+Periphery scans, the unsigned arm64 app/system-extension build, and packaging
+verification. Shared Kit/AppCore and Firebase adapter tests also passed.
+The signed run repeated the passing tests and dead-code checks, then failed
+while signing the Release system extension with `errSecInternalComponent`.
+Signing/profile verification remains pending. The exact failure is recorded in
+[/private/tmp/cloudgateway-macos-signed-1.log](/private/tmp/cloudgateway-macos-signed-1.log).
+The fresh Sol High review loop is in progress.
+
+Production policies now live in the
+[controller orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift),
+[request store](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerRequests.swift),
+and [extension update orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacExtensionUpdateOrchestrator.swift).
+The [frontend client](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacFrontendClient.swift)
+uses domain snapshots and fences responses by sequence, generation, and controller
+instance. Its app adapter handles platform construction. The tracked CLI plan
+and macOS runbook describe the acceptance handshake and recovery behavior.
+
+Source checks cover the seven findings. The live evidence list above remains
+open. No installed app, running controller, VPN profile, or active tunnel was
+changed during implementation.
+
+## Original review validation and limits
 
 This pass used source/diff review, inspection of existing tests and plans, Apple
 primary documentation, and read-only comparison of existing signed artifacts.

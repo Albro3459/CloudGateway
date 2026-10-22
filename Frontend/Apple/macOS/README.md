@@ -194,22 +194,40 @@ finishes accepted work, and exits without stopping the VPN. launchd starts the
 installed controller on the next request. Stale menus reopen the verified app;
 clients never choose the replacement executable. Partial or invalid copies do
 not authorize a handoff. Recent request UUIDs and request digests survive the
-handoff for ten minutes, with a maximum of 64 live receipts. Acceptance confirms
-submission, not connection success. An uncertain result is never replayed.
+handoff for ten minutes, with a maximum of 64 live receipts. The controller first
+returns an operation ID and reserves the command. The frontend confirms receipt
+before execution can change routes. Unconfirmed reservations expire after 30
+seconds. Accepted, running, completed, failed, and unknown outcomes are separate
+from observed tunnel status. Only the active/latest result stays in memory,
+without a connection history. Results become unknown after controller restart,
+and uncertain work is never replayed automatically.
+
+Status and idempotent local disconnect use a small authenticated compatibility
+contract while a replaced controller drains. The menu labels retained observations
+when reconnecting and disables new starts until it reaches the current controller.
+Disconnect works while signed out and does not depend on receipt capacity or disk
+writes. Add Client preparation has a 20-second aggregate budget and four concurrent
+capacity reads. Unresolved capacities remain unknown, and closing its frontend
+cancels the preparation without cancelling confirmed VPN work.
 
 A changed VPN extension blocks new connections while status and disconnect stay
 available. Its update waits until every owned tunnel is idle, including profiles
 outside the signed-in account. The menu then attempts Apple's activation flow
 once automatically; Set Up/Update remains available for an explicit retry.
 Approval and reboot requirements persist across relaunch. An interrupted
-activation with an unknown result conservatively requires a restart. Updates
+activation becomes outcome unknown. An authenticated probe of the exact target
+can recover it without a reboot. Only an OS-confirmed reboot requirement remains
+blocked until a later boot. Readiness and activation completion share durable
+terminal receipts, so delayed callbacks cannot reopen an old update. Updates
 never disconnect a tunnel automatically.
 
-Every distributed app build must increase. Increment the extension build when
-its signed artifact changes, including signing identity changes. Same-version
-artifact drift is detected, but Apple may require a higher extension version to
-replace it outside System Extension developer mode. Keep development and
-Developer ID installations separate to avoid Keychain identity mismatches.
+Every distributed app build must increase. Every new release preparation also
+requires a fresh extension build and a verified baseline from the latest
+distributed signed app.
+Archive/export may change signature bytes even when extension source is unchanged.
+Resuming a preparation requires the exact recorded extension artifact, and drift
+is rejected before publication. Keep development and Developer ID installations
+separate to avoid Keychain identity mismatches.
 
 
 Signed checks cover activation/replacement, root/user isolation, repeated
@@ -220,7 +238,7 @@ at login. See the plan's
 Run the containing app from `/Applications` with SIP enabled.
 
 Build and publish a notarized Developer ID DMG with
-`./scripts/macos-release.sh --build <next-build-number> --publish`. Omit
+`./scripts/macos-release.sh --build <next-build-number> --previous-distributed-app <latest-signed-app> --publish`. Omit
 `--publish` to keep the release local. See
 [macOS release deployment](../../../docs/apple-macos-release.md) for signing
 setup, prepared artifacts, notarization retries, publishing existing builds,

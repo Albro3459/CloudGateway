@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **background controller and menu IPC built and reviewed, signed runtime proof pending**.
+Status: **controller orchestration rewrite in validation, signed runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -8,6 +8,17 @@ Keep [macos-cli-deferred.md](macos-cli-deferred.md) for now as historical resear
 Its two-mode design, claim that no controller is needed, proposed REST auth,
 unimplemented device-flow note, and larger command surface are superseded here.
 Do not use its old API support table as proof of SSH compatibility.
+
+## Orchestration rewrite checkpoint
+
+The review findings and source checklist live in
+[the controller review](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-controller-review.md).
+The implementation adds package-owned lifecycle/update transitions, request
+admission and results, a stable status/stop contract, and a generation-fenced
+frontend. The menu consumes domain snapshots and keeps presentation local.
+Signed installation, approval, replacement, reboot, and SSH evidence below remain
+separate acceptance gates. Historical test results later in this file describe
+older commits.
 
 ## Agreed behavior
 
@@ -191,9 +202,10 @@ app host, signing, a live Firebase session, or an activated tunnel extension.
 ### Accepted requests and observed status
 
 - Validate the request and acquire controller ownership before acknowledging an
-  operation ID. Send and flush the acceptance response before changing routes
-- Separate `accepted` from the final command result. An acceptance response
-  means the controller owns the work. It does not mean macOS accepted a start
+  operation ID. The frontend confirms receiving that ID before execution changes
+  routes. An unconfirmed reservation expires after 30 seconds without replay
+- Separate `accepted` from the final command result. Acceptance reserves work,
+  confirmation releases it for execution, and neither means macOS accepted a start
 - Detaching a client, Ctrl-C, a broken pipe, or a client deadline must not
   cancel an accepted VPN operation
 - A successful `up` result means the start API returned without an immediate
@@ -210,8 +222,8 @@ app host, signing, a live Firebase session, or an activated tunnel extension.
   an operation ID. `status` can recover it after SSH reconnects
 - Keep the latest result through a documented reconnect grace period before
   idle exit. Deduplicate transport retries by request ID within that lifetime.
-  A lost response leaves the result uncertain, so inspect status before issuing
-  another mutation rather than automatically repeating a request with a new ID
+  A lost confirmation response leaves the result uncertain, so inspect status
+  before issuing another mutation rather than automatically repeating a request with a new ID
 - Do not build a persistent per-user connection/operation history. Results
   expire on controller restart or replacement by a newer result. Report
   `operation_unknown`, then show current observed state
@@ -748,7 +760,7 @@ components were not changed for this fix.
 - [x] Reuse existing domain protocols, Firebase adapter, device-code flow,
   config coordinator, and extension IPC instead of duplicating them
 - [x] Implement authenticated/versioned/bounded controller IPC and shared snapshots
-- [ ] Add request IDs, acceptance handoff, independent VPN tasks, busy handling,
+- [x] Add request IDs, acceptance handoff, independent VPN tasks, busy handling,
   latest-result retrieval, restart reconciliation, and client reconnect behavior
 - [x] Keep explicit account fencing and install commit/rollback recovery intact
 - [x] Route all existing menu mutations, including Add Client, through the owner
@@ -781,7 +793,9 @@ components were not changed for this fix.
   ownership, idempotency, switching, and IPC validation
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
-- [x] Run `./scripts/test.sh macos --signed` for signing/profile checks
+- [ ] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
+  The 2026-10-21 rewrite run passed tests/scans, then failed system-extension
+  signing with `errSecInternalComponent`. Earlier signed results below are historical
 - [ ] Manually verify the signed runtime matrix: Terminal, local agent,
   noninteractive SSH, reboot before desktop login, desktop plus SSH, final SSH
   disconnect, lock/logout, sleep/wake, network loss, account switch, and app update
