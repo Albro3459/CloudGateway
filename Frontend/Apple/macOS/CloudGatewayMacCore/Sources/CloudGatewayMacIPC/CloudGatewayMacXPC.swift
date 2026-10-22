@@ -36,7 +36,6 @@ public enum CloudGatewayMacPeerRequirement {
 }
 
 public final class CloudGatewayMacXPCListener: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
-    public static let machServiceName = "group.com.gocloudlaunch.gateway.macos.tunnel"
     private let service: CloudGatewayMacSecretService
     private let requirement: String
     private let listener: NSXPCListener
@@ -54,7 +53,12 @@ public final class CloudGatewayMacXPCListener: NSObject, NSXPCListenerDelegate, 
             "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version
         ], codeHash: identity.codeHash) else { throw CloudGatewayMacSecretError.storageFailure }
         capturedExtensionVersion = version
-        listener = NSXPCListener(machServiceName: Self.machServiceName)
+        let name = try CloudGatewayMacTunnelEndpoint.name(extensionBuild: identity.build)
+        let network = Bundle.main.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any]
+        guard network?["NEMachServiceName"] as? String == name else {
+            throw CloudGatewayMacSecretError.invalidRequest
+        }
+        listener = NSXPCListener(machServiceName: name)
         super.init()
         listener.delegate = self
         listener.setConnectionCodeSigningRequirement(requirement)
@@ -152,8 +156,10 @@ private final class SecretEndpoint: NSObject, CloudGatewayMacSecretXPC, Sendable
 
 public final class CloudGatewayMacXPCSecretClient: CloudGatewayMacSecretClient, Sendable {
     private let requirement: String
+    private let machServiceName: String
 
-    public init(teamIdentifier: String) throws {
+    public init(teamIdentifier: String, extensionBuild: String) throws {
+        machServiceName = try CloudGatewayMacTunnelEndpoint.name(extensionBuild: extensionBuild)
         requirement = try CloudGatewayMacPeerRequirement.make(
             teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.tunnel.macos"
         )
@@ -199,7 +205,7 @@ public final class CloudGatewayMacXPCSecretClient: CloudGatewayMacSecretClient, 
               (request.config?.utf8.count ?? 0) <= CloudGatewayMacSecretBounds.configBytes else {
             throw CloudGatewayMacSecretError.invalidRequest
         }
-        let connection = NSXPCConnection(machServiceName: CloudGatewayMacXPCListener.machServiceName, options: .privileged)
+        let connection = NSXPCConnection(machServiceName: machServiceName, options: .privileged)
         connection.setCodeSigningRequirement(requirement)
         connection.remoteObjectInterface = NSXPCInterface(with: CloudGatewayMacSecretXPC.self)
         let reply: SecretReply = try await withCheckedThrowingContinuation { continuation in

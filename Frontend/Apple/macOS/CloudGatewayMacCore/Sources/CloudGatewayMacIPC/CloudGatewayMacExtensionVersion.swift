@@ -1,5 +1,15 @@
 import Foundation
 
+public enum CloudGatewayMacTunnelEndpoint {
+    public static func name(extensionBuild: String) throws -> String {
+        guard !extensionBuild.isEmpty, extensionBuild.utf8.count <= 64,
+              extensionBuild.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ component in
+                  !component.isEmpty && component.utf8.allSatisfy { (48...57).contains($0) }
+              }) else { throw CloudGatewayMacSecretError.invalidRequest }
+        return "group.com.gocloudlaunch.gateway.macos.tunnel.\(extensionBuild)"
+    }
+}
+
 public struct CloudGatewayMacExtensionVersion: Codable, Equatable, Sendable {
     public let bundleVersion: String
     public let bundleShortVersion: String

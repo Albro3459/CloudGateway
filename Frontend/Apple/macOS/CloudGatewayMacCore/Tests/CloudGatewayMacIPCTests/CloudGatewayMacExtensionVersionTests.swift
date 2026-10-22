@@ -2,6 +2,20 @@ import Foundation
 import Testing
 @testable import CloudGatewayMacIPC
 
+@Test func tunnelEndpointUsesTheExtensionBuild() throws {
+    #expect(try CloudGatewayMacTunnelEndpoint.name(extensionBuild: "4") == "group.com.gocloudlaunch.gateway.macos.tunnel.4")
+    #expect(try CloudGatewayMacTunnelEndpoint.name(extensionBuild: "4.1") == "group.com.gocloudlaunch.gateway.macos.tunnel.4.1")
+    #expect(try CloudGatewayMacTunnelEndpoint.name(extensionBuild: "4") != CloudGatewayMacTunnelEndpoint.name(extensionBuild: "3"))
+}
+
+@Test func tunnelEndpointRejectsMalformedBuilds() {
+    for build in ["", ".4", "4.", "4..1", "4/1", "4\n", "４", "4a", String(repeating: "4", count: 65)] {
+        #expect(throws: CloudGatewayMacSecretError.invalidRequest) {
+            try CloudGatewayMacTunnelEndpoint.name(extensionBuild: build)
+        }
+    }
+}
+
 @Test func readinessReplyIncludesRunningBundleVersionAndSurvivesEncoding() throws {
     let version = try #require(CloudGatewayMacExtensionVersion(infoDictionary: [
         "CFBundleVersion": "42", "CFBundleShortVersionString": "1.2.0"

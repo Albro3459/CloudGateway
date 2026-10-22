@@ -693,6 +693,28 @@ scans, the unsigned arm64 app/extension build, and bundle packaging verification
 Fresh Sol research confirmed the signing mismatch, and a separate patch review
 reported no blockers. The running installation was not changed.
 
+The first synchronized extension replacement on 2026-10-21 exposed Apple's
+upgrade-related XPC issue, tracked as `FB17032197`. macOS reported extension
+build 3 activated, but launchd had rejected its fixed Mach endpoint because
+build 2 still owned it, then removed build 2's job. Build 3 never launched and
+had no advertised endpoint. The controller therefore showed VPN setup required,
+and repeated activation returned alreadyActive without restoring communication.
+
+App build 6 and extension build 4 use an extension-build-specific Mach service,
+following [Apple DTS's suggested workaround](https://developer.apple.com/forums/thread/779395).
+Both clients derive the endpoint from the bundled extension build; the listener
+and packaging checks enforce the same declaration. Extension startup enters
+NetworkExtension mode before initializing the extra XPC listener. Failed pings
+query extension properties to distinguish updates from first setup or approval,
+while readiness still requires matching authenticated artifact identity.
+The [permanent issue record](../docs/apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197)
+contains the diagnostic sequence, prevention rule, and recovery path.
+`./scripts/test.sh macos` passed with 199 macOS host-free tests, both strict
+Periphery scans, the unsigned arm64 app/extension build, and packaging checks.
+The final Sol review found no remaining actionable findings. Signed reinstall
+and live replacement confirmation remain pending; the installed app and running
+components were not changed for this fix.
+
 ### 1. Signed runtime proof, before the full command surface
 
 - [x] Add the minimum headless dispatch and launch harness inside the existing

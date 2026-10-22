@@ -257,9 +257,9 @@ class MacOSBuildVerificationTests(unittest.TestCase):
                   "CFBundleExecutable": "Executable"}
         for bundle, info in [
             (app, dict(common, CFBundleIdentifier=verifier.APP_ID, LSUIElement=True)),
-            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID,
+            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID, CFBundleVersion="4",
                              NSSystemExtensionUsageDescription="Connect to your configured networks", NetworkExtension={
-                "NEMachServiceName": f"{verifier.APP_GROUP}.tunnel",
+                "NEMachServiceName": f"{verifier.APP_GROUP}.tunnel.4",
                 "NEProviderClasses": {"com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"},
             })),
         ]:
@@ -286,6 +286,18 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             ])
             info_path = extension / "Contents" / "Info.plist"
             valid_info = verifier.read_plist(info_path)
+            for service in (f"{verifier.APP_GROUP}.tunnel", f"{verifier.APP_GROUP}.tunnel.3", "other.tunnel.4"):
+                invalid_info = dict(valid_info, NetworkExtension=dict(valid_info["NetworkExtension"], NEMachServiceName=service))
+                info_path.write_bytes(plistlib.dumps(invalid_info))
+                with self.subTest(service=service), self.assertRaisesRegex(ValueError, "Mach service mismatch"):
+                    verifier.verify_bundle(app, False)
+            for build in (None, 4, "", "4..1", "4/1", "4\n", "4" * 65):
+                invalid_info = dict(valid_info, CFBundleVersion=build)
+                if build is None:
+                    invalid_info.pop("CFBundleVersion")
+                info_path.write_bytes(plistlib.dumps(invalid_info))
+                with self.subTest(build=build), self.assertRaisesRegex(ValueError, "Extension build"):
+                    verifier.verify_bundle(app, False)
             for description in (None, "", "   ", 17):
                 invalid_info = dict(valid_info)
                 if description is None:

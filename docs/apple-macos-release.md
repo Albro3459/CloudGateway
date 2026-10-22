@@ -6,7 +6,7 @@ root after the required validation passes:
 
 ```sh
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 6 --publish
+./scripts/macos-release.sh --build 7 --publish
 ```
 
 Choose an app build number higher than `CLOUDGATEWAY_APP_BUILD` in the project
@@ -15,7 +15,7 @@ and every previous distributed app release. `--build` overrides only
 `CLOUDGATEWAY_APP_VERSION` unless `--version` overrides it:
 
 ```sh
-./scripts/macos-release.sh --build 7 --version 1.1.1 --publish
+./scripts/macos-release.sh --build 8 --version 1.1.1 --publish
 ```
 
 App build and version overrides apply to the archive. The VPN extension keeps
@@ -23,10 +23,12 @@ its explicit `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION` from the project.
 Keep each target's versions consistent across Debug, Release, and DeveloperID.
 Bump the extension's project versions when its code or packaged dependencies
 change, including a changed signing identity or re-signed artifact. An app-only
-release can keep extension 1.0.0 (build 3) only when its embedded signed extension
+release can keep extension 1.0.0 (build 4) only when its embedded signed extension
 artifact remains identical. A fingerprint mismatch blocks starts even when
 version strings match; Apple's replacement flow still requires distinct versions
 outside developer mode.
+The Mach service name includes the extension build, so incrementing that build
+also avoids stale endpoint registration during replacement.
 
 Project versions and Git staging stay unchanged. Release metadata records both
 targets' versions, the source commit, and whether the working tree had changes.

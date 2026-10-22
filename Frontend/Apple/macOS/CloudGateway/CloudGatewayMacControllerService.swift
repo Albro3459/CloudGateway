@@ -4,6 +4,7 @@ import CloudGatewayMacIPC
 import CryptoKit
 import Darwin
 import Foundation
+import SystemExtensions
 
 @MainActor
 final class CloudGatewayMacControllerService {
@@ -379,7 +380,7 @@ final class CloudGatewayMacControllerService {
             defer { readinessTask = nil }
             extensionIsIdle = (try? await !runtime.hasAnyActiveTunnel()) == true
             do {
-                let client = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier)
+                let client = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier, extensionBuild: identity.build)
                 let version = try await client.ping()
                 guard extensionEpoch == epoch else { return }
                 let state = CloudGatewayMacSetupState.readiness(runningVersion: version, bundledVersion: expected)
@@ -392,7 +393,11 @@ final class CloudGatewayMacControllerService {
                 else { setSetupState(state) }
             } catch {
                 guard extensionEpoch == epoch else { return }
-                if extensionUpdate == nil { setSetupState(.required) }
+                if extensionUpdate == nil {
+                    let state = await ExtensionRegistrationProbe.readiness()
+                    guard extensionEpoch == epoch, extensionUpdate == nil else { return }
+                    setSetupState(state)
+                }
             }
         }
     }
@@ -400,5 +405,48 @@ final class CloudGatewayMacControllerService {
     private func setSetupState(_ state: CloudGatewayMacSetupState) {
         setupState = state
         runtime.controller.setSetupState(state)
+    }
+}
+
+private final class ExtensionRegistrationProbe: NSObject, OSSystemExtensionRequestDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<CloudGatewayMacSetupState, Never>?
+    private let request = OSSystemExtensionRequest.propertiesRequest(
+        forExtensionWithIdentifier: "com.gocloudlaunch.gateway.tunnel.macos", queue: .global()
+    )
+
+    static func readiness() async -> CloudGatewayMacSetupState {
+        let probe = ExtensionRegistrationProbe()
+        return await withCheckedContinuation { continuation in
+            probe.continuation = continuation
+            probe.request.delegate = probe
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) { probe.finish(.required) }
+            OSSystemExtensionManager.shared.submitRequest(probe.request)
+        }
+    }
+
+    func request(_ request: OSSystemExtensionRequest, foundProperties properties: [OSSystemExtensionProperties]) {
+        let installed = properties.filter { !$0.isUninstalling }
+        if installed.contains(where: \.isAwaitingUserApproval) { finish(.awaitingApproval) }
+        else { finish(installed.contains(where: \.isEnabled) ? .updateRequired : .required) }
+    }
+
+    func request(_ request: OSSystemExtensionRequest, didFailWithError error: any Error) { finish(.required) }
+
+    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) { finish(.awaitingApproval) }
+
+    func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {}
+
+    func request(
+        _ request: OSSystemExtensionRequest, actionForReplacingExtension existing: OSSystemExtensionProperties,
+        withExtension replacement: OSSystemExtensionProperties
+    ) -> OSSystemExtensionRequest.ReplacementAction { .cancel }
+
+    private func finish(_ state: CloudGatewayMacSetupState) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: state)
     }
 }

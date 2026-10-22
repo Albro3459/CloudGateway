@@ -35,8 +35,14 @@ final class CloudGatewayMacControllerRuntime {
         let cache = CloudGatewayMacAccountCache(directory: Self.directory)
         let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
         let secrets: CloudGatewayMacXPCSecretClient
-        do { secrets = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier) }
-        catch { preconditionFailure("The macOS signing team configuration is invalid") }
+        do {
+            let identity = try CloudGatewayMacSignedBundle.installed(
+                at: Bundle.main.bundleURL.appendingPathComponent(
+                    "Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension"
+                ), teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.tunnel.macos"
+            )
+            secrets = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier, extensionBuild: identity.build)
+        } catch { preconditionFailure("The bundled macOS VPN extension is invalid") }
         profiles = CloudGatewayMacVPNProfileAdapter()
         let configs = CloudGatewayMacConfigCoordinator(secrets: secrets, profiles: profiles, snapshots: cache)
         let dashboard = URL(string: "https://gocloudlaunch.com")!

@@ -156,7 +156,7 @@ include the macOS App Group in both provisioning profiles:
 | Menu app | `com.gocloudlaunch.gateway.macos` |
 | Packet tunnel | `com.gocloudlaunch.gateway.tunnel.macos` |
 | App Group | `group.com.gocloudlaunch.gateway.macos` |
-| Mach service | `group.com.gocloudlaunch.gateway.macos.tunnel` |
+| Mach service | `group.com.gocloudlaunch.gateway.macos.tunnel.<extension-build>` |
 
 Development profiles authorize `packet-tunnel-provider`. Developer ID profiles
 authorize `packet-tunnel-provider-systemextension`. The app also needs System
@@ -182,11 +182,20 @@ opening or refreshing the menu only checks readiness. A missing or invalid
 embedded extension requires reinstalling the app. Existing VPNs are retained
 until an explicit command or macOS replacement changes them.
 
-Increment the extension's project build number whenever its implementation or
-linked code changes. App-only releases can keep the extension version. The
-handshake cannot distinguish different binaries deliberately shipped with
-identical extension versions. Rebuilding and signing an unchanged extension
-does not guarantee a byte-identical artifact.
+Increment the extension's project build number whenever its implementation,
+linked code, or signing changes. App-only releases can reuse the exact signed
+extension artifact. Readiness also compares the signed artifact hash, so a
+rebuild with identical versions can require an update.
+
+The extension declares a build-specific `NEMachServiceName`. Both controller
+clients derive that endpoint from the bundled extension build. The listener
+checks that its declared name matches its captured signed build. Changing the
+name works around the
+[extension replacement endpoint issue](apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197).
+Packaging checks reject a fixed name or a suffix for another build.
+If the new endpoint is unreachable, the controller queries macOS extension
+properties to distinguish an installed extension needing an update from first
+setup or pending approval. Only the authenticated ping can establish readiness.
 
 The extension belongs at
 `Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.
@@ -216,6 +225,12 @@ Development profiles, register the development Mac with the team and generate
 profiles for both IDs with their required capabilities and App Group membership.
 The Apple Development certificate alone does not supply those profiles. Retry
 the signed build before treating the app as ready for activation.
+
+### Known issue: extension replacement loses its Mach endpoint (FB17032197)
+
+The permanent [Apple known-issues record](apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197)
+contains the diagnostic timeline, Apple references, build-specific endpoint
+workaround, recovery steps, and validation status.
 
 ## Firebase and browser sign-in
 

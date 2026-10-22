@@ -138,6 +138,7 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 ## More Docs
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
+* Apple known issues and workarounds: [docs/apple-known-issues.md](docs/apple-known-issues.md)
 * macOS release deployment: [docs/apple-macos-release.md](docs/apple-macos-release.md)
 * macOS menu screenshot: [docs/apple-macos-screenshots.md](docs/apple-macos-screenshots.md)
 * Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
