@@ -1,7 +1,8 @@
 # macOS controller refactor review
 
 Reviewed 2026-10-21. Source implementation and fresh review are complete.
-Signed validation and live acceptance remain pending. Checked items indicate
+Signed validation passed in the user's terminal on 2026-10-22. Live acceptance
+remains pending. Checked items indicate
 source changes and automated coverage, while live acceptance is tracked separately.
 
 Scope: [PR #16](https://github.com/Albro3459/CloudGateway/pull/16), `mac-cli`
@@ -20,8 +21,8 @@ their findings and made the recommendations below.
 
 Keep the single background controller and the existing VPN/auth core. The
 separation is appropriate for a menu app and a future CLI, but the controller/menu
-milestone is not finished. The seven defects below are fixed. Complete the signed
-build and runtime checks before treating it as stable.
+milestone is not finished. The seven defects below are fixed and the signed build
+passed. Complete the runtime checks before treating it as stable.
 
 The implementation moves controller lifecycle, request admission/results, and
 extension-update reconciliation into package components with injected effects.
@@ -50,7 +51,7 @@ limitation requires a separately reviewed change. Do not start CLI commands yet.
 - [x] Validate inventory commit/publication, signed-out stop, and bounded preparation
 - [x] Validate the package dispatcher, durable extension transitions, and frontend races
 - [x] Pass unsigned macOS checks, including strict dead-code scans
-- [ ] Pass signed macOS build and entitlement/profile verification
+- [x] Pass signed macOS build and entitlement/profile verification
 - [x] Complete fresh Sol High review rounds and resolve their findings
 - [ ] Complete the live runtime matrix below
 
@@ -407,7 +408,8 @@ started against `92b29cb8`, whose code is unchanged from `8589488f`.
 
 Both reviews were read-only, with no new tests, builds, or runtime checks. Round 2
 found no additional confirmed defects, completing the fresh source review gate.
-Signed build/profile verification and the live runtime matrix remain open.
+Signed build/profile verification subsequently passed in the user's terminal.
+The live runtime matrix remains open.
 
 The main agent continued a bounded source review of the app adapters, command
 confirmation/results, handoff status and disconnect, inventory commit fencing,
@@ -420,10 +422,20 @@ validation suite was repeated during this follow-up.
 `./scripts/test.sh macos` passed after the review fixes with 263 macOS package tests, both strict
 Periphery scans, the unsigned arm64 app/system-extension build, and packaging
 verification. Shared Kit/AppCore and Firebase adapter tests also passed.
-The signed run repeated the passing tests and dead-code checks, then failed
-while signing the Release system extension with `errSecInternalComponent`.
-Signing/profile verification remains pending. The exact failure is recorded in
-[/private/tmp/cloudgateway-macos-signed-1.log](/private/tmp/cloudgateway-macos-signed-1.log).
+The user ran `./scripts/test.sh macos --signed` in their terminal on 2026-10-22
+and supplied output ending in `All checks passed`. That run passed the Release
+arm64 app/system-extension build, bundle packaging, signed entitlements,
+provisioning profiles, and Hardened Runtime verification. This is user-run
+validation evidence, not an agent-session success or live installation proof.
+
+The agent's signing attempts failed with `errSecInternalComponent`, recorded in
+[/private/tmp/cloudgateway-macos-signed-1.log](/private/tmp/cloudgateway-macos-signed-1.log)
+and [/private/tmp/cloudgateway-macos-signed-2.log](/private/tmp/cloudgateway-macos-signed-2.log).
+The second attempt also hit an intermittent deadline-test failure:
+`capacityPreparationDeadlineIncludesStalledTokenRetrieval` returned `.offline`
+under its 20 ms aggregate deadline. The user's subsequent full run passed.
+No source change was made for that test, so its timing sensitivity remains a
+follow-up if it recurs.
 The fresh Sol High review loop is complete, with no remaining confirmed findings.
 
 Production policies now live in the

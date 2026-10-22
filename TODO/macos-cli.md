@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **controller orchestration rewrite implemented and reviewed, signed validation and runtime proof pending**.
+Status: **controller orchestration rewrite implemented, reviewed, and signed-build validated, runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -20,6 +20,9 @@ The latest unsigned macOS checks passed with 263 macOS package tests, both stric
 dead-code scans, and app/extension build and packaging verification. Round 1's
 seven findings are fixed. Both fresh Secure Codex Sol High reviewers in round 2
 found no actionable defects in the final source at `8589488f`.
+The user reported a passing `./scripts/test.sh macos --signed` run from their
+terminal on 2026-10-22, including packaging, entitlements, profiles, and Hardened
+Runtime verification. Agent-session signing attempts failed separately.
 Signed installation, approval, replacement, reboot, and SSH evidence below remain
 separate acceptance gates. Historical test results later in this file describe
 older commits.
@@ -798,9 +801,9 @@ components were not changed for this fix.
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
 - [x] Complete fresh Sol High source reviews of the controller orchestration rewrite
-- [ ] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
-  The 2026-10-21 rewrite run passed tests/scans, then failed system-extension
-  signing with `errSecInternalComponent`. Earlier signed results below are historical
+- [x] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
+  The user supplied a passing terminal run on 2026-10-22. Agent-session attempts
+  failed with `errSecInternalComponent`. Earlier signed results below are historical
 - [ ] Manually verify the signed runtime matrix: Terminal, local agent,
   noninteractive SSH, reboot before desktop login, desktop plus SSH, final SSH
   disconnect, lock/logout, sleep/wake, network loss, account switch, and app update
