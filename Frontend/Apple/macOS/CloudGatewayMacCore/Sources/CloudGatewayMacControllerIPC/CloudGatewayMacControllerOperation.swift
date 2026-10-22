@@ -1,0 +1,48 @@
+import Foundation
+
+public struct CloudGatewayMacControllerOperation: Codable, Equatable, Sendable {
+    public enum State: String, Codable, Sendable {
+        case accepted, running, completed, failed, unknown
+    }
+
+    public let id: UUID
+    public let state: State
+    public let failure: CloudGatewayMacControllerFailure?
+
+    public init(id: UUID, state: State, failure: CloudGatewayMacControllerFailure? = nil) {
+        self.id = id
+        self.state = state
+        self.failure = failure
+    }
+
+    func validate() throws {
+        guard failure == nil || state == .failed || state == .unknown else {
+            throw CloudGatewayMacControllerFailure.invalidRequest
+        }
+    }
+}
+
+// This small contract remains readable while normal controller protocols change
+public struct CloudGatewayMacControllerStatus: Codable, Equatable, Sendable {
+    public enum Phase: String, Codable, Sendable {
+        case disconnected, connecting, connected, disconnecting
+    }
+
+    public let phase: Phase
+    public let hasActiveTunnel: Bool
+    public let needsStop: Bool
+    public let observationAvailable: Bool
+
+    public init(hasActiveTunnel: Bool, needsStop: Bool, observationAvailable: Bool, phase: Phase? = nil) {
+        self.phase = phase ?? (hasActiveTunnel ? .connected : needsStop ? .connecting : .disconnected)
+        self.hasActiveTunnel = hasActiveTunnel
+        self.needsStop = needsStop
+        self.observationAvailable = observationAvailable
+    }
+
+    func validate() throws {
+        guard (!hasActiveTunnel || needsStop),
+              phase != .connected || hasActiveTunnel,
+              phase == .disconnected || needsStop else { throw CloudGatewayMacControllerFailure.invalidRequest }
+    }
+}

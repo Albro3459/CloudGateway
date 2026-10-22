@@ -8,6 +8,7 @@ let package = Package(
     products: [
         .library(name: "CloudGatewayMacCore", targets: ["CloudGatewayMacCore"]),
         .library(name: "CloudGatewayMacIPC", targets: ["CloudGatewayMacIPC"]),
+        .library(name: "CloudGatewayMacControllerIPC", targets: ["CloudGatewayMacControllerIPC"]),
     ],
     dependencies: [.package(path: "../../CloudGatewayKit")],
     targets: [
@@ -19,8 +20,14 @@ let package = Package(
             .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
             .product(name: "CloudGatewayAppCore", package: "CloudGatewayKit"),
         ]),
+        .target(name: "CloudGatewayMacControllerIPC", dependencies: [
+            "CloudGatewayMacCore",
+            "CloudGatewayMacIPC",
+            .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
+        ]),
         .testTarget(name: "CloudGatewayMacIPCTests", dependencies: ["CloudGatewayMacIPC"]),
-        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore"]),
+        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC"]),
+        .testTarget(name: "CloudGatewayMacControllerIPCTests", dependencies: ["CloudGatewayMacControllerIPC"]),
     ],
     swiftLanguageModes: [.v6]
 )

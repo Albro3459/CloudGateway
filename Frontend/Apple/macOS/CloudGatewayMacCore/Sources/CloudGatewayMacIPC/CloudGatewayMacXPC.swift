@@ -36,17 +36,29 @@ public enum CloudGatewayMacPeerRequirement {
 }
 
 public final class CloudGatewayMacXPCListener: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
-    public static let machServiceName = "group.com.gocloudlaunch.gateway.macos.tunnel"
     private let service: CloudGatewayMacSecretService
     private let requirement: String
     private let listener: NSXPCListener
+    private let capturedExtensionVersion: CloudGatewayMacExtensionVersion
 
     public init(service: CloudGatewayMacSecretService, teamIdentifier: String) throws {
         self.service = service
         requirement = try CloudGatewayMacPeerRequirement.make(
             teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.macos"
         )
-        listener = NSXPCListener(machServiceName: Self.machServiceName)
+        let identity = try CloudGatewayMacSignedBundle.running(
+            teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.tunnel.macos"
+        )
+        guard let version = CloudGatewayMacExtensionVersion(infoDictionary: [
+            "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version
+        ], codeHash: identity.codeHash) else { throw CloudGatewayMacSecretError.storageFailure }
+        capturedExtensionVersion = version
+        let name = try CloudGatewayMacTunnelEndpoint.name(extensionBuild: identity.build)
+        let network = Bundle.main.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any]
+        guard network?["NEMachServiceName"] as? String == name else {
+            throw CloudGatewayMacSecretError.invalidRequest
+        }
+        listener = NSXPCListener(machServiceName: name)
         super.init()
         listener.delegate = self
         listener.setConnectionCodeSigningRequirement(requirement)
@@ -59,7 +71,9 @@ public final class CloudGatewayMacXPCListener: NSObject, NSXPCListenerDelegate, 
         guard userId != 0, userId != UInt32.max else { return false }
         connection.setCodeSigningRequirement(requirement)
         connection.exportedInterface = NSXPCInterface(with: CloudGatewayMacSecretXPC.self)
-        connection.exportedObject = SecretEndpoint(service: service, userId: userId)
+        connection.exportedObject = SecretEndpoint(
+            service: service, userId: userId, capturedExtensionVersion: capturedExtensionVersion
+        )
         connection.activate()
         return true
     }
@@ -70,10 +84,13 @@ public final class CloudGatewayMacXPCListener: NSObject, NSXPCListenerDelegate, 
 private final class SecretEndpoint: NSObject, CloudGatewayMacSecretXPC, Sendable {
     private let service: CloudGatewayMacSecretService
     private let userId: UInt32
+    private let capturedExtensionVersion: CloudGatewayMacExtensionVersion
 
-    init(service: CloudGatewayMacSecretService, userId: UInt32) {
+    init(service: CloudGatewayMacSecretService, userId: UInt32,
+         capturedExtensionVersion: CloudGatewayMacExtensionVersion) {
         self.service = service
         self.userId = userId
+        self.capturedExtensionVersion = capturedExtensionVersion
     }
 
     func perform(_ request: Data, reply: @escaping @Sendable (Data) -> Void) {
@@ -95,11 +112,7 @@ private final class SecretEndpoint: NSObject, CloudGatewayMacSecretXPC, Sendable
                     guard request.config == nil, request.reference == nil else {
                         throw CloudGatewayMacSecretError.invalidRequest
                     }
-                    guard let info = Bundle.main.infoDictionary,
-                          let version = CloudGatewayMacExtensionVersion(infoDictionary: info) else {
-                        throw CloudGatewayMacSecretError.storageFailure
-                    }
-                    result = SecretReply(extensionVersion: version)
+                    result = SecretReply(extensionVersion: capturedExtensionVersion)
                 case .install:
                     guard let config = request.config, request.reference == nil else {
                         throw CloudGatewayMacSecretError.invalidRequest
@@ -143,8 +156,10 @@ private final class SecretEndpoint: NSObject, CloudGatewayMacSecretXPC, Sendable
 
 public final class CloudGatewayMacXPCSecretClient: CloudGatewayMacSecretClient, Sendable {
     private let requirement: String
+    private let machServiceName: String
 
-    public init(teamIdentifier: String) throws {
+    public init(teamIdentifier: String, extensionBuild: String) throws {
+        machServiceName = try CloudGatewayMacTunnelEndpoint.name(extensionBuild: extensionBuild)
         requirement = try CloudGatewayMacPeerRequirement.make(
             teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.tunnel.macos"
         )
@@ -190,7 +205,7 @@ public final class CloudGatewayMacXPCSecretClient: CloudGatewayMacSecretClient, 
               (request.config?.utf8.count ?? 0) <= CloudGatewayMacSecretBounds.configBytes else {
             throw CloudGatewayMacSecretError.invalidRequest
         }
-        let connection = NSXPCConnection(machServiceName: CloudGatewayMacXPCListener.machServiceName, options: .privileged)
+        let connection = NSXPCConnection(machServiceName: machServiceName, options: .privileged)
         connection.setCodeSigningRequirement(requirement)
         connection.remoteObjectInterface = NSXPCInterface(with: CloudGatewayMacSecretXPC.self)
         let reply: SecretReply = try await withCheckedThrowingContinuation { continuation in

@@ -34,7 +34,7 @@
 			<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
 		</dict>
 		<key>NEMachServiceName</key>
-		<string>group.com.gocloudlaunch.gateway.macos.tunnel</string>
+		<string>group.com.gocloudlaunch.gateway.macos.tunnel.$(CURRENT_PROJECT_VERSION)</string>
 	</dict>
 </dict>
 </plist>

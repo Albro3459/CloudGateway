@@ -65,6 +65,7 @@ private final class BrowserAuth: CloudGatewayCustomTokenAuthServicing {
     var isCustomTokenSignInSettling = false
     var signInCount = 0
     var signOutCount = 0
+    var signOutError: CloudGatewayDeviceAuthError?
     var shouldSuspendExchange = false
     var continuation: CheckedContinuation<Void, Never>?
     private var generation = 0
@@ -88,6 +89,11 @@ private final class BrowserAuth: CloudGatewayCustomTokenAuthServicing {
     func signOut() throws {
         generation += 1
         signOutCount += 1
+        if let signOutError {
+            currentUser = nil
+            isCustomTokenSignInSettling = true
+            throw signOutError
+        }
         currentUser = nil
     }
 }
@@ -266,13 +272,26 @@ private func waitUntil(_ condition: () -> Bool) async {
     let flow = coordinator(service: DeviceService(), auth: auth, clock: PollClock())
     flow.begin()
     await waitUntil { auth.continuation != nil }
-    flow.signOut()
+    #expect(flow.signOut())
     #expect(!flow.begin())
     auth.continuation?.resume()
     auth.continuation = nil
     await waitUntil { !auth.isCustomTokenSignInSettling }
     #expect(flow.state == .signedOut)
     #expect(auth.currentUser == nil)
+}
+
+@Test @MainActor func signOutReportsFailedCleanupEvenWhenCredentialsAreSuppressed() async {
+    let auth = BrowserAuth()
+    auth.currentUser = AuthenticatedUser(uid: "user-a", email: nil)
+    auth.signOutError = .unavailable
+    let flow = coordinator(service: DeviceService(), auth: auth, clock: PollClock())
+
+    #expect(!flow.signOut())
+    #expect(flow.state == .failed(.unavailable))
+    #expect(auth.currentUser == nil)
+    #expect(auth.isCustomTokenSignInSettling)
+    #expect(!flow.begin())
 }
 
 @Test @MainActor func productAccessDenialClearsSDKSession() async {

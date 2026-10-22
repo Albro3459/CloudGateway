@@ -1,5 +1,9 @@
 # macOS CLI (Deferred)
 
+Historical proposal, superseded by [macos-cli.md](macos-cli.md). Kept for
+research context. The original status and implementation assumptions below
+are no longer the plan of record.
+
 Status: **deferred, not scheduled.** Not part of the macOS v1 plan. See
 `TODO/macos-app.md` for the plan of record.
 

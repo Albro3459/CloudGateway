@@ -204,7 +204,10 @@ def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
     require(isinstance(usage_description, str) and bool(usage_description.strip()),
             "System extension usage description missing or invalid")
     network = extension_info.get("NetworkExtension", {})
-    require(network.get("NEMachServiceName") == f"{APP_GROUP}.tunnel", "Mach service mismatch")
+    build = extension_info.get("CFBundleVersion")
+    require(isinstance(build, str) and len(build) <= 64 and re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", build),
+            "Extension build missing or invalid")
+    require(network.get("NEMachServiceName") == f"{APP_GROUP}.tunnel.{build}", "Mach service mismatch")
     require(network.get("NEProviderClasses") == {
         "com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"
     }, "Packet provider class mapping mismatch")
