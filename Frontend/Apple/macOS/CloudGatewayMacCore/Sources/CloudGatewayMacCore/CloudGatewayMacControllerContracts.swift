@@ -22,23 +22,53 @@ public struct CloudGatewayMacClientCreationContext: Equatable, Sendable {
     let controllerId: UUID
 }
 
-public struct CloudGatewayMacControllerSnapshot: Equatable, Sendable {
-    public let groups: [CloudGatewayMacMenuRegion]
-    public let statusTitle: String
-    public let canToggleVPN: Bool
-    public let canTurnOff: Bool
-    public let hasActiveTunnel: Bool
-    public let reconnectIdentifier: String?
-    public let canRefresh: Bool
-    public let canSignOut: Bool
+public enum CloudGatewayMacCommandResult: String, Equatable, Sendable {
+    case completed
+    case failed
+    case unknown
+}
+
+public enum CloudGatewayMacInventoryFreshness: String, Equatable, Sendable {
+    case unavailable
+    case refreshing
+    case current
+    case cached
+}
+
+public struct CloudGatewayMacDomainSnapshot: Equatable, Sendable {
     public let accountId: String?
+    public let hasRetainedSession: Bool
+    public let accessAuthorized: Bool
+    public let inventoryFreshness: CloudGatewayMacInventoryFreshness
+    public let installedIdentifiers: [String]
+    public let observedProfiles: [CloudGatewayMacObservedProfile]
+    public let observationIsFresh: Bool
+    public let commandInFlight: Bool
+    public let clients: [CloudGatewayMacClientMetadata]
+}
+
+public struct CloudGatewayMacClientMetadata: Equatable, Sendable {
+    public let identifier: String
+    public let regionId: String
+    public let regionName: String
+    public let regionOrder: Int
+    public let clientName: String
+    public let ownerLabel: String?
+    public let isEligible: Bool
+    public let status: CloudGatewayTunnelStatus?
+}
+
+public struct CloudGatewayMacObservedProfile: Equatable, Sendable {
+    public let identifier: String
+    public let status: CloudGatewayTunnelStatus
+}
+
+public struct CloudGatewayMacControllerSnapshot: Equatable, Sendable {
+    public let domain: CloudGatewayMacDomainSnapshot
     public let lastSelectedIdentifier: String?
     public let browserState: CloudGatewayMacBrowserAuthState
     public let isRestoringSession: Bool
     public let isAuthSettling: Bool
-    public let hasRetainedSession: Bool
-    public let inventoryInFlight: Bool
     public let canCreateClient: Bool
     public let errorMessage: String?
-    public let hasUnlistedActiveProfile: Bool
 }

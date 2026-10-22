@@ -1,5 +1,4 @@
 import CloudGatewayKit
-import CloudGatewayMacIPC
 
 public enum CloudGatewayMacSetupState: Equatable, Sendable {
     case required
@@ -33,20 +32,6 @@ public enum CloudGatewayMacSetupState: Equatable, Sendable {
         case .failed(let code): "VPN setup failed (error \(code)); check approval and signing"
         case .unavailable: "Move CloudGateway to /Applications, then set up VPN"
         }
-    }
-
-    public static func readiness(
-        runningVersion: CloudGatewayMacExtensionVersion?,
-        bundledVersion: CloudGatewayMacExtensionVersion
-    ) -> Self {
-        guard let runningVersion,
-              runningVersion.bundleVersion == bundledVersion.bundleVersion,
-              runningVersion.bundleShortVersion == bundledVersion.bundleShortVersion,
-              runningVersion.hasCodeHash, bundledVersion.hasCodeHash,
-              runningVersion.codeHash == bundledVersion.codeHash else {
-            return .updateRequired
-        }
-        return .ready
     }
 
     public static func canReplaceExtension(

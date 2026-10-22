@@ -12,6 +12,7 @@ public final class CloudGatewayMacController {
     private let cache: CloudGatewayMacAccountCache
     private let profiles: any CloudGatewayMacProfileAdapter
     private let configs: CloudGatewayMacConfigCoordinator
+    private let inventoryAuthorizationDidCommit: @MainActor () async -> Void
     private let controllerId = UUID()
     private var setupState: CloudGatewayMacSetupState = .required
     private var browser: CloudGatewayMacBrowserAuthCoordinator!
@@ -36,6 +37,9 @@ public final class CloudGatewayMacController {
     private var lastInventoryRefresh: ContinuousClock.Instant?
     private var restorationTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
+    private var inventoryCommitTask: Task<Void, Error>?
+    private var hasAuthorizedInventory = false
+    private var hasObservedProfiles = false
 
     public init(
         auth: any CloudGatewayMacControllerAuthServicing,
@@ -44,13 +48,15 @@ public final class CloudGatewayMacController {
         profiles: any CloudGatewayMacProfileAdapter,
         cache: CloudGatewayMacAccountCache,
         configs: CloudGatewayMacConfigCoordinator,
-        dashboardOrigin: URL
+        dashboardOrigin: URL,
+        inventoryAuthorizationDidCommit: @escaping @MainActor () async -> Void = {}
     ) {
         self.auth = auth
         self.inventory = inventory
         self.profiles = profiles
         self.cache = cache
         self.configs = configs
+        self.inventoryAuthorizationDidCommit = inventoryAuthorizationDidCommit
         browser = CloudGatewayMacBrowserAuthCoordinator(
             service: deviceAuth, auth: auth, dashboardOrigin: dashboardOrigin,
             checkAccess: { [weak self] candidate in
@@ -93,7 +99,7 @@ public final class CloudGatewayMacController {
     }
 
     public var hasPendingWork: Bool {
-        if inventoryTask != nil || restorationTask != nil || commandTask != nil
+        if inventoryTask != nil || inventoryCommitTask != nil || restorationTask != nil || commandTask != nil
             || cancellationTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
             return true
         }
@@ -103,23 +109,25 @@ public final class CloudGatewayMacController {
         }
     }
 
-    public func snapshot(setupState: CloudGatewayMacSetupState) -> CloudGatewayMacControllerSnapshot {
-        let state = presentation(setupState: setupState)
-        let groups = state.groups
-        let visible = Set(groups.flatMap(\.rows).map(\.identifier))
-        return CloudGatewayMacControllerSnapshot(
-            groups: groups, statusTitle: state.statusTitle,
-            canToggleVPN: state.canToggleVPN, canTurnOff: state.canTurnOff,
-            hasActiveTunnel: state.hasActiveTunnel, reconnectIdentifier: state.reconnectIdentifier,
-            canRefresh: state.canRefresh, canSignOut: state.canSignOut,
-            accountId: user?.uid, lastSelectedIdentifier: lastSelectedIdentifier,
+    public func snapshot() -> CloudGatewayMacControllerSnapshot {
+        CloudGatewayMacControllerSnapshot(
+            domain: CloudGatewayMacDomainSnapshot(
+                accountId: user?.uid, hasRetainedSession: auth.currentUser != nil,
+                accessAuthorized: user != nil,
+                inventoryFreshness: inventoryTask != nil || inventoryCommitTask != nil ? .refreshing
+                    : isOffline ? .cached : hasAuthorizedInventory ? .current : .unavailable,
+                installedIdentifiers: installed.map(\.identifier),
+                observedProfiles: profileObservation.profiles.map {
+                    CloudGatewayMacObservedProfile(identifier: $0.identifier, status: $0.status)
+                },
+                observationIsFresh: hasObservedProfiles && profileTask == nil && profileObservation.errorMessage == nil,
+                commandInFlight: !canIssueLocalCommand,
+                clients: clientMetadata
+            ),
+            lastSelectedIdentifier: lastSelectedIdentifier,
             browserState: visibleBrowserState, isRestoringSession: restorationTask != nil,
             isAuthSettling: auth.isCustomTokenSignInSettling,
-            hasRetainedSession: auth.currentUser != nil, inventoryInFlight: inventoryTask != nil,
-            canCreateClient: canStartClientCreation, errorMessage: visibleErrorMessage,
-            hasUnlistedActiveProfile: user != nil && profileObservation.profiles.contains {
-                $0.needsConfirmedStop && !visible.contains($0.identifier)
-            }
+            canCreateClient: canStartClientCreation, errorMessage: visibleErrorMessage
         )
     }
 
@@ -231,6 +239,7 @@ public final class CloudGatewayMacController {
                     installed = saved.configs
                     lastSelectedIdentifier = saved.selectedIdentifier
                     isOffline = true
+                    hasAuthorizedInventory = true
                     errorMessage = nil
                 } else { errorMessage = "Unable to reach CloudGateway to restore this account" }
             } catch CloudGatewayMacInventoryError.accessDenied {
@@ -275,19 +284,21 @@ public final class CloudGatewayMacController {
                 }
                 let role = try await inventory.checkAccess(for: account)
                 try requireCurrent(epoch, token: token)
-                try await observeRole(role, accountId: account.uid)
+                let roleCommit = Task {
+                    defer { inventoryCommitTask = nil; notifyChange() }
+                    try await observeRole(role, accountId: account.uid)
+                }
+                inventoryCommitTask = roleCommit
+                try await roleCommit.value
                 try requireCurrent(epoch, token: token)
                 let fetched = try await inventory.fetchOptions(for: account, role: role)
                 try requireCurrent(epoch, token: token)
-                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
-                try requireCurrent(epoch, token: token)
-                let saved = try await cache.load(accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                options = fetched
-                installed = saved.configs
-                lastSelectedIdentifier = saved.selectedIdentifier
-                isOffline = false
-                errorMessage = nil
+                let commit = Task {
+                    defer { inventoryCommitTask = nil; notifyChange() }
+                    try await publishInventory(fetched, role: role, accountId: account.uid, epoch: epoch, token: token)
+                }
+                inventoryCommitTask = commit
+                try await commit.value
             } catch CloudGatewayMacInventoryError.offline {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 let saved = try? await cache.load(accountId: account.uid)
@@ -298,9 +309,11 @@ public final class CloudGatewayMacController {
                 ) {
                     installed = saved.configs
                     lastSelectedIdentifier = saved.selectedIdentifier
+                    hasAuthorizedInventory = true
                 } else {
                     installed = []
                     lastSelectedIdentifier = nil
+                    hasAuthorizedInventory = false
                 }
                 isOffline = true
                 errorMessage = installed.isEmpty ? "Unable to reach CloudGateway. No installed configs are available for this account" : nil
@@ -308,6 +321,7 @@ public final class CloudGatewayMacController {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 options = []
                 installed = []
+                hasAuthorizedInventory = false
                 try? await cache.deny(accountId: account.uid)
                 guard sessionEpoch == epoch else { return }
                 signOut()
@@ -316,10 +330,35 @@ public final class CloudGatewayMacController {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 options = []
                 installed = []
+                hasAuthorizedInventory = false
                 errorMessage = "Unable to refresh inventory. Try Refresh again"
             }
         }
         notifyChange()
+    }
+
+    private func publishInventory(
+        _ fetched: [CloudGatewayClientOption], role: CloudGatewayMacAccountRole,
+        accountId: String, epoch: UInt64, token: CloudGatewayMacSessionToken?
+    ) async throws {
+        try requireCurrent(epoch, token: token)
+        do {
+            try await cache.authorize(accountId: accountId, role: role, options: fetched)
+            await inventoryAuthorizationDidCommit()
+            try requireCurrent(epoch, token: token)
+            let saved = try await cache.load(accountId: accountId)
+            try requireCurrent(epoch, token: token)
+            guard saved.accessAllowed else { throw CloudGatewayMacCacheError.accessDenied }
+            options = fetched
+            installed = saved.configs
+            lastSelectedIdentifier = saved.selectedIdentifier
+            isOffline = false
+            hasAuthorizedInventory = true
+            errorMessage = nil
+        } catch {
+            if sessionEpoch == epoch { clearInventoryPresentation(for: accountId) }
+            throw error
+        }
     }
 
     private func observeRole(_ role: CloudGatewayMacAccountRole, accountId: String) async throws {
@@ -342,6 +381,7 @@ public final class CloudGatewayMacController {
         guard user?.uid == accountId else { return }
         options = []
         installed = []
+        hasAuthorizedInventory = false
         lastSelectedIdentifier = nil
         notifyChange()
     }
@@ -353,16 +393,16 @@ public final class CloudGatewayMacController {
         let epoch = profileEpoch
         profileTask = Task { [weak self] in
             guard let self else { return }
-            defer { if profileEpoch == epoch { profileTask = nil } }
+            defer { if profileEpoch == epoch { profileTask = nil; notifyChange() } }
             do {
                 let snapshot = try await profiles.installedProfiles()
                 guard profileEpoch == epoch, !Task.isCancelled else { return }
                 profileObservation.didRead(snapshot)
+                hasObservedProfiles = true
             } catch {
                 guard profileEpoch == epoch, !Task.isCancelled else { return }
                 profileObservation.didFailRead()
             }
-            notifyChange()
         }
     }
 
@@ -375,12 +415,14 @@ public final class CloudGatewayMacController {
         options = []
         installed = []
         isOffline = false
+        hasAuthorizedInventory = false
         lastInventoryRefresh = nil
         errorMessage = nil
     }
 
     private func cancelPendingWork() {
         let pendingCommand = commandTask
+        let pendingCommit = inventoryCommitTask
         inventoryTask?.cancel()
         inventoryEpoch &+= 1
         restorationTask?.cancel()
@@ -397,6 +439,7 @@ public final class CloudGatewayMacController {
             guard let self else { return }
             await configs.cancelPendingWork()
             await pendingCommand?.value
+            _ = try? await pendingCommit?.value
             await configs.waitForPendingWork()
             guard cancellationEpoch == epoch else { return }
             cancellationTask = nil
@@ -409,14 +452,6 @@ public final class CloudGatewayMacController {
         if let token {
             guard sessionFence.isCurrent(token), auth.currentUser?.uid == token.accountId else { throw CancellationError() }
         }
-    }
-
-    private func presentation(setupState: CloudGatewayMacSetupState) -> CloudGatewayMacMenuState {
-        CloudGatewayMacMenuState(accountId: user?.uid, setupState: setupState,
-            onlineOptions: options, cachedConfigs: installed, profiles: profileObservation.profiles,
-            commandInFlight: commandTask != nil || cancellationTask != nil || !isStarted || isShuttingDown,
-            isOffline: isOffline, inventoryInFlight: inventoryTask != nil,
-            hasRetainedSession: auth.currentUser != nil, lastSelectedIdentifier: lastSelectedIdentifier)
     }
 
     private var visibleErrorMessage: String? {
@@ -434,28 +469,86 @@ public final class CloudGatewayMacController {
             && auth.currentUser?.uid == user?.uid
     }
 
+    private var canIssueLocalCommand: Bool {
+        isStarted && !isShuttingDown && commandTask == nil && cancellationTask == nil
+    }
+
+    private var clientMetadata: [CloudGatewayMacClientMetadata] {
+        guard let accountId = user?.uid else { return [] }
+        if isOffline || options.isEmpty {
+            let accountConfigs = installed.filter { $0.accountId == accountId }
+            let regions = CloudGatewayConfigSelection.offlineRegions(from: accountConfigs.map(\.snapshot))
+            return accountConfigs.map { config in
+                let profile = profileObservation.profiles.first {
+                    $0.identifier == config.identifier && $0.reference == (try? config.reference)
+                }
+                return CloudGatewayMacClientMetadata(
+                    identifier: config.identifier, regionId: config.snapshot.regionId,
+                    regionName: regions.first { $0.regionId == config.snapshot.regionId }?.displayName ?? config.snapshot.regionId,
+                    regionOrder: 1000, clientName: config.snapshot.clientDisplayName, ownerLabel: nil,
+                    isEligible: hasConnectableConfig(identifier: config.identifier, accountId: accountId), status: profile?.status
+                )
+            }
+        }
+        return options.filter { $0.client.status != .removed }.map { option in
+            let identifier = "\(accountId)/\(option.client.regionId)/\(option.client.clientId)"
+            return CloudGatewayMacClientMetadata(
+                identifier: identifier, regionId: option.client.regionId, regionName: option.regionDisplayName,
+                regionOrder: option.region?.displayOrder ?? 1000, clientName: option.client.displayName,
+                ownerLabel: option.client.ownerEmail,
+                isEligible: hasConnectableConfig(identifier: identifier, accountId: accountId),
+                status: profileObservation.profiles.first { $0.identifier == identifier }?.status
+            )
+        }
+    }
+
+    private func hasConnectableConfig(identifier: String, accountId: String) -> Bool {
+        if !isOffline, !options.isEmpty {
+            return options.contains {
+                "\(accountId)/\($0.client.regionId)/\($0.client.clientId)" == identifier
+                    && $0.client.hasUsableConfig && $0.region?.enabled == true
+            }
+        }
+        return installed.contains {
+            $0.accountId == accountId && $0.identifier == identifier && $0.snapshot.status == .active
+        }
+    }
+
     private func notifyChange() {
         guard isStarted, !isShuttingDown else { return }
         onChange?()
     }
 
     @discardableResult
-    public func connectClient(identifier: String) -> Bool {
-        guard isStarted, !isShuttingDown, setupState == .ready, let account = user,
-              presentation(setupState: setupState).groups.flatMap(\.rows).contains(where: { $0.identifier == identifier && $0.isEnabled }),
-              commandTask == nil, auth.currentUser?.uid == account.uid else { return false }
+    public func connectClient(
+        identifier: String,
+        onCompletion: (@MainActor (CloudGatewayMacCommandResult) -> Void)? = nil
+    ) -> Bool {
+        guard canIssueLocalCommand, setupState == .ready, let account = user,
+              hasConnectableConfig(identifier: identifier, accountId: account.uid),
+              auth.currentUser?.uid == account.uid else { return false }
         let epoch = sessionEpoch
         let token = sessionFence.currentToken
-        let option = options.first { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
-        let saved = installed.first { $0.identifier == identifier && $0.accountId == account.uid }
+        let pendingCommit = inventoryCommitTask
         inventoryTask?.cancel()
         inventoryTask = nil
         inventoryEpoch &+= 1
         commandTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); notifyChange() } }
+            guard let self else { onCompletion?(.unknown); return }
+            var result = CloudGatewayMacCommandResult.failed
+            var startAttempted = false
+            defer {
+                if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); notifyChange() }
+                onCompletion?(result)
+            }
             do {
+                try await pendingCommit?.value
                 try requireCurrent(epoch, token: token)
+                guard hasConnectableConfig(identifier: identifier, accountId: account.uid) else {
+                    throw CloudGatewayMacConfigError.unavailable
+                }
+                let option = options.first { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
+                let saved = installed.first { $0.identifier == identifier && $0.accountId == account.uid }
                 let latestProfiles = try await profiles.installedProfiles()
                 try requireCurrent(epoch, token: token)
                 let savedProfileExists = saved.map { config in
@@ -477,12 +570,14 @@ public final class CloudGatewayMacController {
                 do {
                     if config == saved, !savedProfileExists { try await configs.restore(config) }
                     try requireCurrent(epoch, token: token)
+                    startAttempted = true
                     try await configs.connect(config)
                 } catch CloudGatewayMacConfigError.unavailable {
                     try requireCurrent(epoch, token: token)
                     guard config == saved, let option, !isOffline else { throw CloudGatewayMacConfigError.unavailable }
                     config = try await configs.install(option: option, accountId: account.uid)
                     try requireCurrent(epoch, token: token)
+                    startAttempted = true
                     try await configs.connect(config)
                 }
                 try requireCurrent(epoch, token: token)
@@ -494,7 +589,9 @@ public final class CloudGatewayMacController {
                 lastSelectedIdentifier = savedMetadata.selectedIdentifier
                 try requireCurrent(epoch, token: token)
                 errorMessage = nil
+                result = .completed
             } catch {
+                if startAttempted || error is CancellationError || Task.isCancelled || sessionEpoch != epoch { result = .unknown }
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 if error as? CloudGatewayMacSecretError == .storageFailure {
                     errorMessage = "Unable to access secure VPN storage"
@@ -562,7 +659,8 @@ public final class CloudGatewayMacController {
     public func createClient(
         regionId: String,
         clientName: String,
-        context: CloudGatewayMacClientCreationContext
+        context: CloudGatewayMacClientCreationContext,
+        onCompletion: (@MainActor (CloudGatewayMacCommandResult) -> Void)? = nil
     ) -> Bool {
         guard canStartClientCreation, let account = user,
               context.controllerId == controllerId, sessionFence.isCurrent(context.session),
@@ -570,10 +668,14 @@ public final class CloudGatewayMacController {
         let epoch = sessionEpoch
         let token = context.session
         commandTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; notifyChange() } }
+            guard let self else { onCompletion?(.unknown); return }
             var clientWasCreated = false
             var creationAttempted = false
+            var result = CloudGatewayMacCommandResult.failed
+            defer {
+                if sessionEpoch == epoch { commandTask = nil; notifyChange() }
+                onCompletion?(clientWasCreated ? .completed : result)
+            }
             do {
                 try requireCurrent(epoch, token: token)
                 let role = try await inventory.checkAccess(for: account)
@@ -584,20 +686,12 @@ public final class CloudGatewayMacController {
                 _ = try await inventory.createClient(
                     regionId: regionId, clientName: clientName, for: account
                 )
-                try requireCurrent(epoch, token: token)
                 clientWasCreated = true
+                try requireCurrent(epoch, token: token)
 
                 let fetched = try await inventory.fetchOptions(for: account, role: role)
                 try requireCurrent(epoch, token: token)
-                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
-                try requireCurrent(epoch, token: token)
-                let saved = try await cache.load(accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                options = fetched
-                installed = saved.configs
-                lastSelectedIdentifier = saved.selectedIdentifier
-                isOffline = false
-                errorMessage = nil
+                try await publishInventory(fetched, role: role, accountId: account.uid, epoch: epoch, token: token)
             } catch CloudGatewayMacInventoryError.accessDenied, CloudGatewayAppError.apiAccessDenied(_) {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 clearInventoryPresentation(for: account.uid)
@@ -609,6 +703,7 @@ public final class CloudGatewayMacController {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 errorMessage = message
             } catch {
+                if creationAttempted { result = .unknown }
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 if clientWasCreated {
                     errorMessage = "Client was created, but the client list could not refresh. Choose Refresh before trying again"
@@ -624,20 +719,25 @@ public final class CloudGatewayMacController {
     }
 
     @discardableResult
-    public func turnOff() -> Bool {
-        guard isStarted, !isShuttingDown, presentation(setupState: setupState).canTurnOff, commandTask == nil else { return false }
-        let epoch = sessionEpoch
-        let token = sessionFence.currentToken
+    public func turnOff(onCompletion: (@MainActor (CloudGatewayMacCommandResult) -> Void)? = nil) -> Bool {
+        guard canIssueLocalCommand else { return false }
         commandTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); notifyChange() } }
+            guard let self else { onCompletion?(.unknown); return }
+            var result = CloudGatewayMacCommandResult.unknown
+            defer {
+                commandTask = nil
+                refreshProfiles()
+                notifyChange()
+                onCompletion?(result)
+            }
             do {
-                try requireCurrent(epoch, token: token)
+                try Task.checkCancellation()
                 try await configs.turnOff()
-                try requireCurrent(epoch, token: token)
+                try Task.checkCancellation()
                 errorMessage = nil
+                result = .completed
             } catch {
-                if sessionEpoch == epoch, !Task.isCancelled {
+                if !Task.isCancelled, !isShuttingDown {
                     errorMessage = "VPN has not confirmed stop. Try again after checking System Settings"
                 }
             }

@@ -95,6 +95,7 @@ private final class ControllerServerState: @unchecked Sendable {
     private var isInvalidated = false
     private var connections: [ObjectIdentifier: NSXPCConnection] = [:]
     private var activeRequests = 0
+    private var preparations: [ObjectIdentifier: [UUID: Task<Void, Never>]] = [:]
 
     init(
         requirement: String, userId: UInt32, appVersion: String, appBuild: String,
@@ -127,7 +128,24 @@ private final class ControllerServerState: @unchecked Sendable {
     }
 
     func remove(_ id: ObjectIdentifier) {
-        _ = lock.withLock { connections.removeValue(forKey: id) }
+        let pending = lock.withLock {
+            connections.removeValue(forKey: id)
+            return preparations.removeValue(forKey: id) ?? [:]
+        }
+        pending.values.forEach { $0.cancel() }
+    }
+
+    func retainPreparation(_ task: Task<Void, Never>, id: UUID, peer: ObjectIdentifier) {
+        let retained = lock.withLock {
+            guard connections[peer] != nil, !isInvalidated else { return false }
+            preparations[peer, default: [:]][id] = task
+            return true
+        }
+        if !retained { task.cancel() }
+    }
+
+    func releasePreparation(id: UUID, peer: ObjectIdentifier) {
+        lock.withLock { preparations[peer]?[id] = nil }
     }
 
     func beginRequest(_ connection: NSXPCConnection) -> Bool {
@@ -199,11 +217,17 @@ private final class ControllerEndpoint: NSObject, CloudGatewayMacControllerXPC, 
             reply(state.encode(CloudGatewayMacControllerReply(error: .busy)))
             return
         }
-        // The controller keeps admitted work when the frontend disconnects
-        Task { @MainActor [state] in
-            defer { state.endRequest() }
+        // Accepted mutations survive transport loss, read-only preparations do not
+        let id = UUID()
+        let peerId = ObjectIdentifier(connection)
+        let task = Task { @MainActor [state] in
+            defer {
+                state.endRequest()
+                if request.action == .prepareClient { state.releasePreparation(id: id, peer: peerId) }
+            }
             reply(state.encode(await state.handler(request), action: request.action))
         }
+        if request.action == .prepareClient { state.retainPreparation(task, id: id, peer: peerId) }
     }
 }
 

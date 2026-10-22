@@ -5,6 +5,7 @@ import Foundation
 import Synchronization
 import Testing
 @testable import CloudGatewayMacCore
+import CloudGatewayMacControllerIPC
 
 @Test @MainActor func macControllerRestoresAccountAndHidesInventoryAfterSignOutWithoutStoppingVPN() async throws {
     let fixture = try MacControllerFixture()
@@ -19,13 +20,14 @@ import Testing
     #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
 
     fixture.controller.signOut()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
     let signedOut = fixture.snapshot
     #expect(signedOut.accountId == nil)
     #expect(signedOut.groups.isEmpty)
     #expect(signedOut.lastSelectedIdentifier == nil)
     #expect(signedOut.reconnectIdentifier == nil)
     #expect(!signedOut.canCreateClient)
-    #expect(!signedOut.canToggleVPN)
+    #expect(signedOut.canTurnOff)
     #expect(signedOut.hasActiveTunnel)
     #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
 }
@@ -65,6 +67,64 @@ import Testing
         #expect(fixture.auth.currentUser == nil)
         #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed))
     }
+}
+
+@Test @MainActor func macControllerPublishesRawClientMetadataAndEligibility() async throws {
+    let fixture = try MacControllerFixture()
+    fixture.inventory.options = [
+        ("active", CloudGatewayClientStatus.active, true, controllerWireGuardConfig),
+        ("creating", .creating, true, controllerWireGuardConfig),
+        ("removed", .removed, true, controllerWireGuardConfig),
+        ("disabled", .active, false, controllerWireGuardConfig),
+        ("missing", .active, true, "")
+    ].map { id, status, enabled, config in
+        CloudGatewayClientOption(
+            client: CloudGatewayClient(
+                clientId: id, clientName: "Mac \(id)", regionId: id, status: status,
+                wireGuardConfig: config, ownerUid: "user-a", ownerEmail: "Owner Label"
+            ),
+            region: CloudGatewayRegion(regionId: id, displayName: "Region \(id)", enabled: enabled, displayOrder: 7)
+        )
+    }
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let domain = fixture.domainSnapshot.domain
+    #expect(domain.accessAuthorized)
+    #expect(domain.clients.map(\.identifier) == ["user-a/active/active", "user-a/creating/creating", "user-a/disabled/disabled", "user-a/missing/missing"])
+    let active = try #require(domain.clients.first { $0.isEligible })
+    #expect(active.clientName == "Mac active")
+    #expect(active.ownerLabel == "Owner Label")
+    #expect(active.regionId == "active")
+    #expect(active.regionName == "Region active")
+    #expect(active.regionOrder == 7)
+    #expect(active.status == nil)
+    #expect(domain.clients.filter(\.isEligible).count == 1)
+    let rows = fixture.snapshot.groups.flatMap(\.rows)
+    #expect(rows.first { $0.identifier == active.identifier }?.title == "Mac active (Owner Label)")
+    for client in domain.clients where !client.isEligible {
+        #expect(rows.first { $0.identifier == client.identifier }?.isEnabled == false)
+        #expect(!fixture.controller.connectClient(identifier: client.identifier))
+    }
+    #expect(await fixture.secrets.installCount == 0)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerCachedClientStatusRequiresTheMatchingProfileReference(matchesReference: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
+    let reference = try (matchesReference ? fixture.config.reference
+        : CloudGatewayMacSecretReference(value: "11111111-1111-1111-1111-111111111111"))
+    await fixture.profiles.setProfiles([.init(identifier: fixture.config.identifier, reference: reference, status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { fixture.snapshot.hasActiveTunnel }
+    let client = try #require(fixture.domainSnapshot.domain.clients.first)
+    #expect(client.isEligible)
+    #expect(client.status == (matchesReference ? .connected : nil))
+    #expect(fixture.snapshot.groups.first?.rows.first?.status == (matchesReference ? .connected : nil))
+    #expect(fixture.snapshot.canTurnOff)
 }
 
 @Test @MainActor func macControllerConnectUsesStoredReadinessInsteadOfPresentationReadiness() async throws {
@@ -275,6 +335,8 @@ import Testing
     try await controllerWaitUntil { await delayed.entered }
     #expect(fixture.snapshot.hasActiveTunnel)
     #expect(fixture.snapshot.canTurnOff)
+    #expect(!fixture.domainSnapshot.domain.observationIsFresh)
+    #expect(fixture.snapshot.statusTitle == "VPN connected (last observed)")
 
     await fixture.profiles.failReads()
     fixture.controller.profilesDidChange()
@@ -285,6 +347,8 @@ import Testing
     try await controllerWaitUntil { await fixture.profiles.completedReads >= 3 }
     #expect(fixture.snapshot.hasActiveTunnel)
     #expect(fixture.snapshot.errorMessage == "Unable to read VPN preferences. Try Refresh again")
+    #expect(!fixture.domainSnapshot.domain.observationIsFresh)
+    #expect(fixture.snapshot.statusTitle == "VPN connected (last observed)")
 }
 
 @Test @MainActor func macControllerShutdownDetachesAuthListenerAndRejectsFutureCommands() async throws {
@@ -553,6 +617,112 @@ import Testing
     #expect(fixture.inventory.fetchCount == fetches + 1)
 }
 
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerResolvesConnectAfterCommittedInventoryPublishes(savedConfig: Bool, removed: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    if savedConfig { try await fixture.seedCache() }
+    let active = CloudGatewayMacInstalledProfile(
+        identifier: "user-a/region/other", reference: try fixture.config.reference, status: .connected
+    )
+    await fixture.profiles.setProfiles([active])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let replacement = fixture.option(wireGuardConfig: controllerWireGuardConfig.replacingOccurrences(
+        of: "Address = 10.0.0.2/32", with: "Address = 10.0.0.3/32"
+    ))
+    let publication = MacControllerGate()
+    fixture.commitProbe.gate = publication
+    fixture.inventory.options = removed ? [] : [replacement]
+    fixture.controller.refresh()
+    try await controllerWaitUntil { await publication.entered }
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.isEmpty)
+    #expect(fixture.snapshot.groups.flatMap(\.rows).map(\.identifier) == [fixture.config.identifier])
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    for _ in 0..<50 { await Task.yield() }
+    #expect(completion == nil)
+    #expect(await fixture.secrets.installCount == 0)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    await publication.release()
+    try await controllerWaitUntil { completion != nil }
+    if removed {
+        #expect(completion == .failed)
+        #expect(await fixture.secrets.installCount == 0)
+        #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+        #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+        #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    } else {
+        #expect(completion == .completed)
+        let replacementHash = CloudGatewayConfigHash.make(for: try CloudGatewayConfigSelection.wireGuardConfig(from: replacement))
+        #expect(await fixture.secrets.installedHashes == [replacementHash])
+        #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+        #expect(await fixture.profiles.stoppedIdentifiers == [active.identifier])
+        #expect(try await fixture.cache.load(accountId: "user-a").configs.first?.snapshot.configHash == replacementHash)
+    }
+}
+
+@Test @MainActor func macControllerFailedCommitReconciliationPreservesTheActiveVPN() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let publication = MacControllerGate()
+    fixture.commitProbe.gate = publication
+    fixture.controller.refresh()
+    try await controllerWaitUntil { await publication.entered }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    try await fixture.cache.deny(accountId: "user-a")
+    await publication.release()
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == .failed)
+    #expect(fixture.snapshot.groups.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerLocalStopIsSignedOutAndIdempotent(active: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    if active { await fixture.profiles.setProfiles([try fixture.profile(status: .connected)]) }
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    fixture.controller.signOut()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    var completions: [CloudGatewayMacCommandResult] = []
+    #expect(fixture.controller.turnOff { completions.append($0) })
+    try await controllerWaitUntil { completions.count == 1 }
+    #expect(fixture.controller.turnOff { completions.append($0) })
+    try await controllerWaitUntil { completions.count == 2 }
+    #expect(completions == [.completed, .completed])
+    #expect(await fixture.profiles.stoppedIdentifiers == (active ? [fixture.config.identifier] : []))
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.domain.accountId == nil)
+    #expect(!fixture.domainSnapshot.domain.accessAuthorized)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerCreationCompletionDistinguishesConfirmedAndUnknownResults(confirmed: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let context = try #require(fixture.controller.clientCreationContext())
+    if confirmed { fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline }
+    else { fixture.inventory.createError = CloudGatewayMacInventoryError.offline }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.createClient(regionId: "region", clientName: "Mac", context: context) { completion = $0 })
+    #expect(completion == nil)
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == (confirmed ? .completed : .unknown))
+}
+
 private enum MacControllerRestoreCase: CaseIterable, Sendable {
     case authorizedCache, deniedCache, otherAccount, unavailable, accessDenied
 }
@@ -593,6 +763,7 @@ private struct MacControllerFixture {
     let cache: CloudGatewayMacAccountCache
     let config: CloudGatewayMacInstalledConfig
     let controller: CloudGatewayMacController
+    let commitProbe: MacControllerCommitProbe
 
     init() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayControllerTests-\(UUID())")
@@ -603,6 +774,8 @@ private struct MacControllerFixture {
         let reference = try CloudGatewayMacSecretReference(value: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         secrets = MacControllerSecrets(reference: reference)
         cache = CloudGatewayMacAccountCache(directory: directory)
+        let commitProbe = MacControllerCommitProbe()
+        self.commitProbe = commitProbe
         config = CloudGatewayMacInstalledConfig(
             accountId: "user-a", identifier: "user-a/region/client",
             snapshot: CloudGatewayConfigSnapshot(
@@ -616,18 +789,24 @@ private struct MacControllerFixture {
         controller = CloudGatewayMacController(
             auth: auth, deviceAuth: deviceAuth, inventory: inventory, profiles: profiles, cache: cache,
             configs: CloudGatewayMacConfigCoordinator(secrets: secrets, profiles: profiles, snapshots: cache),
-            dashboardOrigin: URL(string: "https://dashboard.example.com")!
+            dashboardOrigin: URL(string: "https://dashboard.example.com")!,
+            inventoryAuthorizationDidCommit: { await commitProbe.gate?.arriveAndWait() }
         )
         inventory.options = [option()]
     }
 
-    var snapshot: CloudGatewayMacControllerSnapshot { controller.snapshot(setupState: .ready) }
+    var domainSnapshot: CloudGatewayMacControllerSnapshot { controller.snapshot() }
+    var snapshot: CloudGatewayMacControllerView {
+        .init(state: .init(snapshot: domainSnapshot, setupState: .ready, canUpdateExtension: false))
+    }
 
-    func option(clientId: String = "client", name: String = "Mac") -> CloudGatewayClientOption {
+    func option(
+        clientId: String = "client", name: String = "Mac", wireGuardConfig: String = controllerWireGuardConfig
+    ) -> CloudGatewayClientOption {
         CloudGatewayClientOption(
             client: CloudGatewayClient(
                 clientId: clientId, clientName: name, regionId: "region", status: .active,
-                wireGuardConfig: controllerWireGuardConfig, ownerUid: "user-a"
+                wireGuardConfig: wireGuardConfig, ownerUid: "user-a"
             ), region: CloudGatewayRegion(regionId: "region", displayName: "Region", enabled: true)
         )
     }
@@ -810,6 +989,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     private var authorizationGate: MacControllerGate?
     private var available = true
     private(set) var installCount = 0
+    private(set) var installedHashes: [String] = []
 
     init(reference: CloudGatewayMacSecretReference) { self.reference = reference }
     func pauseAuthorization(_ gate: MacControllerGate) { authorizationGate = gate }
@@ -821,6 +1001,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     func install(configId: String, config: CloudGatewayWireGuardConfig) async throws -> CloudGatewayMacSecretReference {
         try Task.checkCancellation()
         installCount += 1
+        installedHashes.append(CloudGatewayConfigHash.make(for: config))
         if let installError { throw installError }
         return installReference ?? reference
     }
@@ -845,6 +1026,11 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
         try Task.checkCancellation()
         return "synthetic-start-grant"
     }
+}
+
+@MainActor
+private final class MacControllerCommitProbe {
+    var gate: MacControllerGate?
 }
 
 private actor MacControllerGate {

@@ -93,45 +93,4 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         self.hasUnlistedActiveProfile = hasUnlistedActiveProfile
         self.canUpdateExtension = canUpdateExtension
     }
-
-    func validate() throws {
-        let bounds = CloudGatewayMacControllerProtocol.self
-        guard groups.count <= 256, groups.reduce(0, { $0 + $1.rows.count }) <= 4096,
-              bounds.boundedText(statusTitle, bytes: 1024),
-              errorMessage.map({ bounds.boundedText($0, bytes: 2048) && ControllerVisibleError.sanitize($0) == $0 }) ?? true else {
-            throw CloudGatewayMacControllerFailure.invalidRequest
-        }
-        guard accountId.map(bounds.validComponent) ?? true,
-              accountId != nil || (groups.isEmpty && lastSelectedIdentifier == nil && reconnectIdentifier == nil) else {
-            throw CloudGatewayMacControllerFailure.invalidRequest
-        }
-        func belongsToAccount(_ identifier: String) -> Bool {
-            guard let accountId else { return false }
-            return bounds.validIdentifier(identifier) && identifier.hasPrefix("\(accountId)/")
-        }
-        guard lastSelectedIdentifier.map(belongsToAccount) ?? true,
-              reconnectIdentifier.map(belongsToAccount) ?? true else {
-            throw CloudGatewayMacControllerFailure.invalidRequest
-        }
-        var identifiers = Set<String>()
-        for group in groups {
-            guard bounds.boundedText(group.title, bytes: 1024) else {
-                throw CloudGatewayMacControllerFailure.invalidRequest
-            }
-            for row in group.rows {
-                guard belongsToAccount(row.identifier), identifiers.insert(row.identifier).inserted,
-                      bounds.boundedText(row.title, bytes: 2048) else {
-                    throw CloudGatewayMacControllerFailure.invalidRequest
-                }
-            }
-        }
-        if case .waitingForApproval(let code, let url) = browserState {
-            guard accountId == nil, bounds.validChallenge(code: code, url: url) else {
-                throw CloudGatewayMacControllerFailure.invalidRequest
-            }
-        }
-        if browserState == .signedIn, accountId == nil {
-            throw CloudGatewayMacControllerFailure.invalidRequest
-        }
-    }
 }

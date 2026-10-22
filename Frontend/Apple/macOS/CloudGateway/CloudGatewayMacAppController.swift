@@ -40,14 +40,13 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
 
     private var snapshot: CloudGatewayMacControllerView {
-        client.snapshot ?? CloudGatewayMacControllerView(statusTitle: "Connecting to controller…",
-                                                       setupState: .checkingConnection)
+        client.presentation
     }
 
     private func controllerChanged() {
         guard !isShuttingDown else { return }
         let state = snapshot
-        if client.snapshot != nil, state.browserState != browserState {
+        if client.isSnapshotFresh, state.browserState != browserState {
             browserState = state.browserState
             if case .waitingForApproval(_, let url) = browserState {
                 NSWorkspace.shared.open(url)
@@ -125,7 +124,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             status.action = #selector(openLoginItemsSettings)
             status.isEnabled = true
         }
-        status.state = state.accountId != nil && state.hasActiveTunnel ? .on : .off
+        status.state = state.hasActiveTunnel ? .on : .off
         if state.canToggleVPN {
             status.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
         }
@@ -203,7 +202,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let controllerActions = [#selector(toggleVPN), #selector(signIn), #selector(cancelSignIn),
                                  #selector(signOut), #selector(refresh), #selector(addClient), #selector(setUp)]
         if let action, controllerActions.contains(action) {
-            item.isEnabled = item.isEnabled && client.snapshot != nil && actionTask == nil
+            item.isEnabled = item.isEnabled && (client.isCurrentBuild || (action == #selector(toggleVPN) && snapshot.canTurnOff)) && actionTask == nil
         }
         menu.addItem(item)
         return item
@@ -331,7 +330,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 catch {
                     frontendErrorMessage = client.message(for: error)
                     render()
-                    if error as? CloudGatewayMacControllerFailure == .rejected { return }
+                    if error as? CloudGatewayMacControllerFailure == .extensionAttemptChanged { return }
                 }
                 do { try await Task.sleep(for: .seconds(1)) }
                 catch { return }

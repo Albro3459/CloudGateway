@@ -102,36 +102,36 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
 
     func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion] {
         guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
-        let regions = try await controlPlane.fetchRegions()
-        try Task.checkCancellation()
-        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        let token: String
-        do { token = try await auth.idToken(forceRefresh: false) }
-        catch { throw Failure.classify(error) }
-        try Task.checkCancellation()
-        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        var regionsWithCapacity: [CloudGatewayRegion] = []
-        for region in regions {
-            let capacity: CloudGatewayRegionCapacity
-            do {
-                let response = try await controlPlane.fetchCapacity(regionId: region.regionId, idToken: token)
-                capacity = response.regionId == region.regionId
-                    ? .known(limit: response.capacityLimit, allocated: response.allocatedClientCount) : .unknown
-            } catch CloudGatewayAppError.apiAccessDenied(_) {
+        let regions = try await CloudGatewayMacCapacityPreparation.prepare(
+            loadRegions: { [self] in
+                let regions = try await controlPlane.fetchRegions()
                 try Task.checkCancellation()
                 guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-                throw Failure.accessDenied
-            } catch {
-                capacity = .unknown
+                return regions
+            },
+            loadToken: { [self] in
+                let token: String
+                do { token = try await auth.idToken(forceRefresh: false) }
+                catch { throw Failure.classify(error) }
+                try Task.checkCancellation()
+                guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+                return token
+            },
+            fetchCapacity: { [self] regionId, token in
+                do {
+                    let response = try await controlPlane.fetchCapacity(regionId: regionId, idToken: token)
+                    try Task.checkCancellation()
+                    guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+                    return response.regionId == regionId
+                        ? .known(limit: response.capacityLimit, allocated: response.allocatedClientCount) : .unknown
+                } catch CloudGatewayAppError.apiAccessDenied(_) {
+                    throw Failure.accessDenied
+                }
             }
-            try Task.checkCancellation()
-            guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-            regionsWithCapacity.append(CloudGatewayRegion(
-                regionId: region.regionId, displayName: region.displayName,
-                enabled: region.enabled, displayOrder: region.displayOrder, capacity: capacity
-            ))
-        }
-        return regionsWithCapacity
+        )
+        try Task.checkCancellation()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+        return regions
     }
 
     func createClient(regionId: String, clientName: String, for user: AuthenticatedUser) async throws -> String {

@@ -32,7 +32,7 @@ private let previousBuild = CloudGatewayMacBuildIdentity(version: "1.2", build: 
     )
     #expect(reply.lifecycle == lifecycle)
     #expect(reply.instanceId == instanceId)
-    #expect(reply.snapshot == nil)
+    #expect(reply.state == nil)
     #expect(reply.error == nil)
     #expect(reply.schemaVersion == 1)
     #expect(reply.protocolVersion == 1)
@@ -91,7 +91,7 @@ private let previousBuild = CloudGatewayMacBuildIdentity(version: "1.2", build: 
     }
 }
 
-@Test(arguments: CloudGatewayMacControllerRequest.Action.allCases.filter { $0 != .lifecycle })
+@Test(arguments: CloudGatewayMacControllerRequest.Action.allCases.filter { !$0.isCompatibleControl })
 func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGatewayMacControllerRequest.Action) throws {
     let rebuilt = CloudGatewayMacBuildIdentity(
         version: currentBuild.version, build: currentBuild.build, codeHash: String(repeating: "c", count: 40)
@@ -208,12 +208,12 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
 @Test func controllerLifecycleNeverAcceptsAccountOrOperationReplyFields() throws {
     let lifecycle = CloudGatewayMacControllerLifecycle(running: currentBuild, installed: currentBuild, state: .current)
     for var reply in [
-        CloudGatewayMacControllerReply(snapshot: .init(accountId: "account"), lifecycle: lifecycle),
+        CloudGatewayMacControllerReply(state: controllerContractState(), lifecycle: lifecycle),
         CloudGatewayMacControllerReply(accepted: true, lifecycle: lifecycle),
         CloudGatewayMacControllerReply(creation: .init(id: UUID(), regions: []), lifecycle: lifecycle),
         CloudGatewayMacControllerReply(operationId: UUID(), lifecycle: lifecycle),
         CloudGatewayMacControllerReply(error: .unavailable, lifecycle: lifecycle),
-        CloudGatewayMacControllerReply(snapshot: .init(accountId: "account")),
+        CloudGatewayMacControllerReply(state: controllerContractState()),
         CloudGatewayMacControllerReply()
     ] {
         let data = CloudGatewayMacControllerProtocol.encodeReply(
@@ -254,6 +254,7 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
     for field in ["schemaVersion", "protocolVersion"] {
         var object = original
         object[field] = 2
+        object.removeValue(forKey: "controlVersion")
         let unsupported = try JSONSerialization.data(withJSONObject: object)
         #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
             try CloudGatewayMacControllerProtocol.decodeReply(
@@ -287,6 +288,7 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
     for field in ["schemaVersion", "protocolVersion"] {
         var object = original
         object[field] = 2
+        object.removeValue(forKey: "controlVersion")
         let unsupported = try JSONSerialization.data(withJSONObject: object)
         #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
             try CloudGatewayMacControllerProtocol.decodeRequest(
@@ -325,5 +327,38 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
         try CloudGatewayMacControllerProtocol.decodeReply(
             data, appVersion: currentBuild.version, appBuild: currentBuild.build
         )
+    }
+}
+
+@Test func stableControlContractWorksAcrossNormalProtocolVersions() throws {
+    for action in [CloudGatewayMacControllerRequest.Action.lifecycle, .status, .turnOff, .operation, .confirmOperation] {
+        let request = CloudGatewayMacControllerRequest(
+            action: action, contextId: action == .operation || action == .confirmOperation ? UUID() : nil,
+            appVersion: previousBuild.version, appBuild: previousBuild.build, buildIdentity: previousBuild
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        object["schemaVersion"] = 12
+        object["protocolVersion"] = 9
+        let data = try JSONSerialization.data(withJSONObject: object)
+        #expect(try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: currentBuild.version,
+            appBuild: currentBuild.build, buildIdentity: currentBuild).action == action)
+        object["controlVersion"] = 2
+        #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+            try CloudGatewayMacControllerProtocol.decodeRequest(try JSONSerialization.data(withJSONObject: object),
+                appVersion: currentBuild.version, appBuild: currentBuild.build, buildIdentity: currentBuild)
+        }
+    }
+    let response = CloudGatewayMacControllerProtocol.encodeReply(
+        .init(status: .init(hasActiveTunnel: true, needsStop: true, observationAvailable: true)),
+        appVersion: previousBuild.version, appBuild: previousBuild.build, instanceId: UUID(), action: .status
+    )
+    var object = try #require(JSONSerialization.jsonObject(with: response) as? [String: Any])
+    object["schemaVersion"] = 12
+    object["protocolVersion"] = 9
+    let data = try JSONSerialization.data(withJSONObject: object)
+    #expect(try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: currentBuild.version,
+        appBuild: currentBuild.build, action: .status).status?.hasActiveTunnel == true)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: currentBuild.version, appBuild: currentBuild.build)
     }
 }

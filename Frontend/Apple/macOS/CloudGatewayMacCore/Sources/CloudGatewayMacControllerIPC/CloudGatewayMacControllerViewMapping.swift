@@ -2,28 +2,86 @@ import CloudGatewayKit
 import CloudGatewayMacCore
 import Foundation
 
+// Menu wording stays at the frontend boundary
 extension CloudGatewayMacControllerView {
-    public init(snapshot: CloudGatewayMacControllerSnapshot, setupState: CloudGatewayMacSetupState,
-                canUpdateExtension: Bool = false) {
-        let accountId = snapshot.accountId
+    public init(state: CloudGatewayMacControllerState) {
+        let status = state.status
+        let canStop = !state.commandInFlight && status.needsStop
+        let isTransitioning = state.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
+        let canConnect = state.accountId != nil && state.accessAuthorized && !state.commandInFlight
+            && !state.isRestoringSession && !state.isAuthSettling && state.setup == .ready
+        let selected = state.clients.first {
+            $0.identifier == state.selectedIdentifier && $0.isEligible && canConnect
+        }
+        let regions = Dictionary(grouping: state.clients, by: \.regionId).values.sorted { lhs, rhs in
+            let left = lhs[0]
+            let right = rhs[0]
+            if left.regionOrder != right.regionOrder { return left.regionOrder < right.regionOrder }
+            let comparison = left.regionName.localizedCaseInsensitiveCompare(right.regionName)
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            return left.regionId.localizedCaseInsensitiveCompare(right.regionId) == .orderedAscending
+        }
+        let groups = regions.map { clients in
+            let rows = clients.sorted { lhs, rhs in
+                let ownerComparison = (lhs.ownerLabel ?? "").localizedCaseInsensitiveCompare(rhs.ownerLabel ?? "")
+                if ownerComparison != .orderedSame { return ownerComparison == .orderedAscending }
+                let comparison = lhs.clientName.localizedCaseInsensitiveCompare(rhs.clientName)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+                return lhs.identifier < rhs.identifier
+            }.map { client in
+                let title = client.ownerLabel.map { "\(client.clientName) (\($0))" } ?? client.clientName
+                return Client(identifier: client.identifier, title: ControllerDisplayText.normalize(title, bytes: 2048),
+                              status: client.status, isEnabled: canConnect && client.isEligible)
+            }
+            return Region(title: clients[0].regionName, rows: rows)
+        }
+        var title: String
+        if state.observedProfiles.contains(where: { $0.status == .connecting }) { title = "VPN connecting…" }
+        else if state.observedProfiles.contains(where: { $0.status == .disconnecting }) { title = "VPN disconnecting…" }
+        else if status.hasActiveTunnel { title = "VPN connected" }
+        else if state.accountId == nil { title = "Signed out" }
+        else if state.setup != .ready { title = state.setup.title }
+        else { title = "VPN off" }
+        if !state.observationAvailable {
+            if state.observedProfiles.isEmpty, state.accountId != nil, state.setup == .ready {
+                title = "VPN status unavailable"
+            } else if status.needsStop || (state.accountId != nil && state.setup == .ready) {
+                title += " (last observed)"
+            }
+        }
         self.init(
-            groups: accountId == nil ? [] : snapshot.groups.map { group in
-                Region(title: ControllerDisplayText.normalize(group.title, bytes: 1024), rows: group.rows.map { row in
-                    Client(identifier: row.identifier, title: ControllerDisplayText.normalize(row.title, bytes: 2048),
-                           status: row.status.map(TunnelStatus.init), isEnabled: row.isEnabled)
-                })
-            },
-            statusTitle: snapshot.statusTitle, canToggleVPN: snapshot.canToggleVPN,
-            canTurnOff: snapshot.canTurnOff, hasActiveTunnel: snapshot.hasActiveTunnel,
-            reconnectIdentifier: accountId == nil ? nil : snapshot.reconnectIdentifier,
-            canRefresh: snapshot.canRefresh, canSignOut: snapshot.canSignOut,
-            accountId: accountId, lastSelectedIdentifier: accountId == nil ? nil : snapshot.lastSelectedIdentifier,
-            browserState: BrowserState(snapshot.browserState), setupState: SetupState(setupState),
-            isRestoringSession: snapshot.isRestoringSession, isAuthSettling: snapshot.isAuthSettling,
-            hasRetainedSession: snapshot.hasRetainedSession, inventoryInFlight: snapshot.inventoryInFlight,
-            canCreateClient: snapshot.canCreateClient, errorMessage: ControllerVisibleError.sanitize(snapshot.errorMessage),
-            hasUnlistedActiveProfile: snapshot.hasUnlistedActiveProfile, canUpdateExtension: canUpdateExtension
+            groups: groups, statusTitle: title,
+            canToggleVPN: !isTransitioning && (canStop || selected != nil), canTurnOff: canStop, hasActiveTunnel: status.hasActiveTunnel,
+            reconnectIdentifier: selected?.identifier,
+            canRefresh: state.accountId != nil && !state.commandInFlight && state.inventory != .refreshing,
+            canSignOut: state.accountId != nil || state.hasRetainedSession,
+            accountId: state.accountId, lastSelectedIdentifier: state.selectedIdentifier,
+            browserState: state.auth, setupState: state.setup,
+            isRestoringSession: state.isRestoringSession, isAuthSettling: state.isAuthSettling,
+            hasRetainedSession: state.hasRetainedSession, inventoryInFlight: state.inventory == .refreshing,
+            canCreateClient: state.creationAllowed, errorMessage: state.errorMessage,
+            hasUnlistedActiveProfile: state.observedProfiles.contains { profile in
+                profile.status != .invalid && profile.status != .disconnected
+                    && !state.clients.contains { $0.identifier == profile.identifier }
+            }, canUpdateExtension: state.canUpdateExtension
         )
+    }
+}
+
+extension CloudGatewayMacControllerView.SetupState {
+    var title: String {
+        switch self {
+        case .required: "VPN setup required"
+        case .updateRequired: "VPN extension update required"
+        case .invalidBundle: "The bundled VPN extension is missing or invalid. Reinstall CloudGateway"
+        case .activating: "Setting up VPN…"
+        case .awaitingApproval: "Approve CloudGateway in System Settings → Login Items & Extensions"
+        case .awaitingRestart: "Restart your Mac to finish VPN setup"
+        case .checkingConnection: "Checking VPN extension…"
+        case .ready: "VPN extension ready"
+        case .unavailable: "Move CloudGateway to /Applications, then set up VPN"
+        case .failed(let code): "VPN setup failed (error \(code)); check approval and signing"
+        }
     }
 }
 

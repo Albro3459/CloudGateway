@@ -26,7 +26,7 @@ let package = Package(
             .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
         ]),
         .testTarget(name: "CloudGatewayMacIPCTests", dependencies: ["CloudGatewayMacIPC"]),
-        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore"]),
+        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC"]),
         .testTarget(name: "CloudGatewayMacControllerIPCTests", dependencies: ["CloudGatewayMacControllerIPC"]),
     ],
     swiftLanguageModes: [.v6]

@@ -3,15 +3,16 @@ import CloudGatewayMacIPC
 import Foundation
 
 public enum CloudGatewayMacControllerFailure: String, Error, Codable, Sendable {
-    case invalidRequest, incompatibleVersion, unavailable, timeout, busy, rejected, outcomeUnknown
+    case invalidRequest, incompatibleVersion, unavailable, timeout, busy, rejected, outcomeUnknown, extensionAttemptChanged, preparationExpired
 }
 
 public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public enum Action: String, Codable, CaseIterable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
-        case lifecycle, snapshot, menuWillOpen, refresh, signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
+        case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, refresh, signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
     }
 
+    public let controlVersion: Int?
     public let schemaVersion: Int
     public let protocolVersion: Int
     public let appVersion: String
@@ -35,6 +36,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
         appBuild: String = "",
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) {
+        controlVersion = CloudGatewayMacControllerProtocol.controlVersion
         schemaVersion = CloudGatewayMacControllerProtocol.protocolVersion
         protocolVersion = CloudGatewayMacControllerProtocol.protocolVersion
         self.appVersion = appVersion
@@ -70,7 +72,10 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
     public internal(set) var appVersion: String
     public internal(set) var appBuild: String
     public internal(set) var instanceId: UUID?
-    public let snapshot: CloudGatewayMacControllerView?
+    public internal(set) var controlVersion: Int?
+    public let state: CloudGatewayMacControllerState?
+    public let status: CloudGatewayMacControllerStatus?
+    public let operation: CloudGatewayMacControllerOperation?
     public let accepted: Bool?
     public let creation: Creation?
     public let error: CloudGatewayMacControllerFailure?
@@ -79,7 +84,9 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
     public let extensionTarget: CloudGatewayMacBuildIdentity?
 
     public init(
-        snapshot: CloudGatewayMacControllerView? = nil,
+        state: CloudGatewayMacControllerState? = nil,
+        status: CloudGatewayMacControllerStatus? = nil,
+        operation: CloudGatewayMacControllerOperation? = nil,
         accepted: Bool? = nil,
         creation: Creation? = nil,
         error: CloudGatewayMacControllerFailure? = nil,
@@ -92,7 +99,10 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
         appVersion = ""
         appBuild = ""
         instanceId = nil
-        self.snapshot = snapshot
+        controlVersion = CloudGatewayMacControllerProtocol.controlVersion
+        self.state = state
+        self.status = status
+        self.operation = operation
         self.accepted = accepted
         self.creation = creation
         self.error = error
@@ -104,6 +114,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
 
 public enum CloudGatewayMacControllerProtocol {
     public static let protocolVersion = 1
+    public static let controlVersion = 1
     public static let machServiceName = "com.gocloudlaunch.gateway.macos.controller"
     public static let appBundleIdentifier = "com.gocloudlaunch.gateway.macos"
     public static let requestBytes = 64 * 1024
@@ -122,20 +133,21 @@ public enum CloudGatewayMacControllerProtocol {
         _ request: CloudGatewayMacControllerRequest, appVersion: String, appBuild: String,
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) throws {
-        guard request.schemaVersion == protocolVersion, request.protocolVersion == protocolVersion else {
+        let compatible = request.action.isCompatibleControl && (request.controlVersion == controlVersion || (request.action == .lifecycle && request.controlVersion == nil && request.schemaVersion == protocolVersion && request.protocolVersion == protocolVersion))
+        guard request.action.isCompatibleControl ? compatible : (request.schemaVersion == protocolVersion && request.protocolVersion == protocolVersion) else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
         }
         try validateVersion(request.appVersion, build: request.appBuild)
         if let identity = request.buildIdentity { try validateBuildIdentity(identity) }
         if let buildIdentity { try validateBuildIdentity(buildIdentity) }
-        if request.action != .lifecycle {
+        if !request.action.isCompatibleControl {
             guard request.appVersion == appVersion, request.appBuild == appBuild,
                   buildIdentity == nil || request.buildIdentity == buildIdentity else {
                 throw CloudGatewayMacControllerFailure.incompatibleVersion
             }
         }
         switch request.action {
-        case .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
+        case .operation, .confirmOperation, .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
             guard request.contextId != nil, request.identifier == nil, request.regionId == nil, request.clientName == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
@@ -174,8 +186,8 @@ public enum CloudGatewayMacControllerProtocol {
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) throws -> Data {
         guard request.schemaVersion == protocolVersion, request.protocolVersion == protocolVersion,
-              request.action == .lifecycle || request.appVersion.isEmpty || request.appVersion == appVersion,
-              request.action == .lifecycle || request.appBuild.isEmpty || request.appBuild == appBuild else {
+              request.action.isCompatibleControl || request.appVersion.isEmpty || request.appVersion == appVersion,
+              request.action.isCompatibleControl || request.appBuild.isEmpty || request.appBuild == appBuild else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
         }
         if !request.appVersion.isEmpty, !boundedText(request.appVersion, bytes: 128) {
@@ -226,8 +238,9 @@ public enum CloudGatewayMacControllerProtocol {
               let reply = try? JSONDecoder().decode(CloudGatewayMacControllerReply.self, from: data) else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }
-        guard reply.schemaVersion == protocolVersion, reply.protocolVersion == protocolVersion,
-              action == .lifecycle || (reply.appVersion == appVersion && reply.appBuild == appBuild) else {
+        let compatible = action.isCompatibleControl && (reply.controlVersion == controlVersion || (action == .lifecycle && reply.controlVersion == nil && reply.schemaVersion == protocolVersion && reply.protocolVersion == protocolVersion))
+        guard action.isCompatibleControl ? compatible : (reply.schemaVersion == protocolVersion && reply.protocolVersion == protocolVersion
+              && reply.appVersion == appVersion && reply.appBuild == appBuild) else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
         }
         try validateVersion(reply.appVersion, build: reply.appBuild)
@@ -240,13 +253,13 @@ public enum CloudGatewayMacControllerProtocol {
         _ reply: CloudGatewayMacControllerReply, action: CloudGatewayMacControllerRequest.Action
     ) throws {
         if reply.error != nil {
-            guard reply.snapshot == nil, reply.accepted == nil, reply.creation == nil,
+            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.accepted == nil, reply.creation == nil,
                   reply.operationId == nil, reply.lifecycle == nil, reply.extensionTarget == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
         }
         if action == .lifecycle {
-            guard reply.snapshot == nil, reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
+            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
                   reply.extensionTarget == nil,
                   reply.lifecycle != nil || reply.error != nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
@@ -261,7 +274,17 @@ public enum CloudGatewayMacControllerProtocol {
             }
             try validateBuildIdentity(target)
         }
-        try reply.snapshot?.validate()
+        if let status = reply.status {
+            guard action.isCompatibleControl else { throw CloudGatewayMacControllerFailure.invalidRequest }
+            try status.validate()
+        }
+        if let operation = reply.operation { try operation.validate() }
+        if action.isCompatibleControl && action != .lifecycle {
+            guard reply.state == nil, reply.creation == nil, reply.extensionTarget == nil else {
+                throw CloudGatewayMacControllerFailure.invalidRequest
+            }
+        }
+        try reply.state?.validate()
         if let creation = reply.creation {
             var identifiers = Set<String>()
             guard creation.regions.count <= 256, creation.regions.allSatisfy({
@@ -310,5 +333,21 @@ public enum CloudGatewayMacControllerProtocol {
         guard fragment.hasPrefix(prefix), fragment.hasSuffix(suffix) else { return false }
         let requestId = String(fragment.dropFirst(prefix.count).dropLast(suffix.count))
         return requestId.utf8.count == 32 && requestId.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+extension CloudGatewayMacControllerRequest.Action {
+    public var isCompatibleControl: Bool {
+        switch self {
+        case .lifecycle, .status, .turnOff, .confirmOperation, .operation: true
+        default: false
+        }
+    }
+
+    var requiresConfirmation: Bool {
+        switch self {
+        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .createClient: true
+        default: false
+        }
     }
 }

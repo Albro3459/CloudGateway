@@ -1,6 +1,8 @@
+import CloudGatewayAppCore
 import CloudGatewayKit
 import Foundation
 import Testing
+@testable import CloudGatewayMacCore
 @testable import CloudGatewayMacControllerIPC
 
 private let appVersion = "1.2.0"
@@ -71,65 +73,122 @@ private let appBuild = "42"
     }
 }
 
-@Test func controllerRepliesPreserveOnlyCurrentAccountMenuMetadata() throws {
-    let view = CloudGatewayMacControllerView(
-        groups: [.init(title: "US Central", rows: [
-            .init(identifier: "account/region/client", title: "Work Mac", status: .connected, isEnabled: true)
-        ])],
-        statusTitle: "VPN connected", canToggleVPN: true, canTurnOff: true, hasActiveTunnel: true,
-        reconnectIdentifier: "account/region/client", accountId: "account",
-        lastSelectedIdentifier: "account/region/client", browserState: .signedIn, setupState: .ready
-    )
+@Test func controllerRepliesPreserveOnlyCurrentAccountDomainMetadata() throws {
+    let state = controllerContractState()
     let instanceId = UUID()
     let data = CloudGatewayMacControllerProtocol.encodeReply(
-        CloudGatewayMacControllerReply(snapshot: view), appVersion: appVersion, appBuild: appBuild, instanceId: instanceId
+        CloudGatewayMacControllerReply(state: state), appVersion: appVersion, appBuild: appBuild, instanceId: instanceId
     )
     let reply = try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild)
-    #expect(reply.snapshot == view)
+    #expect(reply.state == state)
     #expect(reply.instanceId == instanceId)
+    #expect(reply.state?.status.hasActiveTunnel == true)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(object["snapshot"] == nil)
     let text = String(decoding: data, as: UTF8.self)
-    for field in ["wireGuardConfig", "privateKey", "customToken", "deviceSecret", "ownerUid", "email"] {
+    for field in ["wireGuardConfig", "privateKey", "customToken", "deviceSecret", "ownerUid", "email", "private-account@example.com", "secretReference", "configHash"] {
         #expect(!text.contains(field))
     }
 }
 
-@Test func crossAccountAndSignedOutSnapshotsFailClosed() throws {
-    let rows = [CloudGatewayMacControllerView.Region(title: "Region", rows: [
-        .init(identifier: "other/region/client", title: "Other account client", status: .connected, isEnabled: true)
-    ])]
-    for view in [
-        CloudGatewayMacControllerView(groups: rows, accountId: "account"),
-        CloudGatewayMacControllerView(groups: rows),
-        CloudGatewayMacControllerView(lastSelectedIdentifier: "other/region/client"),
-        CloudGatewayMacControllerView(accountId: "account", lastSelectedIdentifier: "other/region/client"),
-        CloudGatewayMacControllerView(browserState: .signedIn)
-    ] {
-        let data = CloudGatewayMacControllerProtocol.encodeReply(
-            CloudGatewayMacControllerReply(snapshot: view), appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
-        )
-        let reply = try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild)
-        #expect(reply.error == .invalidRequest)
-        #expect(reply.snapshot == nil)
-        #expect(!String(decoding: data, as: UTF8.self).contains("other/region/client"))
+@Test func crossAccountAndSignedOutStatesFailClosed() throws {
+    for field in ["clients", "installedIdentifiers", "observedProfiles", "selectedIdentifier", "accountId"] {
+        let state = try controllerInvalidState { object in
+            switch field {
+            case "clients":
+                var clients = try #require(object[field] as? [[String: Any]])
+                clients[0]["identifier"] = "other/region/client"
+                object[field] = clients
+            case "installedIdentifiers": object[field] = ["other/region/client"]
+            case "observedProfiles": object[field] = [["identifier": "other/region/client", "status": "connected"]]
+            case "selectedIdentifier": object[field] = "other/region/client"
+            default: object.removeValue(forKey: field)
+            }
+        }
+        try controllerExpectRejectedState(state)
     }
+    let signedOut = try controllerInvalidState { object in
+        object.removeValue(forKey: "accountId")
+        object["auth"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(CloudGatewayMacControllerView.BrowserState.signedOut))
+    }
+    try controllerExpectRejectedState(signedOut)
+}
+
+@Test func controllerStateBoundsClientMetadataAndProfileCollections() throws {
+    for (field, value) in [
+        ("clientName", String(repeating: "x", count: 2049)), ("regionName", String(repeating: "x", count: 1025)),
+        ("ownerLabel", String(repeating: "x", count: 1025)), ("clientName", "Work\nMac"),
+        ("regionName", ""), ("ownerLabel", "Owner\tLabel"), ("regionId", "other-region")
+    ] {
+        let state = try controllerInvalidState { object in
+            var clients = try #require(object["clients"] as? [[String: Any]])
+            clients[0][field] = value
+            object["clients"] = clients
+        }
+        try controllerExpectRejectedState(state)
+    }
+    for field in ["clients", "installedIdentifiers", "observedProfiles"] {
+        let state = try controllerInvalidState { object in
+            if field == "clients" {
+                let client = try #require((object[field] as? [[String: Any]])?.first)
+                object[field] = (0...4096).map { index in
+                    var value = client
+                    value["identifier"] = "account/region/client-\(index)"
+                    return value
+                }
+            } else if field == "installedIdentifiers" {
+                object[field] = (0...4096).map { "account/region/client-\($0)" }
+            } else {
+                object[field] = Array(repeating: ["status": "connected"], count: 4097)
+            }
+        }
+        try controllerExpectRejectedState(state)
+    }
+    for field in ["clients", "installedIdentifiers"] {
+        let duplicate = try controllerInvalidState { object in
+            let values = try #require(object[field] as? [Any])
+            object[field] = values + values
+        }
+        try controllerExpectRejectedState(duplicate)
+    }
+    let tooManyRegions = try controllerInvalidState { object in
+        let client = try #require((object["clients"] as? [[String: Any]])?.first)
+        object["clients"] = (0...256).map { index in
+            var value = client
+            value["identifier"] = "account/region-\(index)/client"
+            value["regionId"] = "region-\(index)"
+            return value
+        }
+    }
+    try controllerExpectRejectedState(tooManyRegions)
 }
 
 @Test func controllerChallengeOnlyAllowsExistingApprovalOriginAndShape() throws {
     let code = "123456"
     let fragment = "/auth/code?deviceRequestId=0123456789abcdef0123456789abcdef&userCode=\(code)"
     let url = try #require(URL(string: "https://gocloudlaunch.com/#\(fragment)"))
-    #expect(CloudGatewayMacControllerProtocol.validChallenge(code: code, url: url))
-    let view = CloudGatewayMacControllerView(browserState: .waitingForApproval(userCode: code, verificationURL: url))
-    try view.validate()
+    let state = controllerContractState(accountId: nil, auth: .waitingForApproval(userCode: code, verificationURL: url))
+    let data = CloudGatewayMacControllerProtocol.encodeReply(
+        .init(state: state), appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
+    )
+    #expect(try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild).state == state)
     for rawURL in [
         "https://example.com/#\(fragment)", "http://gocloudlaunch.com/#\(fragment)",
         "https://user@gocloudlaunch.com/#\(fragment)", "https://gocloudlaunch.com:444/#\(fragment)",
         "https://gocloudlaunch.com/?token=secret#\(fragment)", "https://gocloudlaunch.com/#\(fragment)&token=secret"
     ] {
         let invalidURL = try #require(URL(string: rawURL))
-        #expect(!CloudGatewayMacControllerProtocol.validChallenge(code: code, url: invalidURL))
+        try controllerExpectRejectedState(controllerContractState(
+            accountId: nil, auth: .waitingForApproval(userCode: code, verificationURL: invalidURL)
+        ))
     }
-    #expect(!CloudGatewayMacControllerProtocol.validChallenge(code: "654321", url: url))
+    for invalidCode in ["654321", "12345", "abc123"] {
+        try controllerExpectRejectedState(controllerContractState(
+            accountId: nil, auth: .waitingForApproval(userCode: invalidCode, verificationURL: url)
+        ))
+    }
+    try controllerExpectRejectedState(controllerContractState(auth: .waitingForApproval(userCode: code, verificationURL: url)))
+    try controllerExpectRejectedState(controllerContractState(accountId: nil, auth: .signedIn(AuthenticatedUser(uid: "account", email: nil))))
 }
 
 @Test func controllerRepliesRejectMalformedBoundsVersionsAndMissingInstance() throws {
@@ -155,16 +214,16 @@ private let appBuild = "42"
 
 @Test func controllerDoesNotExposeArbitraryErrorText() throws {
     let unsafe = "privateKey=secret customToken=secret account=other"
-    let sanitized = try #require(ControllerVisibleError.sanitize(unsafe))
-    #expect(!sanitized.contains("secret"))
+    let state = controllerContractState(errorMessage: unsafe)
+    #expect(state.errorMessage == "CloudGateway could not complete the request. Refresh before trying again")
     #expect(ControllerVisibleError.sanitize("Unable to refresh inventory. Try Refresh again") == "Unable to refresh inventory. Try Refresh again")
     #expect(ControllerVisibleError.sanitize(nil) == nil)
     let data = CloudGatewayMacControllerProtocol.encodeReply(
-        CloudGatewayMacControllerReply(snapshot: .init(errorMessage: unsafe)),
-        appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
+        CloudGatewayMacControllerReply(state: state), appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
     )
     #expect(!String(decoding: data, as: UTF8.self).contains("secret"))
-    #expect(try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild).error == .invalidRequest)
+    #expect(try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild).state == state)
+    try controllerExpectRejectedState(controllerInvalidState { $0["errorMessage"] = unsafe })
 }
 
 @Test func creationRepliesRejectUnboundedRegionsAndInvalidCapacity() throws {
@@ -217,5 +276,55 @@ private let appBuild = "42"
         #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
             try ControllerPeerIdentity.requirement(teamIdentifier: team)
         }
+    }
+}
+
+func controllerContractState(
+    accountId: String? = "account", auth: CloudGatewayMacBrowserAuthState? = nil, errorMessage: String? = nil
+) -> CloudGatewayMacControllerState {
+    let identifier = "\(accountId ?? "account")/region/client"
+    let snapshot = CloudGatewayMacControllerSnapshot(
+        domain: .init(
+            accountId: accountId, hasRetainedSession: accountId != nil, accessAuthorized: accountId != nil,
+            inventoryFreshness: accountId == nil ? .unavailable : .current,
+            installedIdentifiers: accountId == nil ? [] : [identifier],
+            observedProfiles: accountId == nil ? [] : [.init(identifier: identifier, status: .connected)],
+            observationIsFresh: true, commandInFlight: false,
+            clients: accountId == nil ? [] : [.init(
+                identifier: identifier, regionId: "region", regionName: "US Central", regionOrder: 1000,
+                clientName: "Work Mac", ownerLabel: nil, isEligible: true, status: .connected
+            )]
+        ),
+        lastSelectedIdentifier: accountId == nil ? nil : identifier,
+        browserState: auth ?? accountId.map { .signedIn(AuthenticatedUser(uid: $0, email: "private-account@example.com")) } ?? .signedOut,
+        isRestoringSession: false, isAuthSettling: false, canCreateClient: false, errorMessage: errorMessage
+    )
+    return .init(snapshot: snapshot, setupState: .ready, canUpdateExtension: false)
+}
+
+private func controllerInvalidState(
+    _ change: (inout [String: Any]) throws -> Void
+) throws -> CloudGatewayMacControllerState {
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(controllerContractState())) as? [String: Any])
+    try change(&object)
+    return try JSONDecoder().decode(CloudGatewayMacControllerState.self, from: JSONSerialization.data(withJSONObject: object))
+}
+
+private func controllerExpectRejectedState(_ state: CloudGatewayMacControllerState) throws {
+    let data = CloudGatewayMacControllerProtocol.encodeReply(
+        .init(state: state), appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
+    )
+    let reply = try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild)
+    #expect(reply.error == .invalidRequest)
+    #expect(reply.state == nil)
+    #expect(!String(decoding: data, as: UTF8.self).contains("other/region/client"))
+    var raw = CloudGatewayMacControllerReply(state: state)
+    raw.appVersion = appVersion
+    raw.appBuild = appBuild
+    raw.instanceId = UUID()
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+        try CloudGatewayMacControllerProtocol.decodeReply(
+            JSONEncoder().encode(raw), appVersion: appVersion, appBuild: appBuild
+        )
     }
 }
