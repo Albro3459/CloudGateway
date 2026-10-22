@@ -370,6 +370,13 @@ numbered selector, or `--wait` in v1.
   Restore terminal input settings on every exit path
 - Explicitly cancelling the login attempt cancels polling/exchange with the
   existing recovery safeguards. It does not log out an unrelated newer session
+- Login success, cancellation, and expiry must preserve an accepted `down`.
+  Matching-attempt cleanup stays available while the stop runs
+- The controller enforces bounded code acquisition and the challenge expiry
+  throughout polling, token exchange, and access verification, even after the
+  frontend disappears. Suspended calls and late callbacks cannot extend the
+  attempt or establish an expired session. Preserve the existing SDK settlement
+  fence before admitting another exchange
 - Already signed-in login is an idempotent status result. Reject a second
   concurrent login attempt with a busy result rather than creating two exchanges
 - Keep device secrets and Firebase/custom tokens out of output, logs, request
@@ -533,7 +540,7 @@ command surface and its diagnostics remain separate work.
 
 | Choice or concern | Benefit / risk | What to watch |
 | --- | --- | --- |
-| Single user controller | Shared auth/policy and independent command lifetime, with extra launch/IPC lifecycle work | Prove bootstrap context and singleton behavior before implementing the full CLI |
+| Single user controller | Shared auth/policy and independent command lifetime, with extra launch/IPC lifecycle work | Validate bootstrap context and singleton behavior in the deferred runtime session before release |
 | Existing bundled executable | Reuses signing/profile/resource identity, but has several startup modes | Dispatch before AppKit/Firebase side effects and verify the notarized bundle |
 | Firebase SDK reuse | Preserves current auth and recovery behavior | Data Protection Keychain availability depends on execution context |
 | Root system extension stays narrow | Preserves storage and privilege separation | Do not move Firebase or cloud policy into the extension or relax UID/signature checks |
@@ -752,11 +759,11 @@ The final Sol review found no remaining actionable findings. Signed reinstall
 and live replacement confirmation remain pending; the installed app and running
 components were not changed for this fix.
 
-### 1. Signed runtime proof, before the full command surface
+### 1. Deferred signed runtime acceptance
 
-This heading records the original ordering. The
+The
 [CLI implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-implementation.md)
-now allows unsigned implementation first. Keep the unchecked runtime evidence
+allows unsigned implementation first. Keep the unchecked runtime evidence
 below for release acceptance, without claiming it has already passed.
 
 - [x] Add the minimum headless dispatch and launch harness inside the existing
@@ -780,7 +787,7 @@ below for release acceptance, without claiming it has already passed.
 - [ ] Race simultaneous GUI and SSH startup and prove only one auth/core owner
 - [ ] Exercise locked/unlocked credentials, offline restoration, logout, and
   re-login. Repeat with the Developer ID/notarized distribution build
-- [ ] Stop at this gate if launch context, Keychain, extension availability, or
+- [ ] Block release if launch context, Keychain, extension availability, or
   preference operations cannot satisfy the requirement. Document evidence
 
 ### 2. Extract the shared owner and frontend protocol

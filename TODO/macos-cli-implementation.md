@@ -249,6 +249,16 @@ Extend the existing macOS browser coordinator, service, IPC, and
 - [ ] Scope cancellation to the matching attempt. A late cancel after success
   or from an older invocation must not clear a newer account presentation or
   cancel a newer exchange. Keep custom-token recovery fences intact
+- [ ] Keep matching-attempt cancellation and expiry cleanup reachable while
+  `down` runs. Login success, expiry, and cancellation must preserve accepted
+  account-independent stop work. Separate that work from the current blanket
+  account cleanup, while continuing to fence account-authorized starts
+- [ ] Enforce the acquisition deadline and monotonic challenge expiry in the
+  controller, including while request, poll, exchange, or access calls are
+  suspended and after each completion. Expiry ends the attempt without a
+  frontend. Preserve the existing custom-token cancellation/recovery fence so
+  late callbacks cannot establish an expired session. An underlying SDK call
+  may still settle later, and must block another exchange until it does
 - [ ] Let the menu automatically open only a login it initiated. Observing a
   CLI challenge must not open a browser. Keep explicit GUI open/copy actions
 - [ ] Print/flush link and code immediately, then poll in the controller.
@@ -269,6 +279,10 @@ Extend the existing macOS browser coordinator, service, IPC, and
 
 Acceptance: concurrent GUI/CLI login, duplicate submission, stale cancellation,
 expiry/throttling, exchange cleanup, and terminal failures have focused tests.
+Hold a stop open while login succeeds, is cancelled, or expires, and verify the
+stop still completes. With the frontend absent, use fake time and held request,
+poll, exchange, and access calls to verify timely expiry and harmless late
+completions. Repeated challenge-acquisition throttling must also stay bounded.
 Noninteractive/JSON login with stdin already at EOF still approves or expires.
 A locally decoded generated QR matches the validated URL, or a controlled
 fixture establishes matrix encoding. Real-terminal scan/shortcut checks remain
@@ -399,3 +413,7 @@ CloudGateway distribution bundle. Research and document review ran here, with
 no tests/builds, signing, app launch, installation, or live VPN changes.
 Fresh Main Sol High plan review identified cold-doctor startup and stdin EOF
 ambiguity. Both are addressed in the diagnostic/login steps and acceptance checks.
+The follow-up Main/Secure reviews found no additional issues. A focused Main
+review confirmed two further acceptance gaps found during source review:
+preserving accepted stops during login cleanup, and enforcing login deadlines
+while controller calls are suspended. Both are included above.
