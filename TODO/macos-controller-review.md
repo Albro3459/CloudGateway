@@ -369,9 +369,31 @@ Required live evidence:
 - [ ] Sleep/wake and multiple desktop/SSH clients. Treat fast user switching as a
   separate check because a per-user controller is not a machine-wide VPN lock
 
+## Fresh implementation review
+
+Round 1 uses fresh Main Codex GPT-6.1 Sol High reviewers for requests/frontend,
+inventory/domain, and extension/release behavior.
+
+- [x] Evaluate idle exit before each timer schedules another readiness probe
+- [x] Let durable extension attempts survive controller handoff, including an
+  abandoned preparation. The successor restores and expires the reservation
+- [x] Retire an obsolete activation target after a verified later boot, retaining
+  a terminal receipt and requiring authenticated readiness for the new target
+
+- [x] Keep known command results in memory without redundant receipt writes
+- [x] Retain only the active/latest result while durable digests suppress replay
+- [x] Distinguish definite Connect failures from successful start submission and
+  retain success if later selection metadata cannot be written
+- [x] Report credential cleanup failure as a failed Sign Out operation
+
+The domain and requests reviewers reported four distinct outcome/retention issues
+(the Connect finding was duplicated). All seven distinct fixes passed the full macOS validation run, including 263
+package tests and both strict dead-code scans. A second fresh review round is
+pending.
+
 ## Implementation validation
 
-`./scripts/test.sh macos` passed with 246 macOS package tests, both strict
+`./scripts/test.sh macos` passed after the review fixes with 263 macOS package tests, both strict
 Periphery scans, the unsigned arm64 app/system-extension build, and packaging
 verification. Shared Kit/AppCore and Firebase adapter tests also passed.
 The signed run repeated the passing tests and dead-code checks, then failed

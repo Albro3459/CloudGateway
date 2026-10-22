@@ -85,11 +85,17 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         } catch { state = .failed(.unavailable) }
     }
 
-    public func signOut() {
+    @discardableResult
+    public func signOut() -> Bool {
         invalidateAttempt()
         state = .signedOut
-        do { try auth.signOut() }
-        catch { state = .failed(.unavailable) }
+        do {
+            try auth.signOut()
+            return true
+        } catch {
+            state = .failed(.unavailable)
+            return false
+        }
     }
 
     private func invalidateAttempt() {

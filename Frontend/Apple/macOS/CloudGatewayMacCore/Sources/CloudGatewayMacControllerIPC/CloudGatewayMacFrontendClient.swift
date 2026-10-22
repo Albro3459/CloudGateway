@@ -193,6 +193,8 @@ public final class CloudGatewayMacFrontendClient {
         case .outcomeUnknown: return "The previous operation could not be confirmed. Check VPN status before trying again"
         case .busy: return "Another operation is in progress. Wait for it to finish and try again"
         case .rejected: return "Account or client list changed. Refresh and try again"
+        case .commandFailed: return "The command failed. Refresh VPN status before trying again"
+        case .authCleanupFailed: return "Sign Out did not finish. Retry sign-in cleanup"
         case .extensionAttemptChanged: return "VPN extension update changed. Refresh status before trying again"
         case .preparationExpired: return "The Add Client request expired. Open Add Client again"
         case .timeout: return "Controller request timed out. Refresh status before trying the action again"

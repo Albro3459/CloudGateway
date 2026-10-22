@@ -279,6 +279,9 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
                 if isLaterBoot(than: attempt.bootSession) { next.state = .outcomeUnknown(attempt) }
             default: break
             }
+            if next.state.attempt != nil, attempt.target != target, isLaterBoot(than: attempt.bootSession) {
+                next = terminal(.superseded, attempt: attempt, in: next)
+            }
         }
         if next != stored { try commit(next) }
     }

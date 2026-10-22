@@ -3,7 +3,7 @@ import CloudGatewayMacIPC
 import Foundation
 
 public enum CloudGatewayMacControllerFailure: String, Error, Codable, Sendable {
-    case invalidRequest, incompatibleVersion, unavailable, timeout, busy, rejected, outcomeUnknown, extensionAttemptChanged, preparationExpired
+    case invalidRequest, incompatibleVersion, unavailable, timeout, busy, rejected, outcomeUnknown, extensionAttemptChanged, preparationExpired, commandFailed, authCleanupFailed
 }
 
 public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {

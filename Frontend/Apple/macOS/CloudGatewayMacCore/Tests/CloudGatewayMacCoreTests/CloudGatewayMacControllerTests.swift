@@ -19,7 +19,7 @@ import CloudGatewayMacControllerIPC
     #expect(fixture.snapshot.groups.flatMap(\.rows).map(\.identifier) == [fixture.config.identifier])
     #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
 
-    fixture.controller.signOut()
+    #expect(fixture.controller.signOut())
     try await controllerWaitUntil { !fixture.controller.hasPendingWork }
     let signedOut = fixture.snapshot
     #expect(signedOut.accountId == nil)
@@ -29,6 +29,35 @@ import CloudGatewayMacControllerIPC
     #expect(!signedOut.canCreateClient)
     #expect(signedOut.canTurnOff)
     #expect(signedOut.hasActiveTunnel)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerReportsFailedSignOutCleanupAndAllowsRetry(suppressesSession: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { fixture.snapshot.hasActiveTunnel }
+    fixture.auth.signOutError = .unavailable
+    fixture.auth.suppressesFailedSignOut = suppressesSession
+
+    #expect(!fixture.controller.signOut())
+    #expect(fixture.domainSnapshot.browserState == .failed(.unavailable))
+    #expect(fixture.domainSnapshot.isAuthSettling == suppressesSession)
+    #expect(fixture.domainSnapshot.domain.accountId == nil)
+    #expect(!fixture.domainSnapshot.domain.accessAuthorized)
+    #expect(fixture.auth.currentUser?.uid == (suppressesSession ? nil : "user-a"))
+    #expect(fixture.snapshot.hasActiveTunnel)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+
+    fixture.auth.signOutError = nil
+    #expect(fixture.controller.signOut())
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.domainSnapshot.browserState == .signedOut)
+    #expect(!fixture.domainSnapshot.isAuthSettling)
+    #expect(fixture.auth.currentUser == nil)
+    #expect(fixture.snapshot.hasActiveTunnel)
     #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
 }
 
@@ -498,8 +527,11 @@ import CloudGatewayMacControllerIPC
     try await fixture.start()
     defer { fixture.controller.shutdown() }
     try await fixture.cache.deny(accountId: "user-a")
-    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier))
-    try await controllerWaitUntil { fixture.snapshot.errorMessage != nil }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == .failed)
+    #expect(fixture.snapshot.errorMessage != nil)
     #expect(await fixture.profiles.savedIdentifiers.isEmpty)
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
     #expect(await fixture.secrets.installCount == 0)
@@ -514,11 +546,120 @@ import CloudGatewayMacControllerIPC
     fixture.controller.start()
     defer { fixture.controller.shutdown() }
     try await controllerWaitUntil { fixture.snapshot.canToggleVPN }
-    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier))
-    try await controllerWaitUntil { fixture.snapshot.errorMessage != nil }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == .failed)
+    #expect(fixture.snapshot.errorMessage != nil)
     #expect(await fixture.profiles.savedIdentifiers.isEmpty)
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
     #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test @MainActor func macControllerReportsFailedConnectForAMissingOfflineSecretWithAnExistingProfile() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
+    await fixture.secrets.setAvailable(false)
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == .failed)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test(arguments: MacControllerConnectFailure.allCases)
+@MainActor private func macControllerReportsFailedConnectForDefiniteStartFailures(
+    failure: MacControllerConnectFailure
+) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    let active = CloudGatewayMacInstalledProfile(
+        identifier: "user-a/region/other", reference: try fixture.config.reference, status: .connected
+    )
+    await fixture.profiles.setProfiles([active, try fixture.profile(status: .disconnected)])
+    if failure == .stop { await fixture.profiles.setStopError(.profileInstallationFailed) }
+    if failure == .startGrant { await fixture.secrets.setAuthorizationError(.unauthorized) }
+    if failure == .start { await fixture.profiles.setStartError(.profileInstallationFailed) }
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var completion: CloudGatewayMacCommandResult?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completion = $0 })
+    try await controllerWaitUntil { completion != nil }
+    #expect(completion == .failed)
+    #expect(fixture.snapshot.errorMessage != nil)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerReportsCompletedConnectWhenMetadataFails(writeFails: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let submission = MacControllerGate()
+    await fixture.profiles.pauseStart(submission)
+    var completions: [CloudGatewayMacCommandResult] = []
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completions.append($0) })
+    try await controllerWaitUntil { await submission.entered }
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(
+        at: fixture.directory, includingPropertiesForKeys: nil
+    ).first)
+    defer {
+        if writeFails { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: accountDirectory.path) }
+    }
+    if writeFails {
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: accountDirectory.path)
+        #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
+    } else {
+        try Data("{}".utf8).write(to: accountDirectory.appendingPathComponent("inventory.json"), options: .atomic)
+    }
+    await submission.release()
+    try await controllerWaitUntil { !completions.isEmpty }
+    #expect(completions == [.completed])
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+    #expect(fixture.snapshot.errorMessage == "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again")
+}
+
+@Test @MainActor func macControllerReportsUnknownWhenTheSessionChangesDuringConnect() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let authorization = MacControllerGate()
+    await fixture.secrets.pauseAuthorization(authorization)
+    var completions: [CloudGatewayMacCommandResult] = []
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completions.append($0) })
+    try await controllerWaitUntil { await authorization.entered }
+    #expect(fixture.controller.signOut())
+    await authorization.release()
+    try await controllerWaitUntil { !completions.isEmpty }
+    #expect(completions == [.unknown])
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [CloudGatewayTunnelStatus.connected, .connecting, .reasserting])
+@MainActor func macControllerReportsCompletedConnectForAnAlreadyActiveProfile(status: CloudGatewayTunnelStatus) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: status)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var completions: [CloudGatewayMacCommandResult] = []
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { completions.append($0) })
+    try await controllerWaitUntil { !completions.isEmpty }
+    #expect(completions == [.completed])
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(fixture.snapshot.errorMessage == nil)
 }
 
 @Test(arguments: [false, true], [false, true])
@@ -727,6 +868,10 @@ private enum MacControllerRestoreCase: CaseIterable, Sendable {
     case authorizedCache, deniedCache, otherAccount, unavailable, accessDenied
 }
 
+private enum MacControllerConnectFailure: CaseIterable, Sendable {
+    case stop, startGrant, start
+}
+
 private struct MacControllerWaitTimeout: Error {}
 
 @MainActor
@@ -831,7 +976,9 @@ private struct MacControllerFixture {
 @MainActor
 private final class MacControllerAuth: CloudGatewayMacControllerAuthServicing {
     var currentUser: AuthenticatedUser? = AuthenticatedUser(uid: "user-a", email: nil)
-    let isCustomTokenSignInSettling = false
+    var isCustomTokenSignInSettling = false
+    var signOutError: CloudGatewayDeviceAuthError?
+    var suppressesFailedSignOut = false
     private var listener: ((AuthenticatedUser?) -> Void)?
     private let listenerState = MacControllerListenerState()
     private(set) var registrationCount = 0
@@ -863,6 +1010,14 @@ private final class MacControllerAuth: CloudGatewayMacControllerAuthServicing {
 
     func signOut() throws {
         signOutCount += 1
+        if let signOutError {
+            if suppressesFailedSignOut {
+                isCustomTokenSignInSettling = true
+                emit(nil)
+            }
+            throw signOutError
+        }
+        isCustomTokenSignInSettling = false
         emit(nil)
     }
 }
@@ -934,6 +1089,9 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     private var values: [CloudGatewayMacInstalledProfile] = []
     private var nextReadGate: MacControllerGate?
     private var readFails = false
+    private var stopError: CloudGatewayMacConfigError?
+    private var startError: CloudGatewayMacConfigError?
+    private var startGate: MacControllerGate?
     private(set) var readCount = 0
     private(set) var completedReads = 0
     private(set) var startedIdentifiers: [String] = []
@@ -943,6 +1101,9 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     func setProfiles(_ profiles: [CloudGatewayMacInstalledProfile]) { values = profiles }
     func pauseNextRead(_ gate: MacControllerGate) { nextReadGate = gate }
     func failReads() { readFails = true }
+    func setStopError(_ error: CloudGatewayMacConfigError) { stopError = error }
+    func setStartError(_ error: CloudGatewayMacConfigError) { startError = error }
+    func pauseStart(_ gate: MacControllerGate) { startGate = gate }
 
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         readCount += 1
@@ -967,11 +1128,14 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
 
     func start(identifier: String, grant: String) async throws {
         try Task.checkCancellation()
+        if let startError { throw startError }
         startedIdentifiers.append(identifier)
+        await startGate?.arriveAndWait()
     }
 
     func stopAndWait(identifier: String) async throws {
         try Task.checkCancellation()
+        if let stopError { throw stopError }
         stoppedIdentifiers.append(identifier)
         values = values.map {
             $0.identifier == identifier
@@ -986,6 +1150,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     private var installReference: CloudGatewayMacSecretReference?
     private var availabilityError: CloudGatewayMacSecretError?
     private var installError: CloudGatewayMacSecretError?
+    private var authorizationError: CloudGatewayMacSecretError?
     private var authorizationGate: MacControllerGate?
     private var available = true
     private(set) var installCount = 0
@@ -997,6 +1162,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     func setInstallReference(_ reference: CloudGatewayMacSecretReference) { installReference = reference }
     func setAvailabilityError(_ error: CloudGatewayMacSecretError) { availabilityError = error }
     func setInstallError(_ error: CloudGatewayMacSecretError) { installError = error }
+    func setAuthorizationError(_ error: CloudGatewayMacSecretError) { authorizationError = error }
 
     func install(configId: String, config: CloudGatewayWireGuardConfig) async throws -> CloudGatewayMacSecretReference {
         try Task.checkCancellation()
@@ -1024,6 +1190,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     func authorizeStart(reference: CloudGatewayMacSecretReference, configId: String) async throws -> String {
         await authorizationGate?.arriveAndWait()
         try Task.checkCancellation()
+        if let authorizationError { throw authorizationError }
         return "synthetic-start-grant"
     }
 }

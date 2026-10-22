@@ -82,15 +82,17 @@ func controllerRequestsReconstructionMarksUnfinishedWorkUnknown(state: CloudGate
 }
 
 @MainActor
-@Test func controllerRequestsFailedOutcomeWritePreventsReplayUntilReceiptExpires() throws {
+@Test func controllerRequestsKnownOutcomeSurvivesWriteFailureUntilReceiptExpires() throws {
     let store = RequestReceiptStore()
     let requests = try store.make()
     let request = CloudGatewayMacControllerRequest(action: .connect, identifier: "account/region/client")
     _ = try requests.accept(request)
     requests.finish(id: request.id, state: .running)
     store.failWrites = true
-    #expect(requests.finish(id: request.id, state: .completed).state == .unknown)
-    #expect(try requests.lookup(request)?.state == .unknown)
+    let writes = store.writes
+    #expect(requests.finish(id: request.id, state: .completed).state == .completed)
+    #expect(try requests.lookup(request)?.state == .completed)
+    #expect(store.writes == writes)
     let restored = try store.make()
     #expect(try restored.lookup(request)?.state == .unknown)
     store.now.addTimeInterval(600)
@@ -134,4 +136,22 @@ func controllerRequestsReconstructionMarksUnfinishedWorkUnknown(state: CloudGate
     #expect(restored.latest == nil)
     #expect(restored.operation(id: command.id).state == .unknown)
     #expect(restored.operation(id: stop.id).state == .unknown)
+}
+
+@MainActor
+@Test func controllerRequestsRetainOnlyLatestResultWithoutLosingAntiReplayReceipts() throws {
+    let store = RequestReceiptStore()
+    let requests = try store.make()
+    let first = CloudGatewayMacControllerRequest(action: .connect, identifier: "account/region/first")
+    let second = CloudGatewayMacControllerRequest(action: .connect, identifier: "account/region/second")
+    _ = try requests.accept(first)
+    requests.finish(id: first.id, state: .completed)
+    _ = try requests.accept(second)
+    requests.finish(id: second.id, state: .completed)
+    #expect(requests.operation(id: first.id).state == .unknown)
+    #expect(try requests.lookup(first)?.state == .unknown)
+    #expect(requests.operation(id: second.id).state == .completed)
+    #expect(requests.latest?.id == second.id)
+    #expect(requests.finish(id: first.id, state: .failed).state == .unknown)
+    #expect(requests.latest?.id == second.id)
 }

@@ -5,23 +5,17 @@ import Foundation
 public final class CloudGatewayMacControllerRequests {
     private struct Receipt: Codable {
         let digest: String
-        var operation: CloudGatewayMacControllerOperation? = nil
         let expires: Date
-        // Older controllers persisted only admission, so their outcome is unknown
-        let accepted: Bool?
-
-        enum CodingKeys: String, CodingKey { case digest, expires, accepted }
     }
 
     private struct Storage: Codable {
         var receipts: [UUID: Receipt]
-        var latest: CloudGatewayMacControllerOperation? = nil
-
-        enum CodingKeys: String, CodingKey { case receipts }
     }
 
     private var storage: Storage
-    private var stop: (digest: String, operation: CloudGatewayMacControllerOperation)?
+    private var stop: (id: UUID, digest: String)?
+    private var result: CloudGatewayMacControllerOperation?
+    private var resultExpires = Date.distantPast
     private let now: () -> Date
     private let persist: (Data) throws -> Void
 
@@ -33,76 +27,58 @@ public final class CloudGatewayMacControllerRequests {
             ?? Storage(receipts: [:])
         guard storage.receipts.count <= 64 else { throw CloudGatewayMacControllerFailure.invalidRequest }
         storage.receipts = storage.receipts.filter { $0.value.expires > now() }
-        for id in storage.receipts.keys {
-            if storage.receipts[id]?.operation == nil || storage.receipts[id]?.operation?.state == .accepted
-                || storage.receipts[id]?.operation?.state == .running {
-                storage.receipts[id]?.operation = .init(id: id, state: .unknown)
-            }
-        }
-        if let latest = storage.latest, latest.state == .accepted || latest.state == .running {
-            storage.latest = .init(id: latest.id, state: .unknown)
-        }
     }
 
-    public var latest: CloudGatewayMacControllerOperation? { stop?.operation ?? storage.latest }
+    public var latest: CloudGatewayMacControllerOperation? {
+        guard let result else { return nil }
+        return result.state == .accepted || result.state == .running || resultExpires > now() ? result : nil
+    }
 
     public func lookup(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation? {
         let digest = Self.digest(request)
         if request.action == .turnOff {
-            guard let stop, stop.operation.id == request.id else { return nil }
+            guard let stop, stop.id == request.id, let result = latest else { return nil }
             guard stop.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
-            return stop.operation.state == .failed || stop.operation.state == .unknown ? nil : stop.operation
+            return result.state == .failed || result.state == .unknown ? nil : result
         }
-        guard let receipt = storage.receipts[request.id], receipt.expires > now() else { return nil }
+        guard let receipt = storage.receipts[request.id],
+              receipt.expires > now() || latest?.id == request.id else { return nil }
         guard receipt.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
-        return receipt.operation ?? .init(id: request.id, state: .unknown)
+        return operation(id: request.id)
     }
 
     public func operation(id: UUID) -> CloudGatewayMacControllerOperation {
-        if let stop, stop.operation.id == id { return stop.operation }
-        guard let receipt = storage.receipts[id], receipt.expires > now() else {
-            return .init(id: id, state: .unknown)
-        }
-        return receipt.operation ?? .init(id: id, state: .unknown)
+        guard let latest, latest.id == id else { return .init(id: id, state: .unknown) }
+        return latest
     }
 
     public func accept(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation {
         let operation = CloudGatewayMacControllerOperation(id: request.id, state: .accepted)
+        let expires = now().addingTimeInterval(600)
         if request.action == .turnOff {
-            stop = (Self.digest(request), operation)
-            return operation
+            stop = (request.id, Self.digest(request))
+        } else {
+            var next = storage
+            next.receipts = next.receipts.filter { $0.value.expires > now() }
+            guard next.receipts.count < 64 else { throw CloudGatewayMacControllerFailure.unavailable }
+            next.receipts[request.id] = Receipt(digest: Self.digest(request), expires: expires)
+            try persist(JSONEncoder().encode(next))
+            storage = next
+            stop = nil
         }
-        var next = storage
-        next.receipts = next.receipts.filter { $0.value.expires > now() }
-        guard next.receipts.count < 64 else { throw CloudGatewayMacControllerFailure.unavailable }
-        next.receipts[request.id] = Receipt(digest: Self.digest(request), operation: operation,
-                                           expires: now().addingTimeInterval(600), accepted: true)
-        next.latest = operation
-        try persist(JSONEncoder().encode(next))
-        storage = next
-        stop = nil
+        result = operation
+        resultExpires = expires
         return operation
     }
 
     @discardableResult
     public func finish(id: UUID, state: CloudGatewayMacControllerOperation.State,
                        failure: CloudGatewayMacControllerFailure? = nil) -> CloudGatewayMacControllerOperation {
+        guard result?.id == id else { return .init(id: id, state: .unknown) }
         let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure)
-        if stop?.operation.id == id {
-            stop?.operation = operation
-            return operation
-        }
-        guard storage.receipts[id] != nil else { return .init(id: id, state: .unknown) }
-        storage.receipts[id]?.operation = operation
-        storage.latest = operation
-        do { try persist(JSONEncoder().encode(storage)) }
-        catch {
-            // Work already ran, so failed persistence must never trigger replay
-            let unknown = CloudGatewayMacControllerOperation(id: id, state: .unknown)
-            storage.receipts[id]?.operation = unknown
-            storage.latest = unknown
-            return unknown
-        }
+        // Admission already prevents replay, results stay in memory only
+        result = operation
+        if state != .accepted && state != .running { resultExpires = now().addingTimeInterval(600) }
         return operation
     }
 

@@ -204,22 +204,22 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
 }
 
 @MainActor
-@Test func controllerOrchestratorRunningWriteFailurePreventsConnectEffects() async throws {
+@Test func controllerOrchestratorConfirmedConnectKeepsKnownOutcomeWithoutMoreReceiptWrites() async throws {
     let effects = ControllerOrchestratorEffects()
     let controller = try effects.make()
     try await effects.ready(controller)
     let connect = controllerBoundaryRequest(.connect)
     #expect(await controller.handle(connect).operation?.state == .accepted)
     effects.failWrites = true
+    let writes = effects.writes
     let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: connect.id)
-    #expect(await controller.handle(confirmation).operation?.state == .unknown)
-    #expect(await controller.handle(confirmation).operation?.state == .unknown)
-    #expect(effects.performed.isEmpty)
-    let stop = controllerBoundaryRequest(.turnOff)
-    #expect(await controller.handle(stop).operation?.state == .accepted)
-    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: stop.id)).operation?.state == .running)
-    #expect(effects.performed == [.turnOff])
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    #expect(effects.performed == [.connect])
     effects.completion?(.completed)
+    #expect(await controller.handle(confirmation).operation?.state == .completed)
+    #expect(await controller.handle(connect).operation?.state == .completed)
+    #expect(effects.performed == [.connect])
+    #expect(effects.writes == writes)
 }
 
 @MainActor
@@ -364,4 +364,72 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
     #expect(await restored.handle(finished).accepted == true)
     #expect(await restored.handle(finished).accepted == true)
     #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorIdleTickAllowsExitBeforeSchedulingAnotherProbe() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.now.addTimeInterval(60)
+    await controller.tick()
+    #expect(controller.canExit)
+    #expect(effects.setup == .ready)
+}
+
+@MainActor
+@Test func controllerOrchestratorPreparedUpdateSurvivesHandoffWithoutHoldingOwnership() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let prepared = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    let id = try #require(prepared.operationId)
+    effects.installed = controllerBoundaryReplacement
+    await controller.tick()
+    #expect(controller.canExit)
+    #expect(effects.storedUpdates.state.attempt?.id == id)
+    effects.now.addTimeInterval(30)
+    await controller.tick()
+    #expect(controller.canExit)
+    let successor = try effects.make()
+    #expect(effects.storedUpdates.receipts.contains { $0.id == id && $0.outcome == .expired })
+    #expect(!successor.canExit)
+}
+
+@MainActor
+@Test func controllerOrchestratorSupersededOutcomeIsUnknownWithoutReplayingItsRequest() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let first = controllerBoundaryRequest(.connect)
+    let second = controllerBoundaryRequest(.connect)
+    for request in [first, second] {
+        #expect(await controller.handle(request).operation?.state == .accepted)
+        #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id)).operation?.state == .running)
+        effects.completion?(.completed)
+    }
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: first.id)).operation?.state == .unknown)
+    #expect(await controller.handle(first).operation?.state == .unknown)
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: second.id)).operation?.state == .completed)
+    #expect(effects.performed == [.connect, .connect])
+}
+
+@MainActor
+@Test(arguments: [(CloudGatewayMacControllerRequest.Action.connect, CloudGatewayMacControllerFailure.commandFailed),
+                  (.signOut, .authCleanupFailed)])
+func controllerOrchestratorRetainsSpecificDomainFailureForOperationLookup(
+    action: CloudGatewayMacControllerRequest.Action, failure: CloudGatewayMacControllerFailure
+) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.active = true
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let request = controllerBoundaryRequest(action)
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id)).operation?.state == .running)
+    effects.completion?(.failed)
+    let result = await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(result.operation?.state == .failed)
+    #expect(result.operation?.failure == failure)
+    #expect(result.status?.hasActiveTunnel == true)
 }

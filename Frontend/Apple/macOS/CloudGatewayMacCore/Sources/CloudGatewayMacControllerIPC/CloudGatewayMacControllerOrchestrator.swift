@@ -97,9 +97,9 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     public var canExit: Bool {
         guard activeRequests == 0, pending == nil, runningOperation == nil,
-              !effects.hasPendingWork(), readinessTask == nil, !extensionUpdates.hasPendingAttempt else { return false }
-        return update.canExit(hasPendingWork: false, activeRequests: 0)
-            || effects.now().timeIntervalSince(lastActivity) >= 60
+              !effects.hasPendingWork(), readinessTask == nil else { return false }
+        if update.canExit(hasPendingWork: false, activeRequests: 0) { return true }
+        return !extensionUpdates.hasPendingAttempt && effects.now().timeIntervalSince(lastActivity) >= 60
     }
 
     public func tick() async {
@@ -114,6 +114,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         expirePending()
         if effects.hasPendingWork() || runningOperation != nil { lastActivity = effects.now() }
+        if canExit { return }
         if update.canAcceptMutations { refreshReadiness() }
     }
 
@@ -192,15 +193,12 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         self.pending = nil
         runningOperation = id
-        let started = requests.finish(id: id, state: .running)
-        // Durable non-stop commands never run if the running transition could not be saved
-        guard request.action == .turnOff || started.state == .running else {
-            runningOperation = nil
-            return controlReply(operation: started)
-        }
+        requests.finish(id: id, state: .running)
         let completion: (CloudGatewayMacControllerOperation.State) -> Void = { [weak self] state in
             guard let self, runningOperation == id else { return }
-            _ = requests.finish(id: id, state: state, failure: state == .failed ? .rejected : nil)
+            let failure: CloudGatewayMacControllerFailure? = state == .failed
+                ? request.action == .signOut ? .authCleanupFailed : .commandFailed : nil
+            _ = requests.finish(id: id, state: state, failure: failure)
             runningOperation = nil
             lastActivity = effects.now()
         }
@@ -213,7 +211,10 @@ public final class CloudGatewayMacControllerOrchestrator {
             if request.action == .signOut || request.action == .cancelSignIn { creation = nil }
             accepted = effects.perform(request, completion)
         }
-        if !accepted { completion(.failed) }
+        if !accepted, runningOperation == id {
+            requests.finish(id: id, state: .failed, failure: .rejected)
+            runningOperation = nil
+        }
         return controlReply(operation: requests.operation(id: id))
     }
 

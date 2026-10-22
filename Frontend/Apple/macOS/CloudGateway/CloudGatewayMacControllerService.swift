@@ -66,7 +66,9 @@ final class CloudGatewayMacControllerService {
                     guard !state.isRestoringSession, !state.isAuthSettling else { return false }
                     runtime.controller.signIn()
                 case .cancelSignIn: runtime.controller.cancelSignIn()
-                case .signOut: runtime.controller.signOut()
+                case .signOut:
+                    complete(runtime.controller.signOut() ? .completed : .failed)
+                    return true
                 case .refresh: runtime.controller.refresh()
                 case .menuWillOpen: runtime.controller.menuWillOpen()
                 default: return false

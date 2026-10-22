@@ -111,6 +111,7 @@ enum ControllerVisibleError {
         "The VPN profile was saved, but secure storage did not finish. Refresh before retrying",
         "The VPN profile was saved, but offline metadata could not be saved. Refresh before retrying",
         "VPN command could not finish. Refresh preferences before trying again",
+        "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again",
         "Saved VPN configuration is unavailable. Refresh and try again",
         "Unable to access secure VPN storage",
         "Unable to load available regions. Refresh and try again",

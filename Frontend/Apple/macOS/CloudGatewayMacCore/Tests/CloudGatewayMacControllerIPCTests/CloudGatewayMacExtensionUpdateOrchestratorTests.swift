@@ -9,6 +9,10 @@ private typealias ExtensionUpdates = CloudGatewayMacExtensionUpdateOrchestrator
 private let updateTarget = CloudGatewayMacBuildIdentity(version: "1.0", build: "2", codeHash: String(repeating: "a", count: 64))
 private let replacementTarget = CloudGatewayMacBuildIdentity(version: "1.0", build: "3", codeHash: String(repeating: "b", count: 64))
 
+private enum ExtensionUpdatePhase: CaseIterable, Sendable {
+    case prepared, submitted, approvalPending, rebootRequired, outcomeUnknown
+}
+
 @MainActor
 private final class ExtensionUpdateEffects {
     enum Failure: Error, Equatable { case persistence }
@@ -29,6 +33,24 @@ private final class ExtensionUpdateEffects {
                 self.writes += 1
             }
         )
+    }
+
+    func makeAttempt(phase: ExtensionUpdatePhase) throws -> (ExtensionUpdates, ExtensionUpdates.Attempt) {
+        let updates = try make()
+        let attempt = try updates.begin(target: updateTarget)
+        if phase == .prepared { return (updates, attempt) }
+        try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
+        switch phase {
+        case .approvalPending:
+            try updates.handle(.approval, attemptId: attempt.id, installedTarget: updateTarget)
+        case .rebootRequired:
+            try updates.handle(.rebootRequired, attemptId: attempt.id, installedTarget: updateTarget)
+        case .outcomeUnknown:
+            now.addTimeInterval(120)
+            _ = try updates.prepareReadiness(target: updateTarget)
+        case .prepared, .submitted: break
+        }
+        return (updates, attempt)
     }
 }
 
@@ -181,6 +203,135 @@ private final class ExtensionUpdateEffects {
 }
 
 @MainActor
+@Test(arguments: ExtensionUpdatePhase.allCases, [false, true])
+private func extensionUpdateRetiresObsoleteTargetAfterVerifiedBoot(
+    phase: ExtensionUpdatePhase, restoreAfterReboot: Bool
+) throws {
+    let effects = ExtensionUpdateEffects()
+    let (original, attempt) = try effects.makeAttempt(phase: phase)
+    let oldProbe = try original.prepareReadiness(target: updateTarget)
+    effects.boot = "boot-2"
+    let updates = restoreAfterReboot ? try effects.make() : original
+    let probe = try #require(try updates.prepareReadiness(target: replacementTarget))
+    let receipt = try #require(effects.saved.receipts.first { $0.id == attempt.id })
+    #expect(receipt.outcome == (phase == .prepared ? .expired : .superseded))
+    #expect(receipt.expires == effects.now.addingTimeInterval(600))
+    #expect(updates.state == .terminal(receipt))
+    #expect(!updates.hasPendingAttempt)
+    if let oldProbe {
+        #expect(try updates.reconcileReadiness(
+            oldProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
+        ) == .ignored)
+    }
+    #expect(try updates.reconcileReadiness(
+        probe, installedTarget: replacementTarget, authenticatedTarget: nil
+    ) == .notReady)
+    #expect(try updates.reconcileReadiness(
+        probe, installedTarget: replacementTarget, authenticatedTarget: updateTarget
+    ) == .notReady)
+    #expect(updates.state == .terminal(receipt))
+    #expect(try updates.reconcileReadiness(
+        probe, installedTarget: replacementTarget, authenticatedTarget: replacementTarget
+    ) == .ready)
+
+    let restored = try effects.make()
+    #expect(restored.stored.receipts.contains(receipt))
+    #expect(throws: CloudGatewayMacControllerFailure.busy) {
+        try restored.begin(target: replacementTarget, id: attempt.id)
+    }
+    let replacement = try restored.begin(target: replacementTarget)
+    try restored.handle(.started, attemptId: replacement.id, installedTarget: replacementTarget)
+    let pending = restored.stored
+    for event in [ExtensionUpdates.Event.approval, .rebootRequired, .finished, .failed] {
+        try restored.handle(event, attemptId: attempt.id, installedTarget: replacementTarget)
+        #expect(restored.stored == pending)
+    }
+    #expect(throws: CloudGatewayMacControllerFailure.rejected) {
+        try restored.handle(.started, attemptId: attempt.id, installedTarget: replacementTarget)
+    }
+    #expect(try restored.reconcileReadiness(
+        probe, installedTarget: replacementTarget, authenticatedTarget: replacementTarget
+    ) == .ignored)
+}
+
+@MainActor
+@Test(arguments: [ExtensionUpdatePhase.submitted, .approvalPending, .rebootRequired, .outcomeUnknown])
+private func extensionUpdateCanBeginReplacementAfterVerifiedBoot(phase: ExtensionUpdatePhase) throws {
+    let effects = ExtensionUpdateEffects()
+    let (updates, attempt) = try effects.makeAttempt(phase: phase)
+    effects.boot = "boot-2"
+    let replacement = try updates.begin(target: replacementTarget)
+    #expect(updates.state == .prepared(replacement, deadline: effects.now.addingTimeInterval(30)))
+    #expect(effects.saved == updates.stored)
+    #expect(effects.saved.receipts.contains { $0.id == attempt.id && $0.outcome == .superseded })
+    #expect(try updates.prepareReadiness(target: replacementTarget) == nil)
+}
+
+@MainActor
+@Test(arguments: [ExtensionUpdatePhase.submitted, .approvalPending, .rebootRequired, .outcomeUnknown],
+      ["boot-1", "unknown", ""])
+private func extensionUpdateKeepsObsoleteTargetBlockedWithoutVerifiedBoot(
+    phase: ExtensionUpdatePhase, currentBoot: String
+) throws {
+    let effects = ExtensionUpdateEffects()
+    let (updates, attempt) = try effects.makeAttempt(phase: phase)
+    effects.boot = currentBoot
+    #expect(try updates.prepareReadiness(target: replacementTarget) == nil)
+    #expect(updates.state.attempt == attempt)
+    #expect(updates.stored.receipts.isEmpty)
+    #expect(throws: CloudGatewayMacControllerFailure.busy) { try updates.begin(target: replacementTarget) }
+    let restored = try effects.make()
+    #expect(try restored.prepareReadiness(target: replacementTarget) == nil)
+    #expect(throws: CloudGatewayMacControllerFailure.busy) { try restored.begin(target: replacementTarget) }
+    #expect(restored.state.attempt == attempt)
+    if phase == .rebootRequired { #expect(restored.state == .rebootRequired(attempt)) }
+}
+
+@MainActor
+@Test(arguments: [ExtensionUpdatePhase.submitted, .approvalPending, .rebootRequired, .outcomeUnknown])
+private func extensionUpdateUnknownOriginalBootCannotSupersedeTarget(phase: ExtensionUpdatePhase) throws {
+    let effects = ExtensionUpdateEffects()
+    effects.boot = "unknown"
+    let (_, attempt) = try effects.makeAttempt(phase: phase)
+    effects.boot = "boot-2"
+    let restored = try effects.make()
+    #expect(try restored.prepareReadiness(target: replacementTarget) == nil)
+    #expect(throws: CloudGatewayMacControllerFailure.busy) { try restored.begin(target: replacementTarget) }
+    #expect(restored.state.attempt == attempt)
+    #expect(restored.stored.receipts.isEmpty)
+    if phase == .rebootRequired { #expect(restored.state == .rebootRequired(attempt)) }
+}
+
+@MainActor
+@Test(arguments: ExtensionUpdatePhase.allCases, [false, true])
+private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailure(
+    phase: ExtensionUpdatePhase, restoreAfterReboot: Bool
+) throws {
+    let effects = ExtensionUpdateEffects()
+    let (original, attempt) = try effects.makeAttempt(phase: phase)
+    let pending = effects.saved
+    effects.boot = "boot-2"
+    effects.failPersistence = true
+    let updates = restoreAfterReboot ? try effects.make() : original
+    let local = updates.stored
+    #expect(throws: ExtensionUpdateEffects.Failure.persistence) {
+        try updates.prepareReadiness(target: replacementTarget)
+    }
+    #expect(updates.stored == local)
+    #expect(effects.saved == pending)
+    #expect(throws: ExtensionUpdateEffects.Failure.persistence) { try updates.begin(target: replacementTarget) }
+    #expect(updates.stored == local)
+    #expect(effects.saved == pending)
+    effects.failPersistence = false
+    let replacement = try updates.begin(target: replacementTarget)
+    #expect(updates.state.attempt == replacement)
+    #expect(effects.saved == updates.stored)
+    #expect(effects.saved.receipts.contains {
+        $0.id == attempt.id && $0.outcome == (phase == .prepared ? .expired : .superseded)
+    })
+}
+
+@MainActor
 @Test func extensionReadinessReceiptSurvivesReconstructionAndCannotChangeNewAttempt() throws {
     let effects = ExtensionUpdateEffects()
     let original = try effects.make()
@@ -310,13 +461,21 @@ private final class ExtensionUpdateEffects {
     let effects = ExtensionUpdateEffects()
     let updates = try effects.make()
     var attempts: [ExtensionUpdates.Attempt] = []
-    for _ in 0..<20 {
+    for index in 0..<20 {
+        effects.boot = "boot-\(index)"
         let attempt = try updates.begin(target: updateTarget)
         attempts.append(attempt)
-        try updates.handle(.failed, attemptId: attempt.id, installedTarget: updateTarget)
+        if index.isMultiple(of: 2) {
+            try updates.handle(.failed, attemptId: attempt.id, installedTarget: updateTarget)
+        } else {
+            try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
+            effects.boot = "boot-\(index)-after"
+            _ = try updates.prepareReadiness(target: replacementTarget)
+        }
         effects.now.addTimeInterval(1)
     }
     #expect(effects.saved.receipts.count == 16)
+    #expect(effects.saved.receipts.filter { $0.outcome == .superseded }.count == 8)
     #expect(throws: CloudGatewayMacControllerFailure.rejected) {
         try updates.handle(.finished, attemptId: attempts[0].id, installedTarget: updateTarget)
     }

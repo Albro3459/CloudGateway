@@ -536,7 +536,7 @@ public final class CloudGatewayMacController {
         commandTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var result = CloudGatewayMacCommandResult.failed
-            var startAttempted = false
+            var connectInFlight = false
             defer {
                 if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); notifyChange() }
                 onCompletion?(result)
@@ -570,16 +570,19 @@ public final class CloudGatewayMacController {
                 do {
                     if config == saved, !savedProfileExists { try await configs.restore(config) }
                     try requireCurrent(epoch, token: token)
-                    startAttempted = true
+                    connectInFlight = true
                     try await configs.connect(config)
                 } catch CloudGatewayMacConfigError.unavailable {
+                    connectInFlight = false
                     try requireCurrent(epoch, token: token)
                     guard config == saved, let option, !isOffline else { throw CloudGatewayMacConfigError.unavailable }
                     config = try await configs.install(option: option, accountId: account.uid)
                     try requireCurrent(epoch, token: token)
-                    startAttempted = true
+                    connectInFlight = true
                     try await configs.connect(config)
                 }
+                connectInFlight = false
+                result = .completed
                 try requireCurrent(epoch, token: token)
                 try await cache.select(identifier: config.identifier, accountId: account.uid)
                 try requireCurrent(epoch, token: token)
@@ -589,10 +592,16 @@ public final class CloudGatewayMacController {
                 lastSelectedIdentifier = savedMetadata.selectedIdentifier
                 try requireCurrent(epoch, token: token)
                 errorMessage = nil
-                result = .completed
             } catch {
-                if startAttempted || error is CancellationError || Task.isCancelled || sessionEpoch != epoch { result = .unknown }
+                if connectInFlight, error is CancellationError || error as? CloudGatewayMacConfigError == .cancelled
+                    || Task.isCancelled || sessionEpoch != epoch {
+                    result = .unknown
+                }
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                if result == .completed {
+                    errorMessage = "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again"
+                    return
+                }
                 if error as? CloudGatewayMacSecretError == .storageFailure {
                     errorMessage = "Unable to access secure VPN storage"
                     return
@@ -761,11 +770,13 @@ public final class CloudGatewayMacController {
         notifyChange()
     }
 
-    public func signOut() {
-        guard isStarted, !isShuttingDown else { return }
+    @discardableResult
+    public func signOut() -> Bool {
+        guard isStarted, !isShuttingDown else { return false }
         clearAccountPresentation()
-        browser.signOut()
+        let didSignOut = browser.signOut()
         notifyChange()
+        return didSignOut
     }
 
     public func refresh() {
