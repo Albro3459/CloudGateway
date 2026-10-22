@@ -43,13 +43,26 @@ domain. `ProcessType = Background` only selects resource limits. On macOS 26,
 omitting the session type caused `launchctl bootstrap user/<uid>` to fail with
 error 5 before starting the controller.
 The menu polls snapshots and reconnects after transport loss. It never starts
-another Firebase owner as a fallback. Incompatible app builds show a recovery
-message instead of sharing state. Close the menu, let accepted work finish and
-the 60-second idle grace period expire, then reopen the installed app.
+another Firebase owner as a fallback. A version-independent authenticated
+lifecycle handshake reports the captured running identity and verified installed
+target. Normal commands also require the exact startup fingerprint, including
+the signed CodeDirectory and CMS digest, so reused version numbers do not hide
+different code or signing. A valid installed replacement closes mutation
+admission, drains accepted work, and exits without stopping the VPN. Stale menus
+reopen the fixed verified app; clients never select the replacement executable.
+Invalid or partial installations do not authorize a handoff. Older controllers
+need a one-time restart when first installing this lifecycle.
 
 The controller stays alive while requests or core work are pending. After 60
 idle seconds it exits; launchd can start it on demand again. It does not replay
-commands across controller restarts. The signed pre-desktop SSH/Keychain proof
+commands across controller restarts. Recent request UUIDs and request digests
+persist for ten minutes, capped at 64 live entries without eviction. Acceptance
+confirms submission, and an unknown outcome never authorizes an automatic retry.
+Extension updates reserve a target-bound attempt before asynchronous work,
+inspect all owned tunnel activity, and wait for idle without disconnecting.
+Approval and reboot states survive relaunch and reject stale readiness results.
+An activation interrupted by a controller restart conservatively requires a
+reboot if its result cannot be confirmed. The signed pre-desktop SSH/Keychain proof
 still gates the CLI. This implementation is a launch candidate, not proof that
 every macOS security session permits its auth and VPN APIs. See the
 [controller plan](../TODO/macos-cli.md).

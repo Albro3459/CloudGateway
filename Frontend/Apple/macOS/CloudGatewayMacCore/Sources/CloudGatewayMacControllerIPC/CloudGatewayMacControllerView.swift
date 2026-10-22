@@ -59,6 +59,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
     public let canCreateClient: Bool
     public let errorMessage: String?
     public let hasUnlistedActiveProfile: Bool
+    public let canUpdateExtension: Bool
 
     public init(
         groups: [Region] = [], statusTitle: String = "Signed out",
@@ -69,7 +70,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         isRestoringSession: Bool = false, isAuthSettling: Bool = false,
         hasRetainedSession: Bool = false, inventoryInFlight: Bool = false,
         canCreateClient: Bool = false, errorMessage: String? = nil,
-        hasUnlistedActiveProfile: Bool = false
+        hasUnlistedActiveProfile: Bool = false, canUpdateExtension: Bool = false
     ) {
         self.groups = groups
         self.statusTitle = statusTitle
@@ -90,6 +91,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         self.canCreateClient = canCreateClient
         self.errorMessage = errorMessage
         self.hasUnlistedActiveProfile = hasUnlistedActiveProfile
+        self.canUpdateExtension = canUpdateExtension
     }
 
     func validate() throws {

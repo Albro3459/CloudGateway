@@ -30,16 +30,19 @@ public final class CloudGatewayMacControllerServer: NSObject, NSXPCListenerDeleg
         teamIdentifier: String,
         appVersion: String,
         appBuild: String,
+        buildIdentity: CloudGatewayMacBuildIdentity? = nil,
         handler: @escaping @MainActor (CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply
     ) throws {
         try CloudGatewayMacControllerProtocol.validateVersion(appVersion, build: appBuild)
+        if let buildIdentity { try CloudGatewayMacControllerProtocol.validateBuildIdentity(buildIdentity) }
         let userId = geteuid()
         guard ControllerPeerIdentity.accepts(peerUserId: getuid(), ownerUserId: userId) else {
             throw CloudGatewayMacControllerFailure.rejected
         }
         let requirement = try ControllerPeerIdentity.requirement(teamIdentifier: teamIdentifier)
         state = ControllerServerState(
-            requirement: requirement, userId: userId, appVersion: appVersion, appBuild: appBuild, handler: handler
+            requirement: requirement, userId: userId, appVersion: appVersion, appBuild: appBuild,
+            buildIdentity: buildIdentity, handler: handler
         )
         listener = NSXPCListener(machServiceName: CloudGatewayMacControllerProtocol.machServiceName)
         super.init()
@@ -52,9 +55,10 @@ public final class CloudGatewayMacControllerServer: NSObject, NSXPCListenerDeleg
         listener.activate()
     }
 
-    public func invalidate() {
-        state.invalidate()
+    public func invalidateIfIdle() -> Bool {
+        guard state.invalidateIfIdle() else { return false }
         listener.invalidate()
+        return true
     }
 
     public nonisolated func listener(
@@ -83,6 +87,7 @@ private final class ControllerServerState: @unchecked Sendable {
     let userId: UInt32
     let appVersion: String
     let appBuild: String
+    let buildIdentity: CloudGatewayMacBuildIdentity?
     let instanceId = UUID()
     let handler: @MainActor (CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply
     private let lock = NSLock()
@@ -93,12 +98,14 @@ private final class ControllerServerState: @unchecked Sendable {
 
     init(
         requirement: String, userId: UInt32, appVersion: String, appBuild: String,
+        buildIdentity: CloudGatewayMacBuildIdentity?,
         handler: @escaping @MainActor (CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply
     ) {
         self.requirement = requirement
         self.userId = userId
         self.appVersion = appVersion
         self.appBuild = appBuild
+        self.buildIdentity = buildIdentity
         self.handler = handler
     }
 
@@ -134,6 +141,19 @@ private final class ControllerServerState: @unchecked Sendable {
 
     func endRequest() { lock.withLock { activeRequests -= 1 } }
 
+    func invalidateIfIdle() -> Bool {
+        let pending: [NSXPCConnection]? = lock.withLock {
+            guard activeRequests == 0 else { return nil }
+            isInvalidated = true
+            let pending = Array(connections.values)
+            connections.removeAll()
+            return pending
+        }
+        guard let pending else { return false }
+        pending.forEach { $0.invalidate() }
+        return true
+    }
+
     func invalidate() {
         let pending = lock.withLock {
             isInvalidated = true
@@ -144,9 +164,11 @@ private final class ControllerServerState: @unchecked Sendable {
         pending.forEach { $0.invalidate() }
     }
 
-    func encode(_ reply: CloudGatewayMacControllerReply) -> Data {
+    func encode(
+        _ reply: CloudGatewayMacControllerReply, action: CloudGatewayMacControllerRequest.Action = .snapshot
+    ) -> Data {
         CloudGatewayMacControllerProtocol.encodeReply(
-            reply, appVersion: appVersion, appBuild: appBuild, instanceId: instanceId
+            reply, appVersion: appVersion, appBuild: appBuild, instanceId: instanceId, action: action
         )
     }
 }
@@ -165,7 +187,7 @@ private final class ControllerEndpoint: NSObject, CloudGatewayMacControllerXPC, 
         let request: CloudGatewayMacControllerRequest
         do {
             request = try CloudGatewayMacControllerProtocol.decodeRequest(
-                data, appVersion: state.appVersion, appBuild: state.appBuild
+                data, appVersion: state.appVersion, appBuild: state.appBuild, buildIdentity: state.buildIdentity
             )
         } catch {
             reply(state.encode(CloudGatewayMacControllerReply(
@@ -180,7 +202,7 @@ private final class ControllerEndpoint: NSObject, CloudGatewayMacControllerXPC, 
         // The controller keeps admitted work when the frontend disconnects
         Task { @MainActor [state] in
             defer { state.endRequest() }
-            reply(state.encode(await state.handler(request)))
+            reply(state.encode(await state.handler(request), action: request.action))
         }
     }
 }
@@ -192,18 +214,25 @@ public final class CloudGatewayMacControllerClient {
     private let userId: UInt32
     private let appVersion: String
     private let appBuild: String
+    private let buildIdentity: CloudGatewayMacBuildIdentity?
     private var pending: [UUID: ControllerPendingReply] = [:]
     private var isInvalidated = false
 
-    public convenience init(teamIdentifier: String, appVersion: String, appBuild: String) throws {
+    public convenience init(
+        teamIdentifier: String, appVersion: String, appBuild: String, buildIdentity: CloudGatewayMacBuildIdentity? = nil
+    ) throws {
         try self.init(
             teamIdentifier: teamIdentifier, appVersion: appVersion, appBuild: appBuild,
-            machServiceName: CloudGatewayMacControllerProtocol.machServiceName
+            machServiceName: CloudGatewayMacControllerProtocol.machServiceName, buildIdentity: buildIdentity
         )
     }
 
-    init(teamIdentifier: String, appVersion: String, appBuild: String, machServiceName: String) throws {
+    init(
+        teamIdentifier: String, appVersion: String, appBuild: String, machServiceName: String,
+        buildIdentity: CloudGatewayMacBuildIdentity? = nil
+    ) throws {
         try CloudGatewayMacControllerProtocol.validateVersion(appVersion, build: appBuild)
+        if let buildIdentity { try CloudGatewayMacControllerProtocol.validateBuildIdentity(buildIdentity) }
         userId = geteuid()
         guard ControllerPeerIdentity.accepts(peerUserId: getuid(), ownerUserId: userId) else {
             throw CloudGatewayMacControllerFailure.rejected
@@ -212,6 +241,7 @@ public final class CloudGatewayMacControllerClient {
         self.machServiceName = machServiceName
         self.appVersion = appVersion
         self.appBuild = appBuild
+        self.buildIdentity = buildIdentity
     }
 
     public func request(_ request: CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply {
@@ -220,7 +250,9 @@ public final class CloudGatewayMacControllerClient {
         guard pending.count < CloudGatewayMacControllerProtocol.maximumClientRequests else {
             throw CloudGatewayMacControllerFailure.busy
         }
-        let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+        let data = try CloudGatewayMacControllerProtocol.encodeRequest(
+            request, appVersion: appVersion, appBuild: appBuild, buildIdentity: buildIdentity
+        )
         let connection = NSXPCConnection(machServiceName: machServiceName)
         connection.setCodeSigningRequirement(requirement)
         connection.remoteObjectInterface = NSXPCInterface(with: CloudGatewayMacControllerXPC.self)
@@ -260,7 +292,7 @@ public final class CloudGatewayMacControllerClient {
                         }
                         do {
                             let reply = try CloudGatewayMacControllerProtocol.decodeReply(
-                                data, appVersion: appVersion, appBuild: appBuild
+                                data, appVersion: appVersion, appBuild: appBuild, action: request.action
                             )
                             operation.finish(.success(reply))
                         } catch { operation.finish(.failure(error)) }

@@ -1,6 +1,7 @@
 import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import CloudGatewayMacIPC
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -12,10 +13,24 @@ final class CloudGatewayMacControllerService {
         let expires: ContinuousClock.Instant
     }
 
-    private struct Receipt {
-        let request: CloudGatewayMacControllerRequest
-        let accepted: Bool
-        let expires: ContinuousClock.Instant
+    private struct Receipt: Codable {
+        let digest: String
+        let accepted: Bool?
+        let expires: Date
+    }
+
+    private struct ExtensionUpdate: Codable {
+        let id: UUID
+        let target: CloudGatewayMacBuildIdentity
+        let bootSession: String
+        var phase: String
+        var deadline: Date?
+    }
+
+    private struct StoredState: Codable {
+        var receipts: [UUID: Receipt]
+        var extensionUpdate: ExtensionUpdate?
+        var finishedExtensionUpdates: [UUID: Date]
     }
 
     // periphery:ignore - Holding the lock prevents a second Firebase owner for the service lifetime
@@ -30,15 +45,34 @@ final class CloudGatewayMacControllerService {
     private var activeRequests = 0
     private var creation: Creation?
     private var receipts: [UUID: Receipt] = [:]
+    private var update: CloudGatewayMacUpdateLifecycle
+    private var checkingInstallation = false
+    private var extensionIsIdle = false
+    private var extensionUpdate: ExtensionUpdate?
+    private var finishedExtensionUpdates: [UUID: Date] = [:]
+    private var extensionEpoch: UInt64 = 0
+    private static let installedURL = URL(fileURLWithPath: "/Applications/CloudGateway.app")
 
-    init() throws {
+    init(identity: CloudGatewayMacBuildIdentity) throws {
+        update = CloudGatewayMacUpdateLifecycle(running: identity)
         ownership = try CloudGatewayMacControllerOwnership(directory: CloudGatewayMacControllerRuntime.directory)
         teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
+        if let data = try CloudGatewayMacControllerUpdateStorage.load(directory: CloudGatewayMacControllerRuntime.directory) {
+            let state = try JSONDecoder().decode(StoredState.self, from: data)
+            receipts = state.receipts
+            extensionUpdate = state.extensionUpdate
+            finishedExtensionUpdates = state.finishedExtensionUpdates.filter { $0.value > Date() }
+            if extensionUpdate?.phase == "activating", extensionUpdate?.bootSession == Self.bootSession() {
+                extensionUpdate?.phase = "restart"
+            }
+            guard receipts.count <= 64 else { throw CloudGatewayMacControllerFailure.invalidRequest }
+        }
         runtime = CloudGatewayMacControllerRuntime()
         server = try CloudGatewayMacControllerServer(
             teamIdentifier: teamIdentifier,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
-            appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+            appVersion: identity.version,
+            appBuild: identity.build,
+            buildIdentity: identity
         ) { [weak self] request in
             guard let self else { return CloudGatewayMacControllerReply(error: .unavailable) }
             return await handle(request)
@@ -46,25 +80,30 @@ final class CloudGatewayMacControllerService {
     }
 
     func run() {
-        runtime.controller.onChange = { [weak self] in
-            // Preserve the result for a full reconnect grace period after work completes
-            self?.lastActivity = ContinuousClock().now
-        }
         runtime.controller.start()
-        refreshReadiness()
         server.resume()
         Task { [weak self] in
+            var hadPendingWork = false
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(5)) }
-                catch { return }
                 guard let self else { return }
-                if runtime.controller.hasPendingWork || activeRequests > 0 || readinessTask != nil {
-                    lastActivity = clock.now
-                } else if lastActivity.duration(to: clock.now) >= .seconds(60) {
-                    server.invalidate()
+                await checkInstallation()
+                if update.canExit(hasPendingWork: runtime.controller.hasPendingWork || readinessTask != nil,
+                                  activeRequests: activeRequests), server.invalidateIfIdle() {
                     runtime.shutdown()
                     exit(EXIT_SUCCESS)
                 }
+                let hasPendingWork = runtime.controller.hasPendingWork || activeRequests > 0
+                if hasPendingWork || hadPendingWork {
+                    lastActivity = clock.now
+                } else if lastActivity.duration(to: clock.now) >= .seconds(60), readinessTask == nil,
+                          extensionUpdate == nil, server.invalidateIfIdle() {
+                    runtime.shutdown()
+                    exit(EXIT_SUCCESS)
+                }
+                hadPendingWork = hasPendingWork
+                if update.canAcceptMutations, readinessTask == nil { refreshReadiness() }
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return }
             }
         }
     }
@@ -72,23 +111,49 @@ final class CloudGatewayMacControllerService {
     private func reply(accepted: Bool? = nil, operationId: UUID? = nil) -> CloudGatewayMacControllerReply {
         CloudGatewayMacControllerReply(
             snapshot: CloudGatewayMacControllerView(snapshot: runtime.controller.snapshot(setupState: setupState),
-                                                    setupState: setupState),
+                                                    setupState: setupState,
+                                                    canUpdateExtension: extensionIsIdle && extensionUpdate == nil
+                                                        && !runtime.controller.hasPendingWork && update.canAcceptMutations),
             accepted: accepted, operationId: operationId
         )
     }
 
     private func handle(_ request: CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply {
         activeRequests += 1
-        lastActivity = clock.now
-        defer { activeRequests -= 1; lastActivity = clock.now }
-        receipts = receipts.filter { $0.value.expires > clock.now }
+        if !update.isDraining { lastActivity = clock.now }
+        defer { activeRequests -= 1; if !update.isDraining { lastActivity = clock.now } }
+        if request.action == .lifecycle {
+            return CloudGatewayMacControllerReply(lifecycle: .init(
+                running: update.running, installed: update.installed,
+                state: update.isDraining ? .draining : update.installed == nil ? .invalidInstallation : .current
+            ))
+        }
+        let activationCallbacks: Set<CloudGatewayMacControllerRequest.Action> = [
+            .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed
+        ]
+        guard update.canAcceptMutations || request.action == .snapshot || request.action == .turnOff
+            || activationCallbacks.contains(request.action) else {
+            return CloudGatewayMacControllerReply(error: .busy)
+        }
+        receipts = receipts.filter { $0.value.expires > Date() }
         if let receipt = receipts[request.id] {
-            guard receipt.request == request else { return CloudGatewayMacControllerReply(error: .invalidRequest) }
-            return receipt.accepted ? reply(accepted: true, operationId: request.id)
-                : CloudGatewayMacControllerReply(error: .busy)
+            guard receipt.digest == digest(request) else { return CloudGatewayMacControllerReply(error: .invalidRequest) }
+            guard let accepted = receipt.accepted else { return CloudGatewayMacControllerReply(error: .outcomeUnknown) }
+            return accepted ? reply(accepted: true, operationId: request.id) : CloudGatewayMacControllerReply(error: .busy)
+        }
+        let mutations: Set<CloudGatewayMacControllerRequest.Action> = [
+            .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .createClient
+        ]
+        if mutations.contains(request.action), !reserve(request) {
+            return CloudGatewayMacControllerReply(error: .unavailable)
         }
         let controller = runtime.controller
         switch request.action {
+        case .lifecycle: return CloudGatewayMacControllerReply(error: .invalidRequest)
+        case .prepareExtensionUpdate:
+            return await prepareExtensionUpdate()
+        case .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
+            return finishExtensionUpdate(request)
         case .snapshot:
             return reply()
         case .menuWillOpen:
@@ -147,34 +212,187 @@ final class CloudGatewayMacControllerService {
         return record(request, accepted: true)
     }
 
+    private func reserve(_ request: CloudGatewayMacControllerRequest) -> Bool {
+        guard receipts.count < 64 else { return false }
+        receipts[request.id] = Receipt(digest: digest(request), accepted: nil, expires: Date().addingTimeInterval(600))
+        do { try persistReceipts(); return true }
+        catch { return false }
+    }
+
     private func record(_ request: CloudGatewayMacControllerRequest, accepted: Bool) -> CloudGatewayMacControllerReply {
-        if receipts.count >= 64, let oldest = receipts.min(by: { $0.value.expires < $1.value.expires })?.key {
-            receipts.removeValue(forKey: oldest)
-        }
-        receipts[request.id] = Receipt(request: request, accepted: accepted, expires: clock.now.advanced(by: .seconds(60)))
+        receipts[request.id] = Receipt(digest: digest(request), accepted: accepted, expires: Date().addingTimeInterval(600))
+        do { try persistReceipts() }
+        catch { return CloudGatewayMacControllerReply(error: .outcomeUnknown) }
         return accepted ? reply(accepted: true, operationId: request.id) : CloudGatewayMacControllerReply(error: .busy)
+    }
+
+    private func persistReceipts() throws {
+        try CloudGatewayMacControllerUpdateStorage.save(
+            JSONEncoder().encode(StoredState(receipts: receipts, extensionUpdate: extensionUpdate,
+                                             finishedExtensionUpdates: finishedExtensionUpdates)),
+            directory: CloudGatewayMacControllerRuntime.directory
+        )
+    }
+
+    private func digest(_ request: CloudGatewayMacControllerRequest) -> String {
+        let content = [request.action.rawValue, request.identifier ?? "", request.regionId ?? "",
+                       request.clientName ?? "", request.contextId?.uuidString ?? ""]
+        return SHA256.hash(data: (try? JSONEncoder().encode(content)) ?? Data()).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func checkInstallation() async {
+        guard !checkingInstallation else { return }
+        checkingInstallation = true
+        defer { checkingInstallation = false }
+        let team = teamIdentifier
+        let installedURL = Self.installedURL
+        let installed = await Task.detached {
+            try? CloudGatewayMacSignedBundle.installed(at: installedURL, teamIdentifier: team,
+                                                       bundleIdentifier: CloudGatewayMacControllerProtocol.appBundleIdentifier)
+        }.value
+        update.observe(installed)
+        if update.isDraining { creation = nil }
+    }
+
+    private func prepareExtensionUpdate() async -> CloudGatewayMacControllerReply {
+        guard extensionUpdate == nil, !runtime.controller.hasPendingWork, readinessTask == nil else {
+            return CloudGatewayMacControllerReply(error: .busy)
+        }
+        let previous = setupState
+        let id = UUID()
+        do {
+            let expected = try bundledExtensionIdentity()
+            extensionUpdate = ExtensionUpdate(id: id, target: expected, bootSession: Self.bootSession(),
+                                              phase: "prepared", deadline: Date().addingTimeInterval(30))
+            extensionEpoch &+= 1
+            setSetupState(.activating)
+            try persistReceipts()
+            guard try await !runtime.hasAnyActiveTunnel(), update.canAcceptMutations,
+                  extensionUpdate?.id == id, try bundledExtensionIdentity() == expected else {
+                throw CloudGatewayMacControllerFailure.busy
+            }
+            return CloudGatewayMacControllerReply(accepted: true, operationId: id, extensionTarget: expected)
+        } catch {
+            if extensionUpdate?.id == id {
+                extensionUpdate = nil
+                extensionEpoch &+= 1
+                try? persistReceipts()
+                setSetupState(previous)
+            }
+            return CloudGatewayMacControllerReply(error: error as? CloudGatewayMacControllerFailure ?? .unavailable)
+        }
+    }
+
+    private func finishExtensionUpdate(_ request: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
+        finishedExtensionUpdates = finishedExtensionUpdates.filter { $0.value > Date() }
+        if let id = request.contextId, finishedExtensionUpdates[id] != nil {
+            do { try persistReceipts(); return reply(accepted: true) }
+            catch { return CloudGatewayMacControllerReply(error: .unavailable) }
+        }
+        guard var pending = extensionUpdate, pending.id == request.contextId else {
+            return CloudGatewayMacControllerReply(error: .rejected)
+        }
+        extensionEpoch &+= 1
+        if pending.phase == "restart", request.action == .extensionUpdateApproval { return reply(accepted: true) }
+        switch request.action {
+        case .extensionUpdateStarted:
+            if pending.phase != "prepared" { return reply(accepted: true) }
+            guard pending.deadline.map({ $0 > Date() }) == true, update.canAcceptMutations else {
+                return CloudGatewayMacControllerReply(error: .rejected)
+            }
+            pending.phase = "activating"
+            pending.deadline = Date().addingTimeInterval(120)
+            extensionUpdate = pending
+            setSetupState(.activating)
+        case .extensionUpdateApproval:
+            pending.phase = "approval"
+            extensionUpdate = pending
+            setSetupState(.awaitingApproval)
+        case .extensionUpdateRestart:
+            pending.phase = "restart"
+            extensionUpdate = pending
+            setSetupState(.awaitingRestart)
+        case .extensionUpdateFinished, .extensionUpdateFailed:
+            extensionUpdate = nil
+            if finishedExtensionUpdates.count >= 16, let oldest = finishedExtensionUpdates.min(by: { $0.value < $1.value })?.key {
+                finishedExtensionUpdates[oldest] = nil
+            }
+            finishedExtensionUpdates[pending.id] = Date().addingTimeInterval(600)
+            setSetupState(request.action == .extensionUpdateFailed ? .updateRequired : .checkingConnection)
+            refreshReadiness()
+        default: return CloudGatewayMacControllerReply(error: .invalidRequest)
+        }
+        do { try persistReceipts() }
+        catch { return CloudGatewayMacControllerReply(error: .unavailable) }
+        return reply(accepted: true)
+    }
+
+    private func bundledExtensionIdentity() throws -> CloudGatewayMacBuildIdentity {
+        try CloudGatewayMacSignedBundle.installed(
+            at: Self.installedURL.appendingPathComponent(
+                "Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension"
+            ), teamIdentifier: teamIdentifier, bundleIdentifier: "com.gocloudlaunch.gateway.tunnel.macos"
+        )
+    }
+
+    private static func bootSession() -> String {
+        var bytes = [CChar](repeating: 0, count: 128)
+        var length = bytes.count
+        guard sysctlbyname("kern.bootsessionuuid", &bytes, &length, nil, 0) == 0 else { return "unknown" }
+        return String(cString: bytes)
     }
 
     private func refreshReadiness() {
         guard readinessTask == nil else { return }
-        let extensionURL = Bundle.main.bundleURL.appendingPathComponent(
-            "Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension"
-        )
-        guard let info = Bundle(url: extensionURL)?.infoDictionary,
-              let expected = CloudGatewayMacExtensionVersion(infoDictionary: info) else {
+        guard let identity = try? bundledExtensionIdentity(),
+              let expected = CloudGatewayMacExtensionVersion(infoDictionary: [
+                "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version
+              ], codeHash: identity.codeHash) else {
             setSetupState(.invalidBundle)
             return
         }
-        setSetupState(.checkingConnection)
+        if let pending = extensionUpdate {
+            if pending.bootSession != Self.bootSession() {
+                extensionUpdate = nil
+                extensionEpoch &+= 1
+                try? persistReceipts()
+            } else if pending.phase == "prepared", pending.target != identity || pending.deadline.map({ $0 <= Date() }) == true {
+                extensionUpdate = nil
+                extensionEpoch &+= 1
+                try? persistReceipts()
+            } else if pending.target != identity || (pending.phase == "activating" && pending.deadline.map({ $0 <= Date() }) == true) {
+                extensionUpdate?.phase = "restart"
+                try? persistReceipts()
+                setSetupState(.awaitingRestart)
+                return
+            } else if pending.phase == "restart" {
+                setSetupState(.awaitingRestart)
+                return
+            } else if pending.phase == "approval" { setSetupState(.awaitingApproval) }
+            else { setSetupState(.activating) }
+        }
+        if extensionUpdate?.phase == "prepared" { return }
+        if extensionUpdate == nil, setupState != .ready { setSetupState(.checkingConnection) }
+        let epoch = extensionEpoch
         readinessTask = Task { [weak self] in
             guard let self else { return }
             defer { readinessTask = nil }
+            extensionIsIdle = (try? await !runtime.hasAnyActiveTunnel()) == true
             do {
                 let client = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier)
                 let version = try await client.ping()
-                setSetupState(.readiness(runningVersion: version, bundledVersion: expected))
+                guard extensionEpoch == epoch else { return }
+                let state = CloudGatewayMacSetupState.readiness(runningVersion: version, bundledVersion: expected)
+                if state == .ready {
+                    extensionUpdate = nil
+                    try? persistReceipts()
+                    setSetupState(.ready)
+                } else if extensionUpdate?.phase == "approval" { setSetupState(.awaitingApproval) }
+                else if extensionUpdate?.phase == "activating" { setSetupState(.activating) }
+                else { setSetupState(state) }
             } catch {
-                setSetupState(.required)
+                guard extensionEpoch == epoch else { return }
+                if extensionUpdate == nil { setSetupState(.required) }
             }
         }
     }

@@ -149,6 +149,32 @@ public final class CloudGatewayMacControllerOwnership: Sendable {
     }
 }
 
+public enum CloudGatewayMacControllerUpdateStorage {
+    public static func load(directory: URL) throws -> Data? {
+        let parent = try ControllerLaunchFiles.openDirectory(directory)
+        defer { close(parent) }
+        let descriptor = openat(parent, "controller-receipts.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw CloudGatewayMacControllerLaunchError.unsafeLocation
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { throw CloudGatewayMacControllerLaunchError.unavailable }
+        try ControllerLaunchFiles.validateFile(info)
+        guard info.st_size <= 64 * 1024 else { throw CloudGatewayMacControllerLaunchError.unavailable }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        return try handle.read(upToCount: 64 * 1024) ?? Data()
+    }
+
+    public static func save(_ data: Data, directory: URL) throws {
+        guard data.count <= 64 * 1024 else { throw CloudGatewayMacControllerLaunchError.unavailable }
+        let parent = try ControllerLaunchFiles.openDirectory(directory)
+        defer { close(parent) }
+        try ControllerLaunchFiles.writeAtomically(data, directory: parent, name: "controller-receipts.json")
+    }
+}
+
 private enum ControllerLaunchFiles {
     static func validateUser() throws {
         guard getuid() != 0, geteuid() == getuid() else {
@@ -268,7 +294,7 @@ private enum ControllerLaunchFiles {
         try validateFile(info)
     }
 
-    private static func validateFile(_ info: stat) throws {
+    static func validateFile(_ info: stat) throws {
         guard info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), info.st_uid == getuid(),
               info.st_nlink == 1, info.st_mode & 0o7777 == 0o600 else {
             throw CloudGatewayMacControllerLaunchError.unsafeLocation

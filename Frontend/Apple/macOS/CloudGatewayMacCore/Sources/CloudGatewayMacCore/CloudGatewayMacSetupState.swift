@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacIPC
 
 public enum CloudGatewayMacSetupState: Equatable, Sendable {
@@ -11,8 +12,6 @@ public enum CloudGatewayMacSetupState: Equatable, Sendable {
     case ready
     case failed(code: Int)
     case unavailable
-
-    public var canRefreshReadiness: Bool { self != .awaitingRestart }
 
     public var canActivate: Bool {
         switch self {
@@ -42,9 +41,18 @@ public enum CloudGatewayMacSetupState: Equatable, Sendable {
     ) -> Self {
         guard let runningVersion,
               runningVersion.bundleVersion == bundledVersion.bundleVersion,
-              runningVersion.bundleShortVersion == bundledVersion.bundleShortVersion else {
+              runningVersion.bundleShortVersion == bundledVersion.bundleShortVersion,
+              runningVersion.hasCodeHash, bundledVersion.hasCodeHash,
+              runningVersion.codeHash == bundledVersion.codeHash else {
             return .updateRequired
         }
         return .ready
+    }
+
+    public static func canReplaceExtension(
+        isCurrentBuild: Bool, ownedTunnelStatuses: [CloudGatewayTunnelStatus]?
+    ) -> Bool {
+        guard isCurrentBuild, let ownedTunnelStatuses else { return false }
+        return ownedTunnelStatuses.allSatisfy { $0 == .invalid || $0 == .disconnected }
     }
 }

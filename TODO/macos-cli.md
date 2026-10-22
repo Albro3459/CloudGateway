@@ -434,10 +434,36 @@ Follow [macOS release deployment](../docs/apple-macos-release.md). The existing
 workflow signs/notarizes the app, then signs/notarizes the DMG. Do not copy an
 entitled executable out of its bundle as a standalone installed CLI.
 
-### Proposed update lifecycle
+### Synchronized update lifecycle
 
-This handoff is not implemented yet. Replacing a bundle currently leaves a live
-controller running until its normal idle exit.
+The first implementation captures signed code identity at startup, verifies the
+fixed installed bundle, exposes a version-independent lifecycle handshake, and
+drains the controller before launchd handoff. Active VPNs remain running. Recent
+request receipts persist without configs, tokens, client names, or raw requests.
+Extension readiness compares artifact identity and versions. Activation reserves
+an attempt before checking all owned tunnel activity, waits for idle, and retains
+approval/reboot state across relaunch. App build 5 and extension build 3 introduce
+this lifecycle. Older controllers need a one-time restart for this rollout.
+
+The following requirements remain the implementation and release checklist.
+CLI-specific presentation and the signed live update matrix remain open.
+
+`./scripts/test.sh macos` passes with 197 macOS host-free tests, shared package
+and auth adapter tests, both strict Periphery scans, the unsigned arm64 app and
+extension build, and packaging verification. Sol reviews found and resolved
+activation reservation, callback delivery, stale readiness, and queued XPC
+admission races. Activation preparation expires safely before an OS request;
+starting activation needs a second acknowledgement. Delegate reports retry with
+the same request UUID, terminal attempts acknowledge duplicates, and controller
+readiness never generates delegate reports. A live activation keeps its safety
+gate; an unconfirmed result requires restart rather than allowing another start.
+
+The installed app and extension passed a read-only check using the same strict
+Security.framework validation flags. No running component was restarted or
+replaced during implementation. Signed validation still needs first-rollout
+bootstrap, replacement with an active VPN and accepted work, reused build
+numbers, partial copies, stale menus, and approval/reboot recovery. The CLI
+command surface and its diagnostics remain separate work.
 
 - Ship menu, controller, and CLI modes in the same signed app. Keep the CLI
   symlink pointed at that installed bundle. Increment every distributed app

@@ -6,7 +6,7 @@ root after the required validation passes:
 
 ```sh
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 4 --publish
+./scripts/macos-release.sh --build 6 --publish
 ```
 
 Choose an app build number higher than `CLOUDGATEWAY_APP_BUILD` in the project
@@ -15,15 +15,18 @@ and every previous distributed app release. `--build` overrides only
 `CLOUDGATEWAY_APP_VERSION` unless `--version` overrides it:
 
 ```sh
-./scripts/macos-release.sh --build 5 --version 1.1.1 --publish
+./scripts/macos-release.sh --build 7 --version 1.1.1 --publish
 ```
 
 App build and version overrides apply to the archive. The VPN extension keeps
 its explicit `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION` from the project.
 Keep each target's versions consistent across Debug, Release, and DeveloperID.
 Bump the extension's project versions when its code or packaged dependencies
-change. An app-only release can keep extension 1.0.0 (build 2) while releasing
-app 1.1.0 with a higher app build.
+change, including a changed signing identity or re-signed artifact. An app-only
+release can keep extension 1.0.0 (build 3) only when its embedded signed extension
+artifact remains identical. A fingerprint mismatch blocks starts even when
+version strings match; Apple's replacement flow still requires distinct versions
+outside developer mode.
 
 Project versions and Git staging stay unchanged. Release metadata records both
 targets' versions, the source commit, and whether the working tree had changes.
@@ -86,7 +89,7 @@ metadata, notarization submission records, notary logs, and `SHA256SUMS`.
 To build and inspect artifacts before submitting software:
 
 ```sh
-./scripts/macos-release.sh --prepare-only --build 4
+./scripts/macos-release.sh --prepare-only --build 6
 ```
 
 Continue with the directory printed by that command:
@@ -170,9 +173,13 @@ and its symlink installer are still pending.
 
 Install at `/Applications/CloudGateway.app`, the controller's fixed launch path.
 For the first controller migration, quit the old menu before launching the new
-app so two Firebase owners cannot overlap. For later updates, close the menu
-and allow accepted work plus the controller's 60-second idle grace period to
-finish. A version mismatch asks the user to wait and reopen the installed app.
+app so two Firebase owners cannot overlap. The first installation of the
+synchronized lifecycle also needs a one-time controller restart. Later updates
+verify the fixed installed bundle, drain accepted work, and reconnect to the
+replacement controller automatically. Active VPNs stay connected. Extension
+replacement waits until all owned tunnels are idle and preserves Apple's
+approval or reboot requirement. See the local install command in the macOS
+README and validate the signed live update matrix before distributing it.
 Build/signature checks alone do not prove background launch or pre-desktop SSH
 Keychain access. Run those checks in the planned runtime session.
 

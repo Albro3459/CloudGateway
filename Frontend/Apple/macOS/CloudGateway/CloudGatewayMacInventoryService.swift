@@ -76,8 +76,8 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
             throw Failure.accessDenied
         }
         let regionQuery = database.collection("Regions").whereField("enabled", isEqualTo: true)
-        var clientQuery: Query = database.collectionGroup("Instances")
-        if role != .admin { clientQuery = clientQuery.whereField("ownerUid", isEqualTo: user.uid) }
+        let instances = database.collectionGroup("Instances")
+        let clientQuery: Query = role == .admin ? instances : instances.whereField("ownerUid", isEqualTo: user.uid)
         async let regions = documents(regionQuery) { document -> CloudGatewayRegion? in
             let data = document.data()
             guard data["enabled"] as? Bool == true,

@@ -157,31 +157,19 @@ profile/entitlement inspection. Use `ios` for the iOS regression gate and
 tests run once per invocation. Automated checks do not activate extensions
 or change the running VPN.
 
-For a faster local install, quit CloudGateway from its menu and wait for its
-background controller to exit before replacing the app. The controller exits
-after pending work finishes and the 60-second idle grace period expires. Check
-with `ps aux | rg '[C]loudGateway.*--controller'`; continue when no controller is
-listed. Replacing the bundle does not restart a running controller, and local
-rebuilds with the same version/build can still connect to that older process.
+For a faster local install, use the command below. It builds and verifies the
+signed Release app and extension, then replaces `/Applications/CloudGateway.app`.
+It skips tests and dead-code scans and uses Apple Development signing.
 
-Then paste this command from the repository root. It builds the signed Release app and extension,
-checks packaging and signing, and copies the app to `/Applications`. It skips
-tests and dead-code scans. It checks for a running installed app/controller
-before building and again before replacing the bundle, and stops if either is
-still running. If an app is already installed, it moves that copy
-to Trash first so removed build files cannot remain in
-the new bundle. It uses the same development signing setup as `macos --signed`.
+The first installation of the synchronized lifecycle needs a one-time controller
+restart because an older controller cannot perform the new handshake. Quit the
+old menu and wait for pending work and its 60-second idle grace period, or restart
+the job explicitly after accepted work finishes. Subsequent replacements are
+detected automatically, including local rebuilds with reused version numbers.
 
 ```sh
 (
   set -e
-  require_stopped() {
-    if ps -axo pid=,command= | rg '^[[:space:]]*[0-9]+[[:space:]]+/Applications/CloudGateway[.]app/Contents/MacOS/CloudGateway([[:space:]]|$)'; then
-      echo "CloudGateway is still running. Quit the menu and wait for the controller to exit, then rerun this command."
-      exit 1
-    fi
-  }
-  require_stopped
   xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
     -scheme CloudGateway -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
@@ -189,7 +177,6 @@ the new bundle. It uses the same development signing setup as `macos --signed`.
     ARCHS=arm64 -allowProvisioningUpdates build
   python3 scripts/verify_macos_build.py \
     Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed
-  require_stopped
   if [ -e /Applications/CloudGateway.app ]; then
     trash /Applications/CloudGateway.app
     echo "Trashed previous app"
@@ -200,6 +187,30 @@ the new bundle. It uses the same development signing setup as `macos --signed`.
 ```
 
 Open `/Applications/CloudGateway.app` after the command succeeds.
+
+The controller checks the fixed installed bundle's signature and fingerprint
+every five seconds. A verified replacement closes admission to new mutations,
+finishes accepted work, and exits without stopping the VPN. launchd starts the
+installed controller on the next request. Stale menus reopen the verified app;
+clients never choose the replacement executable. Partial or invalid copies do
+not authorize a handoff. Recent request UUIDs and request digests survive the
+handoff for ten minutes, with a maximum of 64 live receipts. Acceptance confirms
+submission, not connection success. An uncertain result is never replayed.
+
+A changed VPN extension blocks new connections while status and disconnect stay
+available. Its update waits until every owned tunnel is idle, including profiles
+outside the signed-in account. The menu then attempts Apple's activation flow
+once automatically; Set Up/Update remains available for an explicit retry.
+Approval and reboot requirements persist across relaunch. An interrupted
+activation with an unknown result conservatively requires a restart. Updates
+never disconnect a tunnel automatically.
+
+Every distributed app build must increase. Increment the extension build when
+its signed artifact changes, including signing identity changes. Same-version
+artifact drift is detected, but Apple may require a higher extension version to
+replace it outside System Extension developer mode. Keep development and
+Developer ID installations separate to avoid Keychain identity mismatches.
+
 
 Signed checks cover activation/replacement, root/user isolation, repeated
 sessions, sleep/wake, network changes, offline use, account switching, status

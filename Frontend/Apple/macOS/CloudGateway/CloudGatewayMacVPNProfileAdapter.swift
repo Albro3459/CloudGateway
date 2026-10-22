@@ -53,6 +53,10 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
         return profiles
     }
 
+    func hasAnyActiveTunnel() async throws -> Bool {
+        try await loadManagers().contains { Self.isOwned($0) && Self.needsConfirmedStop($0.connection.status) }
+    }
+
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws {
         let loaded = try await loadManagers()
         let matching = try loaded.filter(Self.isOwned).filter { try Self.profile($0).identifier == config.identifier }

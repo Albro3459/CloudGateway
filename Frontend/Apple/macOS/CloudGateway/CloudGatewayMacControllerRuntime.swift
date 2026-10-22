@@ -53,4 +53,8 @@ final class CloudGatewayMacControllerRuntime {
         profiles.onChange = nil
         controller.shutdown()
     }
+
+    func hasAnyActiveTunnel() async throws -> Bool {
+        try await profiles.hasAnyActiveTunnel()
+    }
 }

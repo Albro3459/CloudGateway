@@ -3,7 +3,8 @@ import CloudGatewayMacCore
 import Foundation
 
 extension CloudGatewayMacControllerView {
-    public init(snapshot: CloudGatewayMacControllerSnapshot, setupState: CloudGatewayMacSetupState) {
+    public init(snapshot: CloudGatewayMacControllerSnapshot, setupState: CloudGatewayMacSetupState,
+                canUpdateExtension: Bool = false) {
         let accountId = snapshot.accountId
         self.init(
             groups: accountId == nil ? [] : snapshot.groups.map { group in
@@ -21,7 +22,7 @@ extension CloudGatewayMacControllerView {
             isRestoringSession: snapshot.isRestoringSession, isAuthSettling: snapshot.isAuthSettling,
             hasRetainedSession: snapshot.hasRetainedSession, inventoryInFlight: snapshot.inventoryInFlight,
             canCreateClient: snapshot.canCreateClient, errorMessage: ControllerVisibleError.sanitize(snapshot.errorMessage),
-            hasUnlistedActiveProfile: snapshot.hasUnlistedActiveProfile
+            hasUnlistedActiveProfile: snapshot.hasUnlistedActiveProfile, canUpdateExtension: canUpdateExtension
         )
     }
 }
