@@ -63,6 +63,7 @@ public enum CloudGatewayMacConfigError: Error, Equatable, Sendable {
     case profileInstallationFailed
     case secretCommitFailed
     case snapshotPersistenceFailed
+    case stopTimedOut
     case unavailable
 }
 
@@ -209,13 +210,15 @@ public actor CloudGatewayMacConfigCoordinator {
         }
     }
 
-    public func connect(_ config: CloudGatewayMacInstalledConfig) async throws {
+    // False means the matching profile was already active, so no start was submitted
+    @discardableResult
+    public func connect(_ config: CloudGatewayMacInstalledConfig) async throws -> Bool {
         try await runCommand { command in
             try await self.performConnect(config, command: command)
         }
     }
 
-    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64) async throws {
+    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64) async throws -> Bool {
         let reference = try config.reference
         try await requireAvailableSecret(reference: reference, identifier: config.identifier)
         try requireCurrent(command)
@@ -228,7 +231,7 @@ public actor CloudGatewayMacConfigCoordinator {
         }
         let activeProfiles = installedProfiles.filter(\.needsConfirmedStop)
         if selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
-            return
+            return false
         }
         for active in activeProfiles {
             try requireCurrent(command)
@@ -238,6 +241,7 @@ public actor CloudGatewayMacConfigCoordinator {
         let grant = try await secrets.authorizeStart(reference: reference, configId: config.identifier)
         try requireCurrent(command)
         try await profiles.start(identifier: config.identifier, grant: grant)
+        return true
     }
 
     public func turnOff() async throws {

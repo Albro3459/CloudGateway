@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacCore
 import Foundation
 
@@ -13,8 +14,16 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         public let regionOrder: Int
         public let clientName: String
         public let ownerLabel: String?
-        public let isEligible: Bool
+        public let internalIp: String?
+        public let cloudState: CloudGatewayClientStatus
+        public let eligibility: CloudGatewayMacClientEligibility
+        public let isInstalled: Bool
+        public let source: CloudGatewayMacInventorySource
+        public let readAt: Date
+        public let updatedAt: Date?
         public let status: CloudGatewayMacControllerView.TunnelStatus?
+
+        public var isEligible: Bool { eligibility == .eligible }
     }
 
     public struct Profile: Codable, Equatable, Sendable {
@@ -28,11 +37,14 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
     public let isRestoringSession: Bool
     public let isAuthSettling: Bool
     public let accessAuthorized: Bool
+    public let access: CloudGatewayMacAccessState
+    public let credentials: CloudGatewayMacCredentialEvidence
     public let inventory: Freshness
     public let clients: [Client]
     public let installedIdentifiers: [String]
     public let observedProfiles: [Profile]
     public let observationAvailable: Bool
+    public let profilesObservedAt: Date?
     public let commandInFlight: Bool
     public let selectedIdentifier: String?
     public let setup: CloudGatewayMacControllerView.SetupState
@@ -49,6 +61,8 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         isRestoringSession = snapshot.isRestoringSession
         isAuthSettling = snapshot.isAuthSettling
         accessAuthorized = snapshot.domain.accessAuthorized
+        access = snapshot.domain.access
+        credentials = snapshot.domain.credentials
         inventory = Freshness(rawValue: snapshot.domain.inventoryFreshness.rawValue) ?? .unavailable
         clients = snapshot.domain.clients.filter { Self.belongs($0.identifier, to: accountId) }.map { client in
             Client(identifier: client.identifier, regionId: client.regionId,
@@ -56,7 +70,10 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
                    regionOrder: client.regionOrder,
                    clientName: ControllerDisplayText.normalize(client.clientName, bytes: 2048),
                    ownerLabel: client.ownerLabel.map { ControllerDisplayText.normalize($0, bytes: 1024) },
-                   isEligible: client.isEligible, status: client.status.map(CloudGatewayMacControllerView.TunnelStatus.init))
+                   internalIp: client.internalIp.flatMap { CloudGatewayMacControllerProtocol.validIPv4($0) ? $0 : nil },
+                   cloudState: client.cloudState, eligibility: client.eligibility, isInstalled: client.isInstalled,
+                   source: client.source, readAt: client.readAt, updatedAt: client.updatedAt,
+                   status: client.status.map(CloudGatewayMacControllerView.TunnelStatus.init))
         }
         installedIdentifiers = snapshot.domain.installedIdentifiers.filter { Self.belongs($0, to: accountId) }
         observedProfiles = snapshot.domain.observedProfiles.map {
@@ -64,6 +81,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
                     status: .init($0.status))
         }
         observationAvailable = snapshot.domain.observationIsFresh
+        profilesObservedAt = snapshot.domain.profilesObservedAt
         commandInFlight = snapshot.domain.commandInFlight
         selectedIdentifier = snapshot.lastSelectedIdentifier.flatMap { Self.belongs($0, to: accountId) ? $0 : nil }
         setup = .init(setupState)
@@ -85,16 +103,19 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
 
     func validate() throws {
         let bounds = CloudGatewayMacControllerProtocol.self
+        let installed = Set(installedIdentifiers)
         guard accountId.map(bounds.validComponent) ?? true,
               clients.count <= 4096, installedIdentifiers.count <= 4096, observedProfiles.count <= 4096,
               Set(clients.map(\.regionId)).count <= 256,
               clients.allSatisfy({ Self.belongs($0.identifier, to: accountId)
                   && bounds.validComponent($0.regionId) && $0.identifier.split(separator: "/")[1] == $0.regionId
                   && bounds.boundedText($0.clientName, bytes: 2048) && bounds.boundedText($0.regionName, bytes: 1024)
-                  && ($0.ownerLabel.map { bounds.boundedText($0, bytes: 1024) } ?? true) }),
+                  && ($0.ownerLabel.map { bounds.boundedText($0, bytes: 1024) } ?? true)
+                  && ($0.internalIp.map(bounds.validIPv4) ?? true)
+                  && $0.isInstalled == installed.contains($0.identifier) && ($0.source == .cloud || $0.isInstalled) }),
               Set(clients.map(\.identifier)).count == clients.count,
               installedIdentifiers.allSatisfy({ Self.belongs($0, to: accountId) }),
-              Set(installedIdentifiers).count == installedIdentifiers.count,
+              installed.count == installedIdentifiers.count,
               observedProfiles.allSatisfy({ $0.identifier.map { Self.belongs($0, to: accountId) } ?? true }),
               selectedIdentifier.map({ Self.belongs($0, to: accountId) }) ?? true,
               errorMessage.map({ bounds.boundedText($0, bytes: 2048) && ControllerVisibleError.sanitize($0) == $0 }) ?? true else {
@@ -108,7 +129,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         if auth == .signedIn, accountId == nil { throw CloudGatewayMacControllerFailure.invalidRequest }
     }
 
-    private static func belongs(_ identifier: String, to accountId: String?) -> Bool {
+    static func belongs(_ identifier: String, to accountId: String?) -> Bool {
         guard let accountId else { return false }
         return CloudGatewayMacControllerProtocol.validIdentifier(identifier) && identifier.hasPrefix("\(accountId)/")
     }

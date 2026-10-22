@@ -6,10 +6,10 @@ import Foundation
 @MainActor
 public struct CloudGatewayMacPreparedClient {
     public let regions: [CloudGatewayRegion]
-    let submit: (String, String, @escaping (CloudGatewayMacControllerOperation.State) -> Void) -> Bool
+    let submit: (String, String, @escaping (CloudGatewayMacCommandOutcome) -> Void) -> Bool
 
     public init(regions: [CloudGatewayRegion],
-                submit: @escaping (String, String, @escaping (CloudGatewayMacControllerOperation.State) -> Void) -> Bool) {
+                submit: @escaping (String, String, @escaping (CloudGatewayMacCommandOutcome) -> Void) -> Bool) {
         self.regions = regions
         self.submit = submit
     }
@@ -19,7 +19,8 @@ public struct CloudGatewayMacPreparedClient {
 public struct CloudGatewayMacControllerEffects {
     let snapshot: (CloudGatewayMacSetupState, Bool) -> CloudGatewayMacControllerState
     let hasPendingWork: () -> Bool
-    let perform: (CloudGatewayMacControllerRequest, @escaping (CloudGatewayMacControllerOperation.State) -> Void) -> Bool
+    let perform: (CloudGatewayMacControllerRequest, @escaping (CloudGatewayMacCommandOutcome) -> Void) -> Bool
+    let session: () -> CloudGatewayMacSessionToken?
     let prepareClient: () async throws -> CloudGatewayMacPreparedClient
     let setSetupState: (CloudGatewayMacSetupState) -> Void
     let hasAnyActiveTunnel: () async throws -> Bool
@@ -32,7 +33,8 @@ public struct CloudGatewayMacControllerEffects {
     public init(
         snapshot: @escaping (CloudGatewayMacSetupState, Bool) -> CloudGatewayMacControllerState,
         hasPendingWork: @escaping () -> Bool,
-        perform: @escaping (CloudGatewayMacControllerRequest, @escaping (CloudGatewayMacControllerOperation.State) -> Void) -> Bool,
+        perform: @escaping (CloudGatewayMacControllerRequest, @escaping (CloudGatewayMacCommandOutcome) -> Void) -> Bool,
+        session: @escaping () -> CloudGatewayMacSessionToken? = { nil },
         prepareClient: @escaping () async throws -> CloudGatewayMacPreparedClient,
         setSetupState: @escaping (CloudGatewayMacSetupState) -> Void,
         hasAnyActiveTunnel: @escaping () async throws -> Bool,
@@ -45,6 +47,7 @@ public struct CloudGatewayMacControllerEffects {
         self.snapshot = snapshot
         self.hasPendingWork = hasPendingWork
         self.perform = perform
+        self.session = session
         self.prepareClient = prepareClient
         self.setSetupState = setSetupState
         self.hasAnyActiveTunnel = hasAnyActiveTunnel
@@ -130,10 +133,10 @@ public final class CloudGatewayMacControllerOrchestrator {
         case .lifecycle:
             return .init(lifecycle: .init(running: update.running, installed: update.installed,
                                          state: update.isDraining ? .draining : update.installed == nil ? .invalidInstallation : .current))
-        case .status: return controlReply()
+        case .status: return controlReply(for: request)
         case .operation:
             guard let id = request.contextId else { return .init(error: .invalidRequest) }
-            return controlReply(operation: requests.operation(id: id))
+            return controlReply(for: request, operation: requests.operation(id: id))
         case .confirmOperation: return confirm(request)
         default: break
         }
@@ -160,7 +163,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func admit(_ request: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
         do {
             if let operation = try requests.lookup(request) {
-                return operationReply(operation, action: request.action)
+                return operationReply(operation, request: request)
             }
             guard pending == nil, runningOperation == nil else { return .init(error: .busy) }
             var prepared: CloudGatewayMacPreparedClient?
@@ -172,35 +175,49 @@ public final class CloudGatewayMacControllerOrchestrator {
             }
             let operation = try requests.accept(request)
             pending = Pending(request: request, deadline: effects.now().addingTimeInterval(30), preparation: prepared)
-            return operationReply(operation, action: request.action)
+            return operationReply(operation, request: request)
         } catch { return .init(error: error as? CloudGatewayMacControllerFailure ?? .unavailable) }
     }
 
     private func confirm(_ confirmation: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
         guard let id = confirmation.contextId else { return .init(error: .invalidRequest) }
         guard let pending, pending.request.id == id else {
-            return controlReply(operation: requests.operation(id: id))
+            return controlReply(for: confirmation, operation: requests.operation(id: id))
         }
         let request = pending.request
+        let session = effects.session()
         guard request.action == .turnOff || (update.canAcceptMutations && confirmation.buildIdentity == update.running) else {
             self.pending = nil
-            return controlReply(operation: requests.finish(id: id, state: .failed, failure: .incompatibleVersion))
+            return controlReply(for: confirmation, operation: requests.finish(
+                id: id, state: .failed, failure: .incompatibleVersion, outcome: .failed(.incompatibleVersion), session: session
+            ))
         }
         if request.action == .createClient,
            creation?.id != request.contextId || creation.map({ $0.expires <= effects.now() }) != false {
             self.pending = nil
-            return controlReply(operation: requests.finish(id: id, state: .failed, failure: .preparationExpired))
+            return controlReply(for: confirmation, operation: requests.finish(id: id, state: .failed, failure: .preparationExpired))
         }
         self.pending = nil
         runningOperation = id
         requests.finish(id: id, state: .running)
-        let completion: (CloudGatewayMacControllerOperation.State) -> Void = { [weak self] state in
-            guard let self, runningOperation == id else { return }
-            let failure: CloudGatewayMacControllerFailure? = state == .failed
-                ? request.action == .signOut ? .authCleanupFailed : .commandFailed : nil
-            _ = requests.finish(id: id, state: state, failure: failure)
+        var isSubmitting = true
+        var heldOutcome: CloudGatewayMacCommandOutcome?
+        let record: (CloudGatewayMacCommandOutcome, Bool) -> Void = { [weak self] outcome, rejected in
+            guard let self else { return }
+            var failure: CloudGatewayMacControllerFailure?
+            if outcome.state == .failed, case .failed(let reason) = outcome {
+                failure = reason == .busy ? .busy : rejected ? .rejected
+                    : request.action == .signOut ? .authCleanupFailed : .commandFailed
+            }
+            _ = requests.finish(id: id, state: outcome.state, failure: failure, outcome: outcome, session: session)
             runningOperation = nil
             lastActivity = effects.now()
+        }
+        let completion: (CloudGatewayMacCommandOutcome) -> Void = { [weak self] outcome in
+            guard let self, runningOperation == id else { return }
+            // A command that refuses work reports why before returning false
+            if isSubmitting { heldOutcome = outcome }
+            else { record(outcome, false) }
         }
         let accepted: Bool
         if request.action == .createClient, let prepared = pending.preparation,
@@ -211,16 +228,18 @@ public final class CloudGatewayMacControllerOrchestrator {
             if request.action == .signOut || request.action == .cancelSignIn { creation = nil }
             accepted = effects.perform(request, completion)
         }
-        if !accepted, runningOperation == id {
+        isSubmitting = false
+        if let heldOutcome { record(heldOutcome, !accepted) }
+        else if !accepted, runningOperation == id {
             requests.finish(id: id, state: .failed, failure: .rejected)
             runningOperation = nil
         }
-        return controlReply(operation: requests.operation(id: id))
+        return controlReply(for: confirmation, operation: requests.operation(id: id))
     }
 
     private func expirePending() {
         guard let pending, pending.deadline <= effects.now() else { return }
-        _ = requests.finish(id: pending.request.id, state: .unknown)
+        _ = requests.finish(id: pending.request.id, state: .unknown, outcome: .expired, session: effects.session())
         self.pending = nil
     }
 
@@ -249,15 +268,20 @@ public final class CloudGatewayMacControllerOrchestrator {
     }
 
     private func operationReply(_ operation: CloudGatewayMacControllerOperation,
-                                action: CloudGatewayMacControllerRequest.Action) -> CloudGatewayMacControllerReply {
-        if action == .turnOff { return controlReply(operation: operation) }
+                                request: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
+        if request.action == .turnOff { return controlReply(for: request, operation: operation) }
         return reply(operation: operation)
     }
 
-    private func controlReply(operation: CloudGatewayMacControllerOperation? = nil) -> CloudGatewayMacControllerReply {
+    private func controlReply(for request: CloudGatewayMacControllerRequest,
+                              operation: CloudGatewayMacControllerOperation? = nil) -> CloudGatewayMacControllerReply {
         let operation = operation ?? requests.latest
         let snapshot = effects.snapshot(setupState, false)
-        return .init(status: snapshot.status, operation: operation,
+        // Other builds may not decode newer outcome cases, so they get the compatible operation only
+        let outcome = request.buildIdentity == update.running ? operation.flatMap {
+            requests.outcome(id: $0.id, session: effects.session())
+        } : nil
+        return .init(status: snapshot.status, operation: operation, outcome: outcome,
                      accepted: operation.map { $0.state != .failed && $0.state != .unknown }, operationId: operation?.id)
     }
 
@@ -265,8 +289,8 @@ public final class CloudGatewayMacControllerOrchestrator {
         let operation = operation ?? requests.latest
         return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && pending == nil && runningOperation == nil
                                               && !effects.hasPendingWork() && update.canAcceptMutations),
-              operation: operation, accepted: operation.map { $0.state != .failed && $0.state != .unknown },
-              operationId: operation?.id)
+              operation: operation, outcome: operation.flatMap { requests.outcome(id: $0.id, session: effects.session()) },
+              accepted: operation.map { $0.state != .failed && $0.state != .unknown }, operationId: operation?.id)
     }
 
     private func setSetupState(_ state: CloudGatewayMacSetupState) {

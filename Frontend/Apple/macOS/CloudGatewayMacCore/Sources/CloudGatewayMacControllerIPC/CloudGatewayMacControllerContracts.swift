@@ -1,4 +1,5 @@
 import CloudGatewayKit
+import CloudGatewayMacCore
 import CloudGatewayMacIPC
 import Foundation
 
@@ -37,8 +38,8 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) {
         controlVersion = CloudGatewayMacControllerProtocol.controlVersion
-        schemaVersion = CloudGatewayMacControllerProtocol.protocolVersion
-        protocolVersion = CloudGatewayMacControllerProtocol.protocolVersion
+        schemaVersion = CloudGatewayMacControllerProtocol.version(for: action)
+        protocolVersion = CloudGatewayMacControllerProtocol.version(for: action)
         self.appVersion = appVersion
         self.appBuild = appBuild
         self.buildIdentity = buildIdentity
@@ -76,6 +77,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
     public let state: CloudGatewayMacControllerState?
     public let status: CloudGatewayMacControllerStatus?
     public let operation: CloudGatewayMacControllerOperation?
+    public let outcome: CloudGatewayMacCommandOutcome?
     public let accepted: Bool?
     public let creation: Creation?
     public let error: CloudGatewayMacControllerFailure?
@@ -87,6 +89,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
         state: CloudGatewayMacControllerState? = nil,
         status: CloudGatewayMacControllerStatus? = nil,
         operation: CloudGatewayMacControllerOperation? = nil,
+        outcome: CloudGatewayMacCommandOutcome? = nil,
         accepted: Bool? = nil,
         creation: Creation? = nil,
         error: CloudGatewayMacControllerFailure? = nil,
@@ -103,6 +106,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
         self.state = state
         self.status = status
         self.operation = operation
+        self.outcome = outcome
         self.accepted = accepted
         self.creation = creation
         self.error = error
@@ -113,15 +117,22 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
 }
 
 public enum CloudGatewayMacControllerProtocol {
-    public static let protocolVersion = 1
+    public static let protocolVersion = 2
     public static let controlVersion = 1
+    // Lifecycle, status, stop, and lookup envelopes keep v1 stamps for older clients
+    static let compatibleProtocolVersion = 1
     public static let machServiceName = "com.gocloudlaunch.gateway.macos.controller"
     public static let appBundleIdentifier = "com.gocloudlaunch.gateway.macos"
     public static let requestBytes = 64 * 1024
-    public static let replyBytes = 1024 * 1024
+    // Rows carry freshness and install metadata, so a full 4096-row inventory needs about 1.6 MiB
+    public static let replyBytes = 2 * 1024 * 1024
     static let maximumConnections = 32
     static let maximumRequests = 64
     static let maximumClientRequests = 8
+
+    static func version(for action: CloudGatewayMacControllerRequest.Action) -> Int {
+        action.isCompatibleControl ? compatibleProtocolVersion : protocolVersion
+    }
 
     static func validateVersion(_ version: String, build: String) throws {
         guard boundedText(version, bytes: 128), boundedText(build, bytes: 128) else {
@@ -133,7 +144,7 @@ public enum CloudGatewayMacControllerProtocol {
         _ request: CloudGatewayMacControllerRequest, appVersion: String, appBuild: String,
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) throws {
-        let compatible = request.action.isCompatibleControl && (request.controlVersion == controlVersion || (request.action == .lifecycle && request.controlVersion == nil && request.schemaVersion == protocolVersion && request.protocolVersion == protocolVersion))
+        let compatible = request.action.isCompatibleControl && (request.controlVersion == controlVersion || (request.action == .lifecycle && request.controlVersion == nil && request.schemaVersion == compatibleProtocolVersion && request.protocolVersion == compatibleProtocolVersion))
         guard request.action.isCompatibleControl ? compatible : (request.schemaVersion == protocolVersion && request.protocolVersion == protocolVersion) else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
         }
@@ -185,7 +196,7 @@ public enum CloudGatewayMacControllerProtocol {
         _ request: CloudGatewayMacControllerRequest, appVersion: String, appBuild: String,
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
     ) throws -> Data {
-        guard request.schemaVersion == protocolVersion, request.protocolVersion == protocolVersion,
+        guard request.schemaVersion == version(for: request.action), request.protocolVersion == version(for: request.action),
               request.action.isCompatibleControl || request.appVersion.isEmpty || request.appVersion == appVersion,
               request.action.isCompatibleControl || request.appBuild.isEmpty || request.appBuild == appBuild else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
@@ -213,8 +224,8 @@ public enum CloudGatewayMacControllerProtocol {
     ) -> Data {
         guard (try? validateVersion(appVersion, build: appBuild)) != nil else { return Data() }
         var envelope = reply
-        envelope.schemaVersion = protocolVersion
-        envelope.protocolVersion = protocolVersion
+        envelope.schemaVersion = version(for: action)
+        envelope.protocolVersion = version(for: action)
         envelope.appVersion = appVersion
         envelope.appBuild = appBuild
         envelope.instanceId = instanceId
@@ -223,6 +234,8 @@ public enum CloudGatewayMacControllerProtocol {
             return data
         }
         envelope = CloudGatewayMacControllerReply(error: .invalidRequest)
+        envelope.schemaVersion = version(for: action)
+        envelope.protocolVersion = version(for: action)
         envelope.appVersion = appVersion
         envelope.appBuild = appBuild
         envelope.instanceId = instanceId
@@ -238,13 +251,16 @@ public enum CloudGatewayMacControllerProtocol {
               let reply = try? JSONDecoder().decode(CloudGatewayMacControllerReply.self, from: data) else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }
-        let compatible = action.isCompatibleControl && (reply.controlVersion == controlVersion || (action == .lifecycle && reply.controlVersion == nil && reply.schemaVersion == protocolVersion && reply.protocolVersion == protocolVersion))
+        let compatible = action.isCompatibleControl && (reply.controlVersion == controlVersion || (action == .lifecycle && reply.controlVersion == nil && reply.schemaVersion == compatibleProtocolVersion && reply.protocolVersion == compatibleProtocolVersion))
         guard action.isCompatibleControl ? compatible : (reply.schemaVersion == protocolVersion && reply.protocolVersion == protocolVersion
               && reply.appVersion == appVersion && reply.appBuild == appBuild) else {
             throw CloudGatewayMacControllerFailure.incompatibleVersion
         }
         try validateVersion(reply.appVersion, build: reply.appBuild)
-        guard reply.instanceId != nil else { throw CloudGatewayMacControllerFailure.invalidRequest }
+        guard reply.instanceId != nil,
+              reply.outcome == nil || (reply.appVersion == appVersion && reply.appBuild == appBuild) else {
+            throw CloudGatewayMacControllerFailure.invalidRequest
+        }
         try validateReplyContent(reply, action: action)
         return reply
     }
@@ -253,13 +269,15 @@ public enum CloudGatewayMacControllerProtocol {
         _ reply: CloudGatewayMacControllerReply, action: CloudGatewayMacControllerRequest.Action
     ) throws {
         if reply.error != nil {
-            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.accepted == nil, reply.creation == nil,
+            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.outcome == nil,
+                  reply.accepted == nil, reply.creation == nil,
                   reply.operationId == nil, reply.lifecycle == nil, reply.extensionTarget == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
         }
         if action == .lifecycle {
-            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
+            guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.outcome == nil,
+                  reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
                   reply.extensionTarget == nil,
                   reply.lifecycle != nil || reply.error != nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
@@ -279,6 +297,14 @@ public enum CloudGatewayMacControllerProtocol {
             try status.validate()
         }
         if let operation = reply.operation { try operation.validate() }
+        if let outcome = reply.outcome {
+            let identifier = outcome.identifier
+            guard let operation = reply.operation, operation.state == outcome.state,
+                  identifier.map(validIdentifier) ?? true,
+                  reply.state == nil || identifier.map({ CloudGatewayMacControllerState.belongs($0, to: reply.state?.accountId) }) ?? true else {
+                throw CloudGatewayMacControllerFailure.invalidRequest
+            }
+        }
         if action.isCompatibleControl && action != .lifecycle {
             guard reply.state == nil, reply.creation == nil, reply.extensionTarget == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
@@ -317,6 +343,14 @@ public enum CloudGatewayMacControllerProtocol {
     static func validIdentifier(_ value: String) -> Bool {
         let parts = value.split(separator: "/", omittingEmptySubsequences: false)
         return value.utf8.count <= 1024 && parts.count == 3 && parts.allSatisfy { validComponent(String($0)) }
+    }
+
+    static func validIPv4(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { part in
+            (1...3).contains(part.count) && (part.count == 1 || part.first != "0")
+                && part.allSatisfy { $0.isASCII && $0.isNumber } && Int(part).map { $0 <= 255 } == true
+        }
     }
 
     static func validChallenge(code: String, url: URL) -> Bool {

@@ -9,7 +9,6 @@ enum CloudGatewayMacVPNProfileError: Error {
     case duplicateProfile
     case missingProfile
     case missingSession
-    case stopTimedOut
     case invalidGrant
 }
 
@@ -203,7 +202,7 @@ private final class MacVPNStopWaiter {
                 timeoutTask = Task { @MainActor [weak self, timeout] in
                     do {
                         try await Task.sleep(for: .seconds(timeout))
-                        self?.finish(.failure(CloudGatewayMacVPNProfileError.stopTimedOut))
+                        self?.finish(.failure(CloudGatewayMacConfigError.stopTimedOut))
                     } catch {}
                 }
                 connection.stopVPNTunnel()

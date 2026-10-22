@@ -239,8 +239,16 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
         .init(lifecycle: lifecycle), appVersion: currentBuild.version, appBuild: currentBuild.build,
         instanceId: UUID(), action: .lifecycle
     )
-    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
         try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: currentBuild.version, appBuild: currentBuild.build)
+    }
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["schemaVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    object["protocolVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+        try CloudGatewayMacControllerProtocol.decodeReply(
+            JSONSerialization.data(withJSONObject: object), appVersion: currentBuild.version, appBuild: currentBuild.build
+        )
     }
 }
 

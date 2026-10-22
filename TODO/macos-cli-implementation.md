@@ -1,6 +1,6 @@
 # Implement the macOS CLI
 
-Status: **researched, implementation pending**. Updated 2026-10-22.
+Status: **implementation in progress**. Updated 2026-10-22.
 
 This is the implementation sequence for the CLI on top of PR #17's controller.
 The command and product contract remains in
@@ -94,7 +94,7 @@ user's decision and do not block implementation.
 ## Implementation sequence
 
 Each step should leave the menu app working and include its targeted coverage.
-No implementation step is complete yet.
+Step 1 is complete.
 
 ### 1. Add CLI-ready domain results and metadata
 
@@ -104,30 +104,31 @@ Primary files:
 [IPC contracts](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerContracts.swift),
 [state projection](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerState.swift).
 
-- [ ] Replace coarse completed/failed/unknown command reporting with macOS-owned
+- [x] Replace coarse completed/failed/unknown command reporting with macOS-owned
   typed outcomes and sanitized failure codes. Distinguish auth/access, setup,
   credential availability, selection/config, network, busy, deadlines, VPN
   failure, and uncertain/expired outcomes. Never parse menu messages for exits
-- [ ] Distinguish `startRequested` and `alreadyActive`. A successful start API
+- [x] Distinguish `startRequested` and `alreadyActive`. A successful start API
   return stays successful if later selection/cache persistence fails, with a
   sanitized warning. A reservation alone never means a start was submitted
-- [ ] Extend inventory rows with internal IP, cloud state, eligibility reason,
+- [x] Extend inventory rows with internal IP, cloud state, eligibility reason,
   installation/profile state, source, and freshness/observation timestamps.
   Project existing models/cache metadata, without serializing configs or secrets
-- [ ] Distinguish a retained local profile from current authorized installed
+- [x] Distinguish a retained local profile from current authorized installed
   metadata. Refresh can invalidate metadata while an old profile remains active
-- [ ] Expose explicit identity, access-verification, and credential-evidence
+- [x] Expose explicit identity, access-verification, and credential-evidence
   states for auth status. Retained identity is separate from online/offline
   authorization. Include unknown evidence rather than inventing a diagnosis
-- [ ] If needed, add the authorized narrow diagnostic to the
+- [x] If needed, add the authorized narrow diagnostic to the
   [Firebase adapter](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/CloudGatewayFirebaseAdapter/Sources/CloudGatewayFirebaseAuthAdapter/CloudGatewayFirebaseAuthAdapter.swift).
   Keep it observational, preserve existing token/session recovery, and expose
   only sanitized availability evidence. Do not introduce a second credential
-  store or change iOS sign-in behavior
-- [ ] Associate account-bound operation details with their account/session in
+  store or change iOS sign-in behavior. Not needed: no supported API separates
+  inaccessible credentials from signed out, so evidence is `available` or `unknown`
+- [x] Associate account-bound operation details with their account/session in
   memory. Redact after logout/account change, including explicit ID lookup.
   Preserve minimal local VPN status and signed-out stop results
-- [ ] Version richer ordinary IPC where required, update exact bounds and
+- [x] Version richer ordinary IPC where required, update exact bounds and
   validation, and keep public CLI JSON versioning separate. Preserve or
   explicitly version the compatible lifecycle/status/stop/lookup protocol.
   New Codable enum cases are not automatically backward compatible
@@ -136,6 +137,16 @@ Acceptance: typed fixtures cover every CLI exit category, cross-account output,
 freshness, and malformed/oversized replies. Existing menu mapping and compatible
 status/stop remain valid. No raw SDK errors, tokens, keys, or full configs cross
 the frontend boundary.
+
+Implementation notes:
+
+- Ordinary IPC is protocol 2. Lifecycle, status, stop, confirm, and lookup
+  keep the version 1 stamps. Replies carry the typed `CloudGatewayMacCommandOutcome`
+  only for requests from the running build. Other builds use the legacy operation
+- Only `connect` and `createClient` outcomes are account-bound and redacted after
+  a session change. Stop, sign-in, cancel, and logout outcomes stay readable
+- A timed-out stop is typed `stopTimedOut` (exit 8), with legacy state unknown
+- Reply bound is 2 MiB, enough for a full 4096-row inventory with row metadata
 
 ### 2. Complete command ownership and recovery contracts
 

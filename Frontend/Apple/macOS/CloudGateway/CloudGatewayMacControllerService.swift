@@ -53,38 +53,37 @@ final class CloudGatewayMacControllerService {
             },
             hasPendingWork: { runtime.controller.hasPendingWork },
             perform: { request, complete in
-                let completion: (CloudGatewayMacCommandResult) -> Void = {
-                    complete(CloudGatewayMacControllerOperation.State(rawValue: $0.rawValue) ?? .unknown)
-                }
                 switch request.action {
                 case .connect:
                     guard let identifier = request.identifier else { return false }
-                    return runtime.controller.connectClient(identifier: identifier, onCompletion: completion)
-                case .turnOff: return runtime.controller.turnOff(onCompletion: completion)
+                    return runtime.controller.connectClient(identifier: identifier, onCompletion: complete)
+                case .turnOff: return runtime.controller.turnOff(onCompletion: complete)
                 case .signIn:
                     let state = runtime.controller.snapshot()
-                    guard !state.isRestoringSession, !state.isAuthSettling else { return false }
+                    guard !state.isRestoringSession, !state.isAuthSettling else {
+                        complete(.failed(.busy))
+                        return false
+                    }
                     runtime.controller.signIn()
                 case .cancelSignIn: runtime.controller.cancelSignIn()
                 case .signOut:
-                    complete(runtime.controller.signOut() ? .completed : .failed)
+                    complete(runtime.controller.signOut() ? .completed(warning: nil) : .failed(.credentialsUnavailable))
                     return true
                 case .refresh: runtime.controller.refresh()
                 case .menuWillOpen: runtime.controller.menuWillOpen()
                 default: return false
                 }
-                complete(.completed)
+                complete(.completed(warning: nil))
                 return true
             },
+            session: { runtime.controller.session },
             prepareClient: {
                 guard let context = runtime.controller.clientCreationContext() else {
                     throw CloudGatewayMacControllerFailure.busy
                 }
                 let regions = try await runtime.controller.loadCreateRegions(context: context)
                 return CloudGatewayMacPreparedClient(regions: regions) { region, name, complete in
-                    runtime.controller.createClient(regionId: region, clientName: name, context: context) {
-                        complete(CloudGatewayMacControllerOperation.State(rawValue: $0.rawValue) ?? .unknown)
-                    }
+                    runtime.controller.createClient(regionId: region, clientName: name, context: context, onCompletion: complete)
                 }
             },
             setSetupState: { runtime.controller.setSetupState($0) },
