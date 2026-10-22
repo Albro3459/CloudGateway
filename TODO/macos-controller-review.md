@@ -387,9 +387,20 @@ inventory/domain, and extension/release behavior.
 - [x] Report credential cleanup failure as a failed Sign Out operation
 
 The domain and requests reviewers reported four distinct outcome/retention issues
-(the Connect finding was duplicated). All seven distinct fixes passed the full macOS validation run, including 263
-package tests and both strict dead-code scans. A second fresh review round is
-pending.
+(the Connect finding was duplicated). All seven distinct fixes passed the full
+macOS validation run, including 263 package tests and both strict dead-code scans.
+
+Round 2 was attempted against `8589488f` with Main Codex GPT-6.1 Sol High. The
+first delegated reviewer failed before reviewing source because that account hit
+its usage limit. No second reviewer was launched on the exhausted account. The
+fresh review gate remains open, pending Main account availability or permission
+to use Secure Codex.
+
+The main agent continued a bounded source review of the app adapters, command
+confirmation/results, handoff status and disconnect, inventory commit fencing,
+and extension transitions. That follow-up found no additional confirmed defect.
+It does not replace the requested fresh reviewer round. No code changed and no
+validation suite was repeated during this follow-up.
 
 ## Implementation validation
 
