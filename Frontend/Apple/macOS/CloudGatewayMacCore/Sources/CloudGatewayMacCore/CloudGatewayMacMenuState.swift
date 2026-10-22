@@ -122,23 +122,16 @@ public struct CloudGatewayMacMenuState: Sendable {
 
     public var statusTitle: String {
         guard accountId != nil else { return "Signed out" }
-        let tunnelTitle: String
         if profiles.contains(where: { $0.status == .connecting }) {
-            tunnelTitle = "VPN connecting…"
+            return "VPN connecting…"
         } else if profiles.contains(where: { $0.status == .disconnecting }) {
-            tunnelTitle = "VPN disconnecting…"
+            return "VPN disconnecting…"
         } else if hasActiveTunnel {
-            tunnelTitle = "VPN connected"
-        } else if commandInFlight || inventoryInFlight {
-            tunnelTitle = "Working…"
+            return "VPN connected"
         } else if setupState != .ready {
             return setupState.title
-        } else if reconnectIdentifier == nil {
-            tunnelTitle = "Choose a client to connect"
-        } else {
-            tunnelTitle = "VPN off"
         }
-        return isOffline ? "Offline · \(tunnelTitle)" : tunnelTitle
+        return "VPN off"
     }
 
     private var canConnect: Bool { accountId != nil && setupState == .ready && !commandInFlight && !inventoryInFlight }

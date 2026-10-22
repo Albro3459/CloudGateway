@@ -433,6 +433,38 @@ Follow [macOS release deployment](../docs/apple-macos-release.md). The existing
 workflow signs/notarizes the app, then signs/notarizes the DMG. Do not copy an
 entitled executable out of its bundle as a standalone installed CLI.
 
+### Proposed update lifecycle
+
+This handoff is not implemented yet. Replacing a bundle currently leaves a live
+controller running until its normal idle exit.
+
+- Ship menu, controller, and CLI modes in the same signed app. Keep the CLI
+  symlink pointed at that installed bundle. Increment every distributed app
+  build, and detect different local rebuilds even when version/build are reused
+- Capture the running build identity at process startup. Compare it with the
+  installed bundle using a signed build fingerprint, including from the running
+  controller so drag-and-drop replacements are detected without a new client.
+  Reading the replaced bundle's current Info.plist must not relabel old code
+- Add a small authenticated lifecycle handshake separate from ordinary command
+  version validation. Report the running and installed identities, protocol
+  support, and update state even when normal commands are incompatible
+- Treat the verified installed bundle as the update target. An old menu or CLI
+  invocation must not switch the service back to its own older build
+- On replacement, stop admitting new mutations, finish accepted work through
+  safe profile/secret persistence points, retain recoverable command outcomes,
+  then release ownership and exit. Clients reconnect to the launchd-started
+  replacement. Do not replay an uncertain mutation after reconnect
+- Keep active VPNs running through app/controller updates. Reconcile Apple VPN
+  preferences after restart instead of stopping or starting a tunnel implicitly
+- Keep extension versions independent. Each app release declares its expected
+  extension and supported IPC. Use Apple's activation/replacement flow for
+  changed extensions, represent approval/reboot requirements, and defer a
+  disruptive replacement while a VPN is active. Incompatible extensions block
+  new starts while safe status/disconnect operations remain available
+- Show component identities and update state in CLI diagnostics. Validate live
+  replacement during an active VPN, pending commands, stale clients, reused
+  development build numbers, and extension approval/reboot states
+
 ## Tradeoffs and concerns
 
 | Choice or concern | Benefit / risk | What to watch |
@@ -543,6 +575,30 @@ app to preserve the generated-plist fix on future registrations.
 The follow-up `./scripts/test.sh macos` passed all checks, including 140 macOS
 tests, both strict Periphery scans, the unsigned arm64 app/extension build,
 and bundle packaging verification.
+
+The user's next connect/disconnect capture showed Apple confirming stop in
+about 0.8 seconds. The menu could then show Working while a cloud inventory
+refresh remained pending. The status now follows the observed VPN state,
+including VPN off during pending commands or inventory work. Refreshing clients
+appears on the Refresh row. Cloud transport failures still allow authorized
+cached configs but no longer label the internet connection Offline.
+Regression coverage holds an inventory refresh open while disconnect completes,
+then checks both successful refresh and cached fallback. `./scripts/test.sh macos`
+passed all checks, including 142 macOS tests, both strict Periphery scans,
+the unsigned arm64 app/extension build, and bundle packaging verification.
+Signed rebuild/reinstall and live menu confirmation remain required for this
+status change.
+
+The next reinstall capture again confirmed a fast stop, about 0.53 seconds,
+followed later by a Firestore ping timeout. Process inspection showed controller
+PID 19906 still running from 18:50, predating the installed fixed Release binary
+built at 19:08. The installed executable matched the rebuilt Release app, but
+replacing the bundle had left the old controller serving the new menu. The local
+install instructions now require waiting for the controller to exit before
+replacement, including when rebuilding with the same version/build.
+When restart was authorized, the old controller and menu had already exited.
+`launchctl kickstart` successfully started the installed controller as PID 38511;
+launchd reported the previous exit code as 0. The menu was closed at this check.
 
 ### 1. Signed runtime proof, before the full command surface
 

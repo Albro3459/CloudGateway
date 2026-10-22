@@ -129,7 +129,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 menu.addItem(item)
             }
             add("Add Client…", #selector(addClient), enabled: state.canCreateClient && dialogTask == nil && actionTask == nil)
-            add("Refresh", #selector(refresh), enabled: state.canRefresh && !state.inventoryInFlight && actionTask == nil)
+            add(state.inventoryInFlight ? "Refreshing clients…" : "Refresh", #selector(refresh),
+                enabled: state.canRefresh && !state.inventoryInFlight && actionTask == nil)
             add("Sign Out", #selector(signOut), enabled: state.canSignOut && actionTask == nil)
         }
         if activation.state != .ready {

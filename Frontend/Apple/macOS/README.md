@@ -92,8 +92,12 @@ Selection explicitly connects or switches. The top status row toggles the VPN,
 with a native checkmark reflecting the observed connection state. Clicking
 VPN connected disconnects, and VPN off reconnects the last-used usable client.
 Connecting and disconnecting disable the toggle. Without a usable last-used
-client, the row says Choose a client to connect. Disconnecting retains
-configs/secrets and cloud clients. Sign Out hides inventory and ends the local Firebase session,
+client, VPN off is disabled, and the region/client submenus select a connection.
+The status follows Apple VPN preferences even while a cloud refresh or command
+is pending. The Refresh row shows Refreshing clients while inventory is loading.
+Cloud request failures do not label the internet connection offline.
+Disconnecting retains configs/secrets and cloud clients. Sign Out hides inventory
+and ends the local Firebase session,
 retaining VPN, profiles, secrets, and account caches. Quit exits only the menu
 app. Signed-out menus expose no configs or VPN controls. Sign Out remains
 available when a retained Firebase session cannot restore. System Settings can
@@ -137,8 +141,14 @@ profile/entitlement inspection. Use `ios` for the iOS regression gate and
 tests run once per invocation. Automated checks do not activate extensions
 or change the running VPN.
 
-For a faster local install, quit CloudGateway from its menu, then paste this
-command from the repository root. It builds the signed Release app and extension,
+For a faster local install, quit CloudGateway from its menu and wait for its
+background controller to exit before replacing the app. The controller exits
+after pending work finishes and the 60-second idle grace period expires. Check
+with `ps aux | rg '[C]loudGateway.*--controller'`; continue when no controller is
+listed. Replacing the bundle does not restart a running controller, and local
+rebuilds with the same version/build can still connect to that older process.
+
+Then paste this command from the repository root. It builds the signed Release app and extension,
 checks packaging and signing, and copies the app to `/Applications`. It skips
 tests and dead-code scans. If an app is already installed, it moves that copy
 to Trash first so removed build files cannot remain in

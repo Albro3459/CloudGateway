@@ -52,7 +52,7 @@ import Testing
         #expect(fixture.snapshot.accountId == "user-a")
         #expect(fixture.snapshot.groups.flatMap(\.rows).map(\.identifier) == [fixture.config.identifier])
         #expect(fixture.snapshot.reconnectIdentifier == fixture.config.identifier)
-        #expect(fixture.snapshot.statusTitle.hasPrefix("Offline"))
+        #expect(fixture.snapshot.statusTitle == "VPN off")
         #expect(!fixture.snapshot.canCreateClient)
     } else {
         #expect(fixture.snapshot.accountId == nil)
@@ -294,6 +294,34 @@ import Testing
     #expect(notifications == 0)
 }
 
+@Test(arguments: [false, true])
+@MainActor func macControllerShowsVPNOffBeforeCloudRefreshFinishes(refreshFails: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { fixture.snapshot.hasActiveTunnel }
+
+    let refresh = MacControllerGate()
+    fixture.inventory.fetchGate = refresh
+    if refreshFails { fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline }
+    fixture.controller.menuWillOpen()
+    try await controllerWaitUntil { await refresh.entered }
+    #expect(fixture.snapshot.inventoryInFlight)
+    #expect(fixture.controller.turnOff())
+    try await controllerWaitUntil { fixture.snapshot.statusTitle == "VPN off" }
+    #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+    #expect(!fixture.snapshot.hasActiveTunnel)
+    #expect(fixture.snapshot.inventoryInFlight)
+
+    await refresh.release()
+    try await controllerWaitUntil { !fixture.snapshot.inventoryInFlight }
+    #expect(fixture.snapshot.statusTitle == "VPN off")
+    #expect(fixture.snapshot.reconnectIdentifier == fixture.config.identifier)
+    #expect(fixture.snapshot.errorMessage == nil)
+}
+
 private enum MacControllerRestoreCase: CaseIterable, Sendable {
     case authorizedCache, deniedCache, otherAccount, unavailable, accessDenied
 }
@@ -455,6 +483,7 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     var fetchError: (any Error)?
     var regionsGate: MacControllerGate?
     var createGate: MacControllerGate?
+    var fetchGate: MacControllerGate?
     private(set) var accessCount = 0
     private(set) var fetchCount = 0
     private(set) var regionsCount = 0
@@ -469,6 +498,7 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
 
     func fetchOptions(for user: AuthenticatedUser, role _: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption] {
         fetchCount += 1
+        await fetchGate?.arriveAndWait()
         if let fetchError { throw fetchError }
         return options.filter { $0.client.ownerUid == user.uid }
     }
@@ -531,6 +561,11 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     func stopAndWait(identifier: String) async throws {
         try Task.checkCancellation()
         stoppedIdentifiers.append(identifier)
+        values = values.map {
+            $0.identifier == identifier
+                ? CloudGatewayMacInstalledProfile(identifier: $0.identifier, reference: $0.reference, status: .disconnected)
+                : $0
+        }
     }
 }
 

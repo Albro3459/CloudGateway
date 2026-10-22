@@ -229,7 +229,7 @@ public final class CloudGatewayMacController {
                     lastSelectedIdentifier = saved.selectedIdentifier
                     isOffline = true
                     errorMessage = nil
-                } else { errorMessage = "Connect to the internet to restore this account" }
+                } else { errorMessage = "Unable to reach CloudGateway to restore this account" }
             } catch CloudGatewayMacInventoryError.accessDenied {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 try? await cache.deny(accountId: candidate.uid)
@@ -288,7 +288,7 @@ public final class CloudGatewayMacController {
                     lastSelectedIdentifier = nil
                 }
                 isOffline = true
-                errorMessage = installed.isEmpty ? "Offline. No installed configs are available for this account" : nil
+                errorMessage = installed.isEmpty ? "Unable to reach CloudGateway. No installed configs are available for this account" : nil
             } catch CloudGatewayMacInventoryError.accessDenied {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 options = []

@@ -103,7 +103,22 @@ import Testing
     #expect(macMenuState(profiles: [macMenuProfile(status: .connecting)]).statusTitle == "VPN connecting…")
     #expect(macMenuState(profiles: [macMenuProfile(status: .reasserting)]).hasActiveTunnel)
     #expect(!macMenuState(profiles: [macMenuProfile(status: .disconnecting)]).hasActiveTunnel)
-    #expect(macMenuState(profiles: [macMenuProfile(status: .connected)], offline: true).statusTitle == "Offline · VPN connected")
+    #expect(macMenuState(profiles: [macMenuProfile(status: .connected)], offline: true).statusTitle == "VPN connected")
+}
+
+@Test func macVPNStatusStaysOffDuringCommandsAndCloudRefreshes() {
+    for busy in [false, true] {
+        for inventoryBusy in [false, true] {
+            for offline in [false, true] {
+                let state = macMenuState(configs: [macMenuConfig()],
+                    profiles: [macMenuProfile(status: .disconnected)], busy: busy,
+                    inventoryBusy: inventoryBusy, offline: offline,
+                    lastSelectedIdentifier: "account/region/client")
+                #expect(state.statusTitle == "VPN off")
+                #expect(!state.hasActiveTunnel)
+            }
+        }
+    }
 }
 
 @Test func macMenuGroupsAuthorizedClientsByRegionAndDisablesUnusableRows() {
@@ -130,7 +145,7 @@ import Testing
         let state = macMenuState(options: options, lastSelectedIdentifier: selection)
         #expect(state.reconnectIdentifier == nil)
         #expect(!state.canToggleVPN)
-        #expect(state.statusTitle == "Choose a client to connect")
+        #expect(state.statusTitle == "VPN off")
     }
     for option in [macMenuOption(clientId: "last", status: .creating),
                    macMenuOption(clientId: "last", status: .removed),
@@ -167,7 +182,7 @@ import Testing
         lastSelectedIdentifier: identifier)
     #expect(state.reconnectIdentifier == identifier)
     #expect(state.canToggleVPN)
-    #expect(state.statusTitle == "Offline · VPN off")
+    #expect(state.statusTitle == "VPN off")
     #expect(!macMenuState(configs: [config], offline: true,
         lastSelectedIdentifier: identifier).canToggleVPN)
     #expect(!macMenuState(configs: [macMenuConfig(accountId: "other")], profiles: [profile],
