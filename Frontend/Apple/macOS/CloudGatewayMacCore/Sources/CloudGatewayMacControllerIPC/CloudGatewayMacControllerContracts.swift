@@ -10,7 +10,8 @@ public enum CloudGatewayMacControllerFailure: String, Error, Codable, Sendable {
 public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public enum Action: String, Codable, CaseIterable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
-        case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, refresh, signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
+        case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, refresh, awaitRefresh
+        case signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
     }
 
     public let controlVersion: Int?
@@ -78,6 +79,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
     public let status: CloudGatewayMacControllerStatus?
     public let operation: CloudGatewayMacControllerOperation?
     public let outcome: CloudGatewayMacCommandOutcome?
+    public let refresh: CloudGatewayMacRefreshResult?
     public let accepted: Bool?
     public let creation: Creation?
     public let error: CloudGatewayMacControllerFailure?
@@ -90,6 +92,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
         status: CloudGatewayMacControllerStatus? = nil,
         operation: CloudGatewayMacControllerOperation? = nil,
         outcome: CloudGatewayMacCommandOutcome? = nil,
+        refresh: CloudGatewayMacRefreshResult? = nil,
         accepted: Bool? = nil,
         creation: Creation? = nil,
         error: CloudGatewayMacControllerFailure? = nil,
@@ -107,6 +110,7 @@ public struct CloudGatewayMacControllerReply: Codable, Equatable, Sendable {
         self.status = status
         self.operation = operation
         self.outcome = outcome
+        self.refresh = refresh
         self.accepted = accepted
         self.creation = creation
         self.error = error
@@ -163,7 +167,7 @@ public enum CloudGatewayMacControllerProtocol {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
         case .connect:
-            guard let identifier = request.identifier, validIdentifier(identifier),
+            guard request.identifier.map(validIdentifier) ?? true,
                   request.regionId == nil, request.clientName == nil, request.contextId == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
@@ -270,14 +274,14 @@ public enum CloudGatewayMacControllerProtocol {
     ) throws {
         if reply.error != nil {
             guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.outcome == nil,
-                  reply.accepted == nil, reply.creation == nil,
+                  reply.refresh == nil, reply.accepted == nil, reply.creation == nil,
                   reply.operationId == nil, reply.lifecycle == nil, reply.extensionTarget == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
         }
         if action == .lifecycle {
             guard reply.state == nil, reply.status == nil, reply.operation == nil, reply.outcome == nil,
-                  reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
+                  reply.refresh == nil, reply.accepted == nil, reply.creation == nil, reply.operationId == nil,
                   reply.extensionTarget == nil,
                   reply.lifecycle != nil || reply.error != nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
@@ -297,6 +301,10 @@ public enum CloudGatewayMacControllerProtocol {
             try status.validate()
         }
         if let operation = reply.operation { try operation.validate() }
+        guard reply.refresh == nil || (action == .awaitRefresh && reply.state != nil),
+              action != .awaitRefresh || reply.refresh != nil || reply.error != nil else {
+            throw CloudGatewayMacControllerFailure.invalidRequest
+        }
         if let outcome = reply.outcome {
             let identifier = outcome.identifier
             guard let operation = reply.operation, operation.state == outcome.state,
@@ -376,6 +384,10 @@ extension CloudGatewayMacControllerRequest.Action {
         case .lifecycle, .status, .turnOff, .confirmOperation, .operation: true
         default: false
         }
+    }
+
+    var hasAccountBoundOutcome: Bool {
+        self == .connect || self == .createClient
     }
 
     var requiresConfirmation: Bool {

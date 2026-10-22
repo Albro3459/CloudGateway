@@ -79,7 +79,7 @@ public final class CloudGatewayMacControllerRequests {
         result = operation
         outcome = nil
         owner = nil
-        isAccountBound = request.action == .connect || request.action == .createClient
+        isAccountBound = request.action.hasAccountBoundOutcome
         resultExpires = expires
         return operation
     }

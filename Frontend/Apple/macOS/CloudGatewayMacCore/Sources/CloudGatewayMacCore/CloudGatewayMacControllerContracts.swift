@@ -25,7 +25,7 @@ public struct CloudGatewayMacClientCreationContext: Equatable, Sendable {
 public enum CloudGatewayMacCommandFailure: String, Codable, Sendable {
     case signInRequired, accessDenied
     case setupRequired, credentialsUnavailable, incompatibleVersion
-    case configUnavailable, networkUnavailable, busy
+    case configUnavailable, selectionUnavailable, networkUnavailable, busy
     case stopTimedOut, vpnFailed, internalError
 }
 
@@ -41,6 +41,11 @@ public enum CloudGatewayMacCommandOutcome: Codable, Equatable, Sendable {
     case failed(CloudGatewayMacCommandFailure)
     case unknown
     case expired
+}
+
+// Unavailable refreshes keep any retained rows, which the snapshot marks as cached
+public enum CloudGatewayMacRefreshResult: String, Codable, Sendable {
+    case refreshed, unavailable, denied, signInRequired, skipped, superseded, timedOut
 }
 
 public enum CloudGatewayMacAccessState: String, Codable, Sendable {

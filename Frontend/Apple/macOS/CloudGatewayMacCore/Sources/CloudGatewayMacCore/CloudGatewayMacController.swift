@@ -43,6 +43,7 @@ public final class CloudGatewayMacController {
     private var hasObservedProfiles = false
     private var accessResult: CloudGatewayMacAccessState?
     private var inventoryReadAt = Date.distantPast
+    private var refreshResult: (epoch: UInt64, result: CloudGatewayMacRefreshResult)?
     private var profilesObservedAt: Date?
 
     public init(
@@ -316,8 +317,10 @@ public final class CloudGatewayMacController {
                 }
                 inventoryCommitTask = commit
                 try await commit.value
+                refreshResult = (refreshEpoch, .refreshed)
             } catch CloudGatewayMacInventoryError.offline {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                refreshResult = (refreshEpoch, .unavailable)
                 let saved = try? await cache.load(accountId: account.uid)
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 options = []
@@ -336,6 +339,7 @@ public final class CloudGatewayMacController {
                 errorMessage = installed.isEmpty ? "Unable to reach CloudGateway. No installed configs are available for this account" : nil
             } catch CloudGatewayMacInventoryError.accessDenied {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                refreshResult = (refreshEpoch, .denied)
                 options = []
                 installed = []
                 hasAuthorizedInventory = false
@@ -346,6 +350,7 @@ public final class CloudGatewayMacController {
                 errorMessage = "Account access was denied. Sign in again after access is restored"
             } catch {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                refreshResult = (refreshEpoch, .unavailable)
                 options = []
                 installed = []
                 hasAuthorizedInventory = false
@@ -561,16 +566,18 @@ public final class CloudGatewayMacController {
     }
 
     @discardableResult
+    // A nil identifier starts this account's last selection
     public func connectClient(
-        identifier: String,
+        identifier requested: String?,
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
+        let resolved = requested ?? lastSelectedIdentifier
         let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
             else if setupState != .ready { .setupRequired }
             else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
-            else if !hasConnectableConfig(identifier: identifier, accountId: user?.uid ?? "") { .configUnavailable }
-            else { nil }
-        guard rejection == nil, let account = user else {
+            else if let resolved, hasConnectableConfig(identifier: resolved, accountId: user?.uid ?? "") { nil }
+            else { requested == nil ? .selectionUnavailable : .configUnavailable }
+        guard rejection == nil, let account = user, let identifier = resolved else {
             onCompletion?(.failed(rejection ?? .signInRequired))
             return false
         }
@@ -870,6 +877,33 @@ public final class CloudGatewayMacController {
         if user != nil { refreshInventory() }
         else { restoreSession() }
         notifyChange()
+    }
+
+    // Waits only for the controller's own work, so a departed caller cannot cancel the fetch.
+    // A repeated call joins a fetch already in flight and reports that fetch's result
+    public func awaitRefresh() async -> CloudGatewayMacRefreshResult {
+        guard isStarted, !isShuttingDown else { return .skipped }
+        refreshProfiles()
+        if user == nil {
+            guard auth.currentUser != nil else { return .signInRequired }
+            restoreSession()
+            notifyChange()
+            guard let restoration = restorationTask else { return .skipped }
+            await restoration.value
+            guard user != nil else {
+                if accessResult == .denied { return .denied }
+                return auth.currentUser == nil ? .signInRequired : .unavailable
+            }
+            if isOffline { return .unavailable }
+        } else {
+            refreshInventory()
+            notifyChange()
+        }
+        guard let task = inventoryTask else { return .skipped }
+        let epoch = inventoryEpoch
+        await task.value
+        guard let refreshResult, refreshResult.epoch == epoch else { return .superseded }
+        return refreshResult.result
     }
 
     deinit {

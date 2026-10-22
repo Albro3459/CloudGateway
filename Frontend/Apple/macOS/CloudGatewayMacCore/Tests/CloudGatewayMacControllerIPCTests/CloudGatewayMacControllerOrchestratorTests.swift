@@ -40,7 +40,7 @@ func controllerBoundaryEventually(_ condition: () -> Bool) async -> Bool {
 }
 
 @MainActor
-private final class ControllerOrchestratorEffects {
+final class ControllerOrchestratorEffects {
     enum Failure: Error { case persistence }
 
     var now = Date(timeIntervalSince1970: 1_000)
@@ -52,9 +52,14 @@ private final class ControllerOrchestratorEffects {
     var writes = 0
     var data: Data?
     var performed: [CloudGatewayMacControllerRequest.Action] = []
-    var completion: ((CloudGatewayMacCommandOutcome) -> Void)?
-    var performHandler: ((CloudGatewayMacControllerRequest, (CloudGatewayMacCommandOutcome) -> Void) -> Bool)?
+    var completion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
+    var performHandler: ((CloudGatewayMacControllerRequest, @MainActor (CloudGatewayMacCommandOutcome) -> Void) -> Bool)?
     var sessions = CloudGatewayMacSessionFence()
+    var refreshResult = CloudGatewayMacRefreshResult.refreshed
+    var refreshTimeout = Duration.seconds(25)
+    var refreshes = 0
+    var holdRefresh: CheckedContinuation<Void, Never>?
+    var holdsRefresh = false
     var preparationEvents: AsyncStream<Void>?
     var preparations = 0
     var submissions = 0
@@ -83,6 +88,12 @@ private final class ControllerOrchestratorEffects {
                 return self.performHandler?(request, completion) ?? true
             },
             session: { self.sessions.currentToken },
+            refresh: {
+                self.refreshes += 1
+                if self.holdsRefresh { await withCheckedContinuation { self.holdRefresh = $0 } }
+                return self.refreshResult
+            },
+            refreshTimeout: refreshTimeout,
             prepareClient: {
                 self.preparations += 1
                 if self.ignorePreparationCancellation {
@@ -115,7 +126,7 @@ private final class ControllerOrchestratorEffects {
     }
 }
 
-private func controllerBoundaryRequest(_ action: CloudGatewayMacControllerRequest.Action,
+func controllerBoundaryRequest(_ action: CloudGatewayMacControllerRequest.Action,
                                        id: UUID = UUID(), contextId: UUID? = nil,
                                        build: CloudGatewayMacBuildIdentity = controllerBoundaryBuild) -> CloudGatewayMacControllerRequest {
     .init(action: action, id: id, identifier: action == .connect ? "account/region/client" : nil,

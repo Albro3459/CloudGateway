@@ -17,6 +17,8 @@ public final class CloudGatewayMacFrontendClient {
     private let identity: CloudGatewayMacBuildIdentity
     private let transport: (CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply
     private let bootstrap: () async throws -> Void
+    private let now: @Sendable () -> Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var pollTask: Task<Void, Never>?
     private var sequence: UInt64 = 0
     private var appliedSequence: UInt64 = 0
@@ -27,10 +29,16 @@ public final class CloudGatewayMacFrontendClient {
 
     public init(identity: CloudGatewayMacBuildIdentity,
                 transport: @escaping (CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply,
-                bootstrap: @escaping () async throws -> Void) {
+                bootstrap: @escaping () async throws -> Void,
+                now: (@Sendable () -> Duration)? = nil,
+                sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.identity = identity
         self.transport = transport
         self.bootstrap = bootstrap
+        let clock = ContinuousClock()
+        let origin = clock.now
+        self.now = now ?? { origin.duration(to: clock.now) }
+        self.sleep = sleep
     }
 
     public var isCurrentBuild: Bool { connectionState == .connected }
@@ -72,7 +80,7 @@ public final class CloudGatewayMacFrontendClient {
                     }
                     delay = min(delay * 2, 10)
                 }
-                do { try await Task.sleep(for: .seconds(delay)) }
+                do { try await sleep(.seconds(delay)) }
                 catch { return }
             }
         }
@@ -98,9 +106,25 @@ public final class CloudGatewayMacFrontendClient {
         onReplacement = nil
     }
 
+    // Menu convenience: reserved mutations are confirmed at once, and failed or uncertain results throw
     public func request(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                         identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
                         contextId: UUID? = nil) async throws -> CloudGatewayMacControllerReply {
+        let reply = try await send(action, id: id, identifier: identifier, regionId: regionId,
+                                   clientName: clientName, contextId: contextId)
+        guard action.requiresConfirmation, reply.operation?.state == .accepted else { return reply }
+        let confirmed = try await confirm(id)
+        if let operation = confirmed.operation, operation.state == .failed {
+            throw operation.failure ?? CloudGatewayMacControllerFailure.rejected
+        }
+        if confirmed.operation?.state == .unknown { throw CloudGatewayMacControllerFailure.outcomeUnknown }
+        return confirmed
+    }
+
+    // Mutations come back reserved. Nothing runs until the caller confirms the same ID
+    public func send(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
+                     identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
+                     contextId: UUID? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         let callback: Set<CloudGatewayMacControllerRequest.Action> = [
             .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed
@@ -129,7 +153,8 @@ public final class CloudGatewayMacFrontendClient {
             throw error
         }
         try Task.checkCancellation()
-        guard !isShuttingDown, currentGeneration == generation else { throw CancellationError() }
+        guard !isShuttingDown else { throw CancellationError() }
+        guard currentGeneration == generation else { throw Self.fencedFailure(for: action) }
         if let failure = reply.error { throw failure }
         if action == .lifecycle, currentSequence >= appliedSequence, let lifecycle = reply.lifecycle {
             appliedSequence = currentSequence
@@ -152,7 +177,7 @@ public final class CloudGatewayMacFrontendClient {
                 connectionState = .reconnecting
                 errorMessage = "The controller restarted. Reconnecting…"
                 onChange?()
-                throw action == .confirmOperation ? CloudGatewayMacControllerFailure.outcomeUnknown : .unavailable
+                throw Self.fencedFailure(for: action)
             }
             appliedSequence = currentSequence
             if let state = reply.state, isCurrentBuild {
@@ -167,15 +192,58 @@ public final class CloudGatewayMacFrontendClient {
                 onChange?()
             }
         }
-        if action.requiresConfirmation, reply.operation?.state == .accepted {
-            let confirmed = try await self.request(.confirmOperation, contextId: id)
-            if let operation = confirmed.operation, operation.state == .failed {
-                throw operation.failure ?? CloudGatewayMacControllerFailure.rejected
-            }
-            if confirmed.operation?.state == .unknown { throw CloudGatewayMacControllerFailure.outcomeUnknown }
-            return confirmed
-        }
         return reply
+    }
+
+    // A lost confirmation may have started the work, so it is reported as uncertain and never resent
+    public func confirm(_ id: UUID) async throws -> CloudGatewayMacControllerReply {
+        do { return try await send(.confirmOperation, contextId: id) }
+        catch {
+            if error is CancellationError, Task.isCancelled { throw error }
+            throw CloudGatewayMacControllerFailure.outcomeUnknown
+        }
+    }
+
+    // Stopping early only detaches this caller. The controller keeps confirmed work running.
+    // Cancellation means the caller stopped waiting, while timeout means its own deadline passed
+    public func awaitOutcome(of id: UUID, timeout: Duration,
+                             interval: Duration = .milliseconds(500)) async throws -> CloudGatewayMacControllerReply {
+        let deadline = now() + timeout
+        while true {
+            let reply = try await lookup(id, until: deadline)
+            if let state = reply.operation?.state, state != .accepted, state != .running { return reply }
+            let remaining = deadline - now()
+            guard remaining > .zero else { throw CloudGatewayMacControllerFailure.timeout }
+            try await sleep(min(interval, remaining))
+        }
+    }
+
+    // The transport's own reply timer must not outlast a shorter caller deadline
+    private func lookup(_ id: UUID, until deadline: Duration) async throws -> CloudGatewayMacControllerReply {
+        let race = ControllerReplyRace()
+        let request = Task {
+            do { race.finish(.success(try await send(.operation, contextId: id))) }
+            catch { race.finish(.failure(error is CancellationError ? CloudGatewayMacControllerFailure.unavailable : error)) }
+        }
+        let timer = Task {
+            guard !race.isFinished else { return }
+            do { try await sleep(max(deadline - now(), .zero)) } catch { return }
+            race.finish(.failure(CloudGatewayMacControllerFailure.timeout))
+        }
+        defer {
+            request.cancel()
+            timer.cancel()
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { race.start($0) }
+        } onCancel: {
+            Task { @MainActor in race.finish(.failure(CancellationError())) }
+        }
+    }
+
+    // A reply from a replaced controller cannot show whether confirmed work ran
+    private static func fencedFailure(for action: CloudGatewayMacControllerRequest.Action) -> CloudGatewayMacControllerFailure {
+        action == .confirmOperation || action == .operation ? .outcomeUnknown : .unavailable
     }
 
     public func message(for error: Error) -> String {
@@ -200,5 +268,25 @@ public final class CloudGatewayMacFrontendClient {
         case .timeout: return "Controller request timed out. Refresh status before trying the action again"
         default: return "Unable to reach the controller. Reconnecting…"
         }
+    }
+}
+
+@MainActor
+private final class ControllerReplyRace {
+    private var continuation: CheckedContinuation<CloudGatewayMacControllerReply, any Error>?
+    private var result: Result<CloudGatewayMacControllerReply, any Error>?
+
+    var isFinished: Bool { result != nil }
+
+    func start(_ continuation: CheckedContinuation<CloudGatewayMacControllerReply, any Error>) {
+        if let result { continuation.resume(with: result) }
+        else { self.continuation = continuation }
+    }
+
+    func finish(_ result: Result<CloudGatewayMacControllerReply, any Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        continuation?.resume(with: result)
+        continuation = nil
     }
 }

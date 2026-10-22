@@ -55,8 +55,7 @@ final class CloudGatewayMacControllerService {
             perform: { request, complete in
                 switch request.action {
                 case .connect:
-                    guard let identifier = request.identifier else { return false }
-                    return runtime.controller.connectClient(identifier: identifier, onCompletion: complete)
+                    return runtime.controller.connectClient(identifier: request.identifier, onCompletion: complete)
                 case .turnOff: return runtime.controller.turnOff(onCompletion: complete)
                 case .signIn:
                     let state = runtime.controller.snapshot()
@@ -77,6 +76,7 @@ final class CloudGatewayMacControllerService {
                 return true
             },
             session: { runtime.controller.session },
+            refresh: { await runtime.controller.awaitRefresh() },
             prepareClient: {
                 guard let context = runtime.controller.clientCreationContext() else {
                     throw CloudGatewayMacControllerFailure.busy

@@ -1005,6 +1005,104 @@ import CloudGatewayMacControllerIPC
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
 }
 
+@Test @MainActor func macControllerBareConnectResolvesThisAccountSelectionOrOffersChoices() async throws {
+    let fixture = try MacControllerFixture()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcomes: [CloudGatewayMacCommandOutcome] = []
+    #expect(!fixture.controller.connectClient(identifier: nil) { outcomes.append($0) })
+    #expect(outcomes == [.failed(.selectionUnavailable)])
+    let choices = fixture.domainSnapshot.domain.clients.filter { $0.eligibility == .eligible }.map(\.identifier)
+    #expect(choices == [fixture.config.identifier])
+
+    try await fixture.seedCache()
+    fixture.controller.refresh()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == fixture.config.identifier)
+    #expect(fixture.controller.connectClient(identifier: nil) { outcomes.append($0) })
+    try await controllerWaitUntil { outcomes.count == 2 }
+    #expect(outcomes.last == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+}
+
+@Test @MainActor func macControllerAwaitedRefreshReportsItsOwnFetchResult() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline
+    #expect(await fixture.controller.awaitRefresh() == .unavailable)
+    let stale = fixture.domainSnapshot.domain
+    #expect(stale.inventoryFreshness == .cached)
+    #expect(stale.clients.map(\.identifier) == [fixture.config.identifier])
+    #expect(stale.clients.allSatisfy { $0.source == .cache && $0.readAt != fixture.clock.now })
+
+    fixture.inventory.fetchError = nil
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.accessDenied
+    #expect(await fixture.controller.awaitRefresh() == .denied)
+    #expect(fixture.domainSnapshot.domain.accountId == nil)
+    #expect(await fixture.controller.awaitRefresh() == .signInRequired)
+}
+
+@Test @MainActor func macControllerAwaitedRefreshIsSupersededByAStartAndSkippedDuringCommands() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    let refresh = Task { await fixture.controller.awaitRefresh() }
+    try await controllerWaitUntil { await fetch.entered }
+    let submission = MacControllerGate()
+    await fixture.profiles.pauseStart(submission)
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier))
+    await fetch.release()
+    #expect(await refresh.value == .superseded)
+    try await controllerWaitUntil { await submission.entered }
+    #expect(await fixture.controller.awaitRefresh() == .skipped)
+    await submission.release()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+}
+
+@Test @MainActor func macControllerRepeatedAwaitedRefreshJoinsTheFetchInFlight() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    let first = Task { await fixture.controller.awaitRefresh() }
+    try await controllerWaitUntil { await fetch.entered }
+    let second = Task { await fixture.controller.awaitRefresh() }
+    for _ in 0..<20 { await Task.yield() }
+    await fetch.release()
+    #expect(await first.value == .refreshed)
+    #expect(await second.value == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+}
+
+@Test @MainActor func macControllerAwaitedRefreshWaitsForRetainedIdentityRestoration() async throws {
+    let fixture = try MacControllerFixture()
+    let access = MacControllerGate()
+    fixture.inventory.accessGate = access
+    fixture.controller.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { await access.entered }
+    let refresh = Task { await fixture.controller.awaitRefresh() }
+    await access.release()
+    #expect(await refresh.value == .refreshed)
+    #expect(fixture.domainSnapshot.domain.access == .online)
+    #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == [fixture.config.identifier])
+}
+
 private enum MacControllerRestoreCase: CaseIterable, Sendable {
     case authorizedCache, deniedCache, otherAccount, unavailable, accessDenied
 }

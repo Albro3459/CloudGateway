@@ -94,7 +94,7 @@ user's decision and do not block implementation.
 ## Implementation sequence
 
 Each step should leave the menu app working and include its targeted coverage.
-Step 1 is complete.
+Steps 1 and 2 are complete.
 
 ### 1. Add CLI-ready domain results and metadata
 
@@ -156,35 +156,53 @@ Primary files:
 [request store](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerRequests.swift),
 [production service](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift).
 
-- [ ] Expose raw domain replies and separate reservation from confirmation.
+- [x] Expose raw domain replies and separate reservation from confirmation.
   The current frontend converts snapshots to menu presentation and confirms
   inside `request()`. Preserve a menu convenience API using the same transport
-- [ ] For VPN mutations: reserve, write/flush the operation ID, confirm, then
+- [x] For VPN mutations: reserve, write/flush the operation ID, confirm, then
   await the final command outcome. Failed output before confirmation leaves
   the reservation unexecuted and subject to its existing 30-second expiry
-- [ ] After confirmation, frontend timeout, interruption, broken pipe, or SSH
+- [x] After confirmation, frontend timeout, interruption, broken pipe, or SSH
   loss only detaches the caller. Retain controller-owned tasks. Do not replay
   uncertain work with a new request ID, including automatic retries of `down`
-- [ ] Keep request-ID payload checking and instance/generation fencing.
+- [x] Keep request-ID payload checking and instance/generation fencing.
   Unknown lookup returns `operation_unknown` and current observed state.
   Ordinary status can succeed while reporting an unknown prior outcome
-- [ ] Align idle exit with the ten-minute reconnect grace. Keep only active
+- [x] Align idle exit with the ten-minute reconnect grace. Keep only active
   and latest result in memory. Durable anti-replay receipts remain separate
   from results, contain no user labels/configs/tokens, and do not replay work
-- [ ] Resolve bare `up` inside the controller using that account's selection.
+- [x] Resolve bare `up` inside the controller using that account's selection.
   Bind the request to the admitted session and revalidate at execution.
   Missing/removed/unusable selection fails with authorized choices
-- [ ] Add correlated refresh completion, not an immediate snapshot reply.
+- [x] Add correlated refresh completion, not an immediate snapshot reply.
   `refresh` and `list --refresh` await their own fetch/authorization result and
   report network failure with retained rows marked stale. Represent skipped,
   superseded, denied, and timed-out refreshes explicitly
-- [ ] Keep status and local stop available during cloud reads/login, and
+- [x] Keep status and local stop available during cloud reads/login, and
   serialize actual VPN mutations. Preserve existing refresh cancellation and
   generation fences when a start takes priority
 
 Acceptance: output failure cannot release work, uncertain confirmation cannot
 replay it, refresh cannot claim success from stale rows, and caller loss cannot
 cancel confirmed VPN work. Use injected time to verify result expiry/idle exit.
+
+Implementation notes:
+
+- The frontend client's `send` returns raw replies, `confirm` confirms the same
+  ID, and `awaitOutcome(timeout:)` polls the operation within the caller's
+  deadline, even while a lookup is held. The menu's `request` wraps all three
+- Confirm or lookup after a controller restart throws `outcomeUnknown` (exit 10)
+- `awaitRefresh` returns a `CloudGatewayMacRefreshResult` within a 25-second
+  controller budget. A repeated call joins the fetch in flight, so the CLI
+  loops on `timedOut` until its own deadline
+- Bare `up` fails with `selectionUnavailable` (exit 5). The CLI lists eligible
+  rows from a snapshot in the same invocation
+- Any retained result keeps the controller alive for its ten-minute window
+- `status --operation` should do one `send(.operation)` lookup, not
+  `awaitOutcome(timeout: 0)`, which reports a deadline without a lookup
+- Deferred: same-ID confirm retry after server errors that prove nothing ran,
+  a distinct refresh result for local cache/role failures (now `unavailable`),
+  and `awaitRefresh` restarting the profile read on every call
 
 ### 3. Add the CLI module, dispatch, and read commands
 

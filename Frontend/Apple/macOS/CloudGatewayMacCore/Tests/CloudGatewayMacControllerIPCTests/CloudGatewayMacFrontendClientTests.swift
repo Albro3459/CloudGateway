@@ -197,7 +197,7 @@ func frontendClientPreviousGenerationCannotReplaceOrEraseReplacementState(failur
         await #expect(throws: CloudGatewayMacControllerFailure.unavailable) { try await old.value }
     } else {
         try transport.resolve(id, with: transport.envelope(.init(state: controllerBoundaryState(active: false)), instance: previousInstance))
-        await #expect(throws: CancellationError.self) { try await old.value }
+        await #expect(throws: CloudGatewayMacControllerFailure.unavailable) { try await old.value }
     }
     #expect(client.connectionState == .connected)
     #expect(client.isSnapshotFresh)

@@ -258,13 +258,26 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         actionTask = Task { [weak self] in
             guard let self else { return }
             defer { actionTask = nil; render() }
-            do { _ = try await client.request(action, identifier: identifier) }
+            let id = UUID()
+            do { _ = try await client.request(action, id: id, identifier: identifier) }
             catch is CancellationError { }
             catch {
                 if action != .menuWillOpen { frontendErrorMessage = client.message(for: error) }
+                if error as? CloudGatewayMacControllerFailure == .outcomeUnknown { await resolveUncertainOperation(id) }
             }
         }
         render()
+    }
+
+    // Keep actions disabled while the same operation resolves, so the user cannot replay it
+    private func resolveUncertainOperation(_ id: UUID) async {
+        render()
+        guard let operation = try? await client.awaitOutcome(of: id, timeout: .seconds(30)).operation else { return }
+        switch operation.state {
+        case .completed: frontendErrorMessage = nil
+        case .failed: frontendErrorMessage = client.message(for: operation.failure ?? CloudGatewayMacControllerFailure.commandFailed)
+        default: break
+        }
     }
 
     @objc private func signIn() { send(.signIn) }
