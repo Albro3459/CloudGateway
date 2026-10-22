@@ -4,6 +4,16 @@ Status: **controller orchestration rewrite implemented, reviewed, and signed-bui
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
+The next steps are in the
+[CLI implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-implementation.md).
+As agreed on 2026-10-22, proceed with unsigned implementation and validation
+through `./scripts/test.sh macos`. This supersedes the earlier ordering that
+blocked CLI implementation on signed runtime proof. Signed installation and
+the live reboot/SSH matrix remain release acceptance gates.
+The user confirmed no live checks have run since PR #17 and directed us to
+assume the controller works for implementation. Defer those checks until later,
+without marking them passed or requesting the same evidence again.
+
 Keep [macos-cli-deferred.md](macos-cli-deferred.md) for now as historical research.
 Its two-mode design, claim that no controller is needed, proposed REST auth,
 unimplemented device-flow note, and larger command surface are superseded here.
@@ -52,13 +62,16 @@ older commits.
 
 ## Scope
 
-Implement the controller and migrate the existing menu app before adding the
-CLI. The menu app is the first client. All its current behavior, including Add
-Client, must work through the controller before the CLI becomes a second client.
+The controller and menu migration are implemented. Add the CLI as the second
+client, preserving the menu's behavior, including Add Client. Runtime acceptance
+of both frontends remains separate from unsigned implementation checks.
 
-Keep `CloudGatewayKit`, shared `CloudGatewayAppCore`, the Firebase adapter, and
-iOS unchanged during this refactor. Compose their existing APIs in the macOS
-layer. Raise a concrete shared-core limitation before expanding that scope.
+Keep `CloudGatewayKit`, shared `CloudGatewayAppCore`, and iOS behavior unchanged.
+Compose existing APIs in the macOS layer. The user authorized a narrow Firebase
+adapter diagnostic change if needed to distinguish inaccessible startup
+credentials from signed out. Preserve existing auth/storage behavior and report
+unknown when supported APIs cannot establish that distinction. Raise other
+concrete shared-core limitations before expanding scope.
 
 Initial commands:
 
@@ -307,6 +320,9 @@ numbered selector, or `--wait` in v1.
 - Online `up` follows existing auth/access checks and config comparison rules.
   Install an uninstalled cloud config or replace a changed installed config
   before connecting. Persist selection through the account cache
+- `up` uses the controller's authorized inventory/cache. Fetch fresh inventory
+  explicitly with `refresh` or `list --refresh`, without a mandatory inventory
+  fetch before every online start
 - An unchanged active/connecting config is an idempotent `up`. If fresh
   inventory reveals changed contents, the next explicit `up` may replace and
   reconnect it using confirmed-stop sequencing
@@ -407,6 +423,8 @@ Report each check as `pass`, `warning`, `fail`, or `unknown`, with evidence and
 a suggested fix. Inspect without activating an extension, saving preferences,
 starting/stopping a VPN, signing in/out, or changing Settings. Starting the
 on-demand controller and bounded network probes are allowed.
+Diagnostic-only controller startup must stay passive until a normal client
+command initializes auth restoration. Cold auth evidence can be unknown.
 
 - Installed app location, bundle/resources, app/extension versions, OS/architecture
 - CLI symlink target, executable availability, and this invocation's PATH
@@ -736,6 +754,11 @@ components were not changed for this fix.
 
 ### 1. Signed runtime proof, before the full command surface
 
+This heading records the original ordering. The
+[CLI implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-implementation.md)
+now allows unsigned implementation first. Keep the unchecked runtime evidence
+below for release acceptance, without claiming it has already passed.
+
 - [x] Add the minimum headless dispatch and launch harness inside the existing
   signed app bundle, preserving production identity/entitlements
 - [ ] Record OS build, app/extension versions, signature/profile, launch mechanism,
@@ -773,8 +796,9 @@ components were not changed for this fix.
 - [x] Route all existing menu mutations, including Add Client, through the owner
 - [ ] Preserve menu setup/update, browser auth, status, logout, quit, launch at
   login, offline behavior, and selection UX
-- [ ] Finish the menu-through-background-controller runtime milestone before
-  starting CLI commands. Quitting the menu must then detach only its client
+- [ ] Finish the menu-through-background-controller runtime acceptance.
+  Quitting the menu must detach only its client. This remains a release gate
+  while unsigned CLI implementation proceeds
 
 ### 3. CLI and diagnostics
 
@@ -820,9 +844,10 @@ access path. Writing this plan does not run those operations or publish a releas
 
 ## Existing code to reuse
 
-- [Entry point](../Frontend/Apple/macOS/CloudGateway/main.swift): currently starts AppKit immediately
-- [Menu controller](../Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift): current auth, inventory, offline, selection, and command ownership
-- [Device auth coordinator](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacBrowserAuthCoordinator.swift): request/poll/exchange/access flow, currently auto-opens the approval URL
+- [Entry point](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/main.swift): verifies running identity, then dispatches controller or menu mode. CLI dispatch and static output are still needed
+- [Menu controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift): presentation, explicit desktop actions, and controller-client integration
+- [Shared macOS controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift): auth, inventory, offline policy, selection, and command ownership
+- [Device auth coordinator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacBrowserAuthCoordinator.swift): request/poll/exchange/access flow. Browser opening is frontend-owned and needs GUI/CLI attempt scoping
 - [Firebase exchange recovery](../Frontend/Apple/CloudGatewayFirebaseAdapter/Sources/CloudGatewayFirebaseAuthAdapter/CloudGatewayFirebaseCustomTokenSession.swift): shared unsettled-exchange marker and cancellation fencing
 - [Inventory service](../Frontend/Apple/macOS/CloudGateway/CloudGatewayMacInventoryService.swift) and [account cache](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift): authorized cloud reads and installed metadata
 - [Config coordinator](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacConfigCoordinator.swift): transaction recovery, process-local serialization, confirmed stops, and start grants
