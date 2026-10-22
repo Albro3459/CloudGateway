@@ -45,13 +45,13 @@ import Testing
     #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true).canTurnOff)
 }
 
-@Test func macInventoryRefreshKeepsLocalStopAvailableAndConnectionsDisabled() {
+@Test func macInventoryRefreshKeepsLocalConnectionsAndStopAvailable() {
     let state = macMenuState(options: [macMenuOption(clientId: "client")],
         profiles: [macMenuProfile(status: .connected)], inventoryBusy: true)
     #expect(state.canTurnOff)
     #expect(state.canToggleVPN)
     #expect(!state.canRefresh)
-    #expect(state.groups.first?.rows.first?.isEnabled == false)
+    #expect(state.groups.first?.rows.first?.isEnabled == true)
     #expect(state.statusTitle == "VPN connected")
     #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true,
         inventoryBusy: true).canTurnOff)
@@ -77,15 +77,15 @@ import Testing
     #expect(observation.errorMessage == nil)
 }
 
-@Test func macOfflineInventoryUsesOnlyCurrentAccountsMatchingInstalledReferences() {
+@Test func macCachedInventoryUsesOnlyTheCurrentAccountAndCanRestoreMissingProfiles() {
     let other = macMenuConfig(accountId: "other", clientId: "secret-client")
     let state = macMenuState(configs: [macMenuConfig(), other], profiles: [macMenuProfile(status: .disconnected)], offline: true)
     #expect(state.groups.count == 1)
     #expect(state.groups.first?.rows.map(\.identifier) == ["account/region/client"])
     #expect(state.groups.first?.rows.first?.isEnabled == true)
-    #expect(macMenuState(configs: [macMenuConfig()], offline: true).groups.first?.rows.first?.isEnabled == false)
+    #expect(macMenuState(configs: [macMenuConfig()], offline: true).groups.first?.rows.first?.isEnabled == true)
     let wrongReference = macMenuProfile(status: .disconnected, reference: "11111111-1111-1111-1111-111111111111")
-    #expect(macMenuState(configs: [macMenuConfig()], profiles: [wrongReference], offline: true).groups.first?.rows.first?.isEnabled == false)
+    #expect(macMenuState(configs: [macMenuConfig()], profiles: [wrongReference], offline: true).groups.first?.rows.first?.isEnabled == true)
 }
 
 @Test func macHiddenActiveTunnelUsesGenericStatusAndDoesNotDecorateCurrentAccountRow() {
@@ -152,7 +152,7 @@ import Testing
                    macMenuOption(clientId: "last", regionEnabled: false)] {
         #expect(!macMenuState(options: [option], lastSelectedIdentifier: identifier).canToggleVPN)
     }
-    #expect(!macMenuState(options: options, inventoryBusy: true,
+    #expect(macMenuState(options: options, inventoryBusy: true,
         lastSelectedIdentifier: identifier).canToggleVPN)
     #expect(!macMenuState(options: options, busy: true,
         lastSelectedIdentifier: identifier).canToggleVPN)
@@ -174,7 +174,7 @@ import Testing
     #expect(!macMenuState(profiles: [macMenuProfile(status: .connected)], busy: true).canToggleVPN)
 }
 
-@Test func macOfflineToggleRequiresTheLastSelectedAccountsInstalledProfile() {
+@Test func macOfflineToggleRequiresTheLastSelectedAccountsCachedConfig() {
     let identifier = "account/region/client"
     let config = macMenuConfig()
     let profile = macMenuProfile(status: .disconnected)
@@ -183,12 +183,12 @@ import Testing
     #expect(state.reconnectIdentifier == identifier)
     #expect(state.canToggleVPN)
     #expect(state.statusTitle == "VPN off")
-    #expect(!macMenuState(configs: [config], offline: true,
+    #expect(macMenuState(configs: [config], offline: true,
         lastSelectedIdentifier: identifier).canToggleVPN)
     #expect(!macMenuState(configs: [macMenuConfig(accountId: "other")], profiles: [profile],
         offline: true, lastSelectedIdentifier: "other/region/client").canToggleVPN)
     let mismatched = macMenuProfile(status: .disconnected, reference: "11111111-1111-1111-1111-111111111111")
-    #expect(!macMenuState(configs: [config], profiles: [mismatched], offline: true,
+    #expect(macMenuState(configs: [config], profiles: [mismatched], offline: true,
         lastSelectedIdentifier: identifier).canToggleVPN)
 }
 

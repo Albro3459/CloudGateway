@@ -259,7 +259,16 @@ failures use cached inventory without labeling the internet connection offline.
 The Refresh row shows Refreshing clients while inventory is loading.
 Disconnecting retains profiles, secrets, and cloud clients.
 
-Inventory refresh gates new connections but leaves local disconnect available.
+Inventory refresh leaves authorized connections, cached profile restoration,
+and local disconnect available. A connect command cancels the competing refresh;
+its late result cannot replace command state or clear a newer refresh. Restoring
+a missing profile requires this account's authorized metadata and its available
+committed system secret. Previously fetched in-memory configs remain installable.
+Cloud access checks have a 10-second deadline, including token retrieval. Region
+and client queries run in parallel with separate 10-second deadlines and removable
+listeners. Only server snapshots count as fresh inventory; completion, timeout,
+and cancellation all detach the listener. Menu openings reuse inventory for
+30 seconds; explicit Refresh always attempts a new read when idle.
 Account switching keeps commands blocked until prior cancellation and required
 profile/secret recovery finish. Failed VPN preferences reads retain the last
 observed status and show the existing error, which only a successful preferences

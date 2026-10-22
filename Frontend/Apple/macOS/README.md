@@ -109,7 +109,16 @@ preference changes, and commands. Observe status events for app-owned managers.
 The icon may indicate a hidden active tunnel without exposing client details.
 Failed preference reads retain the last observed status and the existing error
 until a successful read. Inventory refresh does not disable the local disconnect
-action. Account switching waits for cancelled commands and required installation
+action or connections from already authorized inventory. Connecting cancels a
+competing refresh and ignores its late result. Cached metadata can recreate a
+missing Apple profile using its existing committed system secret, after checking
+the account's cached authorization. Configs already fetched into memory can also
+be installed during refresh. No raw configs or keys are added to the disk cache.
+Access checks and server inventory reads each have a 10-second deadline. Region
+and client queries run together, ignore Firestore cache-only snapshots, and
+detach their listeners on completion, cancellation, or timeout. Menu opening
+refreshes cloud inventory at most once per 30 seconds; explicit Refresh bypasses
+that interval. Account switching waits for cancelled commands and required installation
 cleanup before enabling another command.
 Launch at Login starts the menu app without connecting.
 Setup instructions appear once. Setup and update actions appear only when
@@ -150,13 +159,22 @@ rebuilds with the same version/build can still connect to that older process.
 
 Then paste this command from the repository root. It builds the signed Release app and extension,
 checks packaging and signing, and copies the app to `/Applications`. It skips
-tests and dead-code scans. If an app is already installed, it moves that copy
+tests and dead-code scans. It checks for a running installed app/controller
+before building and again before replacing the bundle, and stops if either is
+still running. If an app is already installed, it moves that copy
 to Trash first so removed build files cannot remain in
 the new bundle. It uses the same development signing setup as `macos --signed`.
 
 ```sh
 (
   set -e
+  require_stopped() {
+    if ps -axo pid=,command= | rg '^[[:space:]]*[0-9]+[[:space:]]+/Applications/CloudGateway[.]app/Contents/MacOS/CloudGateway([[:space:]]|$)'; then
+      echo "CloudGateway is still running. Quit the menu and wait for the controller to exit, then rerun this command."
+      exit 1
+    fi
+  }
+  require_stopped
   xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
     -scheme CloudGateway -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
@@ -164,6 +182,7 @@ the new bundle. It uses the same development signing setup as `macos --signed`.
     ARCHS=arm64 -allowProvisioningUpdates build
   python3 scripts/verify_macos_build.py \
     Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed
+  require_stopped
   if [ -e /Applications/CloudGateway.app ]; then
     trash /Applications/CloudGateway.app
     echo "Trashed previous app"

@@ -29,6 +29,16 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
     }
 
     func checkAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
+        try await CloudGatewayMacInventoryRequest.read { complete in
+            let task = Task {
+                do { complete(.success(try await loadAccess(for: user))) }
+                catch { complete(.failure(Failure.classify(error))) }
+            }
+            return { task.cancel() }
+        }
+    }
+
+    private func loadAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
         guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
         let token: String
         do { token = try await auth.idToken(forceRefresh: false) }
@@ -68,16 +78,14 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         let regionQuery = database.collection("Regions").whereField("enabled", isEqualTo: true)
         var clientQuery: Query = database.collectionGroup("Instances")
         if role != .admin { clientQuery = clientQuery.whereField("ownerUid", isEqualTo: user.uid) }
-        let regions = try await documents(regionQuery).documents.compactMap { document -> CloudGatewayRegion? in
+        async let regions = documents(regionQuery) { document -> CloudGatewayRegion? in
             let data = document.data()
             guard data["enabled"] as? Bool == true,
                   let name = CloudGatewayFirestoreClientMapper.string(data["displayName"]) else { return nil }
             return CloudGatewayRegion(regionId: document.documentID, displayName: name, enabled: true,
                                       displayOrder: (data["displayOrder"] as? NSNumber)?.intValue ?? 1000)
         }
-        try Task.checkCancellation()
-        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        let clients = try await documents(clientQuery).documents.compactMap { document -> CloudGatewayClient? in
+        async let clients = documents(clientQuery) { document -> CloudGatewayClient? in
             var data = document.data()
             if let timestamp = data["updatedAt"] as? Timestamp { data["updatedAt"] = timestamp.dateValue() }
             guard let client = CloudGatewayFirestoreClientMapper.client(
@@ -85,10 +93,11 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
             ), role == .admin || client.ownerUid == user.uid else { return nil }
             return client
         }
+        let (fetchedRegions, fetchedClients) = try await (regions, clients)
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        let regionsById = Dictionary(uniqueKeysWithValues: regions.map { ($0.regionId, $0) })
-        return clients.map { CloudGatewayClientOption(client: $0, region: regionsById[$0.regionId]) }
+        let regionsById = Dictionary(uniqueKeysWithValues: fetchedRegions.map { ($0.regionId, $0) })
+        return fetchedClients.map { CloudGatewayClientOption(client: $0, region: regionsById[$0.regionId]) }
     }
 
     func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion] {
@@ -138,18 +147,20 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         return response.clientName
     }
 
-    private func documents(_ query: Query) async throws -> QuerySnapshot {
+    private func documents<Value: Sendable>(
+        _ query: Query,
+        map: @escaping @Sendable (QueryDocumentSnapshot) -> Value?
+    ) async throws -> [Value] {
         do {
-            try Task.checkCancellation()
-            let snapshot: QuerySnapshot = try await withCheckedThrowingContinuation { continuation in
-                query.getDocuments(source: .server) { snapshot, error in
-                    if let error { continuation.resume(throwing: error) }
-                    else if let snapshot { continuation.resume(returning: snapshot) }
-                    else { continuation.resume(throwing: Failure.unavailable) }
+            return try await CloudGatewayMacInventoryRequest.read { complete in
+                let listener = query.addSnapshotListener(includeMetadataChanges: true) { @Sendable snapshot, error in
+                    if let error { complete(.failure(error)) }
+                    else if let snapshot, !snapshot.metadata.isFromCache {
+                        complete(.success(snapshot.documents.compactMap(map)))
+                    }
                 }
+                return { listener.remove() }
             }
-            try Task.checkCancellation()
-            return snapshot
         } catch {
             try Task.checkCancellation()
             throw Failure.classify(error)

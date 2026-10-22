@@ -299,7 +299,8 @@ numbered selector, or `--wait` in v1.
   configs, since the current persistent cache covers installed metadata only
 - Offline `list` contains only this account's previously authorized installed
   metadata and labels its reduced scope. Offline `up` additionally requires a
-  retained valid session, permitted cached role, and matching installed profile
+  retained valid session, permitted cached role, and an available committed
+  secret. Recreate a missing profile from authorized installed metadata
 - Distinguish connectivity failures from confirmed denial/revocation. Denial,
   account changes, and role downgrades must preserve current cache invalidation
   rules. Never treat them as offline authorization
@@ -599,6 +600,34 @@ replacement, including when rebuilding with the same version/build.
 When restart was authorized, the old controller and menu had already exited.
 `launchctl kickstart` successfully started the installed controller as PID 38511;
 launchd reported the previous exit code as 0. The menu was closed at this check.
+
+The next report exposed a separate refresh gate: both menu eligibility and
+controller admission rejected connections while inventory loaded. Cached
+metadata also required an existing Apple profile, and Firestore server reads
+had no app deadline. That capture covered about 23 seconds of XPC activity and
+did not contain the refresh start or a Firestore completion.
+Authorized connections now remain available during refresh. Selecting a config
+cancels the competing read and fences its late cleanup. Previously fetched
+in-memory configs remain installable, and authorized metadata can restore a
+missing profile through its existing committed system secret. Cache denial and
+missing secrets still prevent a start. Startup exposes cached configs before
+the initial inventory read finishes. Menu openings reuse inventory for 30
+seconds; explicit Refresh bypasses that interval. Access checks and parallel
+server inventory queries each have 10-second deadlines. Query listeners ignore
+cache-only snapshots and detach on completion, cancellation, or timeout.
+The installed app and running processes were not changed for this fix.
+`./scripts/test.sh macos` passed all checks, including 153 macOS tests, both
+strict Periphery scans, the unsigned arm64 app/extension build, and bundle
+packaging verification. Signed installation and live confirmation remain open.
+The next installed Release binary matched the rebuilt app and contained the
+new inventory deadline code, but controller PID 39831 was still running from
+19:20, before the 19:34 build. The new capture contained another Firestore ping
+timeout. Using the user's existing controller restart approval, a launchd
+restart loaded the installed controller as PID 56664. The menu and packet
+extension processes were retained. The README install command now refuses to
+build or replace the bundle while an installed app/controller is running.
+The user confirmed an installed config connects while Refreshing clients is
+shown after the controller restart, providing live proof of the refresh fix.
 
 ### 1. Signed runtime proof, before the full command surface
 

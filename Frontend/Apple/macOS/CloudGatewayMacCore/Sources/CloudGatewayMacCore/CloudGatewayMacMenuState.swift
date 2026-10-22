@@ -74,7 +74,7 @@ public struct CloudGatewayMacMenuState: Sendable {
 
     public var groups: [CloudGatewayMacMenuRegion] {
         guard let accountId else { return [] }
-        if isOffline {
+        if isOffline || onlineOptions.isEmpty {
             let accountConfigs = cachedConfigs.filter { $0.accountId == accountId }
             let regions = CloudGatewayConfigSelection.offlineRegions(from: accountConfigs.map(\.snapshot))
             return regions.map { region in
@@ -88,7 +88,7 @@ public struct CloudGatewayMacMenuState: Sendable {
                         identifier: config.identifier,
                         title: config.snapshot.clientDisplayName,
                         status: matching?.status,
-                        isEnabled: canConnect && matching != nil && config.snapshot.status == .active
+                        isEnabled: canConnect && config.snapshot.status == .active
                     )
                 }
                 return CloudGatewayMacMenuRegion(title: region.displayName, rows: rows)
@@ -134,7 +134,7 @@ public struct CloudGatewayMacMenuState: Sendable {
         return "VPN off"
     }
 
-    private var canConnect: Bool { accountId != nil && setupState == .ready && !commandInFlight && !inventoryInFlight }
+    private var canConnect: Bool { accountId != nil && setupState == .ready && !commandInFlight }
 }
 
 public struct CloudGatewayMacProfileObservation: Sendable {

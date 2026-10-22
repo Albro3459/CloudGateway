@@ -192,6 +192,23 @@ public actor CloudGatewayMacConfigCoordinator {
         }
     }
 
+    public func restore(_ config: CloudGatewayMacInstalledConfig) async throws {
+        try await runCommand { command in
+            let reference = try config.reference
+            guard config.snapshot.status == .active,
+                  try await self.secrets.isAvailable(reference: reference, configId: config.identifier) else {
+                throw CloudGatewayMacConfigError.unavailable
+            }
+            try await self.requireCurrent(command)
+            do { try await self.profiles.saveAndReload(config) }
+            catch {
+                try await self.requireCurrent(command)
+                throw CloudGatewayMacConfigError.profileInstallationFailed
+            }
+            try await self.requireCurrent(command)
+        }
+    }
+
     public func connect(_ config: CloudGatewayMacInstalledConfig) async throws {
         try await runCommand { command in
             try await self.performConnect(config, command: command)
