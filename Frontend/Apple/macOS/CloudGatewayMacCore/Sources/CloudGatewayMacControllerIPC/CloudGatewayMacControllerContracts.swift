@@ -342,13 +342,13 @@ public enum CloudGatewayMacControllerProtocol {
         !value.isEmpty && value.utf8.count <= bytes && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 
-    static func validComponent(_ value: String) -> Bool {
+    public static func validComponent(_ value: String) -> Bool {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
         return !value.isEmpty && value.utf8.count <= 256 && value != "." && value != ".."
             && value.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
-    static func validIdentifier(_ value: String) -> Bool {
+    public static func validIdentifier(_ value: String) -> Bool {
         let parts = value.split(separator: "/", omittingEmptySubsequences: false)
         return value.utf8.count <= 1024 && parts.count == 3 && parts.allSatisfy { validComponent(String($0)) }
     }

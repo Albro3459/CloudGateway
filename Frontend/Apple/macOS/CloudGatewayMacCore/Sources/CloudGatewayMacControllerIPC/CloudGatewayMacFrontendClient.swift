@@ -97,6 +97,25 @@ public final class CloudGatewayMacFrontendClient {
         }
     }
 
+    // Short-lived frontends start the controller once, then retry until the caller stops waiting
+    public func handshake(retryDelay: Duration = .milliseconds(250)) async throws -> CloudGatewayMacControllerLifecycle {
+        var isBootstrapped = false
+        while true {
+            do {
+                guard let lifecycle = try await send(.lifecycle).lifecycle else {
+                    throw CloudGatewayMacControllerFailure.invalidRequest
+                }
+                return lifecycle
+            } catch CloudGatewayMacControllerFailure.unavailable {
+                if !isBootstrapped {
+                    try await bootstrap()
+                    isBootstrapped = true
+                }
+                try await sleep(retryDelay)
+            }
+        }
+    }
+
     public func shutdown() {
         isShuttingDown = true
         generation &+= 1

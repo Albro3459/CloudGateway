@@ -242,3 +242,18 @@ func frontendClientPreviousGenerationCannotReplaceOrEraseReplacementState(failur
     #expect(!transport.requests.contains { $0.action == .confirmOperation })
     await #expect(throws: CancellationError.self) { try await client.request(.status) }
 }
+
+@MainActor
+@Test func frontendClientHandshakeBootstrapsOnlyWhenTheControllerIsUnavailable() async {
+    for failure: CloudGatewayMacControllerFailure in [.rejected, .incompatibleVersion, .timeout, .invalidRequest] {
+        var bootstraps = 0
+        var attempts = 0
+        let client = CloudGatewayMacFrontendClient(identity: controllerBoundaryBuild, transport: { _ in
+            attempts += 1
+            throw failure
+        }, bootstrap: { bootstraps += 1 }, sleep: { _ in })
+        await #expect(throws: failure) { try await client.handshake() }
+        #expect(bootstraps == 0)
+        #expect(attempts == 1)
+    }
+}

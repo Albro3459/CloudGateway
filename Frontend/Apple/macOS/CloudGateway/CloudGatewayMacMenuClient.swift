@@ -6,8 +6,10 @@ import Foundation
 typealias CloudGatewayMacMenuClient = CloudGatewayMacFrontendClient
 
 extension CloudGatewayMacFrontendClient {
-    convenience init(identity: CloudGatewayMacBuildIdentity) {
-        let team = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
+    convenience init(
+        identity: CloudGatewayMacBuildIdentity,
+        teamIdentifier team: String = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
+    ) {
         self.init(identity: identity, transport: { request in
             let client = try CloudGatewayMacControllerClient(teamIdentifier: team, appVersion: identity.version,
                                                               appBuild: identity.build, buildIdentity: identity)

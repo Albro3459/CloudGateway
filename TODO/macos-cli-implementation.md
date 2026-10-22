@@ -94,7 +94,7 @@ user's decision and do not block implementation.
 ## Implementation sequence
 
 Each step should leave the menu app working and include its targeted coverage.
-Steps 1 and 2 are complete.
+Steps 1–3 are complete.
 
 ### 1. Add CLI-ready domain results and metadata
 
@@ -207,40 +207,63 @@ Implementation notes:
 ### 3. Add the CLI module, dispatch, and read commands
 
 Add a `CloudGatewayMacCLI` library and host-free test target inside
-[the existing macOS package](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Package.swift).
+[the existing macOS package](/Users/abrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Package.swift).
 Keep parsing, command execution, public output DTOs, and renderers free of
 AppKit, Firebase, live credentials, and an app host. Inject controller, output,
 clock, terminal, and diagnostic effects. Use a small typed parser with shared
 help definitions and no new parsing dependency.
 
 Wire the product and thin adapters into
-[the Xcode project](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway.xcodeproj/project.pbxproj).
+[the Xcode project](/Users/abrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway.xcodeproj/project.pbxproj).
 Keep the CLI as a mode of the app executable.
 
-- [ ] Move mode selection ahead of signed operational identity lookup in
-  [main.swift](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/main.swift).
+- [x] Move mode selection ahead of signed operational identity lookup in
+  [main.swift](/Users/abrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/main.swift).
   Exact private `--controller` selects the service, private `--cli` selects CLI,
   and original invocation basename `cloudgateway` selects CLI before resolving
   symlinks. Normal app launch selects the menu. Reject conflicting dispatch
-- [ ] Help, version, and usage errors finish before creating `NSApplication`,
+- [x] Help, version, and usage errors finish before creating `NSApplication`,
   Firebase, a controller, or credential adapters. Operational commands retain
   signature/peer checks. Do not add a production unsigned security bypass
-- [ ] Implement strict parsing for nested auth/help commands, common flag
+- [x] Implement strict parsing for nested auth/help commands, common flag
   placement, command-specific options, canonical IDs, UUIDs, and positive finite
   timeouts. Reject duplicate value options, unknown flags, and extra arguments
-- [ ] Implement `auth status`, local `status`, `status --operation`, `list`,
+- [x] Implement `auth status`, local `status`, `status --operation`, `list`,
   and region filtering against typed domain replies. Wait for bounded startup
   restoration where needed, and identify pending/stale/unknown observations
-- [ ] Implement dedicated public NDJSON envelopes, stable string enums,
+- [x] Implement dedicated public NDJSON envelopes, stable string enums,
   explicit nulls, UTC timestamps, and the existing exits 0–10/130. Human
   diagnostics use stderr. Help/version JSON requires no IPC
-- [ ] Sanitize terminal labels and errors, keep IDs copyable, honor `NO_COLOR`,
+- [x] Sanitize terminal labels and errors, keep IDs copyable, honor `NO_COLOR`,
   and suppress ANSI/shortcuts/prompts when redirected or noninteractive
 
 Acceptance: unsigned packaged direct/symlink help and version work without
 opening the menu or starting a controller. Host-free command fixtures cover
 signed-out, restoring, authorized online/offline, denied, and stale inventory.
 JSON is line-complete and independent of internal Codable layouts.
+
+Implementation notes:
+
+- `auth status`, `status`, `status --operation`, and `list` are implemented.
+  Refresh, mutations, login, and doctor parse with shared help but return
+  `not_implemented` until their later steps
+- Direct `--cli` and the original `cloudgateway` basename select the CLI before
+  signing checks. Symlink resolution supplies display version/build only.
+  Operational signature and controller peer checks use the fixed team identity
+- Public NDJSON uses explicit nulls and UTC timestamps. `list` reports profile
+  observation freshness separately from inventory freshness, labels retained
+  tunnel states as stale, and leaves unavailable tunnel observations null
+- The parser retains an explicit timeout separately from the command default.
+  Read commands default to 30 seconds. Login expiry semantics remain in step 5
+- Fable and Main Astra High reviews passed after fixes, including the rejected
+  handshake, version sanitization, JSON usage errors, and stale observations
+- `PATH=/opt/homebrew/bin:$PATH ./scripts/test.sh macos` passed with 329 macOS
+  package tests, including 29 CLI tests, both strict Periphery scans, the unsigned
+  arm64 app/extension build, and bundle verification. All 20 bounded packaged
+  direct/symlink help, version, and invalid-usage smoke checks passed
+- Deferred to steps 4–5: wait through the transient inventory-verification edge
+  case, document login's timeout exception, and add signal/terminal cleanup.
+  Ctrl-C currently uses the shell's default exit 130
 
 ### 4. Add refresh and VPN/auth mutations
 
@@ -389,7 +412,7 @@ All automated testing flows through
 [scripts/test.sh](/Users/alexbrodsky/GitHub/CloudGateway/scripts/test.sh).
 Do not run individual Swift/Python test commands as a parallel workflow.
 
-- [ ] Add the new host-free test target to the existing macOS package. The
+- [x] Add the new host-free test target to the existing macOS package. The
   `macos` suite already runs package tests, shared package/auth adapter tests,
   verifier/release tests, strict Periphery scans, unsigned arm64 app/extension
   builds, and bundle verification
