@@ -6,7 +6,8 @@ root after the required validation passes:
 
 ```sh
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 7 --publish
+./scripts/macos-release.sh --build 7 \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
 Choose an app build number higher than `CLOUDGATEWAY_APP_BUILD` in the project
@@ -15,20 +16,43 @@ and every previous distributed app release. `--build` overrides only
 `CLOUDGATEWAY_APP_VERSION` unless `--version` overrides it:
 
 ```sh
-./scripts/macos-release.sh --build 8 --version 1.1.1 --publish
+./scripts/macos-release.sh --build 8 --version 1.1.1 \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
 App build and version overrides apply to the archive. The VPN extension keeps
 its explicit `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION` from the project.
 Keep each target's versions consistent across Debug, Release, and DeveloperID.
-Bump the extension's project versions when its code or packaged dependencies
-change, including a changed signing identity or re-signed artifact. An app-only
-release can keep extension 1.0.0 (build 4) only when its embedded signed extension
-artifact remains identical. A fingerprint mismatch blocks starts even when
-version strings match; Apple's replacement flow still requires distinct versions
-outside developer mode.
-The Mach service name includes the extension build, so incrementing that build
-also avoids stale endpoint registration during replacement.
+Every new preparation requires `--previous-distributed-app` pointing to the exact
+signed app from the latest release actually distributed to users. Extract it
+from the retained distributed DMG if needed. The script verifies its Developer
+ID signature, team, profiles, and packaged dependencies before reading its
+extension version, build, and artifact digest. It never selects an untracked
+local archive or export as the baseline automatically. The operator must identify
+the latest distributed app correctly, including a release distributed outside
+GitHub. Local signature checks cannot establish distribution history.
+
+Before signing or contacting Apple, preparation requires the extension's
+`CURRENT_PROJECT_VERSION` to strictly exceed the baseline build. Its marketing
+version must not decrease. Bump the extension build in all project configurations
+for every new preparation, including app-only releases. Archive/export can change
+the CMS signature even when extension code has not changed. The Mach service
+name includes the extension build, so increasing it also avoids stale endpoint
+registration during replacement.
+
+The script records a SHA-256 manifest of the full exported extension tree,
+including executable signature bytes, resources, file modes, and symlink targets.
+Notarization resumption and publication check that manifest and the baseline
+policy again. A re-signed extension at an unchanged version/build is rejected,
+even if its CodeDirectory remains the same. Existing signer and authenticated
+runtime identity checks remain required.
+
+Exact reuse is supported by resuming the same prepared release. New preparation
+always signs/exports again and therefore requires a fresh extension build. There
+is no command to transplant a previously signed extension into a new app.
+Use `--initial-distribution` instead of `--previous-distributed-app` only when no
+extension has ever been distributed. This explicit first-release declaration is
+recorded in the manifest. It must not be used to bypass an existing baseline.
 
 Project versions and Git staging stay unchanged. Release metadata records both
 targets' versions, the source commit, and whether the working tree had changes.
@@ -91,7 +115,8 @@ metadata, notarization submission records, notary logs, and `SHA256SUMS`.
 To build and inspect artifacts before submitting software:
 
 ```sh
-./scripts/macos-release.sh --prepare-only --build 6
+./scripts/macos-release.sh --prepare-only --build 6 \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app
 ```
 
 Continue with the directory printed by that command:
@@ -105,12 +130,20 @@ same `--notarize` command later. Existing submission IDs are reused; changed
 artifacts cannot reuse an earlier submission. Partial work remains available
 for diagnosis and retry.
 
-Preparation saves the app's `version` and `build` and the extension's
-`extensionVersion` and `extensionBuild` in `release.json`. Both `--notarize` and
-`--publish-existing` check the exported bundles against those saved versions,
+Preparation saves the app's `version` and `build`, the extension's
+`extensionVersion` and `extensionBuild`, and the `extensionBaseline` and
+`extensionArtifact` manifests in `release.json`. Keep this directory intact for
+resumption and retain the distributed DMG for the next release baseline. Both
+`--notarize` and `--publish-existing` check the exported bundles against those saved versions,
 even if the project versions have since changed. Older metadata without either
-extension field expects the extension to match the app's version and build.
-Partially present or malformed extension fields stop the release.
+extension version field expects the extension to match the app's version and
+build. Partially present or malformed extension fields stop the release. Releases
+prepared before the artifact policy was added cannot resume or publish through
+this script, because they lack a trustworthy recorded baseline and artifact
+manifest. Prepare a new release against the latest distributed app with fresh
+app and extension builds. Do not add manifests retroactively to old outputs.
+Baseline options apply only to new preparation. Resumed releases use their saved
+policy.
 
 If an upload is interrupted before its submission ID is saved, the script
 refuses to upload it again automatically. Match the artifact and attempt time

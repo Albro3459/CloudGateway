@@ -1,6 +1,7 @@
 # macOS controller refactor review
 
-Reviewed 2026-10-21. Implementation fixes have not started.
+Reviewed 2026-10-21. Implementation is in progress. Checked items indicate source
+changes and automated coverage, while live acceptance remains tracked separately.
 
 Scope: [PR #16](https://github.com/Albro3459/CloudGateway/pull/16), `mac-cli`
 at `376e6b20`, compared with `main` at `9f426542`. The checkout was clean before
@@ -101,7 +102,7 @@ must never be presented as fresh observations.
 
 ### F3. Re-signing can change extension identity without changing its version
 
-- [ ] Enforce the extension artifact/version relationship during release preparation
+- [x] Enforce the extension artifact/version relationship during release preparation
 
 The [release archive/export path](/Users/alexbrodsky/GitHub/CloudGateway/scripts/macos-release.py:110)
 retains the extension's project version while signing/exporting it again.

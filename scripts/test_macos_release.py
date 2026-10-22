@@ -40,6 +40,7 @@ def write_app(app: Path, version: str, build: int, extension_version: str, exten
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
             "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
         }))
+    (extension / "Contents/tunnel").write_bytes(b"CodeDirectory plus original CMS")
 
 
 class ReleaseTests(unittest.TestCase):
@@ -64,6 +65,75 @@ class ReleaseTests(unittest.TestCase):
         patcher = mock.patch.object(release, "PROJECT", self.project)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def test_preparation_requires_an_explicit_distribution_baseline(self) -> None:
+        with mock.patch.object(release, "command") as command:
+            with self.assertRaisesRegex(ValueError, "previous-distributed-app"):
+                release.prepare(4, None, "profile")
+            command.assert_not_called()
+
+    def test_same_or_older_extension_build_stops_before_signing_or_network(self) -> None:
+        app = self.directory / "previous/CloudGateway.app"
+        for version, build in [("1.0.0", 2), ("0.9.0", 3)]:
+            write_app(app, "1.0.0", 3, version, build)
+            with self.subTest(version=version, build=build), \
+                    mock.patch.object(release, "verify_app") as verify, \
+                    mock.patch.object(release, "signing_identity") as signing, \
+                    mock.patch.object(release, "command") as command:
+                with self.assertRaisesRegex(ValueError, "must exceed"):
+                    release.prepare(4, None, "profile", previous_distributed_app=app)
+                verify.assert_called_once_with(app.resolve())
+                signing.assert_not_called()
+                command.assert_not_called()
+
+    def test_baseline_retains_signer_validation(self) -> None:
+        with mock.patch.object(release, "verify_app", side_effect=ValueError("bad signer")), \
+                mock.patch.object(release, "command") as command:
+            with self.assertRaisesRegex(ValueError, "bad signer"):
+                release.prepare(4, None, "profile", previous_distributed_app=self.directory)
+            command.assert_not_called()
+
+    def test_preparation_accepts_a_strictly_newer_extension_build(self) -> None:
+        app = self.directory / "previous/CloudGateway.app"
+        write_app(app, "1.0.0", 3, "1.0.0", 1)
+        baseline = release.extension_artifact(app)
+
+        def command(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("xcodebuild", "-exportArchive"):
+                exported = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
+                write_app(exported, "1.1.0", 4, "1.0.0", 2)
+            return ""
+
+        with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
+                mock.patch.object(release, "signing_identity", return_value="A" * 40), \
+                mock.patch.object(release, "command", side_effect=command), \
+                mock.patch.object(release, "verify_app"):
+            directory = release.prepare(4, None, "profile", previous_distributed_app=app)
+            metadata = json.loads((directory / "release.json").read_text())
+            self.assertEqual(metadata["extensionBaseline"], baseline)
+            release.verify_extension_policy(directory / "export/CloudGateway.app", metadata)
+
+    def test_extension_version_cannot_decrease_even_with_a_fresh_build(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not decrease"):
+            release.require_fresh_extension("1.0.0", 4, {"version": "1.1.0", "build": 3, "sha256": "a" * 64})
+
+    def test_digest_covers_signature_resources_and_symlinks(self) -> None:
+        app = self.directory / "CloudGateway.app"
+        write_app(app, "1.0.0", 3, "1.0.0", 2)
+        extension = release.extension_bundle(app)
+        executable = extension / "Contents/tunnel"
+        executable.write_bytes(b"CodeDirectory plus original CMS")
+        original = release.extension_artifact(app)
+        executable.write_bytes(b"CodeDirectory plus resigned CMS")
+        self.assertNotEqual(release.extension_artifact(app), original)
+        executable.write_bytes(b"CodeDirectory plus original CMS")
+        self.assertEqual(release.extension_artifact(app), original)
+        resource = extension / "Contents/resource"
+        resource.write_bytes(b"resource")
+        with_resource = release.extension_artifact(app)
+        self.assertNotEqual(with_resource, original)
+        (extension / "Contents/link").symlink_to("resource")
+        self.assertNotEqual(release.extension_artifact(app), with_resource)
 
     def test_rejected_notarization_retains_id_and_fetches_log(self) -> None:
         def command(*args: str, **kwargs: object) -> str:
@@ -156,7 +226,7 @@ class ReleaseTests(unittest.TestCase):
                 mock.patch.object(release, "command", return_value="") as command, \
                 mock.patch.object(release, "verify_release_app", side_effect=ValueError("bad signature")):
             with self.assertRaisesRegex(ValueError, "bad signature"):
-                release.prepare(2, None, "profile")
+                release.prepare(2, None, "profile", initial_distribution=True)
         calls = [call.args for call in command.call_args_list]
         self.assertFalse(any(args[0] == "ditto" for args in calls))
         self.assertFalse(any(args[:3] == ("xcrun", "notarytool", "submit") for args in calls))
@@ -218,7 +288,7 @@ class ReleaseTests(unittest.TestCase):
                 mock.patch.object(release, "signing_identity", return_value="A" * 40), \
                 mock.patch.object(release, "command", side_effect=command) as commands, \
                 mock.patch.object(release, "verify_app"):
-            directory = release.prepare(4, "1.2.0", "profile")
+            directory = release.prepare(4, "1.2.0", "profile", initial_distribution=True)
         archive = next(call.args for call in commands.call_args_list if "archive" in call.args)
         self.assertIn("CLOUDGATEWAY_APP_BUILD=4", archive)
         self.assertIn("CLOUDGATEWAY_APP_VERSION=1.2.0", archive)
@@ -238,7 +308,7 @@ class ReleaseTests(unittest.TestCase):
                 mock.patch.object(release, "command", side_effect=command) as commands, \
                 mock.patch.object(release, "verify_app"):
             with self.assertRaisesRegex(ValueError, "systemextension.*requested release version"):
-                release.prepare(4, None, "profile")
+                release.prepare(4, None, "profile", initial_distribution=True)
         self.assertFalse(any(call.args[0] == "ditto" for call in commands.call_args_list))
         self.assertFalse(list(self.directory.glob("releases/*/release.json")))
 
@@ -276,6 +346,11 @@ class PublicationTests(unittest.TestCase):
             "workingTreeDirty": True,
         })
         write_app(self.directory / "export/CloudGateway.app", "1.0.0", 2, "1.0.0", 2)
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update({"extensionBaseline": {"initialDistribution": True},
+                         "extensionArtifact": release.extension_artifact(self.directory / "export/CloudGateway.app")})
+        release.write_json(metadata_path, metadata)
         for label, artifact in [("app", self.zip), ("dmg", self.dmg)]:
             release.write_json(self.directory / f"notary-{label}-submission.json", {
                 "id": SUBMISSION_ID, "sha256": release.sha256(artifact),
@@ -373,6 +448,10 @@ class PublicationTests(unittest.TestCase):
             ["--publish-existing", "release", "--recover-submission", f"app={SUBMISSION_ID}"],
             ["--build", "3", "--prepare-only", "--publish"],
             ["--publish"],
+            ["--build", "3", "--prepare-only"],
+            ["--build", "3", "--initial-distribution", "--previous-distributed-app", "app"],
+            ["--notarize", "release", "--previous-distributed-app", "app"],
+            ["--publish-existing", "release", "--initial-distribution"],
         ]
         for args in options:
             with self.subTest(args=args), mock.patch("sys.argv", [str(SCRIPT), *args]), \
@@ -403,6 +482,8 @@ class PublicationTests(unittest.TestCase):
         metadata.update({"extensionVersion": "0.9.0", "extensionBuild": 1, "keychainProfile": "profile"})
         release.write_json(metadata_path, metadata)
         write_app(self.directory / "export/CloudGateway.app", "1.0.0", 2, "0.9.0", 1)
+        metadata["extensionArtifact"] = release.extension_artifact(self.directory / "export/CloudGateway.app")
+        release.write_json(metadata_path, metadata)
         with mock.patch.object(release, "project_versions", side_effect=AssertionError("must use release snapshot")), \
                 mock.patch.object(release, "notarize_artifact") as notarize:
             self.assertEqual(release.finish(self.directory), self.dmg)
@@ -469,7 +550,7 @@ class PublicationTests(unittest.TestCase):
                     self.assertEqual(self.calls, [])
 
     def test_new_build_publishes_only_after_finish(self) -> None:
-        with mock.patch("sys.argv", [str(SCRIPT), "--build", "3", "--publish"]), \
+        with mock.patch("sys.argv", [str(SCRIPT), "--build", "3", "--initial-distribution", "--publish"]), \
                 mock.patch.object(release, "prepare", return_value=self.directory), \
                 mock.patch.object(release, "finish", side_effect=ValueError("notarization failed")), \
                 mock.patch.object(release, "publish") as publish:
@@ -477,6 +558,46 @@ class PublicationTests(unittest.TestCase):
                 release.main()
             self.assertEqual(error.exception.code, 1)
             publish.assert_not_called()
+
+    def test_signature_drift_stops_resume_and_publication_before_uploads(self) -> None:
+        app = self.directory / "export/CloudGateway.app"
+        extension = release.extension_bundle(app)
+        executable = extension / "Contents/tunnel"
+        executable.write_bytes(b"CodeDirectory plus resigned CMS")
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["keychainProfile"] = "profile"
+        release.write_json(metadata_path, metadata)
+        for resume in [release.finish, release.publish]:
+            with self.subTest(resume=resume.__name__), \
+                    mock.patch.object(release, "notarize_artifact") as notarize:
+                self.calls = []
+                with self.assertRaisesRegex(ValueError, "changed after preparation"):
+                    resume(self.directory)
+                notarize.assert_not_called()
+                self.assertEqual(self.calls, [])
+
+    def test_old_release_without_artifact_policy_cannot_resume_or_publish(self) -> None:
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("extensionBaseline")
+        metadata.pop("extensionArtifact")
+        metadata["keychainProfile"] = "profile"
+        release.write_json(metadata_path, metadata)
+        for resume in [release.finish, release.publish]:
+            with self.subTest(resume=resume.__name__):
+                with self.assertRaisesRegex(ValueError, "lacks an extension artifact baseline"):
+                    resume(self.directory)
+                self.assertEqual(self.calls, [])
+
+    def test_same_build_cannot_be_published_even_with_a_new_artifact_manifest(self) -> None:
+        metadata_path = self.directory / "release.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["extensionBaseline"] = metadata["extensionArtifact"]
+        release.write_json(metadata_path, metadata)
+        with self.assertRaisesRegex(ValueError, "must exceed"):
+            release.publish(self.directory)
+        self.assertEqual(self.calls, [])
 
     def test_invalid_checksum_stops_before_github_and_is_not_rewritten(self) -> None:
         checksum = self.directory / "SHA256SUMS"

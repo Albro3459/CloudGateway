@@ -107,9 +107,75 @@ def verify_release_app(app: Path, version: str, build: int, extension_version: s
             raise ValueError(f"Exported {bundle.name} does not match the requested release version {expected_version} ({expected_build})")
 
 
-def prepare(build: int, version: str | None, keychain_profile: str) -> Path:
+def extension_bundle(app: Path) -> Path:
+    return app / "Contents/Library/SystemExtensions" / f"{EXTENSION_ID}.systemextension"
+
+
+def extension_artifact(app: Path) -> dict:
+    extension = extension_bundle(app)
+    info = plistlib.loads((extension / "Contents/Info.plist").read_bytes())
+    version, build = info.get("CFBundleShortVersionString"), info.get("CFBundleVersion")
+    if not isinstance(build, str) or re.fullmatch(r"[0-9]+", build) is None:
+        raise ValueError("Invalid extension artifact build")
+    release_versions({"version": version, "build": int(build)})
+    # Include the whole executable signature (including CMS), resources, and symlink targets
+    entries = []
+    for path in sorted(extension.rglob("*")):
+        relative = path.relative_to(extension).as_posix()
+        if path.is_symlink():
+            entries.append([relative, "symlink", os.readlink(path)])
+        elif path.is_file():
+            entries.append([relative, "file", path.stat().st_mode & 0o777, sha256(path)])
+        elif path.is_dir():
+            entries.append([relative, "directory"])
+        else:
+            raise ValueError("Unsupported file in extension artifact")
+    digest = hashlib.sha256(json.dumps(entries, separators=(",", ":")).encode()).hexdigest()
+    return {"version": version, "build": int(build), "sha256": digest}
+
+
+def extension_baseline(previous_distributed_app: Path | None, initial_distribution: bool) -> dict:
+    if (previous_distributed_app is not None) == initial_distribution:
+        raise ValueError("Choose --previous-distributed-app or --initial-distribution for a new release")
+    if initial_distribution:
+        return {"initialDistribution": True}
+    app = previous_distributed_app.resolve()
+    verify_app(app)
+    return extension_artifact(app)
+
+
+def require_fresh_extension(version: str, build: int, baseline: dict) -> None:
+    if len(baseline) == 1 and baseline.get("initialDistribution") is True:
+        return
+    previous_version, previous_build = baseline.get("version"), baseline.get("build")
+    release_versions({"version": previous_version, "build": previous_build})
+    if re.fullmatch(r"[a-f0-9]{64}", str(baseline.get("sha256", ""))) is None:
+        raise ValueError("Invalid previous distributed extension artifact digest")
+    if build <= previous_build:
+        raise ValueError("Newly signed extension build must exceed the previous distributed extension build")
+    if tuple(map(int, version.split("."))) < tuple(map(int, previous_version.split("."))):
+        raise ValueError("Extension marketing version must not decrease from the previous distributed release")
+
+
+def verify_extension_policy(app: Path, metadata: dict) -> None:
+    baseline = metadata.get("extensionBaseline")
+    expected = metadata.get("extensionArtifact")
+    if not isinstance(baseline, dict) or not isinstance(expected, dict):
+        raise ValueError("Release lacks an extension artifact baseline; prepare a new release with --previous-distributed-app")
+    artifact = extension_artifact(app)
+    if artifact != expected:
+        raise ValueError("Signed extension artifact changed after preparation; use a new extension build")
+    require_fresh_extension(artifact["version"], artifact["build"], baseline)
+
+
+def prepare(
+    build: int, version: str | None, keychain_profile: str,
+    previous_distributed_app: Path | None = None, initial_distribution: bool = False,
+) -> Path:
     version = release_version(build, version)
     extension_version, extension_build = project_versions(EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION")
+    baseline = extension_baseline(previous_distributed_app, initial_distribution)
+    require_fresh_extension(extension_version, extension_build, baseline)
     identity = signing_identity()
     # Validate access before spending time archiving; this does not upload software
     command("xcrun", "notarytool", "history", "--keychain-profile", keychain_profile,
@@ -140,11 +206,13 @@ def prepare(build: int, version: str | None, keychain_profile: str) -> Path:
             log=directory / "export.log")
     app = directory / "export/CloudGateway.app"
     verify_release_app(app, version, build, extension_version, extension_build)
+    artifact = extension_artifact(app)
     command("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app),
             str(directory / "CloudGateway-notary.zip"))
     write_json(directory / "release.json", {
         "version": version, "build": build, "team": TEAM_ID, "signingIdentity": identity,
         "extensionVersion": extension_version, "extensionBuild": extension_build,
+        "extensionBaseline": baseline, "extensionArtifact": artifact,
         "keychainProfile": keychain_profile, "appProfile": app_profile, "tunnelProfile": tunnel_profile,
         "sourceCommit": command("git", "-C", str(ROOT), "rev-parse", "HEAD").strip(),
         "workingTreeDirty": bool(command("git", "-C", str(ROOT), "status", "--porcelain").strip()),
@@ -236,6 +304,7 @@ def finish(directory: Path) -> Path:
     app = directory / "export/CloudGateway.app"
     profile = metadata["keychainProfile"]
     verify_release_app(app, version, build, extension_version, extension_build)
+    verify_extension_policy(app, metadata)
     app_ticket = directory / "app-stapled.json"
     if not app_ticket.exists():
         notarize_artifact(directory / "CloudGateway-notary.zip", directory, "app", profile)
@@ -292,6 +361,7 @@ def verify_publication(directory: Path) -> tuple[dict, Path]:
     if checksum.read_text() != f"{sha256(dmg)}  {dmg.name}\n":
         raise ValueError("SHA256SUMS does not match the finished DMG; publication will not rewrite it")
     verify_release_app(app, version, build, extension_version, extension_build)
+    verify_extension_policy(app, metadata)
     command("codesign", "--verify", "--strict", str(dmg))
     signature = command("codesign", "--display", "--verbose=4", str(dmg), stderr_output=True)
     for expected in [f"TeamIdentifier={TEAM_ID}", f"Identifier={APP_ID}.dmg"]:
@@ -448,6 +518,11 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true", help="publish the finished release to GitHub after notarizing")
     parser.add_argument("--publish-existing", type=Path, help="verify and publish an existing finished release without building or notarizing")
     parser.add_argument("--keychain-profile", default=os.environ.get("CLOUDGATEWAY_NOTARY_PROFILE", "CloudGateway-notary"))
+    baseline_options = parser.add_mutually_exclusive_group()
+    baseline_options.add_argument("--previous-distributed-app", type=Path,
+                                  help="exact signed app from the latest distributed release, used as the extension baseline")
+    baseline_options.add_argument("--initial-distribution", action="store_true",
+                                  help="explicitly attest that no extension has been distributed before")
     args = parser.parse_args()
     if args.publish_existing is not None and (
         args.build is not None or args.version or args.prepare_only or args.notarize is not None
@@ -462,6 +537,11 @@ def main() -> None:
         parser.error("provide a positive --build number for a new release")
     if args.recover_submission and args.notarize is None:
         parser.error("--recover-submission requires --notarize")
+    if args.previous_distributed_app is not None or args.initial_distribution:
+        if args.notarize is not None or args.publish_existing is not None:
+            parser.error("extension baseline options apply only to new releases")
+    elif args.notarize is None and args.publish_existing is None:
+        parser.error("a new release requires --previous-distributed-app or --initial-distribution")
     existing = args.publish_existing or args.notarize
     directory = existing.resolve() if existing is not None else None
     try:
@@ -469,7 +549,8 @@ def main() -> None:
             publish(directory)
             return
         if directory is None:
-            directory = prepare(args.build, args.version, args.keychain_profile)
+            directory = prepare(args.build, args.version, args.keychain_profile,
+                                args.previous_distributed_app, args.initial_distribution)
         if args.recover_submission:
             recover_submission(directory, args.recover_submission)
         if not args.prepare_only:
