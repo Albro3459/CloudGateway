@@ -2,10 +2,15 @@ import Darwin
 import Foundation
 
 public enum CloudGatewayMacControllerLaunchError: Error, Equatable, Sendable {
+    public enum BootstrapFailure: String, Sendable {
+        case launchFailed, timedOut, terminated, registrationFailed, registrationCheckFailed
+    }
+
     case busy
     case unsafeLocation
     case unavailable
     case installationRequired
+    case bootstrapFailed(category: BootstrapFailure, exitStatus: Int32?)
 }
 
 public struct CloudGatewayMacControllerLauncher: Sendable {
@@ -40,7 +45,7 @@ public struct CloudGatewayMacControllerLauncher: Sendable {
         self.run = run
     }
 
-    // A false result is advisory, so callers must still retry the authenticated XPC handshake
+    // False means another bootstrap holds the lock; success still needs an authenticated XPC handshake
     public func bootstrap() async throws -> Bool {
         try Task.checkCancellation()
         let directoryDescriptor = try ControllerLaunchFiles.openDirectory(directory)
@@ -63,15 +68,35 @@ public struct CloudGatewayMacControllerLauncher: Sendable {
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try ControllerLaunchFiles.writeAtomically(data, directory: directoryDescriptor, name: name)
         try Task.checkCancellation()
+        let domain = "user/\(getuid())"
+        let status = try await runLaunchctl(["bootstrap", domain, directory.appendingPathComponent(name).path])
+        guard status != 0 else { return true }
+
+        let registrationStatus: Int32
         do {
-            let status = try await run(
-                URL(fileURLWithPath: "/bin/launchctl"),
-                ["bootstrap", "user/\(getuid())", directory.appendingPathComponent(name).path]
-            )
-            try Task.checkCancellation()
-            return status == 0
+            registrationStatus = try await runLaunchctl(["print", "\(domain)/\(Self.serviceName)"])
         } catch is CancellationError { throw CancellationError() }
-        catch { throw CloudGatewayMacControllerLaunchError.unavailable }
+        catch {
+            throw CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .registrationCheckFailed, exitStatus: status)
+        }
+        guard registrationStatus == 0 else {
+            throw CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .registrationFailed, exitStatus: status)
+        }
+        return true
+    }
+
+    private func runLaunchctl(_ arguments: [String]) async throws -> Int32 {
+        do {
+            let status = try await run(URL(fileURLWithPath: "/bin/launchctl"), arguments)
+            try Task.checkCancellation()
+            return status
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try Task.checkCancellation()
+            if let error = error as? CloudGatewayMacControllerLaunchError,
+               case .bootstrapFailed = error { throw error }
+            throw CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .launchFailed, exitStatus: nil)
+        }
     }
 
     private static func runProcess(executableURL: URL, arguments: [String]) async throws -> Int32 {
@@ -81,7 +106,7 @@ public struct CloudGatewayMacControllerLauncher: Sendable {
                 pending.start(executableURL: executableURL, arguments: arguments, continuation: continuation)
                 Task {
                     try? await Task.sleep(for: .seconds(10))
-                    pending.finish(.failure(CloudGatewayMacControllerLaunchError.unavailable))
+                    pending.finish(.failure(CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .timedOut, exitStatus: nil)))
                 }
             }
         } onCancel: {
@@ -110,14 +135,18 @@ private final class ControllerLaunchProcess: @unchecked Sendable {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         process.terminationHandler = { [self] process in
-            finish(.success(process.terminationReason == .exit ? process.terminationStatus : -1))
+            if process.terminationReason == .exit {
+                finish(.success(process.terminationStatus))
+            } else {
+                finish(.failure(CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .terminated, exitStatus: process.terminationStatus)))
+            }
         }
         do {
             try process.run()
             lock.unlock()
         } catch {
             lock.unlock()
-            finish(.failure(CloudGatewayMacControllerLaunchError.unavailable))
+            finish(.failure(CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .launchFailed, exitStatus: nil)))
         }
     }
 
@@ -150,10 +179,21 @@ public final class CloudGatewayMacControllerOwnership: Sendable {
 }
 
 public enum CloudGatewayMacControllerUpdateStorage {
-    public static func load(directory: URL) throws -> Data? {
+    public enum Record: Sendable {
+        case requests, extensionUpdates
+
+        fileprivate var name: String {
+            switch self {
+            case .requests: "controller-receipts.json"
+            case .extensionUpdates: "controller-extension-updates.json"
+            }
+        }
+    }
+
+    public static func load(directory: URL, record: Record = .requests) throws -> Data? {
         let parent = try ControllerLaunchFiles.openDirectory(directory)
         defer { close(parent) }
-        let descriptor = openat(parent, "controller-receipts.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        let descriptor = openat(parent, record.name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
             throw CloudGatewayMacControllerLaunchError.unsafeLocation
@@ -167,11 +207,11 @@ public enum CloudGatewayMacControllerUpdateStorage {
         return try handle.read(upToCount: 64 * 1024) ?? Data()
     }
 
-    public static func save(_ data: Data, directory: URL) throws {
+    public static func save(_ data: Data, directory: URL, record: Record = .requests) throws {
         guard data.count <= 64 * 1024 else { throw CloudGatewayMacControllerLaunchError.unavailable }
         let parent = try ControllerLaunchFiles.openDirectory(directory)
         defer { close(parent) }
-        try ControllerLaunchFiles.writeAtomically(data, directory: parent, name: "controller-receipts.json")
+        try ControllerLaunchFiles.writeAtomically(data, directory: parent, name: record.name)
     }
 }
 

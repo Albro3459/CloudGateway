@@ -44,7 +44,7 @@ import Testing
     let runner = ControllerLaunchTestRunner()
     let executable = URL(fileURLWithPath: "/Applications/CloudGateway.app/Contents/MacOS/CloudGateway")
     let launcher = try CloudGatewayMacControllerLauncher(executableURL: executable, directory: directory) { url, arguments in
-        await runner.run(url: url, arguments: arguments)
+        try await runner.run(url: url, arguments: arguments)
     }
     #expect(try await launcher.bootstrap())
     let calls = await runner.calls
@@ -65,12 +65,12 @@ import Testing
     #expect(permissions?.intValue == 0o600)
 }
 
-@Test func controllerBootstrapSerializesStartupAndTreatsRegistrationFailureAsAdvisory() async throws {
+@Test func controllerBootstrapSerializesStartup() async throws {
     let directory = controllerLaunchTestDirectory()
-    let runner = ControllerLaunchTestRunner(paused: true, status: 5)
+    let runner = ControllerLaunchTestRunner(paused: true)
     let launcher = try CloudGatewayMacControllerLauncher(
         executableURL: URL(fileURLWithPath: "/Applications/CloudGateway.app/Contents/MacOS/CloudGateway"), directory: directory
-    ) { url, arguments in await runner.run(url: url, arguments: arguments) }
+    ) { url, arguments in try await runner.run(url: url, arguments: arguments) }
     let first = Task { try await launcher.bootstrap() }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: .seconds(5))
@@ -78,8 +78,66 @@ import Testing
     #expect(await runner.calls.count == 1)
     #expect(try await !launcher.bootstrap())
     await runner.release()
-    #expect(try await !first.value)
-    #expect(try await !launcher.bootstrap())
+    #expect(try await first.value)
+    #expect(try await launcher.bootstrap())
+    #expect(await runner.calls.count == 2)
+}
+
+@Test func controllerBootstrapAcceptsAnAlreadyRegisteredJobAfterCheckingItsExactService() async throws {
+    let runner = ControllerLaunchTestRunner(results: [.success(5), .success(0)])
+    let launcher = try controllerTestLauncher(runner)
+    #expect(try await launcher.bootstrap())
+    let calls = await runner.calls
+    #expect(calls.count == 2)
+    #expect(calls.last?.url.path == "/bin/launchctl")
+    #expect(calls.last?.arguments == ["print", "user/\(getuid())/\(CloudGatewayMacControllerLauncher.serviceName)"])
+}
+
+@Test(arguments: [Int32(5), 78, 113])
+func controllerBootstrapPreservesRegistrationFailureStatus(status: Int32) async throws {
+    let runner = ControllerLaunchTestRunner(results: [.success(status), .success(113)])
+    let launcher = try controllerTestLauncher(runner)
+    await #expect(throws: CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .registrationFailed, exitStatus: status)) {
+        try await launcher.bootstrap()
+    }
+    #expect(await runner.calls.count == 2)
+}
+
+@Test func controllerBootstrapSanitizesRunnerErrors() async throws {
+    let runner = ControllerLaunchTestRunner(results: [.failure(NSError(domain: "untrusted subprocess details", code: 123))])
+    let launcher = try controllerTestLauncher(runner)
+    await #expect(throws: CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .launchFailed, exitStatus: nil)) {
+        try await launcher.bootstrap()
+    }
+    #expect(await runner.calls.count == 1)
+}
+
+@Test(arguments: [
+    CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .timedOut, exitStatus: nil),
+    .bootstrapFailed(category: .terminated, exitStatus: 9),
+])
+func controllerBootstrapPreservesBoundedProcessFailures(error: CloudGatewayMacControllerLaunchError) async throws {
+    let runner = ControllerLaunchTestRunner(results: [.failure(error)])
+    let launcher = try controllerTestLauncher(runner)
+    await #expect(throws: error) { try await launcher.bootstrap() }
+    #expect(await runner.calls.count == 1)
+}
+
+@Test func controllerBootstrapPreservesOriginalStatusWhenRegistrationCheckFails() async throws {
+    let runner = ControllerLaunchTestRunner(results: [
+        .success(78), .failure(NSError(domain: "untrusted check details", code: 456)),
+    ])
+    let launcher = try controllerTestLauncher(runner)
+    await #expect(throws: CloudGatewayMacControllerLaunchError.bootstrapFailed(category: .registrationCheckFailed, exitStatus: 78)) {
+        try await launcher.bootstrap()
+    }
+    #expect(await runner.calls.count == 2)
+}
+
+@Test func controllerBootstrapPreservesCancellationDuringRegistrationCheck() async throws {
+    let runner = ControllerLaunchTestRunner(results: [.success(5), .failure(CancellationError())])
+    let launcher = try controllerTestLauncher(runner)
+    await #expect(throws: CancellationError.self) { try await launcher.bootstrap() }
     #expect(await runner.calls.count == 2)
 }
 
@@ -91,7 +149,7 @@ import Testing
     let runner = ControllerLaunchTestRunner()
     let launcher = try CloudGatewayMacControllerLauncher(
         executableURL: URL(fileURLWithPath: "/Applications/CloudGateway.app/Contents/MacOS/CloudGateway"), directory: directory
-    ) { url, arguments in await runner.run(url: url, arguments: arguments) }
+    ) { url, arguments in try await runner.run(url: url, arguments: arguments) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let target = directory.appendingPathComponent("target")
     try Data("untouched".utf8).write(to: target)
@@ -107,6 +165,13 @@ private func controllerLaunchTestDirectory() -> URL {
         .appendingPathComponent("CloudGatewayLaunchTests-\(UUID())", isDirectory: true)
 }
 
+private func controllerTestLauncher(_ runner: ControllerLaunchTestRunner) throws -> CloudGatewayMacControllerLauncher {
+    try CloudGatewayMacControllerLauncher(
+        executableURL: URL(fileURLWithPath: "/Applications/CloudGateway.app/Contents/MacOS/CloudGateway"),
+        directory: controllerLaunchTestDirectory()
+    ) { url, arguments in try await runner.run(url: url, arguments: arguments) }
+}
+
 private actor ControllerLaunchTestRunner {
     struct Call: Sendable {
         let url: URL
@@ -115,18 +180,19 @@ private actor ControllerLaunchTestRunner {
 
     private(set) var calls: [Call] = []
     private var paused: Bool
-    private let status: Int32
+    private let results: [Result<Int32, any Error>]
     private var continuation: CheckedContinuation<Void, Never>?
 
-    init(paused: Bool = false, status: Int32 = 0) {
+    init(paused: Bool = false, results: [Result<Int32, any Error>] = [.success(0)]) {
         self.paused = paused
-        self.status = status
+        self.results = results
     }
 
-    func run(url: URL, arguments: [String]) async -> Int32 {
+    func run(url: URL, arguments: [String]) async throws -> Int32 {
         calls.append(Call(url: url, arguments: arguments))
+        let result = results[min(calls.count - 1, results.count - 1)]
         if paused { await withCheckedContinuation { continuation = $0 } }
-        return status
+        return try result.get()
     }
 
     func release() {
