@@ -1,7 +1,8 @@
 # macOS controller refactor review
 
-Reviewed 2026-10-21. Source implementation is complete. Final validation and review are in progress. Checked items indicate source
-changes and automated coverage, while live acceptance remains tracked separately.
+Reviewed 2026-10-21. Source implementation and fresh review are complete.
+Signed validation and live acceptance remain pending. Checked items indicate
+source changes and automated coverage, while live acceptance is tracked separately.
 
 Scope: [PR #16](https://github.com/Albro3459/CloudGateway/pull/16), `mac-cli`
 at `376e6b20`, compared with `main` at `9f426542`. The checkout was clean before
@@ -19,8 +20,8 @@ their findings and made the recommendations below.
 
 Keep the single background controller and the existing VPN/auth core. The
 separation is appropriate for a menu app and a future CLI, but the controller/menu
-milestone is not finished. Fix the seven defects below and complete the signed
-runtime checks before treating it as stable.
+milestone is not finished. The seven defects below are fixed. Complete the signed
+build and runtime checks before treating it as stable.
 
 The implementation moves controller lifecycle, request admission/results, and
 extension-update reconciliation into package components with injected effects.
@@ -50,7 +51,7 @@ limitation requires a separately reviewed change. Do not start CLI commands yet.
 - [x] Validate the package dispatcher, durable extension transitions, and frontend races
 - [x] Pass unsigned macOS checks, including strict dead-code scans
 - [ ] Pass signed macOS build and entitlement/profile verification
-- [ ] Complete fresh Sol High review rounds and resolve their findings
+- [x] Complete fresh Sol High review rounds and resolve their findings
 - [ ] Complete the live runtime matrix below
 
 The menu and controller remain the implementation scope. CLI commands wait for
@@ -393,8 +394,20 @@ macOS validation run, including 263 package tests and both strict dead-code scan
 Round 2 was attempted against `8589488f` with Main Codex GPT-6.1 Sol High. The
 first delegated reviewer failed before reviewing source because that account hit
 its usage limit. No second reviewer was launched on the exhausted account. The
-fresh review gate remains open, pending Main account availability or permission
-to use Secure Codex.
+user then authorized Secure Codex, and two fresh GPT-6.1 Sol High reviewers
+started against `92b29cb8`, whose code is unchanged from `8589488f`.
+
+- [x] Requests/frontend review: no actionable confirmed findings in lifecycle
+  exit/drain, admission/confirmation, receipts/replay, XPC authentication and
+  compatibility, frontend response fencing, and app adapters
+- [x] Domain/extension review: no actionable findings in inventory/connect
+  coherence, account fencing, auth cleanup, VPN outcomes, preparation deadlines
+  and cancellation, extension restoration/receipts/readiness/target fencing,
+  signed artifact policy, and app effects
+
+Both reviews were read-only, with no new tests, builds, or runtime checks. Round 2
+found no additional confirmed defects, completing the fresh source review gate.
+Signed build/profile verification and the live runtime matrix remain open.
 
 The main agent continued a bounded source review of the app adapters, command
 confirmation/results, handoff status and disconnect, inventory commit fencing,
@@ -411,7 +424,7 @@ The signed run repeated the passing tests and dead-code checks, then failed
 while signing the Release system extension with `errSecInternalComponent`.
 Signing/profile verification remains pending. The exact failure is recorded in
 [/private/tmp/cloudgateway-macos-signed-1.log](/private/tmp/cloudgateway-macos-signed-1.log).
-The fresh Sol High review loop is in progress.
+The fresh Sol High review loop is complete, with no remaining confirmed findings.
 
 Production policies now live in the
 [controller orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift),

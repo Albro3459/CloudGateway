@@ -1,6 +1,6 @@
 # macOS CLI and shared controller
 
-Status: **controller orchestration rewrite in validation, signed runtime proof pending**.
+Status: **controller orchestration rewrite implemented and reviewed, signed validation and runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -16,6 +16,10 @@ The review findings and source checklist live in
 The implementation adds package-owned lifecycle/update transitions, request
 admission and results, a stable status/stop contract, and a generation-fenced
 frontend. The menu consumes domain snapshots and keeps presentation local.
+The latest unsigned macOS checks passed with 263 macOS package tests, both strict
+dead-code scans, and app/extension build and packaging verification. Round 1's
+seven findings are fixed. Both fresh Secure Codex Sol High reviewers in round 2
+found no actionable defects in the final source at `8589488f`.
 Signed installation, approval, replacement, reboot, and SSH evidence below remain
 separate acceptance gates. Historical test results later in this file describe
 older commits.
@@ -793,6 +797,7 @@ components were not changed for this fix.
   ownership, idempotency, switching, and IPC validation
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
+- [x] Complete fresh Sol High source reviews of the controller orchestration rewrite
 - [ ] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
   The 2026-10-21 rewrite run passed tests/scans, then failed system-extension
   signing with `errSecInternalComponent`. Earlier signed results below are historical
