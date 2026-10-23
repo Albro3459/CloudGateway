@@ -212,7 +212,7 @@ public final class CloudGatewayMacControllerOrchestrator {
             }
         }
         let activity: Set<CloudGatewayMacControllerRequest.Action> = [
-            .userActivity, .recordActivity, .menuWillOpen, .connect, .turnOff, .signIn, .cancelSignIn, .signOut,
+            .userActivity, .recordActivity, .menuWillOpen, .connect, .turnOff, .disconnectClient, .signIn, .cancelSignIn, .signOut,
             .refresh, .awaitRefresh, .prepareClient, .createClient, .beginLogin, .cancelLogin
         ]
         if activity.contains(request.action), update.canAcceptMutations || request.action == .turnOff {
@@ -316,6 +316,15 @@ public final class CloudGatewayMacControllerOrchestrator {
                 return operationReply(operation, request: request)
             }
             guard pending == nil, runningOperation == nil else { return .init(error: .busy) }
+            if request.action == .disconnectClient {
+                let snapshot = effects.snapshot(setupState, false)
+                guard let session = effects.session(), session.accountId == snapshot.accountId,
+                      snapshot.accessAuthorized, !snapshot.isRestoringSession, !snapshot.isAuthSettling,
+                      let identifier = request.identifier,
+                      snapshot.clients.filter({ $0.identifier == identifier }).count == 1 else {
+                    return .init(error: .rejected)
+                }
+            }
             var prepared: CloudGatewayMacPreparedClient?
             if request.action == .createClient {
                 guard let creation, creation.id == request.contextId, creation.expires > effects.now() else {
@@ -341,15 +350,26 @@ public final class CloudGatewayMacControllerOrchestrator {
         guard request.action == .turnOff || (update.canAcceptMutations && confirmation.buildIdentity == update.running) else {
             self.pending = nil
             return controlReply(for: confirmation, operation: requests.finish(
-                id: id, state: .failed, failure: .incompatibleVersion, outcome: .failed(.incompatibleVersion), session: session
+                id: id, state: .failed, failure: .incompatibleVersion, outcome: .failed(.incompatibleVersion), session: pending.session
             ))
         }
         // Account work runs only for the session that reserved it
         if request.action.hasAccountBoundOutcome, session != pending.session {
             self.pending = nil
             return controlReply(for: confirmation, operation: requests.finish(
-                id: id, state: .failed, failure: .rejected, outcome: .failed(.signInRequired), session: session
+                id: id, state: .failed, failure: .rejected, outcome: .failed(.signInRequired), session: pending.session
             ))
+        }
+        if request.action == .disconnectClient {
+            let snapshot = effects.snapshot(setupState, false)
+            guard session != nil, session?.accountId == snapshot.accountId, snapshot.accessAuthorized,
+                  let identifier = request.identifier,
+                  snapshot.clients.filter({ $0.identifier == identifier }).count == 1 else {
+                self.pending = nil
+                return controlReply(for: confirmation, operation: requests.finish(
+                    id: id, state: .failed, failure: .rejected, outcome: .failed(.configUnavailable), session: pending.session
+                ))
+            }
         }
         if request.action == .createClient,
            creation?.id != request.contextId || creation.map({ $0.expires <= effects.now() }) != false {
@@ -401,7 +421,7 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     private func expirePending() {
         guard let pending, pending.deadline <= effects.now() else { return }
-        _ = requests.finish(id: pending.request.id, state: .unknown, outcome: .expired, session: effects.session())
+        _ = requests.finish(id: pending.request.id, state: .unknown, outcome: .expired, session: pending.session)
         self.pending = nil
     }
 
@@ -442,10 +462,13 @@ public final class CloudGatewayMacControllerOrchestrator {
         let operation = operation ?? requests.latest
         let snapshot = effects.snapshot(setupState, false)
         // Other builds may not decode newer outcome cases, so they get the compatible operation only
-        let outcome = request.buildIdentity == update.running ? operation.flatMap {
+        let sameBuild = request.buildIdentity == update.running
+            && request.appVersion == update.running.version && request.appBuild == update.running.build
+        let outcome = sameBuild ? operation.flatMap {
             requests.outcome(id: $0.id, session: effects.session())
         } : nil
-        return .init(status: snapshot.status, operation: operation, outcome: outcome,
+        return .init(state: request.action == .operation && sameBuild ? snapshot : nil,
+                     status: snapshot.status, operation: operation, outcome: outcome,
                      accepted: operation.map { $0.state != .failed && $0.state != .unknown }, operationId: operation?.id)
     }
 

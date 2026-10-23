@@ -121,8 +121,8 @@ struct CloudGatewayMacCLIRenderer {
             lines.append(bold("\(region.name) (\(region.regionId))"))
             let names = region.configs.map { config in config.owner.map { "\(config.name) (\($0))" } ?? config.name }
             let nameWidth = names.map(\.count).max() ?? 0
-            let idWidth = region.configs.map(\.configId.count).max() ?? 0
-            let ipWidth = region.configs.map { ($0.internalIp ?? "-").count }.max() ?? 0
+            let idWidth = region.configs.map(\.clientId.count).max() ?? 0
+            let indexWidth = region.configs.map { String($0.index).count }.max() ?? 0
             for (config, name) in zip(region.configs, names) {
                 var labels: [String] = []
                 if let tunnel = config.tunnel, tunnel != .disconnected || inventory.profileObservation == .stale {
@@ -131,11 +131,19 @@ struct CloudGatewayMacCLIRenderer {
                 if config.cloudState != .active { labels.append(config.cloudState.rawValue) }
                 if config.eligibility != .eligible { labels.append(label(config.eligibility.rawValue)) }
                 if config.selected { labels.append("selected") }
-                var columns = ["  " + name.padding(toLength: nameWidth, withPad: " ", startingAt: 0),
-                               config.configId.padding(toLength: idWidth, withPad: " ", startingAt: 0),
-                               (config.internalIp ?? "-").padding(toLength: ipWidth, withPad: " ", startingAt: 0)]
-                if !labels.isEmpty { columns.append(labels.joined(separator: ", ")) }
-                lines.append(columns.joined(separator: "  "))
+                let prefix = "  " + String(config.index).padding(toLength: indexWidth, withPad: " ", startingAt: 0)
+                if inventory.isLong {
+                    lines.append(prefix + "  " + config.name + (labels.isEmpty ? "" : "  " + labels.joined(separator: ", ")))
+                    let ip = config.internalIp?.split(separator: "/").first.map(String.init)
+                    lines += table([("VPN id", config.clientId), ("Tunnel IP", ip ?? "Unavailable"),
+                                    ("Connection URL", config.connectionUrl ?? "Unavailable"),
+                                    ("Owner email", config.owner ?? "Unknown")]).map { "     " + $0 }
+                } else {
+                    var columns = [prefix, name.padding(toLength: nameWidth, withPad: " ", startingAt: 0),
+                                   config.clientId.padding(toLength: idWidth, withPad: " ", startingAt: 0)]
+                    if !labels.isEmpty { columns.append(labels.joined(separator: ", ")) }
+                    lines.append(columns.joined(separator: "  "))
+                }
             }
         }
         lines.append("")

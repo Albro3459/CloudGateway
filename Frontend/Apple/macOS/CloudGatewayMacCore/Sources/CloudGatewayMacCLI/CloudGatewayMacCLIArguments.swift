@@ -1,8 +1,7 @@
-import CloudGatewayMacControllerIPC
 import Foundation
 
 enum CloudGatewayMacCLIOption: CaseIterable {
-    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation
+    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation, long
 
     static let common: [Self] = [.help, .json, .nonInteractive, .timeout]
 
@@ -12,18 +11,19 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .json: ["--json"]
         case .nonInteractive: ["--non-interactive"]
         case .timeout: ["--timeout"]
-        case .version: ["--version"]
+        case .version: ["-v", "--version"]
         case .noQR: ["--no-qr"]
         case .region: ["--region"]
         case .refresh: ["--refresh"]
         case .operation: ["--operation"]
+        case .long: ["-l", "--long"]
         }
     }
 
     var valueName: String? {
         switch self {
         case .timeout: "seconds"
-        case .region: "region-id"
+        case .region: "region"
         case .operation: "operation-id"
         default: nil
         }
@@ -40,13 +40,14 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .region: "Show only configs in this region"
         case .refresh: "Fetch current inventory before listing"
         case .operation: "Look up a retained operation by ID"
+        case .long: "Show VPN details for each config"
         }
     }
 }
 
 struct CloudGatewayMacCLITopic {
     enum Kind {
-        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, refresh, doctor, help
+        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, refresh, doctor, help, version
     }
 
     let kind: Kind
@@ -80,7 +81,7 @@ struct CloudGatewayMacCLITopic {
         .init(kind: .root, path: [], arguments: nil, options: [.version],
               summary: "Control the CloudGateway VPN on this Mac",
               notes: [
-                  "Config IDs use the form FirebaseUID/regionId/clientId, exactly as `list` prints them",
+                  "Use a client UUID or a region and row index to select a config. `ls` is an alias of `list`",
                   "Request acceptance reserves work. `up` succeeds after start submission or if already active. "
                       + "`down` succeeds only after a confirmed stop. Check `status` for the observed tunnel state",
                   "Exit codes: 0 success, 1 internal failure, 2 usage, 3 sign-in or access denied, 4 setup, permissions, or version, "
@@ -103,31 +104,39 @@ struct CloudGatewayMacCLITopic {
               summary: "Sign out, keeping the running VPN and saved configs",
               notes: ["Logout does not disconnect. Run `cloudgateway down` to stop the VPN"],
               examples: ["cloudgateway auth logout"]),
-        .init(kind: .list, path: ["list"], arguments: nil, options: [.region, .refresh],
+        .init(kind: .list, path: ["list"], arguments: nil, options: [.region, .refresh, .long],
               summary: "Show authorized configs grouped by region",
               notes: ["Waits for stale controller inventory to refresh",
-                      "Offline, only this account's saved configs are listed"],
-              examples: ["cloudgateway list", "cloudgateway list --region us-east-1 --json"]),
+                      "Offline, only this account's saved configs are listed",
+                      "Regions accept a full ID, display name, or city alias such as sanjose",
+                      "Indices restart at 1 in each region. Rerun `ls` after inventory changes. Use a UUID in scripts"],
+              examples: ["cloudgateway ls", "cloudgateway ls -l", "cloudgateway list --region sanjose --json"]),
         .init(kind: .status, path: ["status"], arguments: nil, options: [.operation],
               summary: "Show the observed VPN state and the latest command result",
               notes: ["A successful status read does not mean the VPN is connected"],
               examples: ["cloudgateway status", "cloudgateway status --operation <operation-id>"]),
-        .init(kind: .up, path: ["up"], arguments: "[config-id]", options: [],
+        .init(kind: .up, path: ["up"], arguments: "[<client-uuid> | <region> <index>]", options: [],
               summary: "Request a VPN start for an authorized config",
               notes: [
-                  "Without a config ID, `up` uses this account's last selection",
+                  "Without a selector, `up` uses this account's last selection",
+                  "Regions accept a full ID, display name, or city alias. Quote names containing spaces",
                   "Success means macOS accepted the start request, not that the tunnel connected"
               ],
-              examples: ["cloudgateway up", "cloudgateway up <config-id>"]),
-        .init(kind: .down, path: ["down"], arguments: nil, options: [],
+              examples: ["cloudgateway up", "cloudgateway up <client-uuid>", "cloudgateway up chicago 1"]),
+        .init(kind: .down, path: ["down"], arguments: "[<client-uuid> | <region> <index>]", options: [],
               summary: "Stop the CloudGateway VPN, even while signed out",
-              notes: ["Saved configs stay on this Mac"], examples: ["cloudgateway down"]),
+              notes: ["Saved configs stay on this Mac", "A selector stops only that config and requires sign-in"],
+              examples: ["cloudgateway down", "cloudgateway down chicago 1"]),
         .init(kind: .refresh, path: ["refresh"], arguments: nil, options: [],
               summary: "Recheck access and fetch current inventory without reconnecting",
               notes: [], examples: ["cloudgateway refresh"]),
         .init(kind: .doctor, path: ["doctor"], arguments: nil, options: [],
               summary: "Inspect setup, permissions, auth, and service reachability",
               notes: [], examples: ["cloudgateway doctor --json"]),
+        .init(kind: .version, path: ["version"], arguments: nil, options: [],
+              summary: "Show the app version and build",
+              notes: ["Aliases: --version, -v. Completes locally without connecting to the controller"],
+              examples: ["cloudgateway version", "cloudgateway -v --json"]),
         .init(kind: .help, path: ["help"], arguments: "[command...]", options: [],
               summary: "Show help for a command", notes: [],
               examples: ["cloudgateway help auth login"]),
@@ -136,9 +145,10 @@ struct CloudGatewayMacCLITopic {
 
 enum CloudGatewayMacCLICommand: Equatable {
     case authLogin(showsQR: Bool), authStatus, authLogout
-    case list(regionId: String?, refresh: Bool)
+    case list(regionId: String?, refresh: Bool, long: Bool = false)
     case status(operationId: UUID?)
-    case up(configId: String?)
+    case up(selector: CloudGatewayMacCLISelector?)
+    case downTarget(CloudGatewayMacCLISelector)
     case down, refresh, doctor
 
     var name: String {
@@ -149,7 +159,7 @@ enum CloudGatewayMacCLICommand: Equatable {
         case .list: "list"
         case .status: "status"
         case .up: "up"
-        case .down: "down"
+        case .down, .downTarget: "down"
         case .refresh: "refresh"
         case .doctor: "doctor"
         }
@@ -210,7 +220,8 @@ enum CloudGatewayMacCLIParser {
         }
 
         let isHelpCommand = words.first == "help"
-        let commandWords = isHelpCommand ? Array(words.dropFirst()) : words
+        var commandWords = isHelpCommand ? Array(words.dropFirst()) : words
+        if commandWords.first == "ls" { commandWords[0] = "list" }
         guard let topic = CloudGatewayMacCLITopic.all.filter({ commandWords.starts(with: $0.path) })
             .max(by: { $0.path.count < $1.path.count }) else {
             throw failure("Unknown command", words: named)
@@ -250,12 +261,10 @@ enum CloudGatewayMacCLIParser {
         case .authLogout: command = .authLogout
         case .list:
             let regionId = try values[.region].map { value in
-                guard CloudGatewayMacControllerProtocol.validComponent(value) else {
-                    throw failure("Invalid region ID \(quoted(value))", words: named)
-                }
+                guard validRegion(value) else { throw failure("Invalid region '\(CloudGatewayMacCLIText.sanitize(value))'", words: named) }
                 return value
             }
-            command = .list(regionId: regionId, refresh: flags.contains(.refresh))
+            command = .list(regionId: regionId, refresh: flags.contains(.refresh), long: flags.contains(.long))
         case .status:
             let operationId = try values[.operation].map { value in
                 guard let id = UUID(uuidString: value) else {
@@ -264,8 +273,9 @@ enum CloudGatewayMacCLIParser {
                 return id
             }
             command = .status(operationId: operationId)
-        case .up: command = .up(configId: operands.first)
-        case .down: command = .down
+        case .up: command = .up(selector: try selector(operands, topic: topic))
+        case .down: command = try selector(operands, topic: topic).map(CloudGatewayMacCLICommand.downTarget) ?? .down
+        case .version: return invocation(.version)
         case .refresh: command = .refresh
         case .doctor: command = .doctor
         }
@@ -277,14 +287,25 @@ enum CloudGatewayMacCLIParser {
         switch topic.kind {
         case .root: throw failure("Unknown command \(quoted(operand))", words: [])
         case .auth: throw failure("Unknown auth command \(quoted(operand))", words: topic.path)
-        case .up where operands.count == 1:
-            guard CloudGatewayMacControllerProtocol.validIdentifier(operand) else {
-                throw failure("Invalid config ID \(quoted(operand)). Use FirebaseUID/regionId/clientId from `cloudgateway list`",
-                              words: topic.path)
-            }
-        default: throw failure("Unexpected argument \(quoted(operands.dropFirst(topic.kind == .up ? 1 : 0).first ?? operand))",
-                               words: topic.path)
+        case .up, .down:
+            _ = try selector(operands, topic: topic)
+        default: throw failure("Unexpected argument \(quoted(operand))", words: topic.path)
         }
+    }
+
+    private static func validRegion(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.utf8.count <= 512
+            && value == CloudGatewayMacCLIText.sanitize(value) && !value.contains("/")
+    }
+
+    private static func selector(_ operands: ArraySlice<String>, topic: CloudGatewayMacCLITopic) throws -> CloudGatewayMacCLISelector? {
+        guard let first = operands.first else { return nil }
+        if operands.count == 1, let id = UUID(uuidString: first) { return .client(id) }
+        if operands.count == 2, validRegion(first), let value = operands.last,
+           !value.isEmpty, value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }), let index = Int(value), index > 0 {
+            return .region(first, index: index)
+        }
+        throw failure("Use a client UUID or <region> <positive index> from `cloudgateway ls`", words: topic.path)
     }
 
     private static func parseTimeout(_ value: String, words: [String]) throws -> Duration {
@@ -311,7 +332,8 @@ enum CloudGatewayMacCLIParser {
     }
 
     private static func failure(_ message: String, words: [String]) -> CloudGatewayMacCLIUsageFailure {
-        let words = words.first == "help" ? ["help"] : words
+        var words = words.first == "help" ? ["help"] : words
+        if words.first == "ls" { words[0] = "list" }
         let topic = CloudGatewayMacCLITopic.all.filter { words.starts(with: $0.path) && !$0.path.isEmpty }
             .max { $0.path.count < $1.path.count }
         return .init(message: message, command: topic?.name)

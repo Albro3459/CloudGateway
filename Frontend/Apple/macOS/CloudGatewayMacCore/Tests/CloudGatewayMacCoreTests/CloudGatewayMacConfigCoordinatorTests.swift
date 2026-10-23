@@ -246,6 +246,72 @@ import Testing
     _ = try await task.value
 }
 
+@Test(arguments: [CloudGatewayTunnelStatus.disconnected, .invalid, .connected, .connecting, .reasserting, .disconnecting])
+func macConfigScopedStopOnlyStopsItsExactTarget(status: CloudGatewayTunnelStatus) async throws {
+    let fixture = MacConfigFixture()
+    let identifier = "account/region/client"
+    let target = CloudGatewayMacInstalledProfile(identifier: identifier, reference: fixture.reference, status: status)
+    await fixture.profiles.setProfiles([
+        .init(identifier: "account/region/other", reference: fixture.reference, status: .connected), target,
+        .init(identifier: "another-account/region/client", reference: fixture.reference, status: .connected)
+    ])
+    try await fixture.coordinator.disconnectClient(identifier: identifier, authorize: {})
+    #expect(await fixture.events.values == (target.needsConfirmedStop ? ["profiles", "stop:\(identifier)"] : ["profiles"]))
+}
+
+@Test func macConfigScopedStopWithNoInstalledTargetLeavesTheActiveProfileAlone() async throws {
+    let fixture = MacConfigFixture()
+    await fixture.profiles.setProfiles([
+        .init(identifier: "account/region/other", reference: fixture.reference, status: .connected)
+    ])
+    try await fixture.coordinator.disconnectClient(identifier: "account/region/client", authorize: {})
+    #expect(await fixture.events.values == ["profiles"])
+}
+
+@Test func macConfigScopedStopRejectsDuplicateInstalledTargets() async throws {
+    let fixture = MacConfigFixture()
+    let target = CloudGatewayMacInstalledProfile(identifier: "account/region/client", reference: fixture.reference, status: .connected)
+    await fixture.profiles.setProfiles([target, target])
+    await #expect(throws: CloudGatewayMacConfigError.unavailable) {
+        try await fixture.coordinator.disconnectClient(identifier: target.identifier, authorize: {})
+    }
+    #expect(await fixture.events.values == ["profiles"])
+}
+
+@MainActor
+@Test func macConfigScopedStopRechecksAuthorizationAfterReadingProfiles() async throws {
+    let fixture = MacConfigFixture()
+    await fixture.profiles.setProfiles([
+        .init(identifier: "account/region/client", reference: fixture.reference, status: .connected)
+    ])
+    var checks = 0
+    await #expect(throws: CloudGatewayMacConfigError.unavailable) {
+        try await fixture.coordinator.disconnectClient(identifier: "account/region/client") {
+            checks += 1
+            if checks == 2 { throw CloudGatewayMacConfigError.unavailable }
+        }
+    }
+    #expect(checks == 2)
+    #expect(await fixture.events.values == ["profiles"])
+}
+
+@MainActor
+@Test func macConfigScopedStopPassesAuthorizationToTheAdapterStopBoundary() async throws {
+    let fixture = MacConfigFixture()
+    await fixture.profiles.setProfiles([
+        .init(identifier: "account/region/client", reference: fixture.reference, status: .connected)
+    ])
+    var checks = 0
+    await #expect(throws: CloudGatewayMacConfigError.unavailable) {
+        try await fixture.coordinator.disconnectClient(identifier: "account/region/client") {
+            checks += 1
+            if checks == 3 { throw CloudGatewayMacConfigError.unavailable }
+        }
+    }
+    #expect(checks == 3)
+    #expect(await fixture.events.values == ["profiles"])
+}
+
 @Test func macConfigCancellationDrainWaitsForReferencedSecretRecovery() async throws {
     let fixture = MacConfigFixture()
     let saveGate = MacConfigTestGate()
@@ -449,6 +515,15 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
         try Task.checkCancellation()
         await events.append("stop:\(identifier)")
         await stopGate?.arriveAndWait()
+        if stopFails { throw MacConfigTestFailure() }
+    }
+
+    func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
+        await stopGate?.arriveAndWait()
+        try Task.checkCancellation()
+        try await authorize()
+        try Task.checkCancellation()
+        await events.append("stop:\(identifier)")
         if stopFails { throw MacConfigTestFailure() }
     }
 }

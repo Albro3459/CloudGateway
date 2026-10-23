@@ -109,6 +109,8 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
     #expect(decoded.profilesObservedAt == Date(timeIntervalSince1970: 1_000))
     let client = try #require(decoded.clients.first)
     #expect(client.internalIp == "10.0.0.2")
+    #expect(client.clientId == "client")
+    #expect(client.connectionUrl == nil)
     #expect(CloudGatewayMacControllerProtocol.validIPv4("0.0.0.0"))
     #expect(CloudGatewayMacControllerProtocol.validIPv4("100.64.10.255"))
     #expect(client.cloudState == .active)
@@ -120,7 +122,9 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
     #expect(client.updatedAt == Date(timeIntervalSince1970: 800))
     #expect(reply.protocolVersion == CloudGatewayMacControllerProtocol.protocolVersion)
 
-    for address in ["10.0.0.256", "fd00::1", "10.0.0", "10.0.0.2/32", " 10.0.0.2", "010.000.000.001", "10.0.0.02"] {
+    for address in ["10.0.0.256", "fd00::1", "10.0.0", " 10.0.0.2", "010.000.000.001", "10.0.0.02",
+                    "10.0.0.2/", "10.0.0.2/33", "10.0.0.2/-1", "10.0.0.2/+1", "10.0.0.2/1.0",
+                    "10.0.0.2/ 1", "10.0.0.2/32/1", "10.0.0.2/３２", "10.0.0.256/32", "10.0.0.2/032"] {
         let snapshot = outcomeSnapshot(internalIp: address)
         #expect(CloudGatewayMacControllerState(snapshot: snapshot, setupState: .ready, canUpdateExtension: false)
             .clients.first?.internalIp == nil)
@@ -131,6 +135,10 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
     try outcomeExpectRejectedClient { $0["cloudState"] = "deleted" }
     try outcomeExpectRejectedClient { $0["source"] = "disk" }
     try outcomeExpectRejectedClient { $0.removeValue(forKey: "readAt") }
+    try outcomeExpectRejectedClient { $0["clientId"] = "another-client" }
+    for endpoint in ["", "wg.example.com\n", String(repeating: "x", count: 1025)] {
+        try outcomeExpectRejectedClient { $0["connectionUrl"] = endpoint }
+    }
     try outcomeExpectRejectedState { object in
         object["installedIdentifiers"] = []
         var clients = try #require(object["clients"] as? [[String: Any]])
@@ -142,13 +150,28 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
     try outcomeExpectRejectedState { $0["credentials"] = "unavailable" }
 }
 
+@Test func controllerMapsValidTunnelCIDRToBareIPv4WithoutRelaxingWireValidation() throws {
+    for prefix in 0...32 {
+        let address = "10.0.0.2/\(prefix)"
+        let state = CloudGatewayMacControllerState(
+            snapshot: outcomeSnapshot(internalIp: address), setupState: .ready, canUpdateExtension: false
+        )
+        let reply = try outcomeRoundTrip(.init(state: state), action: .snapshot)
+        #expect(reply.state?.clients.first?.internalIp == "10.0.0.2")
+        #expect(!CloudGatewayMacControllerProtocol.validIPv4(address))
+        try outcomeExpectRejectedClient { $0["internalIp"] = address }
+    }
+}
+
 @Test func fullInventoryWithRowMetadataFitsTheReplyBound() throws {
     let accountId = String(repeating: "U", count: 28)
     let clients = (0..<4096).map { index in
         CloudGatewayMacClientMetadata(
-            identifier: "\(accountId)/us-central1/\(String(format: "%020d", index))", regionId: "us-central1",
+            identifier: "\(accountId)/us-central1/\(String(format: "00000000-0000-4000-8000-%012d", index))", regionId: "us-central1",
             regionName: "US Central", regionOrder: 1, clientName: "Work MacBook Pro \(index)",
-            ownerLabel: "someone@example.com", internalIp: "10.100.200.250", cloudState: .active, eligibility: .eligible,
+            ownerLabel: "someone@example.com", internalIp: "10.100.200.250",
+            connectionUrl: Array(repeating: String(repeating: "a", count: 63), count: 3).joined(separator: ".") + "." + String(repeating: "b", count: 61),
+            cloudState: .active, eligibility: .eligible,
             isInstalled: false, source: .cloud, readAt: Date(timeIntervalSinceReferenceDate: 782_000_000.123456),
             updatedAt: Date(timeIntervalSinceReferenceDate: 782_000_000.123456), status: .disconnected
         )
@@ -166,8 +189,50 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
         .init(state: .init(snapshot: snapshot, setupState: .ready, canUpdateExtension: false)),
         appVersion: appVersion, appBuild: appBuild, instanceId: UUID()
     )
-    #expect(data.count > 1024 * 1024)
+    #expect(data.count > 2 * 1024 * 1024)
+    #expect(data.count <= CloudGatewayMacControllerProtocol.replyBytes)
     #expect(try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild).state?.clients.count == 4096)
+}
+
+@Test func controllerEndpointMetadataIsBoundedAndSafeForDisplay() throws {
+    for (raw, expected) in [
+        ("wg.\nregion\u{1B}.example.com", "wg. region .example.com"),
+        (String(repeating: "🙂", count: 300), String(repeating: "🙂", count: 256)),
+        ("192.0.2.7", "192.0.2.7")
+    ] {
+        let state = CloudGatewayMacControllerState(
+            snapshot: outcomeSnapshot(internalIp: "10.0.0.2", connectionUrl: raw),
+            setupState: .ready, canUpdateExtension: false
+        )
+        let reply = try outcomeRoundTrip(.init(state: state), action: .snapshot)
+        #expect(reply.error == nil)
+        #expect(reply.state?.clients.first?.connectionUrl == expected)
+    }
+}
+
+@Test func operationDetailsRequireMatchingBuildAndOneConsistentObservation() throws {
+    let state = controllerContractState()
+    let operation = CloudGatewayMacControllerOperation(id: UUID(), state: .unknown)
+    let reply = CloudGatewayMacControllerReply(state: state, status: state.status, operation: operation)
+    let decoded = try outcomeRoundTrip(reply, action: .operation)
+    #expect(decoded.state == state)
+    #expect(decoded.status == state.status)
+    #expect(decoded.operation == operation)
+    #expect(decoded.state?.profilesObservedAt == Date(timeIntervalSince1970: 1_000))
+    #expect(decoded.state?.observedProfiles.first?.identifier == identifier)
+    let data = CloudGatewayMacControllerProtocol.encodeReply(
+        reply, appVersion: appVersion, appBuild: appBuild, instanceId: UUID(), action: .operation
+    )
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+        try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: "43", action: .operation)
+    }
+    for (invalid, action) in [
+        (CloudGatewayMacControllerReply(state: state, operation: operation), CloudGatewayMacControllerRequest.Action.operation),
+        (.init(state: state, status: .init(hasActiveTunnel: false, needsStop: false, observationAvailable: true, phase: .disconnected)), .operation),
+        (reply, .status), (reply, .confirmOperation), (reply, .turnOff)
+    ] {
+        #expect(try outcomeRoundTrip(invalid, action: action).error == .invalidRequest)
+    }
 }
 
 private func outcomeRoundTrip(
@@ -179,7 +244,7 @@ private func outcomeRoundTrip(
     return try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: appVersion, appBuild: appBuild, action: action)
 }
 
-private func outcomeSnapshot(internalIp: String) -> CloudGatewayMacControllerSnapshot {
+private func outcomeSnapshot(internalIp: String, connectionUrl: String? = nil) -> CloudGatewayMacControllerSnapshot {
     let state = controllerContractState()
     let client = state.clients[0]
     return CloudGatewayMacControllerSnapshot(
@@ -189,7 +254,7 @@ private func outcomeSnapshot(internalIp: String) -> CloudGatewayMacControllerSna
             observedProfiles: [], observationIsFresh: true, profilesObservedAt: nil, commandInFlight: false,
             clients: [.init(identifier: client.identifier, regionId: client.regionId, regionName: client.regionName,
                             regionOrder: client.regionOrder, clientName: client.clientName, ownerLabel: nil,
-                            internalIp: internalIp, cloudState: .active, eligibility: .eligible, isInstalled: true,
+                            internalIp: internalIp, connectionUrl: connectionUrl, cloudState: .active, eligibility: .eligible, isInstalled: true,
                             source: .cloud, readAt: client.readAt, updatedAt: nil, status: nil)]
         ),
         lastSelectedIdentifier: nil, browserState: .signedIn(AuthenticatedUser(uid: "account", email: nil)),

@@ -11,7 +11,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public enum Action: String, Codable, CaseIterable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
         case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, userActivity, recordActivity, refresh, awaitRefresh
-        case signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
+        case signIn, cancelSignIn, signOut, connect, turnOff, disconnectClient, prepareClient, createClient
         case beginLogin, loginStatus, cancelLogin, diagnostics
     }
 
@@ -138,8 +138,8 @@ public enum CloudGatewayMacControllerProtocol {
     public static let machServiceName = "com.gocloudlaunch.gateway.macos.controller"
     public static let appBundleIdentifier = "com.gocloudlaunch.gateway.macos"
     public static let requestBytes = 64 * 1024
-    // Rows carry freshness and install metadata, so a full 4096-row inventory needs about 1.6 MiB
-    public static let replyBytes = 2 * 1024 * 1024
+    // Leave room for 4096 rows with endpoint metadata and full-length DNS names
+    public static let replyBytes = 4 * 1024 * 1024
     static let maximumConnections = 32
     static let maximumRequests = 64
     static let maximumClientRequests = 8
@@ -186,6 +186,11 @@ public enum CloudGatewayMacControllerProtocol {
             }
         case .connect:
             guard request.identifier.map(validIdentifier) ?? true,
+                  request.regionId == nil, request.clientName == nil, request.contextId == nil else {
+                throw CloudGatewayMacControllerFailure.invalidRequest
+            }
+        case .disconnectClient:
+            guard let identifier = request.identifier, validIdentifier(identifier),
                   request.regionId == nil, request.clientName == nil, request.contextId == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
@@ -280,7 +285,7 @@ public enum CloudGatewayMacControllerProtocol {
         }
         try validateVersion(reply.appVersion, build: reply.appBuild)
         guard reply.instanceId != nil,
-              reply.outcome == nil || (reply.appVersion == appVersion && reply.appBuild == appBuild) else {
+              (reply.outcome == nil && reply.state == nil) || (reply.appVersion == appVersion && reply.appBuild == appBuild) else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }
         try validateReplyContent(reply, action: action)
@@ -342,7 +347,8 @@ public enum CloudGatewayMacControllerProtocol {
             }
         }
         if action.isCompatibleControl && action != .lifecycle {
-            guard reply.state == nil, reply.creation == nil, reply.extensionTarget == nil else {
+            guard (reply.state == nil || action == .operation), reply.creation == nil, reply.extensionTarget == nil,
+                  reply.state == nil || reply.status == reply.state?.status else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
         }
@@ -432,12 +438,12 @@ extension CloudGatewayMacControllerRequest.Action {
     }
 
     var hasAccountBoundOutcome: Bool {
-        self == .connect || self == .createClient
+        self == .connect || self == .createClient || self == .disconnectClient
     }
 
     var requiresConfirmation: Bool {
         switch self {
-        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .createClient: true
+        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .disconnectClient, .createClient: true
         default: false
         }
     }

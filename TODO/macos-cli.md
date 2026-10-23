@@ -85,12 +85,14 @@ cloudgateway auth login
 cloudgateway auth status
 cloudgateway auth logout
 cloudgateway list
+cloudgateway ls -l
 cloudgateway status
-cloudgateway up [config-id]
-cloudgateway down
+cloudgateway up [<client-uuid> | <region> <index>]
+cloudgateway down [<client-uuid> | <region> <index>]
 cloudgateway refresh
 cloudgateway doctor
 cloudgateway help [command...]
+cloudgateway version
 ```
 
 Keep account administration and cloud client creation/removal out of the CLI.
@@ -275,7 +277,7 @@ extra positional arguments, and malformed IDs return usage errors.
 | `--json` | Emit the versioned JSON records described below, without terminal decoration or keyboard shortcuts |
 | `--non-interactive` | Disable keyboard shortcuts/prompts even with a TTY. Device approval polling still works |
 | `--timeout <seconds>` | Positive finite caller deadline. Default 30 seconds, except login uses the server's code expiry. Does not cancel accepted VPN work |
-| `--version` | Root command: show app version/build and exit without starting the controller |
+| `-v`, `--version` | Root command: show app version/build and exit without starting the controller. Also available as `version` |
 
 No implicit prompts when stdin or output is redirected. Honor `NO_COLOR`, avoid
 ANSI cursor controls outside a suitable terminal, and keep displayed IDs
@@ -301,23 +303,31 @@ cloudgateway auth login --help
 | `auth login` | `--no-qr` | Start the existing device approval flow, display its challenge, and wait for authorized sign-in |
 | `auth status` | Common options | Report identity/session state, access verification state, and credential availability separately |
 | `auth logout` | Common options | Sign out the shared controller session, fence pending account work, retain VPN/configs/cache |
-| `list` | `--region <region-id>`, `--refresh` | Show authorized configs grouped by region. `--refresh` explicitly fetches before listing |
+| `list`, `ls` | `--region <region>`, `--refresh`, `-l`/`--long` | Show numbered configs grouped by region. Long output includes iOS-style details. `--refresh` explicitly fetches before listing |
 | `status` | `--operation <operation-id>` | Show observed local VPN state, pending request, and latest command result, or look up the retained operation |
-| `up [config-id]` | Common options | Select/install an authorized existing config and request a start |
-| `down` | Common options | Stop app-owned active/transitional profiles, including while signed out |
+| `up [<client-uuid> \| <region> <index>]` | Common options | Select/install an authorized existing config and request a start |
+| `down [<client-uuid> \| <region> <index>]` | Common options | Stop the selected target only, or all app-owned active/transitional profiles when no selector is supplied. Bare `down` works while signed out |
 | `refresh` | Common options | Recheck authorization and fetch current cloud inventory/metadata |
 | `doctor` | Common options | Inspect local setup, permissions where observable, auth, and network/service reachability |
 | `help [command...]` | Common help/output options | Show usage, options, examples, and the meaning of request acceptance |
+| `version` | Common options | Show the same local app version/build as `--version` or `-v` |
 
 All commands accept the common options where applicable. `help --json` and
 `--version --json` use the same versioned result envelope without IPC.
 No `--yes`, password/token argument, config export, name-prefix selector,
-numbered selector, or `--wait` in v1.
+or `--wait` in v1.
 
 ### IDs, inventory, and offline access
 
-- `config-id` is the existing canonical `FirebaseUID/regionId/clientId`
-  identifier. Emit it exactly in `list` and JSON. Names are display labels
+- Human list rows show only the client UUID. `up` and targeted `down` accept
+  that UUID or a region plus its row index, starting at 1 in each region
+- Match full region IDs, case-insensitive display names, and city aliases such
+  as `sanjose`. Reject unknown/ambiguous regions, including list filters, with
+  exit 2. Candidates come from the account's current inventory
+- Indices use the same deterministic ordering in short/long/JSON output and
+  selectors. They can change with inventory. Use UUIDs in scripts
+- Existing JSON `configId` fields retain canonical `FirebaseUID/regionId/clientId`
+  identifiers. Inventory adds `clientId`, `index`, and nullable `connectionUrl`
 - Validate the ID against the current account and authorized inventory.
   An opaque/composite ID is never proof of authorization
 - Bare `up` uses this account's last selection. If missing, removed, or unusable,
@@ -332,8 +342,9 @@ numbered selector, or `--wait` in v1.
   inventory reveals changed contents, the next explicit `up` may replace and
   reconnect it using confirmed-stop sequencing
 - Online `list` includes authorized cloud configs, including those not installed
-  on this Mac. Show region/name, ID, assigned internal IP, cloud state, and
-  observed local tunnel state. Label unusable rows without installation labels
+  on this Mac. Show region, index, name/email, UUID, and observed state. Long
+  output adds tunnel IP and connection URL, matching iOS details without a
+  repeated region. Label unusable rows without installation labels
 - Plain `list` uses shared controller inventory, waits for startup restoration,
   and requests a stale refresh through the controller activity policy. Include
   freshness/source metadata. Do not promise a disk cache of all cloud
@@ -349,9 +360,13 @@ numbered selector, or `--wait` in v1.
   fresh result. Retained data may be shown as stale with the failure recorded
 - Refresh does not reinstall, stop, or restart a tunnel. Changed/removed cloud
   rows can affect eligibility for future `up` without disconnecting the current VPN
-- Signed-out `list`/`up` require login. Signed-out `status`/`down` can inspect or
-  stop owned local VPN state without exposing another account's inventory,
+- Signed-out `list`/`up`/targeted `down` require login. Signed-out `status` and bare
+  `down` can inspect or stop owned local VPN state without exposing another account's inventory,
   cached client labels, internal IPs, or retained operation details
+- `status --operation` retains the current tunnel's account-filtered config ID,
+  observation time, and freshness on matching builds. The operation target is
+  separate from the tunnel currently observed. Compatible different builds keep
+  the coarse fallback
 - `auth status` distinguishes signed out, retained identity, restoring/checking,
   online authorized, offline authorized, access denied, and credentials
   unavailable. Retained identity alone does not imply current product access

@@ -54,7 +54,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .controllerUnavailable: ("Unable to reach the CloudGateway controller", "Open CloudGateway once on this Mac, then try again")
             case .controllerRejected: ("The CloudGateway controller rejected this request", "Run the command as the macOS user who set up CloudGateway")
             case .configUnavailable: ("That config is missing or unusable", "Run: cloudgateway list")
-            case .selectionUnavailable: ("No usable config is selected", "Run cloudgateway list, then cloudgateway up <config-id>")
+            case .selectionUnavailable: ("No usable config is selected", "Run cloudgateway ls, then cloudgateway up <client-uuid>")
             case .networkUnavailable: ("Unable to reach CloudGateway", "Check the network connection, then try again")
             case .refreshSkipped: ("Inventory refresh did not run", "Run: cloudgateway refresh")
             case .refreshSuperseded: ("Another operation superseded this inventory refresh", "Run: cloudgateway refresh")

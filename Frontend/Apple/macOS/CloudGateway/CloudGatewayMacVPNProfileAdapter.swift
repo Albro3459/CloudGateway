@@ -111,8 +111,12 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
     }
 
     func stopAndWait(identifier: String) async throws {
+        try await stopAndWait(identifier: identifier, authorize: {})
+    }
+
+    func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
         let manager = try await installedManager(identifier: identifier)
-        try await MacVPNStopWaiter(connection: manager.connection, timeout: stopTimeout).stopAndWait()
+        try await MacVPNStopWaiter(connection: manager.connection, timeout: stopTimeout).stopAndWait(authorize: authorize)
     }
 
     private func installedManager(identifier: String) async throws -> NETunnelProviderManager {
@@ -171,8 +175,9 @@ private final class MacVPNStopWaiter {
         self.timeout = timeout
     }
 
-    func stopAndWait() async throws {
+    func stopAndWait(authorize: @escaping @MainActor @Sendable () throws -> Void = {}) async throws {
         try Task.checkCancellation()
+        try authorize()
         if connection.status == .disconnected || connection.status == .invalid { return }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -193,6 +198,11 @@ private final class MacVPNStopWaiter {
                         try await Task.sleep(for: .seconds(timeout))
                         self?.finish(.failure(CloudGatewayMacConfigError.stopTimedOut))
                     } catch {}
+                }
+                do { try authorize() }
+                catch {
+                    finish(.failure(error))
+                    return
                 }
                 connection.stopVPNTunnel()
                 checkStatus()

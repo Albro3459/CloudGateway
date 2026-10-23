@@ -37,7 +37,7 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
 }
 
 @Test func cliParserAcceptsCommandsWithFlagsBeforeOrAfterWords() throws {
-    let configId = "uid1/us-east-1/client-1"
+    let clientId = "78ab8633-ae25-4287-885f-57bbbf6e7f63"
     let operationId = UUID()
     #expect(try command(["auth", "status"]) == .authStatus)
     #expect(try command(["--json", "auth", "status"]) == .authStatus)
@@ -50,8 +50,8 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
     #expect(try command(["--region=eu_west.2", "list"]) == .list(regionId: "eu_west.2", refresh: false))
     #expect(try command(["status"]) == .status(operationId: nil))
     #expect(try command(["status", "--operation", operationId.uuidString.lowercased()]) == .status(operationId: operationId))
-    #expect(try command(["up"]) == .up(configId: nil))
-    #expect(try command(["up", configId]) == .up(configId: configId))
+    #expect(try command(["up"]) == .up(selector: nil))
+    #expect(try command(["up", clientId]) == .up(selector: .client(UUID(uuidString: clientId)!)))
     #expect(try command(["down"]) == .down)
     #expect(try command(["refresh"]) == .refresh)
     #expect(try command(["doctor", "--non-interactive"]) == .doctor)
@@ -81,9 +81,9 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
         (["list", "--region", "a", "--region", "b"], "--region can only be given once"),
         (["--timeout", "5", "status", "--timeout=6"], "--timeout can only be given once"),
         (["status", "--operation", "not-a-uuid"], "Invalid operation ID 'not-a-uuid'"),
-        (["list", "--region", "us/east"], "Invalid region ID 'us/east'"),
-        (["up", "uid1/region"], "Invalid config ID 'uid1/region'. Use FirebaseUID/regionId/clientId from `cloudgateway list`"),
-        (["up", "uid1/region/client", "extra"], "Unexpected argument 'extra'"),
+        (["list", "--region", "us/east"], "Invalid region 'us/east'"),
+        (["up", "uid1/region"], "Use a client UUID or <region> <positive index> from `cloudgateway ls`"),
+        (["up", "uid1/region/client", "extra"], "Use a client UUID or <region> <positive index> from `cloudgateway ls`"),
         (["list", "extra"], "Unexpected argument 'extra'"),
         (["--timeout", "0", "status"], "--timeout needs a positive number of seconds, up to 86400"),
         (["--timeout", "nan", "status"], "--timeout needs a positive number of seconds, up to 86400"),

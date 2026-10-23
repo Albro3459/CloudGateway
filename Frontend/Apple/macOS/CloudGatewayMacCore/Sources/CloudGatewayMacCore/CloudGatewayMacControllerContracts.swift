@@ -43,7 +43,7 @@ public enum CloudGatewayMacCommandOutcome: Codable, Equatable, Sendable {
     case expired
 }
 
-// Unavailable refreshes keep any retained rows, which the snapshot marks as cached
+// Offline refreshes mark authorized saved inventory as cached, otherwise unavailable
 public enum CloudGatewayMacRefreshResult: String, Codable, Sendable {
     case refreshed, unavailable, denied, signInRequired, skipped, superseded, timedOut
 }
@@ -95,6 +95,7 @@ public struct CloudGatewayMacClientMetadata: Equatable, Sendable {
     public let clientName: String
     public let ownerLabel: String?
     public let internalIp: String?
+    public var connectionUrl: String? = nil
     public let cloudState: CloudGatewayClientStatus
     public let eligibility: CloudGatewayMacClientEligibility
     public let isInstalled: Bool
@@ -102,6 +103,8 @@ public struct CloudGatewayMacClientMetadata: Equatable, Sendable {
     public let readAt: Date
     public let updatedAt: Date?
     public let status: CloudGatewayTunnelStatus?
+
+    public var clientId: String { String(identifier.split(separator: "/").last ?? "") }
 }
 
 public struct CloudGatewayMacObservedProfile: Equatable, Sendable {

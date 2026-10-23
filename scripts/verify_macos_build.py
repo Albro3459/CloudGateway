@@ -242,12 +242,22 @@ def verify_cli(app: Path) -> None:
         (["--help"], 0, "help", False),
         (["help", "auth", "login"], 0, "help", False),
         (["--version"], 0, "version", False),
+        (["version"], 0, "version", False),
+        (["-v"], 0, "version", False),
         (["--json"], 0, "help", True),
         (["help", "doctor", "--json"], 0, "help", True),
         (["--version", "--json"], 0, "version", True),
+        (["version", "--json"], 0, "version", True),
+        (["-v", "--json"], 0, "version", True),
+        (["help", "version"], 0, "help", False),
+        (["version", "--help"], 0, "help", False),
+        (["ls", "--help"], 0, "help", False),
+        (["ls", "-l", "--help", "--json"], 0, "help", True),
+        (["help", "ls", "--json"], 0, "help", True),
         (["--unknown-option"], 2, None, False),
         (["auth", "login", "--timeout", "0", "--json"], 2, "auth login", True),
         (["status", "--unexpected", "--json"], 2, "status", True),
+        (["ls", "--unexpected", "--json"], 2, "list", True),
     ]
     with tempfile.TemporaryDirectory(prefix="cloudgateway-cli-smoke-") as directory:
         root = Path(directory)
@@ -292,10 +302,13 @@ def verify_cli(app: Path) -> None:
                                 "Packaged CLI help is missing")
                 elif expected_exit == 0:
                     require(bool(result.stdout) and result.stderr == b"", "Packaged CLI static output missing")
+                    if expected_command == "version":
+                        expected = f"CloudGateway {info.get('CFBundleShortVersionString')} ({info.get('CFBundleVersion')})\n"
+                        require(result.stdout == expected.encode(), "CLI version text does not match its bundle")
                 else:
                     require(result.stdout == b"" and bool(result.stderr), "CLI usage diagnostics must use stderr")
         require(not list(home.iterdir()), "Static CLI commands wrote user state")
-    print("20 bounded packaged CLI direct/symlink help, version, and usage checks passed")
+    print(f"{len(cases) * 2} bounded packaged CLI direct/symlink help, version, and usage checks passed")
 
 
 def main() -> None:

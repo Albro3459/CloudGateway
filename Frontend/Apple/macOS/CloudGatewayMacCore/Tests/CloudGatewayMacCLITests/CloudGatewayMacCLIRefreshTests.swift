@@ -136,3 +136,74 @@ private let refreshConfig = "uid1/us-east-1/mac"
     #expect(harness.actions == [.lifecycle, .userActivity])
     #expect(!harness.actions.contains(.snapshot))
 }
+
+@MainActor
+@Test func cliFilteredRefreshTimeoutDoesNotResolveAnUnsettledEmptyInventory() async throws {
+    for alias in ["list", "ls"] {
+        let harness = CLIHarness()
+        harness.onRequest = { request in
+            guard request.action == .awaitRefresh else { return nil }
+            return .init(state: cliState(inventory: .refreshing), refresh: .timedOut)
+        }
+        #expect(await harness.run(alias, "--refresh", "--region", "chicago", "--timeout", "1", "--json") == 8)
+        #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "timeout")
+        let data = try #require(harness.json?["data"] as? [String: Any])
+        #expect(data["result"] as? String == "timed_out")
+        #expect(data["inventory"] is NSNull)
+        #expect(harness.actions == [.lifecycle, .userActivity, .awaitRefresh, .awaitRefresh])
+        #expect(!harness.output.contains("unavailable in this account's current inventory"))
+    }
+}
+
+@MainActor
+@Test func cliFilteredRefreshPreservesFailuresWithoutAUsableRegionInventory() async throws {
+    let scenarios: [(CloudGatewayMacRefreshResult, Int32, String)] = [
+        (.unavailable, 6, "network_unavailable"), (.denied, 3, "access_denied"),
+        (.signInRequired, 3, "sign_in_required"), (.skipped, 6, "refresh_skipped"),
+        (.superseded, 7, "refresh_superseded"),
+    ]
+    for inventory in [CloudGatewayMacInventoryFreshness.unavailable, .refreshing] {
+        for (result, exit, code) in scenarios {
+            let harness = CLIHarness()
+            harness.onRequest = { request in
+                guard request.action == .awaitRefresh else { return nil }
+                return .init(state: cliState(inventory: inventory), refresh: result)
+            }
+            #expect(await harness.run("ls", "--refresh", "--long", "--region", "chicago", "--json") == exit)
+            #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == code)
+            let data = try #require(harness.json?["data"] as? [String: Any])
+            #expect(data["inventory"] is NSNull)
+            #expect(!harness.output.contains("unavailable in this account's current inventory"))
+        }
+    }
+}
+
+@MainActor
+@Test func cliFilteredRefreshStillRejectsUnknownRegionsInSettledInventory() async {
+    for result in [CloudGatewayMacRefreshResult.refreshed, .unavailable, .skipped, .superseded, .timedOut] {
+        for inventory in [CloudGatewayMacInventoryFreshness.current, .cached] {
+            let harness = CLIHarness()
+            harness.onRequest = { request in
+                guard request.action == .awaitRefresh else { return nil }
+                return .init(state: cliState(inventory: inventory, clients: [cliClient(refreshConfig, regionName: "East", name: "Mac")]),
+                             refresh: result)
+            }
+            #expect(await harness.run("ls", "--refresh", "--region", "chicago", "--timeout", "1", "--json") == 2)
+            #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "usage")
+            #expect(harness.output.contains("unavailable in this account's current inventory"))
+        }
+    }
+}
+
+@MainActor
+@Test func cliFilteredRefreshKeepsAuthorizationFailureAheadOfRetainedRegionChoices() async {
+    for (result, code) in [(CloudGatewayMacRefreshResult.denied, "access_denied"), (.signInRequired, "sign_in_required")] {
+        let harness = CLIHarness()
+        harness.onRequest = { request in
+            guard request.action == .awaitRefresh else { return nil }
+            return .init(state: cliState(clients: [cliClient(refreshConfig, regionName: "East", name: "Mac")]), refresh: result)
+        }
+        #expect(await harness.run("ls", "--refresh", "--region", "chicago", "--json") == 3)
+        #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == code)
+    }
+}

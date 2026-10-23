@@ -1,6 +1,6 @@
 # Shorter CLI lists and easier VPN selection
 
-Status: planned, implementation has not started
+Status: implemented, unsigned validation passed, fresh Sol xHigh review cleared
 
 ## Goal
 
@@ -106,6 +106,9 @@ and inventory/offline footer in both layouts.
   code `usage` in JSON. Include the supplied value and available region IDs/names
   in the message or suggestion. Never report success with an empty list for an
   unmatched filter, including `ls`, `--long`, `--json`, and `--refresh` combinations
+- Resolve filters only when an authorized inventory is usable. A failed refresh
+  with unsettled inventory retains its timeout/network/access error, and an
+  unavailable inventory retains its service error rather than reporting a typo
 - Resolve against the full account-filtered inventory before applying the region
   or eligibility filter. The current IPC snapshot has no independent region
   catalog, so the error should say the region is unavailable in this account's
@@ -160,7 +163,9 @@ the menu, and older frontends.
 - Scoped stop requires an authorized account snapshot to resolve the target,
   including existing authorized offline access
 - Check the target again in the controller at execution, across any asynchronous
-  observation. A different running config must remain running
+  observation, including the adapter's final manager reload. Recheck authorization
+  immediately before the actual stop call. A different running config must
+  remain running
 - An already disconnected target succeeds without stopping another config
 - Unknown or ambiguous targets fail before mutation acceptance
 - Preserve confirmed-stop semantics, operation lookup, cancellation, deadlines,
@@ -277,10 +282,20 @@ against another active config, already stopped targets, signed-out bare stop,
 compatible older-client stop, accepted-operation tracking, and snapshot deadlines.
 Keep the stable UUID target through asynchronous work.
 
-Run `./scripts/test.sh macos` with unsigned builds only. Update packaged CLI
-smoke checks for aliases/help/parser behavior. For this planning change, manual
-review and `git diff --check` are sufficient. No implementation or test run is
-included in this checkpoint.
+Run `./scripts/test.sh macos` with unsigned builds only. Packaged CLI smoke checks
+cover aliases, help, parser behavior, and identical version text/JSON.
+
+Implementation validation on 2026-10-23 passed 504 macOS package tests, 263 shared
+Kit/AppCore tests, 31 Firebase auth adapter tests, both strict macOS Periphery
+scans, the unsigned arm64 app/extension build, bundle verification, and 40 bounded
+direct/symlink CLI checks. The first fresh Secure Sol xHigh review found two
+issues, now fixed: authorization across the adapter's final manager lookup and
+region resolution masking a refresh timeout. Round 2 found an unusable offline
+fallback incorrectly marked cached, now fixed with controller-to-CLI coverage for
+missing, corrupt, denied, and authorized empty caches. The fresh third Secure
+Sol xHigh review found no actionable findings in the complete final diff.
+The implementation also normalizes backend `/32` tunnel metadata at the IPC
+mapping boundary so details retain the private IP online and offline.
 
 ## Code references
 

@@ -98,7 +98,7 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
     )
     for identity in [nil, rebuilt, currentBuild] {
         let request = CloudGatewayMacControllerRequest(
-            action: action, identifier: action == .connect ? "account/region/client" : nil,
+            action: action, identifier: action == .connect || action == .disconnectClient ? "account/region/client" : nil,
             regionId: action == .createClient ? "region" : nil,
             clientName: action == .createClient ? "Work Mac" : nil,
             contextId: [.createClient, .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart,

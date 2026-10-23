@@ -124,12 +124,13 @@ public struct CloudGatewayMacCLI {
             switch command {
             case .authStatus: return .success(try await session.authStatus())
             case .status(let id?): return .success(try await session.operation(id))
-            case .up(let id): return .success(try await session.mutate(.connect, identifier: id, accepted: accepted))
+            case .up(let selector): return .success(try await session.mutate(.connect, selector: selector, accepted: accepted))
+            case .downTarget(let selector): return .success(try await session.mutate(.disconnectClient, selector: selector, accepted: accepted))
             case .down: return .success(try await session.mutate(.turnOff, accepted: accepted))
             case .authLogout: return .success(try await session.mutate(.signOut, accepted: accepted))
             case .refresh: return .success(try await session.refresh(regionId: nil, isList: false))
-            case .list(let regionId, refresh: true): return .success(try await session.refresh(regionId: regionId, isList: true))
-            case .list(let regionId, _): return .success(try await session.inventory(regionId: regionId))
+            case .list(let regionId, refresh: true, let long): return .success(try await session.refresh(regionId: regionId, isList: true, isLong: long))
+            case .list(let regionId, _, let long): return .success(try await session.inventory(regionId: regionId, isLong: long))
             default: return .success(try await session.status())
             }
         } catch { return .failure(.init(error)) }

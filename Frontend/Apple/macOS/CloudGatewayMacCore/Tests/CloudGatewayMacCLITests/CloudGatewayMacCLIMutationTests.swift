@@ -4,15 +4,16 @@ import Testing
 @testable import CloudGatewayMacControllerIPC
 @testable import CloudGatewayMacCore
 
-private let mutationConfig = "uid1/us-east-1/mac"
+private let mutationUUID = "78ab8633-ae25-4287-885f-57bbbf6e7f63"
+private let mutationConfig = "uid1/us-east-1/" + mutationUUID
 
 @MainActor
 private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: CloudGatewayMacControllerState? = nil) -> CLIHarness {
-    let harness = CLIHarness(state ?? cliState(selected: mutationConfig))
+    let harness = CLIHarness(state ?? cliState(clients: [cliClient(mutationConfig, regionName: "East", name: "Mac")], selected: mutationConfig))
     var operationId: UUID?
     harness.onRequest = { request in
         switch request.action {
-        case .connect, .turnOff, .signOut:
+        case .connect, .turnOff, .disconnectClient, .signOut:
             operationId = request.id
             return .init(operation: .init(id: request.id, state: .accepted))
         case .confirmOperation:
@@ -31,7 +32,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
 @MainActor
 @Test func cliStartFlushesAcceptanceBeforeConfirmAndReportsSubmissionSeparately() async throws {
     let harness = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil))
-    #expect(await harness.run("up", mutationConfig, "--json") == 0)
+    #expect(await harness.run("up", mutationUUID, "--json") == 0)
     let records = try harness.output.split(separator: "\n").map {
         try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
     }
@@ -57,25 +58,27 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
 @MainActor
 @Test func cliStartWaitsForColdExtensionReadinessBeforeReserving() async {
     let harness = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil),
-                                  state: cliState(selected: mutationConfig, setup: .checkingConnection))
-    harness.states.append(cliState(selected: mutationConfig))
-    #expect(await harness.run("up", mutationConfig, "--json") == 0)
+                                  state: cliState(clients: [cliClient(mutationConfig, regionName: "East", name: "Mac")],
+                                                  selected: mutationConfig, setup: .checkingConnection))
+    harness.states.append(cliState(clients: [cliClient(mutationConfig, regionName: "East", name: "Mac")], selected: mutationConfig))
+    #expect(await harness.run("up", mutationUUID, "--json") == 0)
     #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
 }
 
 @MainActor
-@Test func cliStartWaitsForUnresolvedStartupInventoryButUsesAvailableConfigs() async {
+@Test func cliStartWaitsForSettledInventoryBeforeResolvingSelectors() async {
     let row = cliClient(mutationConfig, regionName: "Region", name: "Mac", installed: false)
     let cold = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil),
                                state: cliState(inventory: .refreshing, selected: mutationConfig))
     cold.states.append(cliState(clients: [row], selected: mutationConfig))
-    #expect(await cold.run("up", mutationConfig, "--json") == 0)
+    #expect(await cold.run("up", mutationUUID, "--json") == 0)
     #expect(cold.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
 
     let available = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil),
         state: cliState(inventory: .refreshing, clients: [row], selected: mutationConfig))
-    #expect(await available.run("up", mutationConfig, "--json") == 0)
-    #expect(available.actions == [.lifecycle, .userActivity, .snapshot, .connect, .confirmOperation])
+    available.states.append(cliState(clients: [row], selected: mutationConfig))
+    #expect(await available.run("up", mutationUUID, "--json") == 0)
+    #expect(available.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
     #expect(!available.actions.contains(.awaitRefresh))
 }
 
@@ -157,22 +160,18 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
         let state = cliState(clients: [cliClient(mutationConfig, regionName: "East", name: "Mac", installed: false)],
                              selected: mutationConfig)
         let harness = mutationHarness(outcome, state: state)
-        #expect(await harness.run("up", mutationConfig) == exit)
+        #expect(await harness.run("up", mutationUUID) == exit)
         #expect(!harness.actions.contains(.refresh))
         #expect(!harness.actions.contains(.awaitRefresh))
     }
 }
 
 @MainActor
-@Test func cliForeignAccountIdsRemainControllerAuthorizedAndCannotTriggerRefresh() async {
+@Test func cliCompoundIdentifiersAreRejectedBeforeControllerConnection() async {
     let foreign = "other/us-east-1/mac"
     let harness = mutationHarness(.failed(.configUnavailable))
-    let policy = harness.onRequest
-    harness.onRequest = { request in
-        if request.action == .connect { #expect(request.identifier == foreign) }
-        return try await policy?(request)
-    }
-    #expect(await harness.run("up", foreign) == 5)
+    #expect(await harness.run("up", foreign) == 2)
+    #expect(harness.actions.isEmpty)
     #expect(!harness.actions.contains(.awaitRefresh))
     #expect(!harness.output.contains("VPN start requested"))
 }

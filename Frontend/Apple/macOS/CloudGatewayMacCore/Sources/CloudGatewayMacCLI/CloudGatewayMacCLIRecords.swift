@@ -315,6 +315,9 @@ struct CloudGatewayMacCLIInventory: Encodable {
         }
 
         let configId: String
+        let clientId: String
+        let index: Int
+        @CloudGatewayMacCLINullable var connectionUrl: String?
         let name: String
         @CloudGatewayMacCLINullable var owner: String?
         @CloudGatewayMacCLINullable var internalIp: String?
@@ -327,12 +330,15 @@ struct CloudGatewayMacCLIInventory: Encodable {
         let readAt: Date
         @CloudGatewayMacCLINullable var updatedAt: Date?
 
-        init(_ client: CloudGatewayMacControllerState.Client, selectedId: String?,
+        init(_ client: CloudGatewayMacControllerState.Client, index: Int, selectedId: String?,
              observation: CloudGatewayMacCLIStatus.Tunnel.Observation) {
             configId = client.identifier
+            clientId = client.clientId
+            self.index = index
+            connectionUrl = client.connectionUrl.map(CloudGatewayMacCLIText.sanitize)
             name = CloudGatewayMacCLIText.sanitize(client.clientName)
             owner = client.ownerLabel.map(CloudGatewayMacCLIText.sanitize)
-            internalIp = client.internalIp
+            internalIp = client.internalIp.map(CloudGatewayMacCLIText.sanitize)
             cloudState = switch client.cloudState {
             case .creating: .creating
             case .active: .active
@@ -370,9 +376,15 @@ struct CloudGatewayMacCLIInventory: Encodable {
     @CloudGatewayMacCLINullable var profilesObservedAt: Date?
     @CloudGatewayMacCLINullable var regionId: String?
     let regions: [Region]
+    let isLong: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case accountId, scope, freshness, profileObservation, profilesObservedAt, regionId, regions
+    }
 
     init(_ state: CloudGatewayMacControllerState, accountId: String, regionId: String?, isStale: Bool = false,
-         eligibleOnly: Bool = false) {
+         eligibleOnly: Bool = false, isLong: Bool = false) {
+        self.isLong = isLong
         self.accountId = accountId
         scope = state.access == .offline ? .installed : .authorized
         freshness = isStale ? .stale : state.inventory == .cached ? .cached : .current
@@ -380,23 +392,14 @@ struct CloudGatewayMacCLIInventory: Encodable {
         profileObservation = observation
         profilesObservedAt = state.profilesObservedAt
         self.regionId = regionId
-        let clients = state.clients.filter {
-            (regionId == nil || $0.regionId == regionId) && (!eligibleOnly || $0.eligibility == .eligible)
-        }
-        regions = Dictionary(grouping: clients, by: \.regionId).values.sorted { lhs, rhs in
-            let left = lhs[0]
-            let right = rhs[0]
-            if left.regionOrder != right.regionOrder { return left.regionOrder < right.regionOrder }
-            if left.regionName != right.regionName { return left.regionName < right.regionName }
-            return left.regionId < right.regionId
-        }.map { clients in
-            let configs = clients.sorted { lhs, rhs in
-                if (lhs.ownerLabel ?? "") != (rhs.ownerLabel ?? "") { return (lhs.ownerLabel ?? "") < (rhs.ownerLabel ?? "") }
-                if lhs.clientName != rhs.clientName { return lhs.clientName < rhs.clientName }
-                return lhs.identifier < rhs.identifier
-            }.map { Config($0, selectedId: state.selectedIdentifier, observation: observation) }
-            return Region(regionId: clients[0].regionId, name: CloudGatewayMacCLIText.sanitize(clients[0].regionName),
-                          configs: configs)
+        regions = CloudGatewayMacCLIInventoryOrder.regions(state, accountId: accountId).compactMap { clients in
+            guard let first = clients.first, regionId == nil || first.regionId == regionId else { return nil }
+            let configs = clients.enumerated().compactMap { index, client -> Config? in
+                guard !eligibleOnly || client.eligibility == .eligible else { return nil }
+                return Config(client, index: index + 1, selectedId: state.selectedIdentifier, observation: observation)
+            }
+            guard !configs.isEmpty else { return nil }
+            return Region(regionId: first.regionId, name: CloudGatewayMacCLIText.sanitize(first.regionName), configs: configs)
         }
     }
 }

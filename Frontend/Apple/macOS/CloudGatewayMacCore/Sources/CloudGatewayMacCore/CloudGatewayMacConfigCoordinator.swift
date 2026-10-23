@@ -50,6 +50,7 @@ public protocol CloudGatewayMacProfileAdapter: Sendable {
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws
     func start(identifier: String, grant: String) async throws
     func stopAndWait(identifier: String) async throws
+    func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
 }
 
 public protocol CloudGatewayMacSnapshotPersisting: Sendable {
@@ -247,6 +248,24 @@ public actor CloudGatewayMacConfigCoordinator {
     public func turnOff() async throws {
         try await runCommand { command in
             try await self.performTurnOff(command: command)
+        }
+    }
+
+    public func disconnectClient(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await authorize()
+            let installed = try await self.profiles.installedProfiles()
+            try await authorize()
+            try await self.requireCurrent(command)
+            let targets = installed.filter { $0.identifier == identifier }
+            guard targets.count <= 1 else { throw CloudGatewayMacConfigError.unavailable }
+            if targets.first?.needsConfirmedStop == true {
+                try await self.profiles.stopAndWait(identifier: identifier, authorize: authorize)
+                try await authorize()
+            }
         }
     }
 

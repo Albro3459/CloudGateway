@@ -25,7 +25,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     let harness = CLIHarness()
     #expect(await harness.run() == 0)
     #expect(harness.output.hasPrefix("Control the CloudGateway VPN on this Mac\n\nUsage: cloudgateway <command> [options]\n"))
-    #expect(harness.output.contains("  up [config-id]"))
+    #expect(harness.output.contains("  up [<client-uuid> | <region> <index>]"))
     #expect(!harness.output.contains("--controller"))
     #expect(!harness.output.contains("--cli"))
     #expect(await harness.run("auth", "login", "--help") == 0)
@@ -97,11 +97,11 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     #expect(await harness.run("list") == 0)
     #expect(harness.output == """
         US East (us-east-1)
-          Mac  uid1/us-east-1/mac  10.0.0.2  connected, selected
-          Old  uid1/us-east-1/old  -         removed, inactive
+          1  Mac  mac  connected, selected
+          2  Old  old  removed, inactive
 
         US West (us-west-2)
-          Laptop  uid1/us-west-2/laptop  10.0.0.2
+          1  Laptop  laptop
 
         Tunnel observation: current at 2027-01-15T08:00:00Z
         Inventory: current
@@ -110,12 +110,12 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     harness.output = ""
     #expect(await harness.run("list", "--region", "us-west-2", "--json") == 0)
     #expect(harness.output == #"""
-        {"command":"list","data":{"accountId":"uid1","freshness":"current","profileObservation":"current","profilesObservedAt":"2027-01-15T08:00:00Z","regionId":"us-west-2","regions":[{"configs":[{"cloudState":"active","configId":"uid1/us-west-2/laptop","eligibility":"eligible","installed":false,"internalIp":"10.0.0.2","name":"Laptop","owner":null,"readAt":"1970-01-01T00:00:00Z","selected":false,"source":"cloud","tunnel":null,"updatedAt":null}],"name":"US West","regionId":"us-west-2"}],"scope":"authorized"},"error":null,"operationId":null,"schemaVersion":1,"type":"result"}
+        {"command":"list","data":{"accountId":"uid1","freshness":"current","profileObservation":"current","profilesObservedAt":"2027-01-15T08:00:00Z","regionId":"us-west-2","regions":[{"configs":[{"clientId":"laptop","cloudState":"active","configId":"uid1/us-west-2/laptop","connectionUrl":null,"eligibility":"eligible","index":1,"installed":false,"internalIp":"10.0.0.2","name":"Laptop","owner":null,"readAt":"1970-01-01T00:00:00Z","selected":false,"source":"cloud","tunnel":null,"updatedAt":null}],"name":"US West","regionId":"us-west-2"}],"scope":"authorized"},"error":null,"operationId":null,"schemaVersion":1,"type":"result"}
 
         """#)
     harness.output = ""
-    #expect(await harness.run("list", "--region", "eu-west-1") == 0)
-    #expect(harness.output.hasPrefix("No configs in region eu-west-1\n"))
+    #expect(await harness.run("list", "--region", "eu-west-1") == 2)
+    #expect(harness.diagnostics.contains("unavailable in this account's current inventory"))
 }
 
 @MainActor
@@ -309,4 +309,37 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     let harness = CLIHarness()
     harness.failsOutput = true
     #expect(await harness.run("--version") == 1)
+}
+
+@MainActor
+@Test func cliUnavailableInventoryPrecedesRegionResolutionForBothListAliases() async {
+    for alias in ["list", "ls"] {
+        for isJSON in [false, true] {
+            for filter in [[], ["--region", "chicago"]] {
+                let harness = CLIHarness(cliState(inventory: .unavailable))
+                #expect(await harness.run([alias] + filter + (isJSON ? ["--json"] : [])) == 6)
+                if isJSON {
+                    #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "network_unavailable")
+                    #expect(harness.json?["data"] is NSNull)
+                } else {
+                    #expect(harness.output.isEmpty)
+                    #expect(harness.diagnostics.hasPrefix("Error: Inventory is unavailable for this account\n"))
+                }
+                #expect(!harness.output.contains("No configs"))
+                #expect(!harness.output.contains("unavailable in this account's current inventory"))
+            }
+        }
+    }
+}
+
+@MainActor
+@Test func cliUnknownRegionInSettledEmptyInventoryRemainsAUsageError() async {
+    for alias in ["list", "ls"] {
+        for inventory in [CloudGatewayMacInventoryFreshness.current, .cached] {
+            let harness = CLIHarness(cliState(inventory: inventory))
+            #expect(await harness.run(alias, "--region", "chicago", "--json") == 2)
+            #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "usage")
+            #expect(harness.output.contains("unavailable in this account's current inventory"))
+        }
+    }
 }

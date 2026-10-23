@@ -32,7 +32,7 @@ let package = Package(
             .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
         ]),
         .testTarget(name: "CloudGatewayMacIPCTests", dependencies: ["CloudGatewayMacIPC"]),
-        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC"]),
+        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC", "CloudGatewayMacCLI"]),
         .testTarget(name: "CloudGatewayMacControllerIPCTests", dependencies: ["CloudGatewayMacControllerIPC"]),
         .testTarget(name: "CloudGatewayMacCLITests", dependencies: [
             "CloudGatewayMacCLI",

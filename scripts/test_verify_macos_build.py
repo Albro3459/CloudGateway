@@ -49,7 +49,18 @@ class MacOSCLIVerificationTests(unittest.TestCase):
         self.assertNotIn("--controller", flags)
         self.assertFalse(any(flag in flags for flag in ["up", "down", "refresh", "logout"]))
         invalid = any(flag in flags for flag in ["--unknown-option", "--unexpected", "0"])
-        command = "auth login" if flags[:2] == ["auth", "login"] else "status" if flags[:1] == ["status"] else "version" if "--version" in flags else "help"
+        if flags[:2] == ["auth", "login"]:
+            command = "auth login"
+        elif flags[:1] == ["status"]:
+            command = "status"
+        elif flags[:1] == ["ls"] and invalid:
+            command = "list"
+        elif any(flag in flags for flag in ["version", "--version", "-v"]) and not any(
+            flag in flags for flag in ["help", "--help"]
+        ):
+            command = "version"
+        else:
+            command = "help"
         if "--json" in flags:
             data = {"version": "1.2.0", "build": "7"} if command == "version" else {"usage": "cloudgateway help"}
             record = {"schemaVersion": 1, "type": "error" if invalid else "result", "command": command,
@@ -58,12 +69,20 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             output, diagnostics = json.dumps(record).encode() + b"\n", b""
         else:
             output, diagnostics = (b"", b"Usage error\n") if invalid else (b"CloudGateway help/version\n", b"")
+            if command == "version" and not invalid:
+                output = b"CloudGateway 1.2.0 (7)\n"
         return subprocess.CompletedProcess(arguments, 2 if invalid else 0, stdout=output, stderr=diagnostics)
 
     def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
         with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
             verifier.verify_cli(self.app)
-        self.assertEqual(run.call_count, 20)
+        self.assertEqual(run.call_count, 40)
+        symlink = next(entry.args[0][0] for entry in run.call_args_list
+                       if Path(entry.args[0][0]).name == "cloudgateway")
+        for prefix in ([str(self.binary.absolute()), "--cli"], [symlink]):
+            for flags in (["version"], ["-v"], ["--version"], ["version", "--json"], ["-v", "--json"],
+                          ["--version", "--json"], ["ls", "-l", "--help", "--json"]):
+                self.assertTrue(any(entry.args[0] == prefix + flags for entry in run.call_args_list))
         self.assertEqual(len(self.homes), 1)
         self.assertTrue(all(not home.exists() for home in self.homes))
 
@@ -85,11 +104,13 @@ class MacOSCLIVerificationTests(unittest.TestCase):
         self.assertNotIn("private", str(raised.exception))
 
     def test_invalid_json_version_and_terminal_output_are_rejected(self) -> None:
-        for failure in ("json", "version", "escape", "newline", "usage", "operation"):
+        for failure in ("json", "version", "version_text", "escape", "newline", "usage", "operation"):
             def result(arguments: list[str], **options) -> subprocess.CompletedProcess:
                 response = self.static_result(arguments, **options)
                 if failure == "escape":
                     response.stdout += b"\x1b[31m"
+                elif failure == "version_text" and response.stdout.startswith(b"CloudGateway 1.2.0"):
+                    response.stdout = b"CloudGateway 1.2.0 (8)\n"
                 elif "--json" in arguments:
                     record = json.loads(response.stdout)
                     if failure == "json":

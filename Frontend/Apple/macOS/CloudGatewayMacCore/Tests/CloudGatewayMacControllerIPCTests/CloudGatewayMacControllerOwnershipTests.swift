@@ -279,7 +279,9 @@ private final class OwnershipHarness {
 @Test func controllerOrchestratorBindsReservedAccountWorkToItsSession() async throws {
     let effects = ControllerOrchestratorEffects()
     effects.sessions.changeAccount(to: "account")
-    let controller = try effects.make()
+    let reservedSession = try #require(effects.sessions.currentToken)
+    let requests = try effects.makeRequests()
+    let controller = try effects.make(requests: requests)
     try await effects.ready(controller)
     let bare = CloudGatewayMacControllerRequest(
         action: .connect, appVersion: controllerBoundaryBuild.version, appBuild: controllerBoundaryBuild.build,
@@ -289,7 +291,12 @@ private final class OwnershipHarness {
     effects.sessions.changeAccount(to: "account")
     let rejected = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: bare.id))
     #expect(rejected.operation == .init(id: bare.id, state: .failed, failure: .rejected))
-    #expect(rejected.outcome == .failed(.signInRequired))
+    #expect(rejected.outcome == nil)
+    let lookup = await controller.handle(controllerBoundaryRequest(.operation, contextId: bare.id))
+    #expect(lookup.operation == rejected.operation)
+    #expect(lookup.outcome == nil)
+    #expect(requests.outcome(id: bare.id, session: reservedSession) == .failed(.signInRequired))
+    #expect(requests.outcome(id: bare.id, session: effects.sessions.currentToken) == nil)
     #expect(effects.performed.isEmpty)
 
     var executed: [String?] = []

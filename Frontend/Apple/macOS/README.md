@@ -193,25 +193,41 @@ is outside this feature.
 ```sh
 cloudgateway                       # Help without controller or sign-in
 cloudgateway --version
+cloudgateway version               # Also available as -v
 cloudgateway help auth login
 cloudgateway auth login --no-qr
 cloudgateway auth status --json
 cloudgateway list --region us-east-1
 cloudgateway list --refresh --json
-cloudgateway up '<FirebaseUID>/<regionId>/<clientId>'
+cloudgateway ls -l                 # VPN id, tunnel IP, connection URL, owner email
+cloudgateway up '<client-uuid>'
+cloudgateway up sanjose 1          # Also accepts us-sanjose-1 or California
 cloudgateway up                    # This account's last selection
 cloudgateway status --operation '<operation-id>' --json
 cloudgateway refresh
 cloudgateway auth logout
 cloudgateway down
+cloudgateway down chicago 2        # Stop only this config
 cloudgateway doctor --json
 ```
 
-IDs are canonical `FirebaseUID/regionId/clientId` values printed by `list`.
-Names are display labels. List rows show connection state, selection, and
-unavailable reasons without an installation label. `up` uses the controller's
-authorized inventory/cache policy, installs or replaces an eligible stored config
-when needed, and reports
+`ls` aliases `list`. Rows show a region-local index starting at 1, client name
+and owner email, client UUID, and any connection/selection/unavailable state.
+`list --long` and `ls -l` show the iOS-style details without repeating the region.
+Connection URL prefers the server hostname, then IPv4. Saved configs without
+owner metadata show `Unknown` offline. Installation labels stay hidden.
+
+`up` and targeted `down` accept either a client UUID or a region plus index.
+Regions accept full IDs, display names (quote names containing spaces), or city
+aliases such as `sanjose`. Ambiguous aliases require a full region ID. Unknown
+regions return usage errors, including in `list --region`. Indices follow the
+current inventory and can change after refresh or offline fallback. Rerun `ls`
+after inventory changes and use UUIDs in scripts. An unavailable config keeps
+its index. A targeted `down` never stops a different active config and requires
+authorized inventory, including existing offline authorization.
+
+`up` uses the controller's authorized inventory/cache policy, installs or replaces
+an eligible stored config when needed, and reports
 **VPN start requested** once macOS accepts the start. A later observed connected
 state is separate. An unchanged active config reports already active. Offline
 use is limited to this account's previously authorized saved configs.
@@ -219,8 +235,8 @@ use is limited to this account's previously authorized saved configs.
 `refresh` and `list --refresh` await their own online authorization/inventory
 result without reconnecting. `auth logout` ends the controller session and hides
 account data while retaining the VPN, profiles, secrets, and caches. A cleanup
-failure is reported explicitly. `down` works while signed out and succeeds only
-after a confirmed local stop, including an already-stopped state. Quit only
+failure is reported explicitly. Bare `down` works while signed out and succeeds
+only after a confirmed local stop, including an already-stopped state. Quit only
 detaches the menu.
 
 Common options are `-h`/`--help`, `--json`, `--non-interactive`, and
@@ -239,6 +255,10 @@ and leaves controller-owned VPN work running. Reconnect and use
 automatically. Only the active/latest result is retained in memory for ten
 minutes. A newer result, app replacement, crash, or reboot can end recovery
 earlier. Unknown/expired results do not establish whether a VPN action ran.
+Operation lookup reports the current observed tunnel with the same config ID,
+observation time, and freshness as ordinary `status` when using the current
+controller build. The tunnel may differ from the operation's target. Compatible
+older/different builds retain coarse status without account details.
 Login cancellation/deadline cleanup targets only that attempt. Unexpected
 frontend loss leaves controller polling bounded by the approval expiry.
 
@@ -258,6 +278,11 @@ sanitized `message`, and nullable `suggestion`. Unavailable fields are explicit
 nulls; observation timestamps are UTC. Requested action, command outcome, and
 observed tunnel state are separate. Additive fields retain version 1 field
 types. Human diagnostics use stderr; JSON has no progress text or ANSI escapes.
+Inventory records add `clientId`, region-local `index`, and nullable
+`connectionUrl`. Existing `configId` fields keep their compound
+`FirebaseUID/regionId/clientId` value. `--long` changes human formatting only,
+so JSON returns the same complete metadata with or without it. Version aliases
+also support `--json` and never connect to the controller.
 
 | Exit | Meaning |
 | --- | --- |
@@ -289,7 +314,7 @@ Provider stop completion waits for actual backend shutdown, including after
 the stop deadline. The app reports a stop timeout instead of starting a replacement.
 
 Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
-and packaging checks, including 20 bounded packaged direct/symlink static CLI
+and packaging checks, including bounded packaged direct/symlink static CLI
 checks in temporary homes. Installer tests use temporary filesystems and do not
 edit your shell or installed app. Use `./scripts/test.sh macos --signed` for signed builds and
 profile/entitlement inspection. Use `ios` for the iOS regression gate and

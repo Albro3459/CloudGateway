@@ -46,6 +46,7 @@ final class ControllerOrchestratorEffects {
     var now = Date(timeIntervalSince1970: 1_000)
     var installed: CloudGatewayMacBuildIdentity? = controllerBoundaryBuild
     var active = false
+    var snapshotState: CloudGatewayMacControllerState?
     var authenticated = true
     var setup = CloudGatewayMacSetupState.required
     var failWrites = false
@@ -88,7 +89,9 @@ final class ControllerOrchestratorEffects {
             stored: storedUpdates, now: { self.now }, bootSession: { "boot" }, persist: { self.storedUpdates = $0 }
         )
         let effects = CloudGatewayMacControllerEffects(
-            snapshot: { setup, canUpdate in controllerBoundaryState(active: self.active, setup: setup, canUpdateExtension: canUpdate) },
+            snapshot: { setup, canUpdate in
+                self.snapshotState ?? controllerBoundaryState(active: self.active, setup: setup, canUpdateExtension: canUpdate)
+            },
             hasPendingWork: { self.hasPendingWork },
             perform: { request, completion in
                 self.performed.append(request.action)
@@ -142,7 +145,7 @@ final class ControllerOrchestratorEffects {
 func controllerBoundaryRequest(_ action: CloudGatewayMacControllerRequest.Action,
                                        id: UUID = UUID(), contextId: UUID? = nil,
                                        build: CloudGatewayMacBuildIdentity = controllerBoundaryBuild) -> CloudGatewayMacControllerRequest {
-    .init(action: action, id: id, identifier: action == .connect ? "account/region/client" : nil,
+    .init(action: action, id: id, identifier: action == .connect || action == .disconnectClient ? "account/region/client" : nil,
           contextId: contextId, appVersion: build.version, appBuild: build.build, buildIdentity: build)
 }
 

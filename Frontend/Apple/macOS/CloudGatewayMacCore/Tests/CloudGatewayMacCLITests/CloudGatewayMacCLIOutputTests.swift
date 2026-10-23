@@ -47,10 +47,10 @@ import Testing
     let data = try #require(harness.json?["data"] as? [String: Any])
     #expect(harness.json?["command"] as? String == "help")
     #expect(data["topic"] as? String == "list")
-    #expect(data["usage"] as? String == "cloudgateway list [--region <region-id>] [--refresh] [options]")
+    #expect(data["usage"] as? String == "cloudgateway list [--region <region>] [--refresh] [--long] [options]")
     let options = try #require(data["options"] as? [[String: Any]])
-    #expect(options.map { $0["flags"] as? [String] } == [["--region"], ["--refresh"]])
-    #expect(options.map { $0["value"] as? String } == ["region-id", nil])
+    #expect(options.map { $0["flags"] as? [String] } == [["--region"], ["--refresh"], ["-l", "--long"]])
+    #expect(options.map { $0["value"] as? String } == ["region", nil, nil])
     let common = try #require(data["commonOptions"] as? [[String: Any]])
     #expect(common.compactMap { ($0["flags"] as? [String])?.last } == ["--help", "--json", "--non-interactive", "--timeout"])
 
@@ -63,7 +63,7 @@ import Testing
         + "`down` succeeds only after a confirmed stop. Check `status` for the observed tunnel state"))
     let commands = try #require(root["commands"] as? [[String: Any]])
     #expect(commands.compactMap { $0["name"] as? String } == [
-        "auth login", "auth status", "auth logout", "list", "status", "up", "down", "refresh", "doctor", "help"
+        "auth login", "auth status", "auth logout", "list", "status", "up", "down", "refresh", "doctor", "version", "help"
     ])
     #expect(harness.connects == 0)
 }

@@ -30,8 +30,12 @@ work on those checks or request that evidence again during implementation.
 
 Ship `auth login`, `auth status`, `auth logout`, `list`, `status`, `up`, `down`,
 `refresh`, `doctor`, and help/version with the existing flags and exits. Keep
-canonical `FirebaseUID/regionId/clientId` IDs, NDJSON schema version 1, and the
+canonical `FirebaseUID/regionId/clientId` machine IDs, NDJSON schema version 1, and the
 existing one-time desktop setup requirement. Bare `cloudgateway` prints help.
+
+The later [list and selector plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-list-selectors.md)
+extends this initial command contract with UUID/region-index selectors, detailed
+lists, aliases, operation observation details, and unknown-region errors.
 
 Use the existing bundled executable and background controller. The CLI owns
 parsing, terminal interaction, output, and caller deadlines. The controller

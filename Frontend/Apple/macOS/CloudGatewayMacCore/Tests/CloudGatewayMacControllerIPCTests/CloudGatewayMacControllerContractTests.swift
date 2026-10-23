@@ -65,6 +65,30 @@ private let appBuild = "42"
     }
 }
 
+@Test func scopedStopRequiresAnExactTargetAndCurrentBuildWithoutChangingBareStop() throws {
+    let request = CloudGatewayMacControllerRequest(action: .disconnectClient, identifier: "account/region/client")
+    let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild).identifier == request.identifier)
+    #expect(!request.action.isCompatibleControl)
+    #expect(request.action.requiresConfirmation)
+    #expect(request.action.hasAccountBoundOutcome)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: "43")
+    }
+    for invalid in [
+        CloudGatewayMacControllerRequest(action: .disconnectClient),
+        .init(action: .disconnectClient, identifier: "account/region"),
+        .init(action: .disconnectClient, identifier: "account/region/client", contextId: UUID()),
+        .init(action: .turnOff, identifier: "account/region/client")
+    ] {
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.encodeRequest(invalid, appVersion: appVersion, appBuild: appBuild)
+        }
+    }
+    let stop = try CloudGatewayMacControllerProtocol.encodeRequest(.init(action: .turnOff), appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(stop, appVersion: appVersion, appBuild: "43").action == .turnOff)
+}
+
 @Test func clientCreationRequiresBoundedNameAndOpaqueAccountFencedContext() throws {
     let contextId = UUID()
     let request = CloudGatewayMacControllerRequest(

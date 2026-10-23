@@ -151,7 +151,7 @@ public final class CloudGatewayMacController {
                 accessAuthorized: user != nil, access: accessState,
                 credentials: auth.currentUser != nil ? .available : .unknown,
                 inventoryFreshness: inventoryTask != nil || deferredInventoryRefresh || inventoryCommitTask != nil ? .refreshing
-                    : isOffline ? .cached : hasAuthorizedInventory ? .current : .unavailable,
+                    : hasAuthorizedInventory ? (isOffline ? .cached : .current) : .unavailable,
                 installedIdentifiers: installed.map(\.identifier),
                 observedProfiles: profileObservation.profiles.map {
                     CloudGatewayMacObservedProfile(identifier: $0.identifier, status: $0.status)
@@ -631,7 +631,9 @@ public final class CloudGatewayMacController {
                     identifier: config.identifier, regionId: config.snapshot.regionId,
                     regionName: regions.first { $0.regionId == config.snapshot.regionId }?.displayName ?? config.snapshot.regionId,
                     regionOrder: 1000, clientName: config.snapshot.clientDisplayName, ownerLabel: nil,
-                    internalIp: config.snapshot.assignedTunnelIpv4, cloudState: config.snapshot.status,
+                    internalIp: config.snapshot.assignedTunnelIpv4,
+                    connectionUrl: Self.connectionUrl(hostname: config.snapshot.serverEndpointHostname, ipv4: config.snapshot.serverEndpointIpv4),
+                    cloudState: config.snapshot.status,
                     eligibility: config.snapshot.status == .active ? .eligible : .inactive, isInstalled: true,
                     source: .cache, readAt: config.snapshot.readAt, updatedAt: config.snapshot.updatedAt,
                     status: profile?.status
@@ -644,12 +646,22 @@ public final class CloudGatewayMacController {
                 identifier: identifier, regionId: option.client.regionId, regionName: option.regionDisplayName,
                 regionOrder: option.region?.displayOrder ?? 1000, clientName: option.client.displayName,
                 ownerLabel: option.client.ownerEmail, internalIp: option.client.assignedTunnelIpv4,
+                connectionUrl: Self.connectionUrl(hostname: option.client.serverEndpointHostname, ipv4: option.client.serverEndpointIpv4),
                 cloudState: option.client.status, eligibility: Self.eligibility(of: option),
                 isInstalled: installed.contains { $0.accountId == accountId && $0.identifier == identifier },
                 source: .cloud, readAt: inventoryReadAt, updatedAt: option.client.updatedAt,
                 status: profileObservation.profiles.first { $0.identifier == identifier }?.status
             )
         }
+    }
+
+    private static func connectionUrl(hostname: String?, ipv4: String?) -> String? {
+        for value in [hostname, ipv4] {
+            if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return nil
     }
 
     private static func eligibility(of option: CloudGatewayClientOption) -> CloudGatewayMacClientEligibility {
@@ -918,6 +930,56 @@ public final class CloudGatewayMacController {
                 } else {
                     errorMessage = "Unable to load available regions. Refresh and try again"
                 }
+            }
+        }
+        notifyChange()
+        return true
+    }
+
+    @discardableResult
+    public func disconnectClient(
+        identifier: String,
+        onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
+    ) -> Bool {
+        let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
+            else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
+            else if !hasAuthorizedInventory { .accessDenied }
+            else if clientMetadata.filter({ $0.identifier == identifier }).count != 1 { .configUnavailable }
+            else { nil }
+        guard rejection == nil, let token = sessionFence.currentToken else {
+            onCompletion?(.failed(rejection ?? .signInRequired))
+            return false
+        }
+        let epoch = sessionEpoch
+        commandTask = Task { [weak self] in
+            guard let self else { onCompletion?(.unknown); return }
+            var outcome = CloudGatewayMacCommandOutcome.unknown
+            defer {
+                if sessionEpoch == epoch {
+                    commandTask = nil
+                    resumeDeferredInventoryRefresh()
+                    refreshProfiles()
+                    notifyChange()
+                }
+                onCompletion?(outcome)
+            }
+            do {
+                try requireCurrent(epoch, token: token)
+                try await configs.disconnectClient(identifier: identifier) { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    try self.requireCurrent(epoch, token: token)
+                    guard self.hasAuthorizedInventory,
+                          self.clientMetadata.filter({ $0.identifier == identifier }).count == 1 else {
+                        throw CloudGatewayMacConfigError.unavailable
+                    }
+                }
+                try requireCurrent(epoch, token: token)
+                errorMessage = nil
+                outcome = .completed(warning: nil)
+            } catch {
+                guard sessionEpoch == epoch, !Task.isCancelled, !isShuttingDown else { return }
+                outcome = .failed(Self.failure(for: error))
+                errorMessage = "VPN has not confirmed stop. Try again after checking System Settings"
             }
         }
         notifyChange()

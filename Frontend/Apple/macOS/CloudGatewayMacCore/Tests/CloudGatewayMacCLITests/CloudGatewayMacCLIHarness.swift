@@ -12,11 +12,11 @@ let cliBuild = CloudGatewayMacBuildIdentity(version: "1.2.0", build: "7", codeHa
 let cliObservedAt = Date(timeIntervalSince1970: 1_800_000_000)
 
 func cliClient(_ identifier: String, regionName: String, order: Int = 0, name: String, owner: String? = nil,
-               ip: String? = "10.0.0.2", installed: Bool = true, source: CloudGatewayMacInventorySource = .cloud,
+               ip: String? = "10.0.0.2", connectionUrl: String? = nil, installed: Bool = true, source: CloudGatewayMacInventorySource = .cloud,
                eligibility: CloudGatewayMacClientEligibility = .eligible, cloudState: CloudGatewayClientStatus = .active,
                status: CloudGatewayTunnelStatus? = .disconnected) -> CloudGatewayMacClientMetadata {
     .init(identifier: identifier, regionId: String(identifier.split(separator: "/")[1]), regionName: regionName,
-          regionOrder: order, clientName: name, ownerLabel: owner, internalIp: ip, cloudState: cloudState,
+          regionOrder: order, clientName: name, ownerLabel: owner, internalIp: ip, connectionUrl: connectionUrl, cloudState: cloudState,
           eligibility: eligibility, isInstalled: installed, source: source,
           readAt: Date(timeIntervalSince1970: 0), updatedAt: nil, status: status)
 }

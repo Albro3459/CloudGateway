@@ -38,7 +38,7 @@ final class CloudGatewayMacCLISession {
         return .auth(.init(try Self.state(of: reply)))
     }
 
-    func inventory(regionId: String?) async throws -> CloudGatewayMacCLIData {
+    func inventory(regionId: String?, isLong: Bool = false) async throws -> CloudGatewayMacCLIData {
         try await requireCurrentBuild()
         let (reply, isSettled) = try await poll(.snapshot, until: deadline) {
             let state = try Self.state(of: $0)
@@ -59,7 +59,10 @@ final class CloudGatewayMacCLISession {
         guard state.inventory != .unavailable else {
             throw CloudGatewayMacCLIError(.networkUnavailable, message: "Inventory is unavailable for this account")
         }
-        return .inventory(.init(state, accountId: accountId, regionId: regionId))
+        let regionId = try regionId.map {
+            try CloudGatewayMacCLIInventoryOrder.region($0, in: CloudGatewayMacCLIInventoryOrder.regions(state, accountId: accountId))
+        }
+        return .inventory(.init(state, accountId: accountId, regionId: regionId, isLong: isLong))
     }
 
     // Other builds can still read the compatible status, without account details
@@ -81,7 +84,9 @@ final class CloudGatewayMacCLISession {
         guard reply.operation?.id == id, let operation = Self.operation(of: reply) else {
             throw CloudGatewayMacCLIError(.invalidResponse)
         }
-        let data = CloudGatewayMacCLIData.status(.init(tunnel: .init(try Self.status(of: reply)), operation: operation))
+        let tunnel: CloudGatewayMacCLIStatus.Tunnel = if client.isCurrentBuild, let state = reply.state { .init(state) }
+            else { .init(try Self.status(of: reply)) }
+        let data = CloudGatewayMacCLIData.status(.init(tunnel: tunnel, operation: operation))
         guard var failure = operation.failure else { return data }
         failure.data = data
         throw failure

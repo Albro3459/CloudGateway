@@ -56,7 +56,7 @@ public final class CloudGatewayMacControllerRequests {
         return latest
     }
 
-    // Only connect and creation outcomes describe account data, so only they are hidden after logout or account change
+    // Account-bound outcomes are hidden after logout or account change
     public func outcome(id: UUID, session: CloudGatewayMacSessionToken?) -> CloudGatewayMacCommandOutcome? {
         guard latest?.id == id else { return nil }
         return !isAccountBound || owner == session ? outcome : nil
