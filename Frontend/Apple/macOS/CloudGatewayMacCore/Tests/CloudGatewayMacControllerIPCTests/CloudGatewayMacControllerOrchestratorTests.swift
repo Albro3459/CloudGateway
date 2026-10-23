@@ -66,6 +66,8 @@ final class ControllerOrchestratorEffects {
     var ignorePreparationCancellation = false
     var releasePreparation: CheckedContinuation<Void, Never>?
     var storedUpdates = CloudGatewayMacExtensionUpdateOrchestrator.StoredState()
+    var holdsPing = false
+    var releasePing: CheckedContinuation<Void, Never>?
 
     func makeRequests() throws -> CloudGatewayMacControllerRequests {
         try .init(data: data, now: { self.now }) { data in
@@ -109,6 +111,7 @@ final class ControllerOrchestratorEffects {
             setSetupState: { self.setup = $0 }, hasAnyActiveTunnel: { self.active },
             installedIdentity: { self.installed }, extensionIdentity: { controllerBoundaryBuild },
             ping: { identity in
+                if self.holdsPing { await withCheckedContinuation { self.releasePing = $0 } }
                 guard self.authenticated else { throw CloudGatewayMacControllerFailure.unavailable }
                 return CloudGatewayMacExtensionVersion(infoDictionary: [
                     "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version,
@@ -363,7 +366,7 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
 }
 
 @MainActor
-@Test func controllerOrchestratorReadinessWinsBeforeDelayedReportAndReconstruction() async throws {
+@Test func controllerOrchestratorMatchingExtensionWaitsForTheActivationCallback() async throws {
     let effects = ControllerOrchestratorEffects()
     let controller = try effects.make()
     try await effects.ready(controller)
@@ -372,15 +375,58 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
     let id = try #require(prepared.operationId)
     #expect(await controller.handle(controllerBoundaryRequest(.extensionUpdateStarted, contextId: id)).accepted == true)
     effects.authenticated = true
-    try #require(await controllerBoundaryEventually { effects.setup == .ready })
-    #expect(effects.storedUpdates.receipts.contains { $0.id == id && $0.outcome == .ready })
+    await controller.tick()
+    #expect(effects.setup == .activating)
+    #expect(effects.storedUpdates.receipts.isEmpty)
     let finished = controllerBoundaryRequest(.extensionUpdateFinished, contextId: id)
     #expect(await controller.handle(finished).accepted == true)
+    try #require(await controllerBoundaryEventually { effects.setup == .ready })
+    #expect(effects.storedUpdates.receipts.contains { $0.id == id && $0.outcome == .activationFinished })
     let restored = try effects.make()
     try await effects.ready(restored)
     #expect(await restored.handle(finished).accepted == true)
     #expect(await restored.handle(finished).accepted == true)
     #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorLiveActivationCannotHideALateRebootCallback() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let prepared = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    let id = try #require(prepared.operationId)
+    #expect(await controller.handle(controllerBoundaryRequest(.extensionUpdateStarted, contextId: id)).accepted == true)
+    for elapsed in [0.0, 120.0] {
+        effects.now.addTimeInterval(elapsed)
+        await controller.tick()
+        #expect(effects.setup != .ready)
+        #expect(effects.storedUpdates.state.attempt?.id == id)
+        #expect(effects.storedUpdates.receipts.isEmpty)
+    }
+    #expect(await controller.handle(controllerBoundaryRequest(.extensionUpdateRestart, contextId: id)).accepted == true)
+    #expect(effects.setup == .awaitingRestart)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorDoesNotOfferExtensionPreparationDuringReadiness() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.holdsPing = true
+    effects.setup = .checkingConnection
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.releasePing != nil })
+    #expect(await controller.handle(controllerBoundaryRequest(.snapshot)).state?.canUpdateExtension == false)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    effects.holdsPing = false
+    effects.releasePing?.resume()
+    effects.releasePing = nil
+    try #require(await controllerBoundaryEventually { effects.setup == .ready })
+    #expect(await controller.handle(controllerBoundaryRequest(.snapshot)).state?.canUpdateExtension == true)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).accepted == true)
 }
 
 @MainActor

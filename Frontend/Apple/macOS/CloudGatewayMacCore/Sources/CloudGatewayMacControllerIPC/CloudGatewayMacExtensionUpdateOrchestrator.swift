@@ -123,6 +123,8 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private let persist: (StoredState) throws -> Void
     private let instance = UUID()
     private var epoch: UInt64 = 0
+    // A live activation stays fenced even when the target extension already answers pings
+    private var liveAttemptId: UUID?
     private var restorationNeedsPersistence = false
     private static let receiptLifetime: TimeInterval = 600
     private static let receiptLimit = 16
@@ -222,10 +224,12 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
             next = terminal(.failed, attempt: attempt, in: next)
         }
         if next != stored { try commit(next) }
+        if event == .started || event == .approval { liveAttemptId = attempt.id }
     }
 
     public func prepareReadiness(target: CloudGatewayMacBuildIdentity) throws -> ReadinessToken? {
         try advance(target: target)
+        guard !hasLiveActivation else { return nil }
         if let attempt = state.attempt, attempt.target != target { return nil }
         switch state {
         case .prepared, .rebootRequired: return nil
@@ -243,7 +247,7 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
         guard token.instance == instance, token.epoch == epoch, token.attemptId == state.attempt?.id,
               token.target == installedTarget else { return .ignored }
         try advance(target: installedTarget)
-        guard token.epoch == epoch else { return .ignored }
+        guard token.epoch == epoch, !hasLiveActivation else { return .ignored }
         guard authenticatedTarget == token.target else { return .notReady }
         if let attempt = state.attempt {
             guard attempt.target == token.target else { return .ignored }
@@ -258,6 +262,11 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private var isPrepared: Bool {
         if case .prepared = state { return true }
         return false
+    }
+
+    private var hasLiveActivation: Bool {
+        guard let attempt = state.attempt, attempt.id == liveAttemptId else { return false }
+        return !isLaterBoot(than: attempt.bootSession)
     }
 
     private func advance(target: CloudGatewayMacBuildIdentity) throws {
@@ -318,6 +327,7 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private func commit(_ next: StoredState) throws {
         try persist(next)
         stored = next
+        if next.state.attempt?.id != liveAttemptId { liveAttemptId = nil }
         restorationNeedsPersistence = false
         epoch &+= 1
     }

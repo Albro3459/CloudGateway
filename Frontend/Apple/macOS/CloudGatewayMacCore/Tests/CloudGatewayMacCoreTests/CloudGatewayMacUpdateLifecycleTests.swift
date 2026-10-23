@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 import Testing
+import CloudGatewayMacCore
 import CloudGatewayMacIPC
-@testable import CloudGatewayMacCore
 
 @Test func updateLifecycleDrainsWhenSignedCodeChangesWithoutVersionChanges() {
     let running = updateLifecycleTestIdentity(hash: "a")
@@ -35,6 +35,7 @@ import CloudGatewayMacIPC
     #expect(lifecycle.canAcceptMutations)
     lifecycle.observe(nil)
     #expect(lifecycle.installed == nil)
+    #expect(!lifecycle.isDraining)
     #expect(!lifecycle.canAcceptMutations)
     #expect(!lifecycle.canExit(hasPendingWork: false, activeRequests: 0))
 }
@@ -126,6 +127,32 @@ import CloudGatewayMacIPC
         try CloudGatewayMacControllerUpdateStorage.save(Data(repeating: 0x62, count: 64 * 1024 + 1), directory: directory)
     }
     #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory) == maximum)
+}
+
+@Test func controllerUpdateStorageKeepsRequestAndExtensionRecordsIndependent() throws {
+    let directory = try controllerUpdateTestDirectory()
+    let requests = Data("accepted request".utf8)
+    let pending = Data("pending extension update".utf8)
+    let completed = Data("completed extension update".utf8)
+    try CloudGatewayMacControllerUpdateStorage.save(requests, directory: directory)
+    #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory, record: .extensionUpdates) == nil)
+
+    try CloudGatewayMacControllerUpdateStorage.save(pending, directory: directory, record: .extensionUpdates)
+    let updates = directory.appendingPathComponent("controller-extension-updates.json")
+    let reader = try FileHandle(forReadingFrom: updates)
+    defer { try? reader.close() }
+    try CloudGatewayMacControllerUpdateStorage.save(completed, directory: directory, record: .extensionUpdates)
+    #expect(try reader.readToEnd() == pending)
+    #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory, record: .extensionUpdates) == completed)
+    #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory) == requests)
+
+    #expect(throws: CloudGatewayMacControllerLaunchError.unavailable) {
+        try CloudGatewayMacControllerUpdateStorage.save(
+            Data(repeating: 0x61, count: 64 * 1024 + 1), directory: directory, record: .extensionUpdates
+        )
+    }
+    #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory, record: .extensionUpdates) == completed)
+    #expect(try CloudGatewayMacControllerUpdateStorage.load(directory: directory) == requests)
 }
 
 @Test func controllerUpdateStorageRejectsOversizedReceiptsOnDisk() throws {

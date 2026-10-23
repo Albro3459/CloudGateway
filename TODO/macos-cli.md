@@ -1,6 +1,7 @@
 # macOS CLI and shared controller
 
-Status: **controller orchestration rewrite implemented, reviewed, and signed-build validated, runtime proof pending**.
+Status: **controller orchestration rewrite implemented and signed-build validated,
+one delayed review finding open, runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
 
@@ -30,6 +31,10 @@ The latest unsigned macOS checks passed with 263 macOS package tests, both stric
 dead-code scans, and app/extension build and packaging verification. Round 1's
 seven findings are fixed. Both fresh Secure Codex Sol High reviewers in round 2
 found no actionable defects in the final source at `8589488f`.
+The original Main reviewer later resumed and found that Add Client blocks local
+Disconnect during cloud work, including handoff. This is confirmed in the newer
+checkout and remains open in the controller review. The source review gate is
+reopened until both command gates allow local stop and coverage verifies it.
 The user reported a passing `./scripts/test.sh macos --signed` run from their
 terminal on 2026-10-22, including packaging, entitlements, profiles, and Hardened
 Runtime verification. Agent-session signing attempts failed separately.
@@ -831,7 +836,8 @@ below for release acceptance, without claiming it has already passed.
   ownership, idempotency, switching, and IPC validation
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
-- [x] Complete fresh Sol High source reviews of the controller orchestration rewrite
+- [ ] Resolve the delayed Sol High finding: Add Client must allow local Disconnect
+  during cloud work and handoff, with coverage through the production domain path
 - [x] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
   The user supplied a passing terminal run on 2026-10-22. Agent-session attempts
   failed with `errSecInternalComponent`. Earlier signed results below are historical

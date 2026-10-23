@@ -420,7 +420,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func reply(operation: CloudGatewayMacControllerOperation? = nil,
                        refresh: CloudGatewayMacRefreshResult? = nil) -> CloudGatewayMacControllerReply {
         let operation = operation ?? requests.latest
-        return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && pending == nil && runningOperation == nil
+        return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && readinessTask == nil && pending == nil && runningOperation == nil
                                               && !effects.hasPendingWork() && update.canAcceptMutations),
               operation: operation, outcome: operation.flatMap { requests.outcome(id: $0.id, session: effects.session()) },
               refresh: refresh, accepted: operation.map { $0.state != .failed && $0.state != .unknown }, operationId: operation?.id)

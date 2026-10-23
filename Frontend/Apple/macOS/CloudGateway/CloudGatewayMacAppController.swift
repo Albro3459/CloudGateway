@@ -19,6 +19,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private var dialogTask: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
     private var activationReportTask: Task<Void, Never>?
+    private var isMenuOpen = false
     private var isShuttingDown = false
     private var isRelaunching = false
     private var attemptedAutomaticExtensionUpdate = false
@@ -59,14 +60,24 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         activation.updateReadiness(state.setupState)
         if state.setupState == .updateRequired, state.canUpdateExtension,
            !attemptedAutomaticExtensionUpdate, actionTask == nil {
-            attemptedAutomaticExtensionUpdate = true
             setUp()
         }
         render()
     }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        render()
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        isMenuOpen = true
         send(.menuWillOpen, clearsError: false)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+        // Rebuild after AppKit finishes closing and dispatching the selected action
+        DispatchQueue.main.async { [weak self] in self?.render() }
     }
 
     func shutdown() {
@@ -120,6 +131,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         guard !isShuttingDown else { return }
         let state = snapshot
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
+        guard !isMenuOpen else { return }
         menu.removeAllItems()
         let status = add(state.statusTitle, #selector(toggleVPN),
                          enabled: state.canToggleVPN && (state.canTurnOff || activation.state == .ready))
@@ -321,6 +333,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                     frontendErrorMessage = "VPN extension update is waiting for all tunnels to disconnect"
                     return
                 }
+                attemptedAutomaticExtensionUpdate = true
                 do {
                     let started = try await client.request(.extensionUpdateStarted, contextId: attemptId)
                     guard started.accepted == true else { throw CloudGatewayMacControllerFailure.rejected }

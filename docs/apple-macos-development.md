@@ -95,7 +95,11 @@ The plist must set `LimitLoadToSessionType = Background` to register in this
 domain. `ProcessType = Background` only selects resource limits. On macOS 26,
 omitting the session type caused `launchctl bootstrap user/<uid>` to fail with
 error 5 before starting the controller.
-The menu polls snapshots and reconnects after transport loss. It never starts
+The menu polls snapshots and reconnects after transport loss. While the menu is
+open, its items stay in place so polling cannot dismiss a hovered submenu. The
+status icon keeps updating, and the menu rebuilds with the latest state after
+closing or before its next opening. Controller requests still validate current
+state when an action is selected. It never starts
 another Firebase owner as a fallback. A version-independent authenticated
 lifecycle handshake reports the captured running identity and verified installed
 target. Normal commands also require the exact startup fingerprint, including
@@ -116,8 +120,13 @@ confirms submission, and an unknown outcome never authorizes an automatic retry.
 Extension updates reserve a target-bound attempt before asynchronous work,
 inspect all owned tunnel activity, and wait for idle without disconnecting.
 Approval and reboot states survive relaunch and reject stale readiness results.
-An activation interrupted by a controller restart conservatively requires a
-reboot if its result cannot be confirmed. The signed pre-desktop SSH/Keychain proof
+While an activation is live, matching extension pings cannot reopen starts
+before its terminal OS callback, including after the activation deadline.
+After controller restart, authenticated readiness can reconcile a retained
+attempt. An explicit OS reboot requirement remains fenced until a verified
+later boot. Automatic update preparation waits for readiness work to finish,
+and a rejected busy preparation does not consume its automatic attempt.
+The signed pre-desktop SSH/Keychain proof
 still gates release acceptance. This implementation is a launch candidate, not proof that
 every macOS security session permits its auth and VPN APIs. See the
 [controller plan](../TODO/macos-cli.md).

@@ -1,6 +1,8 @@
 # macOS controller refactor review
 
-Reviewed 2026-10-21. Source implementation and fresh review are complete.
+Reviewed 2026-10-21. A delayed round 2 reviewer returned one additional confirmed
+P2 finding on 2026-10-22: Add Client blocks local Disconnect while cloud work runs.
+The source review gate is reopened until that finding is fixed and validated.
 Signed validation passed in the user's terminal on 2026-10-22. Live acceptance
 remains pending. Checked items indicate
 source changes and automated coverage, while live acceptance is tracked separately.
@@ -21,8 +23,9 @@ their findings and made the recommendations below.
 
 Keep the single background controller and the existing VPN/auth core. The
 separation is appropriate for a menu app and a future CLI, but the controller/menu
-milestone is not finished. The seven defects below are fixed and the signed build
-passed. Complete the runtime checks before treating it as stable.
+milestone is not finished. The original seven defects below are fixed and the
+signed build passed. Fix the delayed round 2 finding and complete the runtime
+checks before treating it as stable.
 
 The implementation moves controller lifecycle, request admission/results, and
 extension-update reconciliation into package components with injected effects.
@@ -52,7 +55,7 @@ limitation requires a separately reviewed change. Do not start CLI commands yet.
 - [x] Validate the package dispatcher, durable extension transitions, and frontend races
 - [x] Pass unsigned macOS checks, including strict dead-code scans
 - [x] Pass signed macOS build and entitlement/profile verification
-- [x] Complete fresh Sol High review rounds and resolve their findings
+- [ ] Resolve the delayed round 2 finding and complete the fresh review gate
 - [ ] Complete the live runtime matrix below
 
 The menu and controller remain the implementation scope. CLI commands wait for
@@ -406,10 +409,41 @@ started against `92b29cb8`, whose code is unchanged from `8589488f`.
   and cancellation, extension restoration/receipts/readiness/target fencing,
   signed artifact policy, and app effects
 
-Both reviews were read-only, with no new tests, builds, or runtime checks. Round 2
-found no additional confirmed defects, completing the fresh source review gate.
+Both Secure reviews were read-only, with no new tests, builds, or runtime checks.
+They reported no additional confirmed defects. The original Main reviewer later
+resumed and returned the confirmed finding below, reopening the source review gate.
 Signed build/profile verification subsequently passed in the user's terminal.
 The live runtime matrix remains open.
+
+### Delayed round 2 finding: Add Client blocks local Disconnect (P2)
+
+- [ ] Allow local Disconnect while confirmed cloud client creation remains pending,
+  including during controller handoff
+
+The reviewer traced this at `8589488f`. The main agent confirmed it in the newer
+checkout at `dc239468` with existing local edits. In the
+[orchestrator admission gate](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift:295),
+confirmed creation holds `runningOperation`, so a Disconnect request returns
+`busy`. The production adapter also uses the
+[domain creation task](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift:795)
+as `commandTask`, which independently blocks
+[local stop](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift:854).
+
+**Trigger and impact:** keep a VPN connected, submit Add Client, and stall its
+token/access request, client creation, or inventory reload. Disconnect stays
+unavailable until creation finishes. Handoff permits the stop action at the
+lifecycle gate but does not bypass either command gate. This retained baseline
+limitation violates the agreed local-stop availability during cloud work.
+
+**Fix:** separate cloud creation from VPN-command serialization in both layers.
+Preserve account fencing, independent operation receipts/results, and handoff
+retention while allowing authenticated local stop.
+
+**Done when:** regression coverage holds the production domain creation path
+pending, requests Disconnect through the orchestrator before and during drain,
+and verifies stop completes while creation is still pending. Both operations
+must retain their own outcomes. No implementation change or test run was made
+when recording this finding.
 
 The main agent continued a bounded source review of the app adapters, command
 confirmation/results, handoff status and disconnect, inventory commit fencing,
@@ -436,7 +470,8 @@ The second attempt also hit an intermittent deadline-test failure:
 under its 20 ms aggregate deadline. The user's subsequent full run passed.
 No source change was made for that test, so its timing sensitivity remains a
 follow-up if it recurs.
-The fresh Sol High review loop is complete, with no remaining confirmed findings.
+The delayed round 2 cloud-creation/Disconnect finding remains open. Earlier
+passing validation did not cover concurrent creation and local stop.
 
 Production policies now live in the
 [controller orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift),
