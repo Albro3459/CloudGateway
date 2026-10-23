@@ -293,11 +293,19 @@ For a faster local install, use the command below. It builds and verifies the
 signed Release app and extension, then replaces `/Applications/CloudGateway.app`.
 It skips tests and dead-code scans and uses Apple Development signing.
 
+Before rebuilding a changed or newly signed VPN extension, increment the tunnel
+target's `CURRENT_PROJECT_VERSION` in every project configuration. macOS uses
+the extension's version numbers to decide whether to offer replacement. Reusing
+them for a different signed artifact can leave **Update VPN Extension** repeating:
+macOS reports the old copy as already active, while doctor detects the different
+signed identity. The app build number does not replace the extension build number.
+
 The first installation of the synchronized lifecycle needs a one-time controller
 restart because an older controller cannot perform the new handshake. Quit the
 old menu and wait for pending work and any ten-minute result retention, or restart
 the job explicitly after accepted work finishes. Subsequent replacements are
-detected automatically, including local rebuilds with reused version numbers.
+detected automatically, including local app rebuilds with reused version numbers.
+Extension replacement still requires the extension build increment described above.
 
 ```sh
 (

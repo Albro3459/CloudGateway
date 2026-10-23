@@ -241,6 +241,13 @@ Increment the extension's project build number whenever its implementation,
 linked code, or signing changes. App-only releases can reuse the exact signed
 extension artifact. Readiness also compares the signed artifact hash, so a
 rebuild with identical versions can require an update.
+macOS skips the replacement callback when both extension versions match outside
+System Extension developer mode, even if the signed artifact differs. An
+activation log containing `alreadyActive` and `existing entry of same version`,
+paired with a doctor identity mismatch, requires a higher extension build and a
+rebuilt signed app. Repeating activation or reinstalling the same app cannot
+replace that same-version extension. See Apple's
+[replacement callback documentation](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
 
 The extension declares a build-specific `NEMachServiceName`. Both controller
 clients derive that endpoint from the bundled extension build. The listener
