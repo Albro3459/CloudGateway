@@ -115,10 +115,12 @@ public struct CloudGatewayMacCLI {
         default: break
         }
         let startedAt = clock.now()
+        // Stop, Apple activation, 120s readiness, and reconnect outlast the usual wait
+        let defaultTimeout: Duration = if case .update = command { .seconds(300) } else { .seconds(30) }
+        let timeout = timeout ?? defaultTimeout
         do {
-            let client = try await makeClient(until: startedAt + (timeout ?? .seconds(30)))
-            session = CloudGatewayMacCLISession(client: client, clock: clock,
-                                                timeout: timeout ?? .seconds(30), startedAt: startedAt)
+            let client = try await makeClient(until: startedAt + timeout)
+            session = CloudGatewayMacCLISession(client: client, clock: clock, timeout: timeout, startedAt: startedAt)
         } catch { return .failure(.init(error)) }
         do {
             switch command {

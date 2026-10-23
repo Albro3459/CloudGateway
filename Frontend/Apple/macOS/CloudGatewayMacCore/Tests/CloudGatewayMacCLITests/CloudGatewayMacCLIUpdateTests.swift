@@ -226,6 +226,13 @@ private func updateHarness(reconnect: Bool = true,
 }
 
 @MainActor
+@Test func cliUpdateWaitsThroughReadinessByDefault() async throws {
+    let harness = updateHarness(phases: [.checkingReadiness])
+    #expect(await harness.run("update", "--allow-disconnect", "--json") == 8)
+    #expect(harness.clock.now == .seconds(300))
+}
+
+@MainActor
 @Test func cliUpdateUncertainConfirmationNeverResendsAndCanBeLookedUpByAnotherFrontend() async throws {
     let harness = updateHarness()
     let previous = harness.onRequest

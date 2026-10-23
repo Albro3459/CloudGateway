@@ -136,7 +136,7 @@ struct CloudGatewayMacCLITopic {
                   "An already matching extension succeeds without stopping the VPN. An initially disconnected VPN stays off",
                   "Replacing an active VPN requires --allow-disconnect. It can disconnect this SSH session if SSH uses the VPN",
                   "The accepted ID prints before execution is confirmed. Output failure before confirmation leaves work unconfirmed",
-                  "After confirmation, timeout, Ctrl-C, or SSH loss detaches observation. The controller keeps running the update",
+                  "Waits up to 300 seconds by default. After confirmation, timeout, Ctrl-C, or SSH loss detaches observation. The controller keeps running the update",
                   "Reconnect requests the same captured config after readiness checks. Check status for the observed tunnel state",
                   "Apple approval or reboot returns exit 4 while the operation remains running. Use status --operation to follow it"
               ],

@@ -242,7 +242,8 @@ only after a confirmed local stop, including an already-stopped state. Quit only
 detaches the menu.
 
 Common options are `-h`/`--help`, `--json`, `--non-interactive`, and
-`--timeout <positive-finite-seconds>`. Reads and mutations default to 30 seconds.
+`--timeout <positive-finite-seconds>`. Reads and mutations default to 30 seconds,
+and `update` defaults to 300 seconds to cover stop, activation, readiness, and reconnect.
 Login startup is bounded separately, then approval waiting follows the server's
 remaining code expiry. An explicit timeout bounds the whole login invocation
 and can only shorten waiting. `auth login --no-qr` suppresses QR output. The
