@@ -394,6 +394,20 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             verifier.main()
         verify_bundle.assert_called_once_with(self.bundle, False, True)
 
+    def test_historical_baseline_flag_requires_developer_id_and_excludes_current_cli(self) -> None:
+        for options in (["--historical-baseline"], ["--historical-baseline", "--developer-id", "--cli-smoke"]):
+            with self.subTest(options=options), \
+                    patch("sys.argv", ["verify_macos_build.py", str(self.bundle), *options]), \
+                    patch.object(verifier, "verify_bundle") as verify_bundle:
+                with self.assertRaises(SystemExit) as error:
+                    verifier.main()
+                self.assertEqual(error.exception.code, 2)
+                verify_bundle.assert_not_called()
+        with patch("sys.argv", ["verify_macos_build.py", str(self.bundle), "--developer-id", "--historical-baseline"]), \
+                patch.object(verifier, "verify_bundle") as verify_bundle:
+            verifier.main()
+        verify_bundle.assert_called_once_with(self.bundle, False, True, historical_baseline=True)
+
     def test_packaged_fixture_rejects_invalid_description_and_duplicate_embedding(self) -> None:
         app = Path(self.temporary.name) / "CloudGateway.app"
         extension = app / "Contents" / "Library" / "SystemExtensions" / f"{verifier.EXTENSION_ID}.systemextension"
@@ -435,6 +449,21 @@ class MacOSBuildVerificationTests(unittest.TestCase):
                 info_path.write_bytes(plistlib.dumps(invalid_info))
                 with self.subTest(service=service), self.assertRaisesRegex(ValueError, "Mach service mismatch"):
                     verifier.verify_bundle(app, False)
+            for service in (f"{verifier.APP_GROUP}.tunnel", f"{verifier.APP_GROUP}.tunnel.4"):
+                info_path.write_bytes(plistlib.dumps(dict(valid_info, NetworkExtension=dict(
+                    valid_info["NetworkExtension"], NEMachServiceName=service))))
+                with self.subTest(historical_service=service), \
+                        patch.object(verifier, "verify_signature") as verify_signature:
+                    verifier.verify_bundle(app, False, developer_id=True, historical_baseline=True)
+                self.assertEqual(verify_signature.call_args_list, [
+                    call(app, verifier.APP_ID, False, True),
+                    call(extension, verifier.EXTENSION_ID, True, True),
+                ])
+            for service in (f"{verifier.APP_GROUP}.tunnel.3", "other.tunnel.4"):
+                info_path.write_bytes(plistlib.dumps(dict(valid_info, NetworkExtension=dict(
+                    valid_info["NetworkExtension"], NEMachServiceName=service))))
+                with self.subTest(historical_service=service), self.assertRaisesRegex(ValueError, "Mach service mismatch"):
+                    verifier.verify_bundle(app, False, developer_id=True, historical_baseline=True)
             for build in (None, 4, "", "4..1", "4/1", "4\n", "4" * 65):
                 invalid_info = dict(valid_info, CFBundleVersion=build)
                 if build is None:

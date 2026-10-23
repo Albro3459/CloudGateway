@@ -106,8 +106,10 @@ temporary home, redirected stdin, and a five-second deadline. JSON checks verify
 schema version 1, line completeness, usage errors, and the bundle's version/build
 through both entry points. No real CLI installation, service registration,
 auth restoration, or VPN operation is part of these static checks. The verified
-previous-distribution baseline keeps historical packaging checks, so an older
-release that predates the CLI remains a valid baseline.
+previous-distribution baseline accepts the original fixed Mach service name as
+well as the build-specific name, while retaining Developer ID signature and
+identity checks. Older releases that predate the CLI remain valid baselines.
+New release products require the build-specific Mach service name.
 
 It submits an app ZIP to Apple, saves the submission ID and log, and staples the
 accepted ticket to the app. It then builds a signed DMG containing the app and

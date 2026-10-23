@@ -193,7 +193,7 @@ def verify_signature(bundle: Path, bundle_id: str, is_extension: bool, developer
     verify_profile(profile, bundle_id, is_extension, datetime.datetime.now(datetime.timezone.utc), developer_id)
 
 
-def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
+def verify_bundle(app: Path, signed: bool, developer_id: bool = False, *, historical_baseline: bool = False) -> None:
     signed = signed or developer_id
     extension = app / "Contents" / "Library" / "SystemExtensions" / f"{EXTENSION_ID}.systemextension"
     require(list(app.glob("**/*.systemextension")) == [extension], "Unexpected or duplicate system extension embedding")
@@ -210,7 +210,9 @@ def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
     build = extension_info.get("CFBundleVersion")
     require(isinstance(build, str) and len(build) <= 64 and re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", build),
             "Extension build missing or invalid")
-    require(network.get("NEMachServiceName") == f"{APP_GROUP}.tunnel.{build}", "Mach service mismatch")
+    service = network.get("NEMachServiceName")
+    require(service == f"{APP_GROUP}.tunnel.{build}"
+            or (historical_baseline and service == f"{APP_GROUP}.tunnel"), "Mach service mismatch")
     require(network.get("NEProviderClasses") == {
         "com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"
     }, "Packet provider class mapping mismatch")
@@ -322,9 +324,16 @@ def main() -> None:
     parser.add_argument("--signed", action="store_true")
     parser.add_argument("--developer-id", action="store_true", help="Verify Developer ID release signing (implies --signed)")
     parser.add_argument("--cli-smoke", action="store_true", help="Check current CLI resources and run bounded static commands")
+    parser.add_argument("--historical-baseline", action="store_true",
+                        help="Allow the original fixed Mach service in a previous Developer ID release")
     args = parser.parse_args()
+    if args.historical_baseline and (not args.developer_id or args.cli_smoke):
+        parser.error("--historical-baseline requires --developer-id and cannot check a current CLI release")
     try:
-        verify_bundle(args.app, args.signed, args.developer_id)
+        if args.historical_baseline:
+            verify_bundle(args.app, args.signed, args.developer_id, historical_baseline=True)
+        else:
+            verify_bundle(args.app, args.signed, args.developer_id)
         if args.cli_smoke:
             verify_cli(args.app)
     except (ValueError, OSError, plistlib.InvalidFileException) as error:

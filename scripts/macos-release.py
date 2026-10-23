@@ -82,8 +82,10 @@ def release_version(build: int, version: str | None) -> str:
     return selected
 
 
-def verify_app(app: Path, *, cli: bool = False) -> None:
+def verify_app(app: Path, *, cli: bool = False, historical_baseline: bool = False) -> None:
     options = ["--developer-id"] + (["--cli-smoke"] if cli else [])
+    if historical_baseline:
+        options.append("--historical-baseline")
     command("python3", str(ROOT / "scripts/verify_macos_build.py"), str(app), *options)
 
 
@@ -141,7 +143,7 @@ def extension_baseline(previous_distributed_app: Path | None, initial_distributi
     if initial_distribution:
         return {"initialDistribution": True}
     app = previous_distributed_app.resolve()
-    verify_app(app)
+    verify_app(app, historical_baseline=True)
     return extension_artifact(app)
 
 

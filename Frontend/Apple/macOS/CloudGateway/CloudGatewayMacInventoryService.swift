@@ -78,22 +78,24 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         let regionQuery = database.collection("Regions").whereField("enabled", isEqualTo: true)
         let instances = database.collectionGroup("Instances")
         let clientQuery: Query = role == .admin ? instances : instances.whereField("ownerUid", isEqualTo: user.uid)
-        async let regions = documents(regionQuery) { document -> CloudGatewayRegion? in
-            let data = document.data()
-            guard data["enabled"] as? Bool == true,
-                  let name = CloudGatewayFirestoreClientMapper.string(data["displayName"]) else { return nil }
-            return CloudGatewayRegion(regionId: document.documentID, displayName: name, enabled: true,
-                                      displayOrder: (data["displayOrder"] as? NSNumber)?.intValue ?? 1000)
-        }
-        async let clients = documents(clientQuery) { document -> CloudGatewayClient? in
-            var data = document.data()
-            if let timestamp = data["updatedAt"] as? Timestamp { data["updatedAt"] = timestamp.dateValue() }
-            guard let client = CloudGatewayFirestoreClientMapper.client(
-                documentId: document.documentID, regionFallback: document.reference.parent.parent?.documentID, data: data
-            ), role == .admin || client.ownerUid == user.uid else { return nil }
-            return client
-        }
-        let (fetchedRegions, fetchedClients) = try await (regions, clients)
+        let (fetchedRegions, fetchedClients) = try await CloudGatewayMacInventoryRequest.inventory(loadRegions: { [self] in
+            try await documents(regionQuery) { document -> CloudGatewayRegion? in
+                let data = document.data()
+                guard data["enabled"] as? Bool == true,
+                      let name = CloudGatewayFirestoreClientMapper.string(data["displayName"]) else { return nil }
+                return CloudGatewayRegion(regionId: document.documentID, displayName: name, enabled: true,
+                                          displayOrder: (data["displayOrder"] as? NSNumber)?.intValue ?? 1000)
+            }
+        }, loadClients: { [self] in
+            try await documents(clientQuery) { document -> CloudGatewayClient? in
+                var data = document.data()
+                if let timestamp = data["updatedAt"] as? Timestamp { data["updatedAt"] = timestamp.dateValue() }
+                guard let client = CloudGatewayFirestoreClientMapper.client(
+                    documentId: document.documentID, regionFallback: document.reference.parent.parent?.documentID, data: data
+                ), role == .admin || client.ownerUid == user.uid else { return nil }
+                return client
+            }
+        })
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         let regionsById = Dictionary(uniqueKeysWithValues: fetchedRegions.map { ($0.regionId, $0) })

@@ -47,10 +47,10 @@ class ReleaseTests(unittest.TestCase):
     def test_current_release_checks_cli_while_historical_baseline_stays_compatible(self) -> None:
         app = Path("/fixture/CloudGateway.app")
         with mock.patch.object(release, "command") as command:
-            release.verify_app(app)
+            release.verify_app(app, historical_baseline=True)
             release.verify_app(app, cli=True)
         self.assertEqual(command.call_args_list, [
-            mock.call("python3", str(release.ROOT / "scripts/verify_macos_build.py"), str(app), "--developer-id"),
+            mock.call("python3", str(release.ROOT / "scripts/verify_macos_build.py"), str(app), "--developer-id", "--historical-baseline"),
             mock.call("python3", str(release.ROOT / "scripts/verify_macos_build.py"), str(app), "--developer-id", "--cli-smoke"),
         ])
 
@@ -99,7 +99,7 @@ class ReleaseTests(unittest.TestCase):
                     mock.patch.object(release, "command") as command:
                 with self.assertRaisesRegex(ValueError, "must exceed"):
                     release.prepare(4, None, "profile", previous_distributed_app=app)
-                verify.assert_called_once_with(app.resolve())
+                verify.assert_called_once_with(app.resolve(), historical_baseline=True)
                 signing.assert_not_called()
                 command.assert_not_called()
 
