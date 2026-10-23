@@ -24,6 +24,7 @@ final class CloudGatewayMacCLISession {
     let client: CloudGatewayMacFrontendClient
     let clock: CloudGatewayMacCLIClock
     let deadline: Duration
+    private var didReportActivity = false
 
     init(client: CloudGatewayMacFrontendClient, clock: CloudGatewayMacCLIClock, timeout: Duration, startedAt: Duration? = nil) {
         self.client = client
@@ -87,7 +88,12 @@ final class CloudGatewayMacCLISession {
     }
 
     private func connect() async throws -> CloudGatewayMacControllerLifecycle {
-        try await call { [client] in try await client.handshake() }
+        let lifecycle = try await call { [client] in try await client.handshake() }
+        if client.isCurrentBuild, !didReportActivity {
+            _ = try await call { [client] in try await client.send(.userActivity) }
+            didReportActivity = true
+        }
+        return lifecycle
     }
 
     func requireCurrentBuild() async throws {

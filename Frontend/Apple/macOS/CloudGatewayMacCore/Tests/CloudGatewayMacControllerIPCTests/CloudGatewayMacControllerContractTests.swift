@@ -346,3 +346,22 @@ private func controllerExpectRejectedState(_ state: CloudGatewayMacControllerSta
         )
     }
 }
+
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.userActivity, .recordActivity])
+func controllerActivityRequiresTheCurrentBuildAndNoArguments(action: CloudGatewayMacControllerRequest.Action) throws {
+    let request = CloudGatewayMacControllerRequest(action: action)
+    let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild).action == action)
+    #expect(!request.action.isCompatibleControl)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: "other")
+    }
+    for invalid in [
+        CloudGatewayMacControllerRequest(action: action, identifier: "account/region/client"),
+        CloudGatewayMacControllerRequest(action: action, contextId: UUID()),
+    ] {
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.encodeRequest(invalid, appVersion: appVersion, appBuild: appBuild)
+        }
+    }
+}

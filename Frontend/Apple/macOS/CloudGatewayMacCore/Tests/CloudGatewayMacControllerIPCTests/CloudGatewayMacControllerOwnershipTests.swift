@@ -249,25 +249,29 @@ private final class OwnershipHarness {
     let effects = ControllerOrchestratorEffects()
     let controller = try effects.make()
     try await effects.ready(controller)
-    effects.now.addTimeInterval(60)
+    effects.now.addTimeInterval(900)
     #expect(controller.canExit)
     let stop = controllerBoundaryRequest(.turnOff)
     _ = await controller.handle(stop)
     _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: stop.id))
+    effects.now.addTimeInterval(901)
+    #expect(!controller.canExit)
     effects.completion?(.completed(warning: nil))
     let finished = effects.now
-    // Without any reads the retained result alone keeps the controller up
+    // Completion retains its recovery window even after user activity has expired
     for elapsed in [60.0, 300, 599] {
         effects.now = finished.addingTimeInterval(elapsed)
         #expect(!controller.canExit)
     }
     effects.now = finished.addingTimeInterval(600)
     #expect(controller.canExit)
-    // After the window, a read only restarts the ordinary 60-second idle gate
+    // Passive lookup does not renew activity after the result expires
     #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: stop.id)).operation?.state == .unknown)
-    effects.now = finished.addingTimeInterval(659)
+    #expect(controller.canExit)
+    _ = await controller.handle(controllerBoundaryRequest(.userActivity))
+    effects.now = finished.addingTimeInterval(1499)
     #expect(!controller.canExit)
-    effects.now = finished.addingTimeInterval(660)
+    effects.now = finished.addingTimeInterval(1500)
     #expect(controller.canExit)
 }
 

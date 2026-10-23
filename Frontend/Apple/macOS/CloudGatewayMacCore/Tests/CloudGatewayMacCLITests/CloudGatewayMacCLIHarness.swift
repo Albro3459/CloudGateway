@@ -165,6 +165,8 @@ final class CLIHarness {
                 throw CloudGatewayMacControllerFailure.unavailable
             }
             reply = .init(lifecycle: .init(running: cliBuild, installed: installed, state: lifecycle))
+        case .userActivity:
+            reply = .init()
         case .snapshot:
             let state = states.count > 1 ? states.removeFirst() : try #require(states.first)
             reply = .init(state: state, operation: operation, outcome: outcome)

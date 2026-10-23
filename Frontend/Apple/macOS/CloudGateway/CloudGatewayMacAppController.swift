@@ -18,7 +18,10 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private var frontendErrorMessage: String?
     private var dialogTask: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
+    private var menuTask: Task<Void, Never>?
     private var activationReportTask: Task<Void, Never>?
+    private var activationReportId: UUID?
+    private weak var statusMenuItem: NSMenuItem?
     private var isMenuOpen = false
     private var isShuttingDown = false
     private var isRelaunching = false
@@ -58,9 +61,9 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         }
         if state.accountId == nil { dialogTask?.cancel() }
         activation.updateReadiness(state.setupState)
-        if state.setupState == .updateRequired, state.canUpdateExtension,
+        if client.isSnapshotFresh, state.setupState == .updateRequired, state.canUpdateExtension,
            !attemptedAutomaticExtensionUpdate, actionTask == nil {
-            setUp()
+            updateExtension(isUserInitiated: false)
         }
         render()
     }
@@ -71,7 +74,13 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         isMenuOpen = true
-        send(.menuWillOpen, clearsError: false)
+        menuTask?.cancel()
+        menuTask = Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.userRequest(.menuWillOpen) }
+            catch is CancellationError { }
+            catch { render() }
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -87,8 +96,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         dialogTask = nil
         actionTask?.cancel()
         actionTask = nil
+        menuTask?.cancel()
+        menuTask = nil
         activationReportTask?.cancel()
         activationReportTask = nil
+        activationReportId = nil
         client.shutdown()
         activation.onStatusChange = nil
         activation.onAttemptStatusChange = nil
@@ -131,10 +143,11 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         guard !isShuttingDown else { return }
         let state = snapshot
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
-        guard !isMenuOpen else { return }
+        if isMenuOpen { updateOpenMenu(state); return }
         menu.removeAllItems()
         let status = add(state.statusTitle, #selector(toggleVPN),
                          enabled: state.canToggleVPN && (state.canTurnOff || activation.state == .ready))
+        statusMenuItem = status
         if activation.state == .awaitingApproval, state.statusTitle == activation.state.title {
             status.action = #selector(openLoginItemsSettings)
             status.isEnabled = true
@@ -209,6 +222,36 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         add("Quit CloudGateway", #selector(quitApp), keyEquivalent: "q")
     }
 
+    private func updateOpenMenu(_ state: CloudGatewayMacControllerView) {
+        let current = client.isSnapshotFresh && client.isCurrentBuild
+        CloudGatewayMacMenuUpdates.updateClients(in: menu, from: state, isSnapshotFresh: current,
+            canConnect: actionTask == nil && activation.state == .ready)
+        for item in menu.items {
+            switch item.action {
+            case #selector(toggleVPN):
+                item.isEnabled = state.canToggleVPN && (state.canTurnOff || activation.state == .ready)
+                    && (client.isCurrentBuild || state.canTurnOff) && actionTask == nil
+            case #selector(signIn):
+                item.isEnabled = current && state.accountId == nil && !state.isRestoringSession && !state.isAuthSettling
+            case #selector(cancelSignIn), #selector(openSignInBrowser):
+                item.isEnabled = current && state.login != nil && state.accountId == nil
+            case #selector(signOut): item.isEnabled = current && state.canSignOut && actionTask == nil
+            case #selector(refresh):
+                item.isEnabled = current && (state.canRefresh || state.hasRetainedSession)
+                    && !state.inventoryInFlight && actionTask == nil
+            case #selector(addClient):
+                item.isEnabled = current && state.canCreateClient && dialogTask == nil && actionTask == nil
+            case #selector(setUp):
+                item.isEnabled = current && state.canUpdateExtension && activation.state.canActivate && actionTask == nil
+            default: break
+            }
+        }
+        if current, let statusMenuItem, statusMenuItem.action == #selector(toggleVPN) {
+            statusMenuItem.title = state.statusTitle
+            statusMenuItem.state = state.hasActiveTunnel ? .on : .off
+        }
+    }
+
     @discardableResult
     private func add(_ title: String, _ action: Selector? = nil, enabled: Bool = true,
                      keyEquivalent: String = "") -> NSMenuItem {
@@ -249,13 +292,13 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 var contextId: UUID?
                 let dialog = CloudGatewayMacClientCreationDialog()
                 guard let request = try await dialog.prompt(loadRegions: { [client] in
-                    let reply = try await client.request(.prepareClient)
+                    let reply = try await client.userRequest(.prepareClient)
                     guard let creation = reply.creation else { throw CloudGatewayMacControllerFailure.invalidRequest }
                     contextId = creation.id
                     return creation.regions
                 }), let contextId else { return }
                 try Task.checkCancellation()
-                let reply = try await client.request(.createClient, regionId: request.regionId,
+                let reply = try await client.userRequest(.createClient, regionId: request.regionId,
                                                      clientName: request.clientName, contextId: contextId)
                 if reply.accepted != true {
                     frontendErrorMessage = "Account or client list changed. Open Add Client again"
@@ -268,18 +311,17 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         render()
     }
 
-    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil,
-                      clearsError: Bool = true) {
+    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil) {
         guard actionTask == nil, !isShuttingDown else { return }
-        if clearsError { frontendErrorMessage = nil }
+        frontendErrorMessage = nil
         actionTask = Task { [weak self] in
             guard let self else { return }
             defer { actionTask = nil; render() }
             let id = UUID()
-            do { _ = try await client.request(action, id: id, identifier: identifier) }
+            do { _ = try await client.userRequest(action, id: id, identifier: identifier) }
             catch is CancellationError { }
             catch {
-                if action != .menuWillOpen { frontendErrorMessage = client.message(for: error) }
+                frontendErrorMessage = client.message(for: error)
                 if error as? CloudGatewayMacControllerFailure == .outcomeUnknown { await resolveUncertainOperation(id) }
             }
         }
@@ -303,7 +345,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         loginAttemptId = id
         Task { [weak self] in
             guard let self else { return }
-            do { _ = try await client.request(.beginLogin, id: id, loginOrigin: .menu) }
+            do { _ = try await client.userRequest(.beginLogin, id: id, loginOrigin: .menu) }
             catch { frontendErrorMessage = client.message(for: error); render() }
         }
     }
@@ -311,16 +353,24 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         guard let id = snapshot.login?.attemptId else { return }
         Task { [weak self] in
             guard let self else { return }
-            do { _ = try await client.request(.cancelLogin, contextId: id) }
+            do { _ = try await client.userRequest(.cancelLogin, contextId: id) }
             catch { frontendErrorMessage = client.message(for: error); render() }
         }
     }
     @objc private func openSignInBrowser() {
         guard case .waitingForApproval(_, let url) = snapshot.browserState else { return }
+        recordUserActivity()
         NSWorkspace.shared.open(url)
     }
-    @objc private func openLoginItemsSettings() { SMAppService.openSystemSettingsLoginItems() }
+    @objc private func openLoginItemsSettings() {
+        recordUserActivity()
+        SMAppService.openSystemSettingsLoginItems()
+    }
     @objc private func setUp() {
+        updateExtension(isUserInitiated: true)
+    }
+
+    private func updateExtension(isUserInitiated: Bool) {
         guard actionTask == nil, !isShuttingDown, client.snapshot != nil, client.isCurrentBuild,
               activation.state.canActivate, snapshot.canUpdateExtension else { return }
         frontendErrorMessage = nil
@@ -328,7 +378,9 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             guard let self else { return }
             defer { actionTask = nil; render() }
             do {
-                let reply = try await client.request(.prepareExtensionUpdate)
+                let reply: CloudGatewayMacControllerReply
+                if isUserInitiated { reply = try await client.userRequest(.prepareExtensionUpdate) }
+                else { reply = try await client.request(.prepareExtensionUpdate) }
                 guard reply.accepted == true, let attemptId = reply.operationId, let target = reply.extensionTarget else {
                     frontendErrorMessage = "VPN extension update is waiting for all tunnels to disconnect"
                     return
@@ -362,10 +414,19 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         }
         let previous = activationReportTask
         let requestId = UUID()
+        activationReportId = requestId
         activationReportTask = Task { [weak self] in
             await previous?.value
             guard let self, !isShuttingDown, !Task.isCancelled else { return }
-            while !Task.isCancelled, !isShuttingDown {
+            defer {
+                if activationReportId == requestId {
+                    activationReportTask = nil
+                    activationReportId = nil
+                    render()
+                }
+            }
+            for _ in 0..<30 {
+                guard !Task.isCancelled, !isShuttingDown else { return }
                 do {
                     let reply = try await client.request(action, id: requestId, contextId: attemptId)
                     if reply.accepted != true {
@@ -384,10 +445,21 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
     }
-    @objc private func openWebsite() { NSWorkspace.shared.open(dashboard) }
+    private func recordUserActivity() {
+        Task { [weak self] in
+            guard let self, !isShuttingDown else { return }
+            _ = try? await client.userRequest(.userActivity)
+        }
+    }
+
+    @objc private func openWebsite() {
+        recordUserActivity()
+        NSWorkspace.shared.open(dashboard)
+    }
     @objc private func quitApp() { quit() }
 
     @objc private func installCommandLineTool() {
+        recordUserActivity()
         let installer = CloudGatewayMacCLIInstaller(homeURL: FileManager.default.homeDirectoryForCurrentUser)
         let explicitPath = installer.executableURL.path
         let explicitCommand = "'" + explicitPath.replacingOccurrences(of: "'", with: "'\\''") + "' status"
@@ -467,6 +539,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
 
     @objc private func toggleLaunchAtLogin() {
+        recordUserActivity()
         Task { [weak self] in
             guard let self else { return }
             do {

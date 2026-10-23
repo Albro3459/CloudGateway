@@ -10,7 +10,7 @@ public enum CloudGatewayMacControllerFailure: String, Error, Codable, Sendable {
 public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public enum Action: String, Codable, CaseIterable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
-        case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, refresh, awaitRefresh
+        case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, userActivity, recordActivity, refresh, awaitRefresh
         case signIn, cancelSignIn, signOut, connect, turnOff, prepareClient, createClient
         case beginLogin, loginStatus, cancelLogin, diagnostics
     }

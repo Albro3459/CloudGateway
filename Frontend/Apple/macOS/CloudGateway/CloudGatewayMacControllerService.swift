@@ -143,6 +143,11 @@ final class CloudGatewayMacControllerService {
                 case .cancelLogin: return request.contextId.map { controller.cancelLogin(attemptId: $0) }
                 default: return nil
                 }
+            },
+            userActivity: { runtime.require().controller.recordUserActivity(refreshIfStale: $0) },
+            refreshInventoryIfDue: { runtime.initialized?.controller.refreshInventoryIfDue() },
+            setAutomaticInventoryRefreshAllowed: {
+                runtime.initialized?.controller.setAutomaticInventoryRefreshAllowed($0, discardDeferred: $1)
             }
         )
         let orchestrator = CloudGatewayMacControllerOrchestrator(identity: identity, effects: effects,

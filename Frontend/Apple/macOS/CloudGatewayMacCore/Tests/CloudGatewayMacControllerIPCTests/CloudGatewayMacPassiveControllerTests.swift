@@ -203,7 +203,8 @@ private func waitForHeldValidation(_ release: DispatchSemaphore) {
             return controllerBoundaryBuild
         }, installationTimer: { _ in try await clock.wait() },
         extensionIdentity: { controllerBoundaryBuild }, ping: { _ in nil },
-        initializeRuntime: { initializations += 1 }, isRuntimeInitialized: { false }, now: { now }
+        initializeRuntime: { initializations += 1 }, isRuntimeInitialized: { false },
+        monotonicNow: { .seconds(now.timeIntervalSince1970) }, now: { now }
     )
     let controller = try CloudGatewayMacControllerOrchestrator(identity: controllerBoundaryBuild, effects: effects,
         requests: .init(data: nil, persist: { _ in }), extensionUpdates: .init(bootSession: { "boot" }, persist: { _ in }))
@@ -227,7 +228,7 @@ private func waitForHeldValidation(_ release: DispatchSemaphore) {
     }
     let diagnostic = await controller.handle(controllerBoundaryRequest(.diagnostics))
     #expect(diagnostic.diagnostics?.runtimeInitialized == false && initializations == 0)
-    now = now.addingTimeInterval(61)
+    now = now.addingTimeInterval(901)
     #expect(controller.canExit)
     let status = await controller.handle(controllerBoundaryRequest(.status))
     #expect(status.status != nil)

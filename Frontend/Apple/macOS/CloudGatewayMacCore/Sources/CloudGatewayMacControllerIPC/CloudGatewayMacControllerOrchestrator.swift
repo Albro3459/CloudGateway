@@ -59,6 +59,10 @@ public struct CloudGatewayMacControllerEffects {
     let isRuntimeInitialized: () -> Bool
     let diagnostics: () async -> CloudGatewayMacControllerDiagnostics
     let login: (CloudGatewayMacControllerRequest) -> CloudGatewayMacLoginStatus?
+    let userActivity: (Bool) -> Void
+    let refreshInventoryIfDue: () -> Void
+    let setAutomaticInventoryRefreshAllowed: (Bool, Bool) -> Void
+    let monotonicNow: () -> Duration
     let now: () -> Date
 
     public init(
@@ -81,6 +85,10 @@ public struct CloudGatewayMacControllerEffects {
         isRuntimeInitialized: @escaping () -> Bool = { true },
         diagnostics: @escaping () async -> CloudGatewayMacControllerDiagnostics = { .init(runtimeInitialized: false) },
         login: @escaping (CloudGatewayMacControllerRequest) -> CloudGatewayMacLoginStatus? = { _ in nil },
+        userActivity: @escaping (Bool) -> Void = { _ in },
+        refreshInventoryIfDue: @escaping () -> Void = {},
+        setAutomaticInventoryRefreshAllowed: @escaping (Bool, Bool) -> Void = { _, _ in },
+        monotonicNow: (() -> Duration)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.snapshot = snapshot
@@ -102,6 +110,12 @@ public struct CloudGatewayMacControllerEffects {
         self.isRuntimeInitialized = isRuntimeInitialized
         self.diagnostics = diagnostics
         self.login = login
+        self.userActivity = userActivity
+        self.refreshInventoryIfDue = refreshInventoryIfDue
+        self.setAutomaticInventoryRefreshAllowed = setAutomaticInventoryRefreshAllowed
+        let clock = ContinuousClock()
+        let origin = clock.now
+        self.monotonicNow = monotonicNow ?? { origin.duration(to: clock.now) }
         self.now = now
     }
 }
@@ -134,7 +148,8 @@ public final class CloudGatewayMacControllerOrchestrator {
     private var preparationTask: Task<CloudGatewayMacPreparedClient, any Error>?
     private var preparationId: UUID?
     private var activeRequests = 0
-    private var lastActivity: Date
+    private var lastActivity: Duration
+    private var lastReadiness: Duration?
     private var readinessTask: Task<Void, Never>?
     private var checkingInstallation = false
     private var hasObservedInstallation = false
@@ -149,7 +164,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         self.requests = requests
         self.extensionUpdates = extensionUpdates
         update = .init(running: identity)
-        lastActivity = effects.now()
+        lastActivity = effects.monotonicNow()
     }
 
     public var canExit: Bool {
@@ -158,7 +173,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         if update.canExit(hasPendingWork: false, activeRequests: 0) { return true }
         // A retained result keeps the controller reachable for its ten-minute recovery window
         return !extensionUpdates.hasPendingAttempt && requests.latest == nil
-            && effects.now().timeIntervalSince(lastActivity) >= 60
+            && effects.monotonicNow() - lastActivity >= .seconds(900)
     }
 
     public func tick() async {
@@ -171,19 +186,22 @@ public final class CloudGatewayMacControllerOrchestrator {
             preparationTask?.cancel()
         }
         expirePending()
-        if effects.hasPendingWork() || runningOperation != nil { lastActivity = effects.now() }
+        updateInventoryAdmission()
         if canExit { return }
-        if update.canAcceptMutations, effects.isRuntimeInitialized() { refreshReadiness() }
+        if update.canAcceptMutations, effects.isRuntimeInitialized() {
+            if pending == nil, runningOperation == nil, preparationTask == nil,
+               !extensionUpdates.hasPendingAttempt, readinessTask == nil, !effects.hasPendingWork() {
+                effects.refreshInventoryIfDue()
+            }
+            refreshReadiness(force: false)
+        }
     }
 
     public func handle(_ request: CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply {
         activeRequests += 1
-        if !update.isDraining { lastActivity = effects.now() }
-        defer {
-            activeRequests -= 1
-            if !update.isDraining { lastActivity = effects.now() }
-        }
+        defer { activeRequests -= 1 }
         expirePending()
+        updateInventoryAdmission()
         // Lifecycle and doctor probes must leave a cold Firebase runtime untouched
         if request.action != .lifecycle && request.action != .diagnostics {
             let wasInitialized = effects.isRuntimeInitialized()
@@ -192,6 +210,14 @@ public final class CloudGatewayMacControllerOrchestrator {
                 setSetupState(.checkingConnection)
                 refreshReadiness()
             }
+        }
+        let activity: Set<CloudGatewayMacControllerRequest.Action> = [
+            .userActivity, .recordActivity, .menuWillOpen, .connect, .turnOff, .signIn, .cancelSignIn, .signOut,
+            .refresh, .awaitRefresh, .prepareClient, .createClient, .beginLogin, .cancelLogin
+        ]
+        if activity.contains(request.action), update.canAcceptMutations || request.action == .turnOff {
+            lastActivity = effects.monotonicNow()
+            effects.userActivity(request.action == .userActivity)
         }
         switch request.action {
         case .lifecycle:
@@ -221,6 +247,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         if request.action.requiresConfirmation { return admit(request) }
         switch request.action {
         case .snapshot: return reply()
+        case .userActivity, .recordActivity: return reply()
         case .prepareClient: return await prepareClient()
         case .prepareExtensionUpdate: return await prepareExtensionUpdate()
         case .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
@@ -283,6 +310,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     }
 
     private func admit(_ request: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
+        defer { updateInventoryAdmission() }
         do {
             if let operation = try requests.lookup(request) {
                 return operationReply(operation, request: request)
@@ -303,6 +331,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     }
 
     private func confirm(_ confirmation: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
+        defer { updateInventoryAdmission() }
         guard let id = confirmation.contextId else { return .init(error: .invalidRequest) }
         guard let pending, pending.request.id == id else {
             return controlReply(for: confirmation, operation: requests.operation(id: id))
@@ -329,6 +358,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         self.pending = nil
         runningOperation = id
+        updateInventoryAdmission()
         requests.finish(id: id, state: .running)
         submitting = id
         let completion: @MainActor (CloudGatewayMacCommandOutcome) -> Void = { [weak self] outcome in
@@ -366,7 +396,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         _ = requests.finish(id: request.id, state: outcome.state, failure: failure, outcome: outcome, session: session)
         runningOperation = nil
-        lastActivity = effects.now()
+        updateInventoryAdmission()
     }
 
     private func expirePending() {
@@ -385,8 +415,10 @@ public final class CloudGatewayMacControllerOrchestrator {
             }
         }
         preparationTask = task
+        updateInventoryAdmission()
         defer {
             if preparationId == id { preparationTask = nil; preparationId = nil }
+            updateInventoryAdmission()
         }
         do {
             let prepared = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
@@ -438,6 +470,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         do {
             let target = try effects.extensionIdentity()
             let reserved = try extensionUpdates.begin(target: target)
+            updateInventoryAdmission()
             attempt = reserved
             setSetupState(.activating)
             guard try await !effects.hasAnyActiveTunnel(), update.canAcceptMutations,
@@ -445,6 +478,7 @@ public final class CloudGatewayMacControllerOrchestrator {
             return .init(accepted: true, operationId: reserved.id, extensionTarget: target)
         } catch {
             if let attempt { try? extensionUpdates.handle(.failed, attemptId: attempt.id, installedTarget: attempt.target) }
+            updateInventoryAdmission()
             setSetupState(extensionUpdates.setupState ?? .updateRequired)
             return .init(error: error as? CloudGatewayMacControllerFailure ?? .unavailable)
         }
@@ -464,6 +498,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         do {
             try extensionUpdates.handle(event, attemptId: id, installedTarget: effects.extensionIdentity(),
                                         canSubmit: update.canAcceptMutations)
+            updateInventoryAdmission()
             setSetupState(extensionUpdates.setupState ?? .checkingConnection)
             refreshReadiness()
             return .init(accepted: true)
@@ -472,8 +507,12 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
     }
 
-    private func refreshReadiness() {
+    private func refreshReadiness(force: Bool = true) {
         guard readinessTask == nil else { return }
+        let now = effects.monotonicNow()
+        let interval: Duration = extensionUpdates.hasPendingAttempt ? .seconds(5) : .seconds(60)
+        if !force, let lastReadiness, now - lastReadiness < interval { return }
+        lastReadiness = now
         let identity: CloudGatewayMacBuildIdentity
         let token: CloudGatewayMacExtensionUpdateOrchestrator.ReadinessToken
         do {
@@ -487,7 +526,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         if extensionUpdates.hasPendingAttempt { setSetupState(extensionUpdates.setupState ?? .checkingConnection) }
         readinessTask = Task { [weak self] in
             guard let self else { return }
-            defer { readinessTask = nil }
+            defer { readinessTask = nil; updateInventoryAdmission() }
             extensionIsIdle = (try? await !effects.hasAnyActiveTunnel()) == true
             let running = try? await effects.ping(identity)
             let observed = running.flatMap { version -> CloudGatewayMacBuildIdentity? in
@@ -511,5 +550,13 @@ public final class CloudGatewayMacControllerOrchestrator {
                 }
             } catch { setSetupState(.unavailable) }
         }
+    }
+
+    private func updateInventoryAdmission() {
+        effects.setAutomaticInventoryRefreshAllowed(
+            update.canAcceptMutations && pending == nil && runningOperation == nil
+                && preparationTask == nil && !extensionUpdates.hasPendingAttempt,
+            update.isDraining
+        )
     }
 }

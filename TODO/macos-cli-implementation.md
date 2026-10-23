@@ -71,10 +71,13 @@ The confirmed decisions and implementation defaults are:
 
 - `up` uses the controller's existing authorized inventory/cache policy. Explicit
   `refresh` or `list --refresh` obtains fresh inventory. The user confirmed this
-  policy. Do not add a mandatory inventory fetch to every online start
+  policy. Stale `list` now waits for the controller refresh described in
+  [the polling plan](macos-inventory-polling.md). Do not add a mandatory inventory
+  fetch to every online start
 - Retain the latest VPN result and keep the controller alive for ten minutes
   after completion. This matches the existing result TTL. Reads need not extend
-  that expiry. Idle exit can remain 60 seconds when no result or work needs it.
+  that expiry. The activity-based polling upgrade makes idle exit eligible after
+  15 minutes without user interaction when no result or work needs it.
   App replacement, crash, reboot, or a newer result can end recovery earlier
 - Credential status supports `unknown`. Never infer accessible credentials from
   a nil Firebase user. The user authorized a narrow shared Firebase adapter

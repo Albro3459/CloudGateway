@@ -95,10 +95,30 @@ The plist must set `LimitLoadToSessionType = Background` to register in this
 domain. `ProcessType = Background` only selects resource limits. On macOS 26,
 omitting the session type caused `launchctl bootstrap user/<uid>` to fail with
 error 5 before starting the controller.
-The menu polls snapshots and reconnects after transport loss. While the menu is
-open, its items stay in place so polling cannot dismiss a hovered submenu. The
-status icon keeps updating, and the menu rebuilds with the latest state after
-closing or before its next opening. Controller requests still validate current
+The controller owns shared inventory refresh scheduling: every 60 seconds during
+the first 2 minutes after user activity, every 5 minutes until 15 minutes, then
+no automatic refresh. Failed automatic requests back off independently with
+jitter. Menu opening and CLI invocations count as activity. Passive snapshots,
+login/result polls, and a connected VPN do not. Menu opening shows cached state
+immediately and triggers one stale refresh in the background. CLI `list` waits
+for that refresh within its existing deadline. Explicit Refresh and `list --refresh`
+fetch immediately, joining a fetch already in progress. Inventory
+refresh does not reconnect the VPN.
+
+After 15 minutes without user activity, all passive menu polling pauses,
+including while a dialog is open. This also prevents Mach-service requests from
+implicitly relaunching an idle controller. Confirmed backend work continues
+independently. The controller can exit when pending work, extension state,
+requests, and result recovery allow it. The tunnel extension keeps an active VPN running independently. The next
+menu interaction or CLI invocation starts the controller again if needed. Sleep
+never schedules inventory wakeups or catches up missed refresh intervals. See
+the [polling plan](../TODO/macos-inventory-polling.md).
+
+The menu polls snapshots while active and recovers controller launch on user
+interaction. While open, menu items stay in place so polling cannot dismiss a
+hovered submenu. Fresh snapshots update existing items in place, including
+enabling cached rows after idle. Structural changes appear after closing or
+before the next opening. The status icon keeps updating. Controller requests still validate current
 state when an action is selected. It never starts
 another Firebase owner as a fallback. A version-independent authenticated
 lifecycle handshake reports the captured running identity and verified installed
@@ -110,10 +130,10 @@ reopen the fixed verified app; clients never select the replacement executable.
 Invalid or partial installations do not authorize a handoff. Older controllers
 need a one-time restart when first installing this lifecycle.
 
-The controller stays alive while requests, core work, or a retained latest
-result are pending. With no retained result it exits after 60 idle seconds;
-the latest result extends that lifetime to its ten-minute expiry. launchd can
-start it on demand again. It does not replay
+The controller stays alive while requests, core work, extension work, or a
+retained latest result are pending. Idle exit requires 15 minutes without user
+activity, and each latest result retains its ten-minute recovery window. launchd
+can start it on demand again. It does not replay
 commands across controller restarts. Recent request UUIDs and request digests
 persist for ten minutes, capped at 64 live entries without eviction. Acceptance
 confirms submission, and an unknown outcome never authorizes an automatic retry.

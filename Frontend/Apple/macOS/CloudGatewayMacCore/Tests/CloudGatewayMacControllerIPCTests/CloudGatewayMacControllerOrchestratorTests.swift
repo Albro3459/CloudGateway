@@ -68,6 +68,12 @@ final class ControllerOrchestratorEffects {
     var storedUpdates = CloudGatewayMacExtensionUpdateOrchestrator.StoredState()
     var holdsPing = false
     var releasePing: CheckedContinuation<Void, Never>?
+    var hasPendingWork = false
+    var activity: [Bool] = []
+    var automaticRefreshes = 0
+    var pings = 0
+    var inventoryAdmission = false
+    var discardsDeferredInventory = false
 
     func makeRequests() throws -> CloudGatewayMacControllerRequests {
         try .init(data: data, now: { self.now }) { data in
@@ -83,7 +89,7 @@ final class ControllerOrchestratorEffects {
         )
         let effects = CloudGatewayMacControllerEffects(
             snapshot: { setup, canUpdate in controllerBoundaryState(active: self.active, setup: setup, canUpdateExtension: canUpdate) },
-            hasPendingWork: { false },
+            hasPendingWork: { self.hasPendingWork },
             perform: { request, completion in
                 self.performed.append(request.action)
                 self.completion = completion
@@ -111,12 +117,16 @@ final class ControllerOrchestratorEffects {
             setSetupState: { self.setup = $0 }, hasAnyActiveTunnel: { self.active },
             installedIdentity: { self.installed }, extensionIdentity: { controllerBoundaryBuild },
             ping: { identity in
+                self.pings += 1
                 if self.holdsPing { await withCheckedContinuation { self.releasePing = $0 } }
                 guard self.authenticated else { throw CloudGatewayMacControllerFailure.unavailable }
                 return CloudGatewayMacExtensionVersion(infoDictionary: [
                     "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version,
                 ], codeHash: identity.codeHash)
-            }, now: { self.now }
+            }, userActivity: { self.activity.append($0) },
+            refreshInventoryIfDue: { self.automaticRefreshes += 1 },
+            setAutomaticInventoryRefreshAllowed: { self.inventoryAdmission = $0; self.discardsDeferredInventory = $1 },
+            monotonicNow: { .seconds(self.now.timeIntervalSince1970) }, now: { self.now }
         )
         return try .init(identity: controllerBoundaryBuild, effects: effects,
                          requests: requests ?? makeRequests(), extensionUpdates: updates)
@@ -417,6 +427,7 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
     try await effects.ready(controller)
     effects.holdsPing = true
     effects.setup = .checkingConnection
+    effects.now.addTimeInterval(60)
     await controller.tick()
     try #require(await controllerBoundaryEventually { effects.releasePing != nil })
     #expect(await controller.handle(controllerBoundaryRequest(.snapshot)).state?.canUpdateExtension == false)
@@ -434,10 +445,154 @@ func controllerOrchestratorReconstructionDoesNotReplayUnfinishedConnect(running:
     let effects = ControllerOrchestratorEffects()
     let controller = try effects.make()
     try await effects.ready(controller)
-    effects.now.addTimeInterval(60)
+    effects.now.addTimeInterval(900)
     await controller.tick()
     #expect(controller.canExit)
     #expect(effects.setup == .ready)
+}
+
+@MainActor
+@Test func controllerOrchestratorPassivePollsAndAnActiveVPNDoNotExtendIdle() async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.active = true
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.now.addTimeInterval(899)
+    for action in [CloudGatewayMacControllerRequest.Action.lifecycle, .diagnostics, .snapshot,
+                   .status, .operation, .loginStatus, .confirmOperation] {
+        _ = await controller.handle(controllerBoundaryRequest(action, contextId: UUID()))
+    }
+    #expect(!controller.canExit)
+    #expect(effects.activity.isEmpty)
+    effects.now.addTimeInterval(1)
+    await controller.tick()
+    #expect(controller.canExit)
+}
+
+@MainActor
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.userActivity, .recordActivity, .menuWillOpen, .awaitRefresh, .beginLogin])
+func controllerOrchestratorRealActionsRenewIdle(action: CloudGatewayMacControllerRequest.Action) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.now.addTimeInterval(899)
+    _ = await controller.handle(controllerBoundaryRequest(action))
+    #expect(effects.activity == [action == .userActivity])
+    try #require(await controllerBoundaryEventually { effects.setup == .ready })
+    effects.now.addTimeInterval(899)
+    #expect(!controller.canExit)
+    effects.now.addTimeInterval(1)
+    #expect(await controllerBoundaryEventually { controller.canExit })
+}
+
+@MainActor
+@Test func controllerOrchestratorRecordsActivityWithoutRequestingAStaleRefresh() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let refreshes = effects.automaticRefreshes
+    let reply = await controller.handle(controllerBoundaryRequest(.recordActivity))
+    #expect(reply.error == nil)
+    #expect(reply.state != nil)
+    #expect(effects.activity == [false])
+    #expect(effects.automaticRefreshes == refreshes)
+    #expect(effects.refreshes == 0)
+    #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorPendingWorkDoesNotCreateAnotherIdleWindow() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.hasPendingWork = true
+    effects.setup = .checkingConnection
+    effects.now.addTimeInterval(900)
+    await controller.tick()
+    #expect(!controller.canExit)
+    try #require(await controllerBoundaryEventually { effects.pings == 2 && effects.setup == .ready })
+    effects.hasPendingWork = false
+    #expect(controller.canExit)
+    #expect(effects.activity.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorRetainsLateCommandResultsForRecoveryWithoutRenewingActivity() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let request = controllerBoundaryRequest(.connect)
+    _ = await controller.handle(request)
+    #expect(!effects.inventoryAdmission)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    effects.now.addTimeInterval(900)
+    #expect(!controller.canExit)
+    effects.completion?(.completed(warning: nil))
+    #expect(effects.inventoryAdmission)
+    effects.now.addTimeInterval(599)
+    #expect(!controller.canExit)
+    _ = await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    effects.now.addTimeInterval(1)
+    #expect(controller.canExit)
+    #expect(effects.activity == [false])
+}
+
+@MainActor
+@Test func controllerOrchestratorActiveRefreshRequestHoldsExitUntilItsReplyCompletes() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    effects.holdsRefresh = true
+    let refresh = Task { await controller.handle(controllerBoundaryRequest(.awaitRefresh)) }
+    try #require(await controllerBoundaryEventually { effects.holdRefresh != nil })
+    effects.now.addTimeInterval(900)
+    #expect(!controller.canExit)
+    effects.holdRefresh?.resume()
+    effects.holdRefresh = nil
+    #expect(await refresh.value.refresh == .refreshed)
+    #expect(controller.canExit)
+}
+
+@MainActor
+@Test func controllerOrchestratorAutomaticInventorySkipsReservationsDrainAndExtensionWork() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let initial = effects.automaticRefreshes
+    let request = controllerBoundaryRequest(.connect)
+    _ = await controller.handle(request)
+    await controller.tick()
+    #expect(effects.automaticRefreshes == initial)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    await controller.tick()
+    #expect(effects.automaticRefreshes == initial)
+    effects.completion?(.completed(warning: nil))
+    let prepared = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    #expect(prepared.accepted == true)
+    await controller.tick()
+    #expect(effects.automaticRefreshes == initial)
+    effects.installed = controllerBoundaryReplacement
+    await controller.tick()
+    #expect(effects.automaticRefreshes == initial)
+    #expect(!effects.inventoryAdmission)
+    #expect(effects.discardsDeferredInventory)
+    #expect(await controller.handle(controllerBoundaryRequest(.userActivity)).error == .busy)
+}
+
+@MainActor
+@Test func controllerOrchestratorRoutineReadinessRunsAtMostOnceAMinute() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    #expect(effects.pings == 1)
+    for _ in 0..<11 {
+        effects.now.addTimeInterval(5)
+        await controller.tick()
+    }
+    #expect(effects.pings == 1)
+    effects.now.addTimeInterval(5)
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.pings == 2 })
 }
 
 @MainActor

@@ -70,16 +70,19 @@ import Testing
 
 @Test @MainActor func capacityPreparationDeadlineIncludesStalledTokenRetrieval() async throws {
     let probe = CapacityPreparationProbe()
+    var tokenStarted = false
     var tokenCancelled = false
     let regions = try await CloudGatewayMacCapacityPreparation.prepare(
-        timeout: .milliseconds(20), loadRegions: { probe.regions },
+        timeout: .seconds(1), loadRegions: { probe.regions },
         loadToken: {
+            tokenStarted = true
             defer { tokenCancelled = Task.isCancelled }
             try await Task.sleep(for: .seconds(60))
             return "test-token"
         },
         fetchCapacity: { regionId, _ in try await probe.capacity(regionId) }
     )
+    #expect(tokenStarted)
     #expect(regions.allSatisfy { $0.capacity == .unknown })
     #expect(probe.maximumConcurrentReads == 0)
     try await capacityWaitUntil { tokenCancelled }

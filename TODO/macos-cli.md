@@ -334,8 +334,9 @@ numbered selector, or `--wait` in v1.
 - Online `list` includes authorized cloud configs, including those not installed
   on this Mac. Show region/name, ID, assigned internal IP, cloud state, local
   installation state, and observed local tunnel state. Label unusable rows
-- Plain `list` uses controller inventory and existing restoration behavior.
-  Include freshness/source metadata. Do not promise a disk cache of all cloud
+- Plain `list` uses shared controller inventory, waits for startup restoration,
+  and requests a stale refresh through the controller activity policy. Include
+  freshness/source metadata. Do not promise a disk cache of all cloud
   configs, since the current persistent cache covers installed metadata only
 - Offline `list` contains only this account's previously authorized installed
   metadata and labels its reduced scope. Offline `up` additionally requires a

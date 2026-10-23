@@ -74,7 +74,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     let harness = CLIHarness(restoring, restoring, onlineState())
     #expect(await harness.run("auth", "status", "--json") == 0)
     #expect((harness.json?["data"] as? [String: Any])?["state"] as? String == "online")
-    #expect(harness.actions == [.lifecycle, .snapshot, .snapshot, .snapshot])
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .snapshot])
     #expect(harness.clock.now == .seconds(1))
 
     // Read commands default to a 30 second deadline when --timeout is absent
@@ -228,7 +228,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     harness.unavailableHandshakes = 3
     #expect(await harness.run("auth", "status") == 0)
     #expect(harness.bootstraps == 1)
-    #expect(harness.actions == [.lifecycle, .lifecycle, .lifecycle, .lifecycle, .snapshot])
+    #expect(harness.actions == [.lifecycle, .lifecycle, .lifecycle, .lifecycle, .userActivity, .snapshot])
 }
 
 @MainActor
@@ -270,7 +270,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     harness.outcome = .startRequested(identifier: east, warning: nil)
     #expect(await harness.run("status", "--operation", id.uuidString, "--json") == 0)
     #expect(harness.json?["operationId"] as? String == id.uuidString.lowercased())
-    #expect(harness.actions == [.lifecycle, .operation])
+    #expect(harness.actions == [.lifecycle, .userActivity, .operation])
 
     harness.outcome = .failed(.vpnFailed)
     harness.operation = .init(id: id, state: .failed, failure: .commandFailed)

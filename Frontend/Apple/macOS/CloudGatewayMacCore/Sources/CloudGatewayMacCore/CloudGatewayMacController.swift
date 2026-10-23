@@ -35,7 +35,12 @@ public final class CloudGatewayMacController {
     private var isShuttingDown = false
     private var inventoryTask: Task<Void, Never>?
     private var inventoryEpoch: UInt64 = 0
-    private var lastInventoryRefresh: ContinuousClock.Instant?
+    private let inventoryNow: () -> Duration
+    private let inventoryJitter: () -> Double
+    private var inventorySchedule: CloudGatewayMacInventorySchedule
+    private var deferredInventoryRefresh = false
+    private var deferredInventoryRefreshIsAutomatic = false
+    private var automaticInventoryRefreshAllowed = true
     private var restorationTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
     private var isStopping = false
@@ -66,7 +71,9 @@ public final class CloudGatewayMacController {
         now: @escaping () -> Date = Date.init,
         loginTimer: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         loginNow: (@Sendable () -> Duration)? = nil,
-        loginSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        loginSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        inventoryNow: (() -> Duration)? = nil,
+        inventoryJitter: @escaping () -> Double = { Double.random(in: 0...1) }
     ) {
         self.auth = auth
         self.inventory = inventory
@@ -80,6 +87,10 @@ public final class CloudGatewayMacController {
         let loginOrigin = loginClock.now
         let monotonicNow: @Sendable () -> Duration = loginNow ?? { loginOrigin.duration(to: loginClock.now) }
         self.loginNow = monotonicNow
+        let inventoryClock = inventoryNow ?? { monotonicNow() }
+        self.inventoryNow = inventoryClock
+        self.inventoryJitter = inventoryJitter
+        inventorySchedule = .init(now: inventoryClock())
         browser = CloudGatewayMacBrowserAuthCoordinator(
             service: deviceAuth, auth: auth, dashboardOrigin: dashboardOrigin, openBrowser: { _ in },
             checkAccess: { [weak self] candidate in
@@ -123,7 +134,7 @@ public final class CloudGatewayMacController {
     }
 
     public var hasPendingWork: Bool {
-        if inventoryTask != nil || inventoryCommitTask != nil || restorationTask != nil || commandTask != nil
+        if inventoryTask != nil || deferredInventoryRefresh || inventoryCommitTask != nil || restorationTask != nil || commandTask != nil
             || cancellationTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
             return true
         }
@@ -139,7 +150,7 @@ public final class CloudGatewayMacController {
                 accountId: user?.uid, hasRetainedSession: auth.currentUser != nil,
                 accessAuthorized: user != nil, access: accessState,
                 credentials: auth.currentUser != nil ? .available : .unknown,
-                inventoryFreshness: inventoryTask != nil || inventoryCommitTask != nil ? .refreshing
+                inventoryFreshness: inventoryTask != nil || deferredInventoryRefresh || inventoryCommitTask != nil ? .refreshing
                     : isOffline ? .cached : hasAuthorizedInventory ? .current : .unavailable,
                 installedIdentifiers: installed.map(\.identifier),
                 observedProfiles: profileObservation.profiles.map {
@@ -160,9 +171,41 @@ public final class CloudGatewayMacController {
     public func menuWillOpen() {
         guard isStarted, !isShuttingDown else { return }
         refreshProfiles()
-        if user != nil { refreshInventory(force: false) }
-        else if auth.currentUser != nil { restoreSession() }
+        recordUserActivity(refreshIfStale: true)
         notifyChange()
+    }
+
+    public func recordUserActivity(refreshIfStale: Bool) {
+        guard isStarted, !isShuttingDown else { return }
+        inventorySchedule.recordActivity(at: inventoryNow())
+        guard refreshIfStale else { return }
+        if user != nil {
+            if inventorySchedule.isStale(at: inventoryNow()) || inventoryTask != nil {
+                refreshInventory(force: false)
+            }
+        } else if auth.currentUser != nil { restoreSession() }
+    }
+
+    public func refreshInventoryIfDue() {
+        guard isStarted, !isShuttingDown, inventoryTask == nil, inventoryCommitTask == nil,
+              restorationTask == nil, commandTask == nil, cancellationTask == nil,
+              automaticInventoryRefreshAllowed, inventorySchedule.isDue(at: inventoryNow()) else { return }
+        switch browser.state {
+        case .requestingCode, .waitingForApproval, .exchangingToken: return
+        default: break
+        }
+        if user != nil { refreshInventory() }
+        else if auth.currentUser != nil { restoreSession() }
+    }
+
+    public func setAutomaticInventoryRefreshAllowed(_ allowed: Bool, discardDeferred: Bool) {
+        automaticInventoryRefreshAllowed = allowed
+        if discardDeferred, deferredInventoryRefreshIsAutomatic {
+            deferredInventoryRefresh = false
+            deferredInventoryRefreshIsAutomatic = false
+            notifyChange()
+        }
+        if allowed { resumeDeferredInventoryRefresh() }
     }
 
     public func profilesDidChange() {
@@ -259,6 +302,7 @@ public final class CloudGatewayMacController {
             } catch CloudGatewayMacInventoryError.offline {
                 guard sessionEpoch == epoch, !Task.isCancelled,
                       auth.currentUser?.uid == candidate.uid else { return }
+                inventorySchedule.complete(at: inventoryNow(), succeeded: false, jitter: inventoryJitter())
                 let saved = try? await cache.load(accountId: candidate.uid)
                 guard sessionEpoch == epoch, !Task.isCancelled,
                       auth.currentUser?.uid == candidate.uid else { return }
@@ -289,6 +333,7 @@ public final class CloudGatewayMacController {
                 errorMessage = "Account access was denied. Sign in again after access is restored"
             } catch {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                inventorySchedule.complete(at: inventoryNow(), succeeded: false, jitter: inventoryJitter())
                 accessResult = .unreachable
                 errorMessage = "Unable to restore your session. Refresh to try again"
             }
@@ -310,10 +355,17 @@ public final class CloudGatewayMacController {
     }
 
     private func refreshInventory(force: Bool = true) {
-        guard let account = user, inventoryTask == nil, commandTask == nil, !isShuttingDown else { return }
-        let now = ContinuousClock().now
-        if !force, let lastInventoryRefresh, lastInventoryRefresh.duration(to: now) < .seconds(30) { return }
-        lastInventoryRefresh = now
+        guard let account = user, inventoryTask == nil, !isShuttingDown else { return }
+        if !force, !inventorySchedule.isStale(at: inventoryNow()) { return }
+        guard commandTask == nil, cancellationTask == nil, inventoryCommitTask == nil,
+              force || automaticInventoryRefreshAllowed else {
+            deferredInventoryRefreshIsAutomatic = deferredInventoryRefresh ? deferredInventoryRefreshIsAutomatic && !force : !force
+            deferredInventoryRefresh = true
+            notifyChange()
+            return
+        }
+        deferredInventoryRefresh = false
+        deferredInventoryRefreshIsAutomatic = false
         inventoryEpoch &+= 1
         let refreshEpoch = inventoryEpoch
         let epoch = sessionEpoch
@@ -322,7 +374,13 @@ public final class CloudGatewayMacController {
         inventoryTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if sessionEpoch == epoch, inventoryEpoch == refreshEpoch { inventoryTask = nil; notifyChange() }
+                if sessionEpoch == epoch, inventoryEpoch == refreshEpoch {
+                    if let result = refreshResult, result.epoch == refreshEpoch {
+                        inventorySchedule.complete(at: inventoryNow(), succeeded: result.result == .refreshed, jitter: inventoryJitter())
+                    }
+                    inventoryTask = nil
+                    notifyChange()
+                }
             }
             do {
                 await pendingCancellation?.value
@@ -476,7 +534,9 @@ public final class CloudGatewayMacController {
         installed = []
         isOffline = false
         hasAuthorizedInventory = false
-        lastInventoryRefresh = nil
+        inventorySchedule.resetInventory()
+        deferredInventoryRefresh = false
+        deferredInventoryRefreshIsAutomatic = false
         errorMessage = nil
     }
 
@@ -504,8 +564,21 @@ public final class CloudGatewayMacController {
             if !preservingStop { await configs.waitForPendingWork() }
             guard cancellationEpoch == epoch else { return }
             cancellationTask = nil
+            resumeDeferredInventoryRefresh()
             notifyChange()
         }
+    }
+
+    private func resumeDeferredInventoryRefresh() {
+        guard deferredInventoryRefresh else { return }
+        if deferredInventoryRefreshIsAutomatic,
+           !inventorySchedule.isStale(at: inventoryNow()) || inventorySchedule.isIdle(at: inventoryNow()) {
+            deferredInventoryRefresh = false
+            deferredInventoryRefreshIsAutomatic = false
+            notifyChange()
+            return
+        }
+        refreshInventory(force: !deferredInventoryRefreshIsAutomatic)
     }
 
     private func requireCurrent(_ epoch: UInt64, token: CloudGatewayMacSessionToken? = nil) throws {
@@ -630,7 +703,7 @@ public final class CloudGatewayMacController {
             var connectInFlight = false
             var startRequested: Bool?
             defer {
-                if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); notifyChange() }
+                if sessionEpoch == epoch { commandTask = nil; resumeDeferredInventoryRefresh(); refreshProfiles(); notifyChange() }
                 onCompletion?(outcome)
             }
             do {
@@ -798,7 +871,7 @@ public final class CloudGatewayMacController {
             var creationAttempted = false
             var outcome = CloudGatewayMacCommandOutcome.failed(.internalError)
             defer {
-                if sessionEpoch == epoch { commandTask = nil; notifyChange() }
+                if sessionEpoch == epoch { commandTask = nil; resumeDeferredInventoryRefresh(); notifyChange() }
                 onCompletion?(clientWasCreated && outcome != .completed(warning: nil)
                     ? .completed(warning: .inventoryNotRefreshed) : outcome)
             }
@@ -818,6 +891,7 @@ public final class CloudGatewayMacController {
                 let fetched = try await inventory.fetchOptions(for: account, role: role)
                 try requireCurrent(epoch, token: token)
                 try await publishInventory(fetched, role: role, accountId: account.uid, epoch: epoch, token: token)
+                inventorySchedule.complete(at: inventoryNow(), succeeded: true, jitter: inventoryJitter())
                 outcome = .completed(warning: nil)
             } catch CloudGatewayMacInventoryError.accessDenied, CloudGatewayAppError.apiAccessDenied(_) {
                 outcome = .failed(.accessDenied)
@@ -864,6 +938,7 @@ public final class CloudGatewayMacController {
                 isStopping = false
                 commandTask = nil
                 resumeLoginInventoryAfterStop()
+                resumeDeferredInventoryRefresh()
                 refreshProfiles()
                 notifyChange()
                 onCompletion?(outcome)
@@ -1017,9 +1092,16 @@ public final class CloudGatewayMacController {
             refreshInventory()
             notifyChange()
         }
-        guard let task = inventoryTask else { return .skipped }
+        if deferredInventoryRefresh {
+            let token = sessionFence.currentToken
+            await commandTask?.value
+            await cancellationTask?.value
+            _ = try? await inventoryCommitTask?.value
+            guard token == sessionFence.currentToken, !isShuttingDown else { return .superseded }
+            resumeDeferredInventoryRefresh()
+        }
         let epoch = inventoryEpoch
-        await task.value
+        if let task = inventoryTask { await task.value }
         guard let refreshResult, refreshResult.epoch == epoch else { return .superseded }
         return refreshResult.result
     }

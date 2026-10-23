@@ -19,7 +19,7 @@ private let refreshConfig = "uid1/us-east-1/mac"
     #expect(await harness.run("refresh", "--json") == 0)
     let data = try #require(harness.json?["data"] as? [String: Any])
     #expect(data["result"] as? String == "refreshed")
-    #expect(harness.actions == [.lifecycle, .awaitRefresh, .awaitRefresh])
+    #expect(harness.actions == [.lifecycle, .userActivity, .awaitRefresh, .awaitRefresh])
     #expect(!harness.actions.contains(.connect))
     #expect(!harness.actions.contains(.turnOff))
 }
@@ -40,7 +40,7 @@ private let refreshConfig = "uid1/us-east-1/mac"
     #expect(regions.count == 1)
     #expect(regions.first?["regionId"] as? String == "us-west-2")
     #expect(data["freshness"] as? String == "current")
-    #expect(harness.actions == [.lifecycle, .awaitRefresh])
+    #expect(harness.actions == [.lifecycle, .userActivity, .awaitRefresh])
 }
 
 @MainActor
@@ -89,7 +89,7 @@ private let refreshConfig = "uid1/us-east-1/mac"
         return .init(state: cliState(), refresh: .timedOut)
     }
     #expect(await harness.run("refresh", "--timeout", "1", "--json") == 8)
-    #expect(harness.actions == [.lifecycle, .awaitRefresh, .awaitRefresh])
+    #expect(harness.actions == [.lifecycle, .userActivity, .awaitRefresh, .awaitRefresh])
     #expect((harness.json?["data"] as? [String: Any])?["result"] as? String == "timed_out")
 }
 
@@ -109,4 +109,30 @@ private let refreshConfig = "uid1/us-east-1/mac"
     #expect(held != nil)
     #expect(!harness.actions.contains(.confirmOperation))
     held?.resume()
+}
+
+@MainActor
+@Test func cliListReportsActivityOnceAndWaitsForTheSharedStaleRefresh() async throws {
+    let harness = CLIHarness(cliState())
+    harness.onRequest = { request in
+        guard request.action == .userActivity else { return nil }
+        harness.states = [
+            cliState(inventory: .refreshing),
+            cliState(clients: [cliClient(refreshConfig, regionName: "East", name: "Fresh Mac")]),
+        ]
+        return .init()
+    }
+    #expect(await harness.run("list", "--json") == 0)
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot])
+    #expect(harness.output.contains("Fresh Mac"))
+    #expect(!harness.actions.contains(.awaitRefresh))
+}
+
+@MainActor
+@Test func cliListActivityUsesTheSameCallerDeadline() async {
+    let harness = CLIHarness(cliState())
+    harness.hungActions = [.userActivity]
+    #expect(await harness.run("list", "--timeout", "1", "--json") == 8)
+    #expect(harness.actions == [.lifecycle, .userActivity])
+    #expect(!harness.actions.contains(.snapshot))
 }

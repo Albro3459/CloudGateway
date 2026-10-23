@@ -55,10 +55,16 @@ locks under `~/Library/Application Support/CloudGateway/macOS`. Development and
 mounted DMG copies cannot register themselves under the production service name.
 The job sets `LimitLoadToSessionType = Background` for the user domain;
 `ProcessType = Background` controls resource limits and does not select the session.
-The controller exits after 60 seconds without requests, pending work, or a
-retained command result. The latest result keeps it alive for ten minutes. Menu
-polling keeps it available while the frontend is open. Reopening the menu starts
-it again without replaying a VPN command. An app/build mismatch requires closing
+The controller refreshes shared inventory every minute for 2 minutes after user
+activity, then every 5 minutes until 15 minutes of inactivity. It becomes eligible
+to exit after 15 minutes, once pending work, extension activation/approval, active
+requests, and retained results allow it. The latest command result keeps its
+ten-minute recovery window. Passive menu polls and a connected VPN do not reset
+user activity. Menu polling pauses at the same idle limit. Reopening the menu
+starts the controller if needed and refreshes stale inventory in the background,
+without replaying a VPN command. CLI `list` waits for stale inventory within its
+caller deadline. Explicit Refresh fetches immediately through the same controller.
+See the [polling plan](../../../TODO/macos-inventory-polling.md). An app/build mismatch requires closing
 the menu, allowing pending work and the idle grace period to finish, then
 reopening the installed app. Never run the old in-process owner alongside it.
 

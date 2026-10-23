@@ -776,6 +776,222 @@ import CloudGatewayMacControllerIPC
     #expect(fixture.inventory.fetchCount == fetches + 1)
 }
 
+@Test @MainActor func macControllerTimerMenuAndExplicitRefreshShareOneFetch() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    fixture.controller.menuWillOpen()
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    let explicit = Task { await fixture.controller.awaitRefresh() }
+    try await controllerWaitUntil { await fetch.entered }
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    await fetch.release()
+    #expect(await explicit.value == .refreshed)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+}
+
+@Test @MainActor func macControllerExplicitRefreshStartsANewFetchAfterActivityRefreshCompletes() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .current }
+    fixture.controller.recordUserActivity(refreshIfStale: false)
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+}
+
+@Test @MainActor func macControllerFreshnessStartsWhenInventoryCommitsAndFailureDoesNotRenewIt() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    try await controllerWaitUntil { await fetch.entered }
+    fixture.clock.elapsed = .seconds(100)
+    await fetch.release()
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .current }
+    fixture.clock.elapsed = .seconds(159)
+    fixture.controller.menuWillOpen()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
+    fixture.clock.elapsed = .seconds(160)
+    fixture.controller.menuWillOpen()
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .unavailable }
+    fixture.inventory.fetchError = nil
+    fixture.clock.elapsed = .seconds(161)
+    fixture.controller.menuWillOpen()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .current }
+    #expect(fixture.inventory.fetchCount == fetches + 3)
+}
+
+@Test @MainActor func macControllerAutomaticFailureBackoffAllowsExplicitRetry() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
+    for seconds in [60, 120] {
+        fixture.clock.elapsed = .seconds(seconds)
+        fixture.controller.recordUserActivity(refreshIfStale: false)
+        fixture.controller.refreshInventoryIfDue()
+        try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    }
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    fixture.clock.elapsed = .seconds(180)
+    fixture.controller.recordUserActivity(refreshIfStale: false)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .unavailable)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    fixture.inventory.fetchError = nil
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 3)
+}
+
+@Test @MainActor func macControllerAutomaticRetryAfterEarlyExplicitFailureDoesNotWaitForStaleInventory() async throws {
+    let fixture = try MacControllerFixture(inventoryJitter: { 0 })
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.clock.elapsed = .seconds(1)
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
+    #expect(await fixture.controller.awaitRefresh() == .unavailable)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.clock.elapsed = .seconds(48)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness != .refreshing)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.inventory.fetchError = nil
+    fixture.clock.elapsed = .seconds(49) + .nanoseconds(1)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+}
+
+@Test @MainActor func macControllerFiveMinuteTierRetriesFailuresBeforeResumingItsCadence() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
+    for seconds in [300, 360] {
+        fixture.clock.elapsed = .seconds(seconds - 1)
+        fixture.controller.refreshInventoryIfDue()
+        #expect(fixture.domainSnapshot.domain.inventoryFreshness != .refreshing)
+        fixture.clock.elapsed = .seconds(seconds)
+        fixture.controller.refreshInventoryIfDue()
+        #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+        try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    }
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    fixture.clock.elapsed = .seconds(479)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    fixture.inventory.fetchError = nil
+    fixture.clock.elapsed = .seconds(480)
+    fixture.controller.refreshInventoryIfDue()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == fetches + 3)
+    fixture.clock.elapsed = .seconds(779)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+    #expect(fixture.inventory.fetchCount == fetches + 3)
+    fixture.clock.elapsed = .seconds(780)
+    fixture.controller.refreshInventoryIfDue()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == fetches + 4)
+}
+
+@Test @MainActor func macControllerStaleActivityWaitsForCommandsAndIsImmediatelyObservable() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    let submission = MacControllerGate()
+    await fixture.profiles.pauseStart(submission)
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier))
+    try await controllerWaitUntil { await submission.entered }
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.inventory.fetchCount == fetches)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    #expect(fixture.inventory.fetchCount == fetches)
+    let refresh = Task { await fixture.controller.awaitRefresh() }
+    await submission.release()
+    #expect(await refresh.value == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+}
+
+@Test @MainActor func macControllerWakeDoesOneDueFetchAndLongSleepNeedsRealActivity() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.clock.elapsed = .seconds(700)
+    fixture.controller.refreshInventoryIfDue()
+    fixture.controller.refreshInventoryIfDue()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.clock.elapsed = .seconds(701)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.clock.elapsed = .seconds(3_600)
+    fixture.controller.refreshInventoryIfDue()
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+}
+
+@Test @MainActor func macControllerDefersActivityBehindAdmissionAndDiscardsItWhileDraining() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let fetches = fixture.inventory.fetchCount
+    fixture.clock.elapsed = .seconds(60)
+    fixture.controller.setAutomaticInventoryRefreshAllowed(false, discardDeferred: false)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    #expect(fixture.inventory.fetchCount == fetches)
+    fixture.controller.setAutomaticInventoryRefreshAllowed(true, discardDeferred: false)
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .current }
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.clock.elapsed = .seconds(120)
+    fixture.controller.setAutomaticInventoryRefreshAllowed(false, discardDeferred: false)
+    fixture.controller.recordUserActivity(refreshIfStale: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .refreshing)
+    fixture.controller.setAutomaticInventoryRefreshAllowed(false, discardDeferred: true)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    fixture.clock.elapsed = .seconds(3_600)
+    fixture.controller.setAutomaticInventoryRefreshAllowed(true, discardDeferred: false)
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+}
+
 @Test(arguments: [false, true], [false, true])
 @MainActor func macControllerResolvesConnectAfterCommittedInventoryPublishes(savedConfig: Bool, removed: Bool) async throws {
     let fixture = try MacControllerFixture()
@@ -1050,7 +1266,7 @@ import CloudGatewayMacControllerIPC
     #expect(await fixture.controller.awaitRefresh() == .signInRequired)
 }
 
-@Test @MainActor func macControllerAwaitedRefreshIsSupersededByAStartAndSkippedDuringCommands() async throws {
+@Test @MainActor func macControllerAwaitedRefreshIsSupersededByAStartAndDeferredDuringCommands() async throws {
     let fixture = try MacControllerFixture()
     try await fixture.seedCache()
     await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
@@ -1066,8 +1282,10 @@ import CloudGatewayMacControllerIPC
     await fetch.release()
     #expect(await refresh.value == .superseded)
     try await controllerWaitUntil { await submission.entered }
-    #expect(await fixture.controller.awaitRefresh() == .skipped)
+    let deferred = Task { await fixture.controller.awaitRefresh() }
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.inventoryFreshness == .refreshing }
     await submission.release()
+    #expect(await deferred.value == .refreshed)
     try await controllerWaitUntil { !fixture.controller.hasPendingWork }
     #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
 }
@@ -1151,7 +1369,8 @@ private struct MacControllerFixture {
     let clock = MacControllerClock()
     let loginClock = AuthDeadlineClock()
 
-    init(loginTimer: (@Sendable (Duration) async throws -> Void)? = nil) throws {
+    init(loginTimer: (@Sendable (Duration) async throws -> Void)? = nil,
+         inventoryJitter: @escaping () -> Double = { 0.5 }) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayControllerTests-\(UUID())")
         auth = MacControllerAuth()
         deviceAuth = MacControllerDeviceAuth()
@@ -1180,7 +1399,8 @@ private struct MacControllerFixture {
             now: { [clock] in clock.now },
             loginTimer: loginTimer ?? { [loginClock] in try await loginClock.timer($0) },
             loginNow: { [loginClock] in loginClock.now },
-            loginSleep: { [loginClock] in await loginClock.sleep($0) }
+            loginSleep: { [loginClock] in await loginClock.sleep($0) },
+            inventoryNow: { [clock] in clock.elapsed }, inventoryJitter: inventoryJitter
         )
         inventory.options = [option()]
     }
@@ -1461,6 +1681,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
 @MainActor
 private final class MacControllerClock {
     var now = Date(timeIntervalSince1970: 5_000)
+    var elapsed = Duration.zero
 }
 
 @MainActor

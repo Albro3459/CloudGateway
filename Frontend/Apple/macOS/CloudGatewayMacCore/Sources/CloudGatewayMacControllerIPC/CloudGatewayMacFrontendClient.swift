@@ -13,6 +13,7 @@ public final class CloudGatewayMacFrontendClient {
     public private(set) var connectionState = ConnectionState.reconnecting
     public private(set) var snapshot: CloudGatewayMacControllerView?
     public private(set) var isSnapshotFresh = false
+    private(set) var isPollingPaused = false
     public private(set) var errorMessage: String?
     private let identity: CloudGatewayMacBuildIdentity
     private let transport: (CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply
@@ -20,6 +21,12 @@ public final class CloudGatewayMacFrontendClient {
     private let now: @Sendable () -> Duration
     private let sleep: @Sendable (Duration) async throws -> Void
     private var pollTask: Task<Void, Never>?
+    private var pollingId: UUID?
+    private var interactionTask: Task<Void, any Error>?
+    private var lastActivity: Duration
+    private var hasStarted = false
+    private var hasPreparedStartup = false
+    private var hasIdleSnapshot = false
     private var sequence: UInt64 = 0
     private var appliedSequence: UInt64 = 0
     private var generation: UInt64 = 0
@@ -37,7 +44,9 @@ public final class CloudGatewayMacFrontendClient {
         self.bootstrap = bootstrap
         let clock = ContinuousClock()
         let origin = clock.now
-        self.now = now ?? { origin.duration(to: clock.now) }
+        let elapsed = now ?? { origin.duration(to: clock.now) }
+        self.now = elapsed
+        lastActivity = elapsed()
         self.sleep = sleep
     }
 
@@ -45,6 +54,19 @@ public final class CloudGatewayMacFrontendClient {
 
     public var presentation: CloudGatewayMacControllerView {
         if isSnapshotFresh, let snapshot { return snapshot }
+        if hasIdleSnapshot, safeStatus == nil, let snapshot {
+            return .init(groups: snapshot.groups.map { group in
+                .init(title: group.title, rows: group.rows.map {
+                    .init(identifier: $0.identifier, title: $0.title, status: nil, isEnabled: false)
+                })
+            }, statusTitle: "\(snapshot.statusTitle) (last observed)",
+                canToggleVPN: snapshot.canTurnOff, canTurnOff: snapshot.canTurnOff,
+                hasActiveTunnel: snapshot.hasActiveTunnel, canRefresh: snapshot.canRefresh, canSignOut: snapshot.canSignOut,
+                accountId: snapshot.accountId, lastSelectedIdentifier: snapshot.lastSelectedIdentifier,
+                browserState: snapshot.browserState, login: snapshot.login, setupState: snapshot.setupState,
+                isRestoringSession: snapshot.isRestoringSession, isAuthSettling: snapshot.isAuthSettling,
+                hasRetainedSession: snapshot.hasRetainedSession, errorMessage: snapshot.errorMessage)
+        }
         let live = safeStatus?.observationAvailable == true
         let active = safeStatus?.hasActiveTunnel ?? snapshot?.hasActiveTunnel ?? false
         let canStop = live && safeStatus?.needsStop == true
@@ -66,18 +88,56 @@ public final class CloudGatewayMacFrontendClient {
     }
 
     public func start() {
-        guard pollTask == nil, !isShuttingDown else { return }
+        guard !hasStarted else { return }
+        hasStarted = true
+        startPolling()
+    }
+
+    private var shouldPoll: Bool {
+        now() - lastActivity < .seconds(15 * 60)
+    }
+
+    private func pausePolling() {
+        guard !isPollingPaused else { return }
+        isPollingPaused = true
+        hasIdleSnapshot = snapshot != nil
+        isSnapshotFresh = false
+        safeStatus = nil
+        onChange?()
+    }
+
+    private func startPolling() {
+        guard hasStarted, pollTask == nil, !isShuttingDown else { return }
+        guard shouldPoll else { pausePolling(); return }
+        let id = UUID()
+        pollingId = id
+        let prepareStartup = !hasPreparedStartup
+        hasPreparedStartup = true
         pollTask = Task { [weak self] in
+            defer {
+                if let self, pollingId == id {
+                    pollTask = nil
+                    pollingId = nil
+                }
+            }
+            if prepareStartup {
+                guard let self else { return }
+                do { try await prepareForInteraction() }
+                catch {
+                    guard !Task.isCancelled, !isShuttingDown else { return }
+                    guard shouldPoll else { pausePolling(); return }
+                    errorMessage = message(for: error)
+                    onChange?()
+                }
+            }
             var delay = 1
             while !Task.isCancelled {
                 guard let self, !isShuttingDown else { return }
+                guard shouldPoll else { pausePolling(); return }
                 do { try await poll(); delay = 1 }
                 catch {
                     guard !Task.isCancelled, !isShuttingDown else { return }
-                    if error as? CloudGatewayMacControllerFailure != .incompatibleVersion {
-                        do { try await bootstrap() }
-                        catch { errorMessage = message(for: error); onChange?() }
-                    }
+                    guard shouldPoll else { pausePolling(); return }
                     delay = min(delay * 2, 10)
                 }
                 do { try await sleep(.seconds(delay)) }
@@ -87,7 +147,9 @@ public final class CloudGatewayMacFrontendClient {
     }
 
     public func poll() async throws {
+        if hasStarted, !shouldPoll { pausePolling(); return }
         let handshake = try await request(.lifecycle)
+        if hasStarted, !shouldPoll { pausePolling(); return }
         guard let lifecycle = handshake.lifecycle else { throw CloudGatewayMacControllerFailure.invalidRequest }
         if lifecycle.state == .current, lifecycle.running == identity, lifecycle.installed == identity {
             _ = try await request(.snapshot)
@@ -95,6 +157,56 @@ public final class CloudGatewayMacFrontendClient {
             _ = try await request(.status)
             if let installed = lifecycle.installed, installed != identity { onReplacement?(installed) }
         }
+    }
+
+    // Only real interactions resume idle polling or authorize another controller launch
+    public func userRequest(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
+                            identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
+                            contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
+        guard !isShuttingDown else { throw CancellationError() }
+        try Task.checkCancellation()
+        lastActivity = now()
+        isPollingPaused = false
+        startPolling()
+        try await prepareForInteraction()
+        try Task.checkCancellation()
+        if action == .menuWillOpen, !isCurrentBuild { return try await request(.status) }
+        if action == .prepareExtensionUpdate, isCurrentBuild {
+            _ = try await request(.recordActivity)
+        }
+        return try await request(action, id: id, identifier: identifier, regionId: regionId,
+                                 clientName: clientName, contextId: contextId, loginOrigin: loginOrigin)
+    }
+
+    private func prepareForInteraction() async throws {
+        if let interactionTask { return try await interactionTask.value }
+        let task = Task { [self] in
+            var launched = false
+            let deadline = now() + .seconds(10)
+            for attempt in 0..<40 {
+                try Task.checkCancellation()
+                guard !isShuttingDown else { throw CancellationError() }
+                guard !hasStarted || shouldPoll else { throw CancellationError() }
+                do {
+                    guard let lifecycle = try await send(.lifecycle).lifecycle else {
+                        throw CloudGatewayMacControllerFailure.invalidRequest
+                    }
+                    if let installed = lifecycle.installed, installed != identity { onReplacement?(installed) }
+                    return
+                } catch CloudGatewayMacControllerFailure.unavailable {
+                    guard !hasStarted || shouldPoll else { throw CancellationError() }
+                    guard attempt < 39, now() < deadline else { throw CloudGatewayMacControllerFailure.timeout }
+                    if !launched {
+                        launched = true
+                        try await bootstrap()
+                    }
+                    try await sleep(.milliseconds(250))
+                }
+            }
+        }
+        interactionTask = task
+        defer { interactionTask = nil }
+        try await task.value
     }
 
     // Short-lived frontends start the controller once, then retry until the caller stops waiting
@@ -121,6 +233,9 @@ public final class CloudGatewayMacFrontendClient {
         generation &+= 1
         pollTask?.cancel()
         pollTask = nil
+        pollingId = nil
+        interactionTask?.cancel()
+        interactionTask = nil
         onChange = nil
         onReplacement = nil
     }
@@ -201,12 +316,14 @@ public final class CloudGatewayMacFrontendClient {
             appliedSequence = currentSequence
             if let state = reply.state, isCurrentBuild {
                 snapshot = .init(state: state)
-                isSnapshotFresh = true
+                isSnapshotFresh = !hasStarted || shouldPoll
                 safeStatus = state.status
+                hasIdleSnapshot = !isSnapshotFresh
+                if !isSnapshotFresh { safeStatus = nil; isPollingPaused = true }
                 errorMessage = nil
                 onChange?()
             } else if let status = reply.status {
-                safeStatus = status
+                safeStatus = hasStarted && !shouldPoll ? nil : status
                 if action == .status { isSnapshotFresh = false }
                 onChange?()
             }

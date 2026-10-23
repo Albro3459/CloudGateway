@@ -43,7 +43,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
     #expect((data["tunnel"] as? [String: Any])?["state"] as? String == "disconnected")
     #expect(!harness.actions.contains(.status))
     #expect(!harness.actions.contains(.operation))
-    #expect(harness.actions == [.lifecycle, .snapshot, .connect, .confirmOperation])
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .connect, .confirmOperation])
 }
 
 @MainActor
@@ -60,7 +60,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
                                   state: cliState(selected: mutationConfig, setup: .checkingConnection))
     harness.states.append(cliState(selected: mutationConfig))
     #expect(await harness.run("up", mutationConfig, "--json") == 0)
-    #expect(harness.actions == [.lifecycle, .snapshot, .snapshot, .connect, .confirmOperation])
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
 }
 
 @MainActor
@@ -70,12 +70,12 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
                                state: cliState(inventory: .refreshing, selected: mutationConfig))
     cold.states.append(cliState(clients: [row], selected: mutationConfig))
     #expect(await cold.run("up", mutationConfig, "--json") == 0)
-    #expect(cold.actions == [.lifecycle, .snapshot, .snapshot, .connect, .confirmOperation])
+    #expect(cold.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
 
     let available = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil),
         state: cliState(inventory: .refreshing, clients: [row], selected: mutationConfig))
     #expect(await available.run("up", mutationConfig, "--json") == 0)
-    #expect(available.actions == [.lifecycle, .snapshot, .connect, .confirmOperation])
+    #expect(available.actions == [.lifecycle, .userActivity, .snapshot, .connect, .confirmOperation])
     #expect(!available.actions.contains(.awaitRefresh))
 }
 
@@ -126,7 +126,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
     let success = mutationHarness(.completed(warning: nil))
     #expect(await success.run("auth", "logout") == 0)
     #expect(success.output.contains("Signed out (VPN retained)\n"))
-    #expect(success.actions == [.lifecycle, .signOut, .confirmOperation])
+    #expect(success.actions == [.lifecycle, .userActivity, .signOut, .confirmOperation])
 
     let failed = CLIHarness()
     failed.onRequest = { request in
@@ -185,7 +185,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
     let harness = mutationHarness(.startRequested(identifier: mutationConfig, warning: nil), state: state)
     #expect(await harness.run("up") == 0)
     #expect(harness.output.contains("VPN start requested\n"))
-    #expect(harness.actions == [.lifecycle, .snapshot, .connect, .confirmOperation])
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .connect, .confirmOperation])
 }
 
 @MainActor
@@ -211,7 +211,7 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
     harness.states = [cliState(account: nil, access: .unverified), cliState(selected: mutationConfig)]
     #expect(await harness.run("up") == 0)
     #expect(harness.output.contains("VPN already active\n"))
-    #expect(harness.actions == [.lifecycle, .snapshot, .snapshot, .connect, .confirmOperation])
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .connect, .confirmOperation])
 }
 
 @MainActor
