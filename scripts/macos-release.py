@@ -82,8 +82,9 @@ def release_version(build: int, version: str | None) -> str:
     return selected
 
 
-def verify_app(app: Path) -> None:
-    command("python3", str(ROOT / "scripts/verify_macos_build.py"), str(app), "--developer-id")
+def verify_app(app: Path, *, cli: bool = False) -> None:
+    options = ["--developer-id"] + (["--cli-smoke"] if cli else [])
+    command("python3", str(ROOT / "scripts/verify_macos_build.py"), str(app), *options)
 
 
 def release_versions(metadata: dict) -> tuple[str, int, str, int]:
@@ -99,7 +100,7 @@ def release_versions(metadata: dict) -> tuple[str, int, str, int]:
 
 
 def verify_release_app(app: Path, version: str, build: int, extension_version: str, extension_build: int) -> None:
-    verify_app(app)
+    verify_app(app, cli=True)
     extension = app / "Contents/Library/SystemExtensions" / f"{EXTENSION_ID}.systemextension"
     for bundle, expected_version, expected_build in [(app, version, build), (extension, extension_version, extension_build)]:
         info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())

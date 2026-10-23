@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import plistlib
 import subprocess
 import tempfile
@@ -8,6 +9,122 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from scripts import verify_macos_build as verifier
+
+
+class MacOSCLIVerificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.app = Path(self.temporary.name) / "CloudGateway.app"
+        self.binary = self.app / "Contents/MacOS/CloudGateway"
+        self.binary.parent.mkdir(parents=True)
+        self.binary.touch(mode=0o755)
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "CloudGateway", "CFBundleShortVersionString": "1.2.0", "CFBundleVersion": "7",
+        }))
+        resources = self.app / "Contents/Resources"
+        resources.mkdir()
+        (resources / "GoogleService-Info.plist").write_bytes(plistlib.dumps({"fixture": True}))
+        self.homes = set()
+
+    def static_result(self, arguments: list[str], **options) -> subprocess.CompletedProcess:
+        self.assertEqual(options["timeout"], 5)
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+        self.assertFalse(options["check"])
+        self.assertTrue(options["capture_output"])
+        home = Path(options["env"]["HOME"])
+        self.homes.add(home)
+        self.assertTrue(home.is_dir())
+        self.assertEqual(options["env"]["CFFIXED_USER_HOME"], str(home))
+        self.assertEqual(options["env"]["TERM"], "dumb")
+        invocation = Path(arguments[0])
+        if invocation.name == "cloudgateway":
+            self.assertTrue(invocation.is_symlink())
+            self.assertEqual(invocation.resolve(), self.binary.resolve())
+            flags = arguments[1:]
+        else:
+            self.assertEqual(invocation.resolve(), self.binary.resolve())
+            self.assertEqual(arguments[1], "--cli")
+            flags = arguments[2:]
+        self.assertNotIn("--controller", flags)
+        self.assertFalse(any(flag in flags for flag in ["up", "down", "refresh", "logout"]))
+        invalid = any(flag in flags for flag in ["--unknown-option", "--unexpected", "0"])
+        command = "auth login" if flags[:2] == ["auth", "login"] else "status" if flags[:1] == ["status"] else "version" if "--version" in flags else "help"
+        if "--json" in flags:
+            data = {"version": "1.2.0", "build": "7"} if command == "version" else {"usage": "cloudgateway help"}
+            record = {"schemaVersion": 1, "type": "error" if invalid else "result", "command": command,
+                      "operationId": None, "data": None if invalid else data,
+                      "error": {"code": "usage"} if invalid else None}
+            output, diagnostics = json.dumps(record).encode() + b"\n", b""
+        else:
+            output, diagnostics = (b"", b"Usage error\n") if invalid else (b"CloudGateway help/version\n", b"")
+        return subprocess.CompletedProcess(arguments, 2 if invalid else 0, stdout=output, stderr=diagnostics)
+
+    def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
+        with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
+            verifier.verify_cli(self.app)
+        self.assertEqual(run.call_count, 20)
+        self.assertEqual(len(self.homes), 1)
+        self.assertTrue(all(not home.exists() for home in self.homes))
+
+    def test_resources_and_executable_are_required_before_launching(self) -> None:
+        resource = self.app / "Contents/Resources/GoogleService-Info.plist"
+        resource.rename(resource.with_suffix(".missing"))
+        with patch.object(verifier.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "resource missing"):
+            verifier.verify_cli(self.app)
+        run.assert_not_called()
+        self.binary.chmod(0o644)
+        with patch.object(verifier.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "not executable"):
+            verifier.verify_cli(self.app)
+        run.assert_not_called()
+
+    def test_timeout_is_reported_without_command_output(self) -> None:
+        error = subprocess.TimeoutExpired("private subprocess details", 5, output=b"private output")
+        with patch.object(verifier.subprocess, "run", side_effect=error), self.assertRaisesRegex(ValueError, "five-second deadline") as raised:
+            verifier.verify_cli(self.app)
+        self.assertNotIn("private", str(raised.exception))
+
+    def test_invalid_json_version_and_terminal_output_are_rejected(self) -> None:
+        for failure in ("json", "version", "escape", "newline", "usage", "operation"):
+            def result(arguments: list[str], **options) -> subprocess.CompletedProcess:
+                response = self.static_result(arguments, **options)
+                if failure == "escape":
+                    response.stdout += b"\x1b[31m"
+                elif "--json" in arguments:
+                    record = json.loads(response.stdout)
+                    if failure == "json":
+                        response.stdout = b"invalid\n"
+                    elif failure == "newline":
+                        response.stdout = response.stdout.rstrip(b"\n")
+                    elif failure == "version" and record["command"] == "version":
+                        record["data"]["build"] = "8"
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                    elif failure == "usage" and response.returncode == 2:
+                        record["error"] = None
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                    elif failure == "operation":
+                        record["operationId"] = "unexpected"
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                return response
+
+            with self.subTest(failure=failure), patch.object(verifier.subprocess, "run", side_effect=result), self.assertRaises(ValueError):
+                verifier.verify_cli(self.app)
+
+    def test_static_command_must_not_write_user_state(self) -> None:
+        def result(arguments: list[str], **options) -> subprocess.CompletedProcess:
+            response = self.static_result(arguments, **options)
+            (Path(options["env"]["HOME"]) / "unexpected-state").touch()
+            return response
+
+        with patch.object(verifier.subprocess, "run", side_effect=result), self.assertRaisesRegex(ValueError, "user state"):
+            verifier.verify_cli(self.app)
+
+    def test_cli_flag_runs_static_checks_after_bundle_verification(self) -> None:
+        with patch("sys.argv", ["verify_macos_build.py", str(self.app), "--cli-smoke"]), \
+                patch.object(verifier, "verify_bundle") as bundle, patch.object(verifier, "verify_cli") as cli:
+            verifier.main()
+        bundle.assert_called_once_with(self.app, False, False)
+        cli.assert_called_once_with(self.app)
 
 
 class MacOSBuildVerificationTests(unittest.TestCase):

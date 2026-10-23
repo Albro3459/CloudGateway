@@ -35,10 +35,17 @@ case .cli(let arguments):
             .deletingLastPathComponent())
     } ?? Bundle.main
     MainActor.assumeIsolated {
+        let connect: @MainActor @Sendable () async throws -> CloudGatewayMacFrontendClient = {
+            let identity = try await Task.detached(priority: .utility) { try verifiedRunningIdentity() }.value
+            try Task.checkCancellation()
+            return CloudGatewayMacFrontendClient(identity: identity, teamIdentifier: teamIdentifier)
+        }
+        let doctor = CloudGatewayMacDoctor(bundle: bundle, team: teamIdentifier, connect: connect)
         let cli = CloudGatewayMacCLI(
             version: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
-            build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
-        ) { CloudGatewayMacFrontendClient(identity: try verifiedRunningIdentity(), teamIdentifier: teamIdentifier) }
+            build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+            doctor: doctor.runner, loginEffects: .production, connect: connect
+        )
         Task { exit(await cli.run(arguments)) }
         RunLoop.main.run()
     }

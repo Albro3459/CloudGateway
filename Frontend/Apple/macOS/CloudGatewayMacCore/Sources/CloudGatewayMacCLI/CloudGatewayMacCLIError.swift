@@ -13,6 +13,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case controllerRejected = "controller_rejected"
         case configUnavailable = "config_unavailable", selectionUnavailable = "selection_unavailable"
         case networkUnavailable = "network_unavailable"
+        case refreshSkipped = "refresh_skipped", refreshSuperseded = "refresh_superseded", interrupted
         case busy
         case timeout, stopTimedOut = "stop_timed_out"
         case vpnFailed = "vpn_failed", commandFailed = "command_failed"
@@ -26,11 +27,12 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .setupRequired, .credentialsUnavailable, .incompatibleVersion, .untrustedBuild,
                  .installationRequired, .controllerUnavailable, .controllerRejected: 4
             case .configUnavailable, .selectionUnavailable: 5
-            case .networkUnavailable: 6
-            case .busy: 7
+            case .networkUnavailable, .refreshSkipped: 6
+            case .busy, .refreshSuperseded: 7
             case .timeout, .stopTimedOut: 8
             case .vpnFailed, .commandFailed: 9
             case .operationUnknown, .operationExpired: 10
+            case .interrupted: 130
             }
         }
 
@@ -54,6 +56,9 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .configUnavailable: ("That config is missing or unusable", "Run: cloudgateway list")
             case .selectionUnavailable: ("No usable config is selected", "Run cloudgateway list, then cloudgateway up <config-id>")
             case .networkUnavailable: ("Unable to reach CloudGateway", "Check the network connection, then try again")
+            case .refreshSkipped: ("Inventory refresh did not run", "Run: cloudgateway refresh")
+            case .refreshSuperseded: ("Another operation superseded this inventory refresh", "Run: cloudgateway refresh")
+            case .interrupted: ("The caller was interrupted", nil)
             case .busy: ("Another operation is in progress", "Wait for it to finish, then try again")
             case .timeout: ("The command did not finish before its deadline", "Try again with a longer --timeout")
             case .stopTimedOut: ("The VPN has not confirmed stop", "Run: cloudgateway status")
@@ -70,11 +75,12 @@ struct CloudGatewayMacCLIError: Error, Sendable {
     let message: String
     let suggestion: String?
     var data: CloudGatewayMacCLIData?
+    var operationId: UUID?
 
-    init(_ code: Code, message: String? = nil, data: CloudGatewayMacCLIData? = nil) {
+    init(_ code: Code, message: String? = nil, suggestion: String? = nil, data: CloudGatewayMacCLIData? = nil) {
         self.code = code
         self.message = message ?? code.defaults.message
-        suggestion = code.defaults.suggestion
+        self.suggestion = suggestion ?? code.defaults.suggestion
         self.data = data
     }
 
@@ -116,6 +122,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         switch error {
         case let error as Self: self = error
         case let failure as CloudGatewayMacControllerFailure: self.init(failure)
+        case is CancellationError: self.init(.interrupted)
         case CloudGatewayMacControllerLaunchError.installationRequired, CloudGatewayMacControllerLaunchError.unsafeLocation:
             self.init(.installationRequired)
         case is CloudGatewayMacControllerLaunchError: self.init(.controllerUnavailable)

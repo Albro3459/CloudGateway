@@ -2,6 +2,7 @@ import AppKit
 import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import CloudGatewayMacIPC
+import Darwin
 import ServiceManagement
 
 @MainActor
@@ -13,6 +14,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private let identity: CloudGatewayMacBuildIdentity
     private let dashboard = URL(string: "https://gocloudlaunch.com")!
     private var browserState = CloudGatewayMacControllerView.BrowserState.signedOut
+    private var loginAttemptId: UUID?
     private var frontendErrorMessage: String?
     private var dialogTask: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
@@ -48,7 +50,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let state = snapshot
         if client.isSnapshotFresh, state.browserState != browserState {
             browserState = state.browserState
-            if case .waitingForApproval(_, let url) = browserState {
+            if state.login?.attemptId == loginAttemptId, state.login?.origin == .menu,
+               case .waitingForApproval(_, let url) = browserState {
                 NSWorkspace.shared.open(url)
             }
         }
@@ -185,6 +188,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
         menu.addItem(.separator())
+        add("Install Command Line Tool…", #selector(installCommandLineTool))
         add("Open Website", #selector(openWebsite))
         let loginStatus = SMAppService.mainApp.status
         let login = add(loginStatus == .requiresApproval ? "Launch at Login: Approval Required…" : "Launch at Login",
@@ -202,7 +206,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let controllerActions = [#selector(toggleVPN), #selector(signIn), #selector(cancelSignIn),
                                  #selector(signOut), #selector(refresh), #selector(addClient), #selector(setUp)]
         if let action, controllerActions.contains(action) {
-            item.isEnabled = item.isEnabled && (client.isCurrentBuild || (action == #selector(toggleVPN) && snapshot.canTurnOff)) && actionTask == nil
+            item.isEnabled = item.isEnabled && (client.isCurrentBuild || (action == #selector(toggleVPN) && snapshot.canTurnOff))
+                && (action == #selector(signIn) || action == #selector(cancelSignIn) || actionTask == nil)
         }
         menu.addItem(item)
         return item
@@ -280,8 +285,24 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         }
     }
 
-    @objc private func signIn() { send(.signIn) }
-    @objc private func cancelSignIn() { send(.cancelSignIn) }
+    @objc private func signIn() {
+        guard client.isCurrentBuild, !isShuttingDown else { return }
+        let id = UUID()
+        loginAttemptId = id
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.request(.beginLogin, id: id, loginOrigin: .menu) }
+            catch { frontendErrorMessage = client.message(for: error); render() }
+        }
+    }
+    @objc private func cancelSignIn() {
+        guard let id = snapshot.login?.attemptId else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.request(.cancelLogin, contextId: id) }
+            catch { frontendErrorMessage = client.message(for: error); render() }
+        }
+    }
     @objc private func openSignInBrowser() {
         guard case .waitingForApproval(_, let url) = snapshot.browserState else { return }
         NSWorkspace.shared.open(url)
@@ -352,6 +373,64 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     }
     @objc private func openWebsite() { NSWorkspace.shared.open(dashboard) }
     @objc private func quitApp() { quit() }
+
+    @objc private func installCommandLineTool() {
+        let installer = CloudGatewayMacCLIInstaller(homeURL: FileManager.default.homeDirectoryForCurrentUser)
+        let explicitPath = installer.executableURL.path
+        let explicitCommand = "'" + explicitPath.replacingOccurrences(of: "'", with: "'\\''") + "' status"
+        let confirm = NSAlert()
+        confirm.messageText = "Install Command Line Tool"
+        confirm.informativeText = "Create \(explicitPath) as a link to the signed app in /Applications. No administrator access is needed. Shell configuration is a separate step."
+        confirm.addButton(withTitle: "Install")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let installResult = try installer.install(runningBundleURL: Bundle.main.bundleURL) { [identity] in
+                let installed = try CloudGatewayMacSignedBundle.installed(
+                    at: URL(fileURLWithPath: "/Applications/CloudGateway.app"),
+                    teamIdentifier: "CRQWDQ7QQR", bundleIdentifier: "com.gocloudlaunch.gateway.macos"
+                )
+                guard installed == identity else { throw CloudGatewayMacCLIInstallError.invalidInstalledApp }
+            }
+            let path = NSAlert()
+            path.messageText = installResult == .installed ? "Command Line Tool Installed" : "Command Line Tool Already Installed"
+            path.informativeText = "Run \(explicitCommand), including over noninteractive SSH.\n\nOptionally append export PATH=\"$HOME/.local/bin:$PATH\" to an ordinary ~/.zprofile for new zsh login shells. Custom shell configuration needs a manual edit. This does not set PATH for every SSH session."
+            path.addButton(withTitle: "Done")
+            path.addButton(withTitle: "Add to Zsh PATH…")
+            guard path.runModal() == .alertSecondButtonReturn else { return }
+            let environment = ProcessInfo.processInfo.environment
+            let shell = getpwuid(getuid()).flatMap { $0.pointee.pw_shell }.map { String(cString: $0) }
+            let pathResult = try installer.addToZshPath(shell: shell, environment: environment)
+            let notice = NSAlert()
+            notice.messageText = pathResult == .added ? "Zsh PATH Updated" : "Zsh PATH Already Configured"
+            notice.informativeText = "Open a new zsh login shell to use cloudgateway. For noninteractive SSH, use \(explicitCommand)."
+            notice.runModal()
+        } catch {
+            let notice = NSAlert()
+            notice.messageText = "Command Line Tool Setup"
+            let message: String
+            switch error as? CloudGatewayMacCLIInstallError {
+            case .installationRequired:
+                message = "Open CloudGateway from /Applications/CloudGateway.app and try again. Mounted disk images, translocated apps, and development locations cannot be permanent targets."
+            case .invalidInstalledApp:
+                message = "The installed app is missing, changed, or could not be verified. Open the current signed app in /Applications and try again."
+            case .conflictingFile:
+                message = "A file or directory already exists at \(explicitPath). Move it yourself if it is no longer needed, then try again."
+            case .conflictingLink:
+                message = "Another symbolic link exists at \(explicitPath). Review and move it yourself before trying again."
+            case .brokenLink:
+                message = "A broken symbolic link exists at \(explicitPath). Restore its target or move the link yourself before trying again."
+            case .manualShellConfiguration, .unsafeStartupFile:
+                message = "Shell configuration needs a manual edit. Review your shell's startup files and add ~/.local/bin to PATH if needed. Automatic editing supports /bin/zsh with a ~/.zprofile containing only comments and simple exports, no ZDOTDIR or ~/.zshenv, and no existing PATH customizations. Symlinked or shared startup files are left alone."
+            case .unsafeDirectory:
+                message = "The home, ~/.local, or ~/.local/bin directory is linked, shared, or not owned by this user. Review its ownership and permissions before trying again."
+            case .filesystemFailure, nil:
+                message = "The filesystem change could not be completed. Check permissions and free space, then inspect the installation before retrying."
+            }
+            notice.informativeText = message + "\n\nExplicit command path for noninteractive SSH: \(explicitCommand)"
+            notice.runModal()
+        }
+    }
 
     @objc private func signOut() {
         dialogTask?.cancel()

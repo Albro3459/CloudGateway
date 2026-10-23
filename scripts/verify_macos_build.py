@@ -2,9 +2,12 @@
 
 import argparse
 import datetime
+import json
+import os
 import plistlib
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 APP_ID = "com.gocloudlaunch.gateway.macos"
@@ -226,14 +229,86 @@ def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
         print("Signed entitlements, profiles, and Hardened Runtime verified")
 
 
+def verify_cli(app: Path) -> None:
+    info = read_plist(app / "Contents/Info.plist")
+    require(info.get("CFBundleExecutable") == "CloudGateway", "CLI requires the bundled CloudGateway executable")
+    executable = (app / "Contents/MacOS/CloudGateway").absolute()
+    require(executable.is_file() and os.access(executable, os.X_OK), "CLI executable missing or not executable")
+    resources = app / "Contents/Resources"
+    require((resources / "GoogleService-Info.plist").is_file(), "Controller Firebase resource missing")
+    require(isinstance(read_plist(resources / "GoogleService-Info.plist"), dict), "Controller Firebase resource invalid")
+    cases = [
+        ([], 0, "help", False),
+        (["--help"], 0, "help", False),
+        (["help", "auth", "login"], 0, "help", False),
+        (["--version"], 0, "version", False),
+        (["--json"], 0, "help", True),
+        (["help", "doctor", "--json"], 0, "help", True),
+        (["--version", "--json"], 0, "version", True),
+        (["--unknown-option"], 2, None, False),
+        (["auth", "login", "--timeout", "0", "--json"], 2, "auth login", True),
+        (["status", "--unexpected", "--json"], 2, "status", True),
+    ]
+    with tempfile.TemporaryDirectory(prefix="cloudgateway-cli-smoke-") as directory:
+        root = Path(directory)
+        home = root / "home"
+        home.mkdir()
+        link = root / "cloudgateway"
+        link.symlink_to(executable)
+        environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+                       "CFFIXED_USER_HOME": str(home), "TMPDIR": str(root), "TERM": "dumb", "NO_COLOR": "1"}
+        for invocation in ([str(executable), "--cli"], [str(link)]):
+            for arguments, expected_exit, expected_command, is_json in cases:
+                try:
+                    result = subprocess.run(invocation + arguments, capture_output=True, check=False,
+                                            timeout=5, env=environment, cwd=root, stdin=subprocess.DEVNULL)
+                except subprocess.TimeoutExpired:
+                    raise ValueError("Packaged CLI static command exceeded its five-second deadline") from None
+                require(result.returncode == expected_exit, "Packaged CLI static command returned an unexpected exit")
+                require(b"\x1b" not in result.stdout + result.stderr, "Redirected CLI output contains terminal escapes")
+                if is_json:
+                    require(result.stderr == b"", "Packaged CLI JSON command wrote unexpected diagnostics")
+                    require(result.stdout.endswith(b"\n") and len(result.stdout.splitlines()) == 1,
+                            "Packaged CLI JSON must be one complete newline-terminated record")
+                    try:
+                        record = json.loads(result.stdout)
+                    except (ValueError, UnicodeDecodeError):
+                        raise ValueError("Packaged CLI JSON is invalid") from None
+                    require(isinstance(record, dict) and record.get("schemaVersion") == 1,
+                            "Packaged CLI JSON schema mismatch")
+                    require(record.get("command") == expected_command, "Packaged CLI command mismatch")
+                    require(record.get("type") == ("result" if expected_exit == 0 else "error"),
+                            "Packaged CLI result type mismatch")
+                    require(record.get("operationId") is None, "Static CLI output must not accept an operation")
+                    if expected_exit:
+                        require(isinstance(record.get("error"), dict) and record["error"].get("code") == "usage",
+                                "Packaged CLI usage code mismatch")
+                    elif expected_command == "version":
+                        require(record.get("data") == {"version": info.get("CFBundleShortVersionString"),
+                                                      "build": info.get("CFBundleVersion")},
+                                "CLI version does not match its bundle, including through a symlink")
+                    else:
+                        require(isinstance(record.get("data"), dict) and "usage" in record["data"],
+                                "Packaged CLI help is missing")
+                elif expected_exit == 0:
+                    require(bool(result.stdout) and result.stderr == b"", "Packaged CLI static output missing")
+                else:
+                    require(result.stdout == b"" and bool(result.stderr), "CLI usage diagnostics must use stderr")
+        require(not list(home.iterdir()), "Static CLI commands wrote user state")
+    print("20 bounded packaged CLI direct/symlink help, version, and usage checks passed")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     parser.add_argument("--signed", action="store_true")
     parser.add_argument("--developer-id", action="store_true", help="Verify Developer ID release signing (implies --signed)")
+    parser.add_argument("--cli-smoke", action="store_true", help="Check current CLI resources and run bounded static commands")
     args = parser.parse_args()
     try:
         verify_bundle(args.app, args.signed, args.developer_id)
+        if args.cli_smoke:
+            verify_cli(args.app)
     except (ValueError, OSError, plistlib.InvalidFileException) as error:
         raise SystemExit(f"macOS verification failed: {error}") from None
 

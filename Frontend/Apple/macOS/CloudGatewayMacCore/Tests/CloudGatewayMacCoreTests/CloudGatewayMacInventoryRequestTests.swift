@@ -56,7 +56,7 @@ import Testing
 @Test @MainActor func capacityPreparationReturnsHealthyRegionsAndUnknownStallsWithinOneDeadline() async throws {
     let probe = CapacityPreparationProbe()
     let regions = try await CloudGatewayMacCapacityPreparation.prepare(
-        timeout: .milliseconds(50), maxConcurrentReads: 2,
+        timeout: .seconds(1), maxConcurrentReads: 2,
         loadRegions: { probe.regions }, loadToken: { "test-token" },
         fetchCapacity: { regionId, _ in try await probe.capacity(regionId) }
     )

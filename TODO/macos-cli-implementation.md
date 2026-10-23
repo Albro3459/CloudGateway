@@ -1,6 +1,6 @@
 # Implement the macOS CLI
 
-Status: **implementation in progress**. Updated 2026-10-22.
+Status: **implemented, reviewed, and unsigned validation passed**. Updated 2026-10-22.
 
 This is the implementation sequence for the CLI on top of PR #17's controller.
 The command and product contract remains in
@@ -26,7 +26,7 @@ work on those checks or request that evidence again during implementation.
   replacement, and recovery checks are deferred. Assume the controller works
   for implementation planning, without recording those checks as passed
 - Main and Secure GPT-6.1 Sol High subagents independently researched controller
-  contracts and packaging/testing. This task changes planning docs only
+  contracts and packaging/testing. That planning task changed docs only
 
 Ship `auth login`, `auth status`, `auth logout`, `list`, `status`, `up`, `down`,
 `refresh`, `doctor`, and help/version with the existing flags and exits. Keep
@@ -94,7 +94,7 @@ user's decision and do not block implementation.
 ## Implementation sequence
 
 Each step should leave the menu app working and include its targeted coverage.
-Steps 1–3 are complete.
+Steps 1–7 are implemented. Final source review and unsigned validation are in progress.
 
 ### 1. Add CLI-ready domain results and metadata
 
@@ -267,18 +267,18 @@ Implementation notes:
 
 ### 4. Add refresh and VPN/auth mutations
 
-- [ ] Implement `refresh` and `list --refresh` using correlated completion
-- [ ] Implement `up [config-id]` through controller resolution/install/start.
+- [x] Implement `refresh` and `list --refresh` using correlated completion
+- [x] Implement `up [config-id]` through controller resolution/install/start.
   Use controller-authorized inventory/cache, with fresh inventory fetched through
   explicit `refresh` or `list --refresh`
-- [ ] Implement idempotent `down` while signed out and with no owned active
+- [x] Implement idempotent `down` while signed out and with no owned active
   profile. Confirm stop before reporting success
-- [ ] Implement logout with explicit cleanup failure reporting, retaining the
+- [x] Implement logout with explicit cleanup failure reporting, retaining the
   running VPN, profiles, secrets, and caches
-- [ ] Print/flush human or JSON acceptance before confirmation. On final `up`
+- [x] Print/flush human or JSON acceptance before confirmation. On final `up`
   success say `VPN start requested` or report already active, with observed
   tunnel state separate. Do not wait for delayed connected notifications
-- [ ] Apply caller deadlines across bootstrap, IPC, and polling. Existing
+- [x] Apply caller deadlines across bootstrap, IPC, and polling. Existing
   per-request transport deadlines must not silently override a shorter caller
   budget. Show the operation ID and recovery hint on uncertain outcomes
 
@@ -293,40 +293,40 @@ Refresh and logout never implicitly reconnect or stop the tunnel.
 Extend the existing macOS browser coordinator, service, IPC, and
 [menu frontend](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift).
 
-- [ ] Introduce a nonsecret login attempt ID, frontend origin, phase,
+- [x] Introduce a nonsecret login attempt ID, frontend origin, phase,
   validated challenge, remaining expiry, and typed terminal result. Submission
   completion is separate from authorized sign-in completion
-- [ ] Return current status for an already authorized session, busy for another
+- [x] Return current status for an already authorized session, busy for another
   active attempt, and bounded restoration/verification for a retained identity
-- [ ] Scope cancellation to the matching attempt. A late cancel after success
+- [x] Scope cancellation to the matching attempt. A late cancel after success
   or from an older invocation must not clear a newer account presentation or
   cancel a newer exchange. Keep custom-token recovery fences intact
-- [ ] Keep matching-attempt cancellation and expiry cleanup reachable while
+- [x] Keep matching-attempt cancellation and expiry cleanup reachable while
   `down` runs. Login success, expiry, and cancellation must preserve accepted
   account-independent stop work. Separate that work from the current blanket
   account cleanup, while continuing to fence account-authorized starts
-- [ ] Enforce the acquisition deadline and monotonic challenge expiry in the
+- [x] Enforce the acquisition deadline and monotonic challenge expiry in the
   controller, including while request, poll, exchange, or access calls are
   suspended and after each completion. Expiry ends the attempt without a
   frontend. Preserve the existing custom-token cancellation/recovery fence so
   late callbacks cannot establish an expired session. An underlying SDK call
   may still settle later, and must block another exchange until it does
-- [ ] Let the menu automatically open only a login it initiated. Observing a
+- [x] Let the menu automatically open only a login it initiated. Observing a
   CLI challenge must not open a browser. Keep explicit GUI open/copy actions
-- [ ] Print/flush link and code immediately, then poll in the controller.
+- [x] Print/flush link and code immediately, then poll in the controller.
   Generate QR locally with a thin Core Image adapter and render its matrix in
   the terminal, with quiet zone, correct orientation, and terminal-width checks
-- [ ] Support `--no-qr`, `c`/`o`, JSON/noninteractive suppression, and remote-Mac
+- [x] Support `--no-qr`, `c`/`o`, JSON/noninteractive suppression, and remote-Mac
   clipboard/browser hints. Failed QR/shortcuts leave readable approval data
   and polling available. Never auto-open the CLI browser
-- [ ] Read shortcut input only from a suitable interactive terminal. JSON,
+- [x] Read shortcut input only from a suitable interactive terminal. JSON,
   noninteractive, and redirected modes never start terminal reading. Closed
   stdin must still allow approval polling through success or expiry
-- [ ] Use nonblocking terminal input with saved/restored settings and handled
+- [x] Use nonblocking terminal input with saved/restored settings and handled
   signals. Interactive EOF restores settings and disables shortcuts while
   polling continues. Clean up on success, denial, expiry, explicit cancellation,
   timeout, and output failure. No claim of recovery from uncatchable termination
-- [ ] Keep challenge URL/code out of diagnostics, retained operation records,
+- [x] Keep challenge URL/code out of diagnostics, retained operation records,
   and logs. Device secret and Firebase/custom tokens remain controller-only
 
 Acceptance: concurrent GUI/CLI login, duplicate submission, stale cancellation,
@@ -342,31 +342,31 @@ manual. Login polling does not occupy the VPN stop lane.
 
 ### 6. Add bounded, read-only doctor
 
-- [ ] Aggregate `pass`, `warning`, `fail`, and `unknown` checks with evidence,
+- [x] Aggregate `pass`, `warning`, `fail`, and `unknown` checks with evidence,
   suggested fixes, individual deadlines, and an overall deadline. Preserve
   partial results on timeout
-- [ ] Inspect app location/resources, CLI link/PATH, OS/architecture, component
+- [x] Inspect app location/resources, CLI link/PATH, OS/architecture, component
   identities, controller handshake/protocol, extension readiness, and readable
   app-owned preferences. Keep local checks useful when the controller fails
-- [ ] Add passive controller startup for diagnostic-only use. Acquire ownership
+- [x] Add passive controller startup for diagnostic-only use. Acquire ownership
   and serve authenticated lifecycle/diagnostic probes before constructing the
   Firebase runtime or starting normal auth restoration/inventory work. A normal
   menu/CLI domain command can then initialize the existing runtime once, behind
   the same owner. Timers and diagnostic status reads must not initialize it
-- [ ] On a cold diagnostic controller, report auth/credential evidence as
+- [x] On a cold diagnostic controller, report auth/credential evidence as
   unknown/uninitialized. With an initialized runtime, read its existing snapshot.
   Independent normal clients may progress auth, but doctor must not trigger it
-- [ ] Keep approval evidence richer than the current setup-state mapping.
+- [x] Keep approval evidence richer than the current setup-state mapping.
   XPC failure or an extension-properties timeout cannot prove a Settings toggle
   is disabled. Preference read success cannot prove write/start permission
-- [ ] Read auth/credential evidence without sign-in, token exchange, refresh,
+- [x] Read auth/credential evidence without sign-in, token exchange, refresh,
   cache invalidation, or test writes. Report unknown when unsupported
-- [ ] Separate network path, cancellable DNS resolution, HTTPS response, and
+- [x] Separate network path, cancellable DNS resolution, HTTPS response, and
   service health. Require bounded HTTPS reachability to the configured dashboard
   origin. For known regional APIs, use existing read-only `/api/health` as an
   optional service check, validating region identity. Do not probe arbitrary
   user-supplied hosts or all regions, or interpret an HTTP error as healthy
-- [ ] Return setup failure `4` before required online failure `6`, otherwise
+- [x] Return setup failure `4` before required online failure `6`, otherwise
   success `0`. Overall deadline gives `8` with partial results. Optional
   warnings/unknowns alone do not fail doctor
 
@@ -379,23 +379,23 @@ capture, or DNS-query logging.
 
 ### 7. Add menu installation and package verification
 
-- [ ] Add **Install Command Line Tool…**, available while signed out, outside
+- [x] Add **Install Command Line Tool…**, available while signed out, outside
   ordinary controller mutation gating
-- [ ] Validate the canonical installed app. Create the user's local bin
+- [x] Validate the canonical installed app. Create the user's local bin
   directory and symlink to the bundled executable without admin rights.
   Reject DMG/translocated/development targets. Keep the signed bundle untouched
-- [ ] Recognize the correct link. Report conflicting files/directories,
+- [x] Recognize the correct link. Report conflicting files/directories,
   conflicting links, and broken links without replacing them automatically
-- [ ] Offer a separate explicit PATH edit for ordinary zsh login configuration.
+- [x] Offer a separate explicit PATH edit for ordinary zsh login configuration.
   Preserve contents/mode, avoid duplicates, and handle custom `ZDOTDIR`, symlinked
   startup files, and unsupported shells conservatively with manual guidance.
   Always show the explicit user-local executable path for noninteractive SSH
-- [ ] Extend
+- [x] Extend
   [bundle verification](/Users/alexbrodsky/GitHub/CloudGateway/scripts/verify_macos_build.py)
   and its fixtures for CLI product/resources and bounded direct/symlink
   help/version/invalid-usage smoke checks. Use temporary links/homes, without
   installing the CLI, registering a service, or touching the running app/VPN
-- [ ] Update the
+- [x] Update the
   [README](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/README.md),
   [development runbook](/Users/alexbrodsky/GitHub/CloudGateway/docs/apple-macos-development.md),
   and [release guide](/Users/alexbrodsky/GitHub/CloudGateway/docs/apple-macos-release.md)
@@ -405,6 +405,30 @@ capture, or DNS-query logging.
 Acceptance: temporary-filesystem tests cover repeat install, conflicts, app
 location, shell edits, and app removal/replacement. Packaged CLI help never
 falls through to GUI mode. Existing app/extension identity and update rules hold.
+
+## Implementation notes for steps 4–7
+
+- Refresh and mutations use typed controller outcomes. Acceptance is flushed
+  before confirmation, caller deadlines cover identity lookup and startup, and
+  uncertain results include their operation ID and recovery command
+- Login has attempt-scoped IPC, independent controller expiry, terminal cleanup,
+  locally generated QR output, and menu-origin browser behavior. Hangup detaches
+  the caller. Explicit cancellation and deadlines clean up only that attempt
+- Accepted stops survive login completion, cancellation, and expiry. Initial
+  inventory loading resumes after a preserved stop for the same authorized session
+- Doctor starts the controller passively, shares its first installation
+  observation, and reports unknown evidence without initializing Firebase.
+  Blocking signature and filesystem checks run off the main actor. Corrupt owned
+  profile metadata and proven extension mismatches are required setup failures
+- Installation observations release waiting requests after three seconds. A
+  stalled signature reader keeps its slot until it settles, so retries cannot
+  accumulate workers. Late results cannot publish a timed-out observation
+- The signed-out menu installs a user-local link. PATH changes require a separate
+  action, preserve existing contents and mode, and use manual guidance for custom
+  shell configuration or conflicting assignments
+- Packaging validation includes 20 bounded direct/symlink help, version, and
+  invalid-usage checks with temporary homes and links. No installer, running app,
+  controller session, profiles, or VPN are changed by these smoke checks
 
 ## Validation and completion
 
@@ -416,18 +440,32 @@ Do not run individual Swift/Python test commands as a parallel workflow.
   `macos` suite already runs package tests, shared package/auth adapter tests,
   verifier/release tests, strict Periphery scans, unsigned arm64 app/extension
   builds, and bundle verification
-- [ ] Wire any packaged CLI smoke helper into that same `macos` target, with
+- [x] Wire any packaged CLI smoke helper into that same `macos` target, with
   deadlines and temporary files. Do not add signing or live service dependencies
-- [ ] Run `./scripts/test.sh macos` after coherent implementation steps. Fix
+- [x] Run `./scripts/test.sh macos` after coherent implementation steps. Fix
   dead production/test code instead of broadly suppressing Periphery
-- [ ] If the authorized shared diagnostic change is needed, use
-  `./scripts/test.sh apple` to validate both consumers through the same script
-- [ ] Use injected clocks/transport/output and deterministic synchronization
+- [x] No shared diagnostic change was needed. The shared Firebase adapter and
+  iOS behavior remain unchanged, so the macOS target is sufficient
+- [x] Use injected clocks/transport/output and deterministic synchronization
   for races and deadlines. Avoid tiny wall-clock sleeps, which made an older
   token-deadline test scheduling-sensitive
-- [ ] Finish with fresh 6.1 Sol High source reviews across Main and Secure,
+- [x] Finish with fresh 6.1 Sol High source reviews across Main and Secure,
   covering command/output/security boundaries and production packaging/lifecycle.
   Fix confirmed findings and rerun the affected script target
+
+The final unsigned `PATH=/opt/homebrew/bin:$PATH ./scripts/test.sh macos` run
+passed on 2026-10-22 with 402 macOS package tests, shared package/auth adapter
+tests, verifier/release fixtures, both strict Periphery scans, the arm64
+app/extension build, bundle verification, and all 20 packaged CLI smoke checks.
+The held installation fixture covers 64 waiting callers, 512 retries, passive
+diagnostics, responsive status/stop, and recovery after a stale reader settles.
+The timer default is created inside its initializer to avoid the cross-module
+async default-argument crash described in
+[Swift issue 92017](https://github.com/swiftlang/swift/issues/92017).
+Main and Secure source reviews covered the implemented steps. Confirmed findings
+were fixed and validated. The closing Secure 6.1 Sol xHigh review found no
+actionable issues in the worker limit, deadline cleanup, late-result fence,
+recovery fixture, or timer default workaround.
 
 No `--signed` run is required during this implementation. Unsigned packaged
 help/version smoke checks validate dispatch, while operational flows use fakes
@@ -460,8 +498,9 @@ requirement or turn it into a proven capability.
 - [Existing health route](/Users/alexbrodsky/GitHub/CloudGateway/Backend/API/src/routes.py:154):
   optional regional doctor checks can use the current read-only endpoint
 
-These sources guide implementation. They do not prove runtime behavior of the
-CloudGateway distribution bundle. Research and document review ran here, with
+Historical planning evidence: these sources guide implementation and do not
+prove runtime behavior of the CloudGateway distribution bundle. The planning
+research and document review ran with
 no tests/builds, signing, app launch, installation, or live VPN changes.
 Fresh Main Sol High plan review identified cold-doctor startup and stdin EOF
 ambiguity. Both are addressed in the diagnostic/login steps and acceptance checks.

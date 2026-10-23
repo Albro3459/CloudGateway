@@ -46,8 +46,8 @@ provider login UI.
 The menu uses authenticated, versioned XPC to reach a separate controller mode
 of the same bundled executable. The controller acquires per-user ownership
 before initializing Firebase. It owns accepted commands after the menu closes.
-Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged. The CLI
-surface and signed launch/Keychain runtime proof remain pending.
+Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged. The CLI uses
+the same controller. Signed launch/Keychain runtime proof remains a release gate.
 
 Controller startup requires `/Applications/CloudGateway.app`. The menu registers
 an on-demand launchd job in `user/<uid>`, with its private plist and ownership
@@ -55,7 +55,8 @@ locks under `~/Library/Application Support/CloudGateway/macOS`. Development and
 mounted DMG copies cannot register themselves under the production service name.
 The job sets `LimitLoadToSessionType = Background` for the user domain;
 `ProcessType = Background` controls resource limits and does not select the session.
-The controller exits after 60 seconds without requests or pending work. Menu
+The controller exits after 60 seconds without requests, pending work, or a
+retained command result. The latest result keeps it alive for ten minutes. Menu
 polling keeps it available while the frontend is open. Reopening the menu starts
 it again without replaying a VPN command. An app/build mismatch requires closing
 the menu, allowing pending work and the idle grace period to finish, then
@@ -102,10 +103,10 @@ Cloud request failures do not label the internet connection offline.
 Disconnecting retains configs/secrets and cloud clients. Sign Out hides inventory
 and ends the local Firebase session,
 retaining VPN, profiles, secrets, and account caches. Quit exits only the menu
-app. Signed-out menus expose no configs or VPN controls. Sign Out remains
+app. Signed-out menus hide configs and retain local status/disconnect. Sign Out remains
 available when a retained Firebase session cannot restore. System Settings can
 stop retained profiles and display their status. Starting requires the
-authenticated menu app, which supplies a single-use start grant.
+authenticated controller, which supplies a single-use start grant.
 
 Refresh Apple preferences/status asynchronously on launch, menu opening,
 preference changes, and commands. Observe status events for app-owned managers.
@@ -136,6 +137,127 @@ match the embedded copy. A mismatch exposes Update VPN Extension and disables
 new connections until explicit replacement and verification succeed. Increase
 the build number when releasing extension changes.
 
+## Command Line Tool
+
+Install and open the signed app at `/Applications/CloudGateway.app`. Complete
+one-time desktop VPN extension and profile approval before using headless VPN
+commands. The menu's **Install Command Line Tool…** is available while signed
+out. It creates `~/.local/bin/cloudgateway`, a symlink to the app's existing
+executable, without administrator access or changes to the signed bundle.
+Development, mounted DMG, and translocated app copies cannot be link targets.
+
+An existing correct link is accepted. Conflicting files, directories, links,
+and broken links are reported and left untouched. Review and move the conflict
+yourself before retrying. Replacing the app at its fixed path updates the link
+automatically. Moving or removing the app breaks the link. Restore the signed app
+at that location rather than copying its entitled executable out of the bundle.
+
+The separate **Add to Zsh PATH…** action appends
+`export PATH="$HOME/.local/bin:$PATH"` to an ordinary `~/.zprofile` once. It
+preserves existing contents and mode. Automatic editing requires `/bin/zsh`,
+no `ZDOTDIR` or `~/.zshenv`, a regular user-owned startup file containing only
+comments and simple exports, and no existing PATH customization.
+Linked/shared files, unsupported shells, and custom startup
+configuration receive manual guidance. Open a new login shell after an edit.
+The menu's environment does not establish Terminal or SSH's PATH.
+
+Noninteractive SSH may skip login startup files. Use the explicit path:
+
+```sh
+~/.local/bin/cloudgateway status
+~/.local/bin/cloudgateway auth status --json
+~/.local/bin/cloudgateway down --non-interactive
+```
+
+Use the same non-root macOS user that completed desktop setup. Firebase uses
+that user's existing credential context, and matching UID or unlocking a login
+Keychain alone does not prove its availability in every security session.
+Pre-desktop SSH, final SSH disconnect, locked credentials, and reboot behavior
+still require the separate signed runtime matrix. FileVault unlock/boot access
+is outside this feature.
+
+```sh
+cloudgateway                       # Help without controller or sign-in
+cloudgateway --version
+cloudgateway help auth login
+cloudgateway auth login --no-qr
+cloudgateway auth status --json
+cloudgateway list --region us-east-1
+cloudgateway list --refresh --json
+cloudgateway up '<FirebaseUID>/<regionId>/<clientId>'
+cloudgateway up                    # This account's last selection
+cloudgateway status --operation '<operation-id>' --json
+cloudgateway refresh
+cloudgateway auth logout
+cloudgateway down
+cloudgateway doctor --json
+```
+
+IDs are canonical `FirebaseUID/regionId/clientId` values printed by `list`.
+Names are display labels. `up` uses the controller's authorized inventory/cache
+policy, installs or replaces an eligible stored config when needed, and reports
+**VPN start requested** once macOS accepts the start. A later observed connected
+state is separate. An unchanged active config reports already active. Offline
+use is limited to this account's previously authorized installed configs.
+
+`refresh` and `list --refresh` await their own online authorization/inventory
+result without reconnecting. `auth logout` ends the controller session and hides
+account data while retaining the VPN, profiles, secrets, and caches. A cleanup
+failure is reported explicitly. `down` works while signed out and succeeds only
+after a confirmed local stop, including an already-stopped state. Quit only
+detaches the menu.
+
+Common options are `-h`/`--help`, `--json`, `--non-interactive`, and
+`--timeout <positive-finite-seconds>`. Reads and mutations default to 30 seconds.
+Login startup is bounded separately, then approval waiting follows the server's
+remaining code expiry. An explicit timeout bounds the whole login invocation
+and can only shorten waiting. `auth login --no-qr` suppresses QR output. The
+approval URL/code remain usable on another device. Suitable interactive
+terminals offer copy/open/cancel shortcuts while polling continues. Redirected,
+JSON, and noninteractive output suppress those shortcuts and prompts.
+
+VPN commands flush an operation ID before confirming execution. A timeout,
+Ctrl-C, broken pipe, or lost SSH connection detaches the caller after confirmation
+and leaves controller-owned VPN work running. Reconnect and use
+`cloudgateway status --operation '<operation-id>'`. Never replay uncertain work
+automatically. Only the active/latest result is retained in memory for ten
+minutes. A newer result, app replacement, crash, or reboot can end recovery
+earlier. Unknown/expired results do not establish whether a VPN action ran.
+Login cancellation/deadline cleanup targets only that attempt. Unexpected
+frontend loss leaves controller polling bounded by the approval expiry.
+
+`doctor` reads setup and supported diagnostic evidence without approving an
+extension, signing in, refreshing inventory, writing preferences, or changing
+the VPN. Checks cover installed resources and identity, link/PATH, controller,
+extension, preferences, credentials/access, network path, DNS, dashboard HTTPS,
+and optional known-region health. Unsupported or uninitialized evidence stays
+unknown. Required setup failure takes exit precedence over required online
+failure; a caller deadline returns partial results.
+
+JSON stdout is NDJSON schema version 1. Each line is a complete object with
+`schemaVersion`, `type`, `command`, `operationId`, `data`, and `error`. Reads emit
+one result. Login first emits `login_required`; VPN mutations first emit
+`accepted`, then a final result/error when available. Errors have stable `code`,
+sanitized `message`, and nullable `suggestion`. Unavailable fields are explicit
+nulls; observation timestamps are UTC. Requested action, command outcome, and
+observed tunnel state are separate. Additive fields retain version 1 field
+types. Human diagnostics use stderr; JSON has no progress text or ANSI escapes.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Command succeeded; status can still show disconnected or signed out |
+| 1 | Unexpected internal failure |
+| 2 | Invalid usage or arguments |
+| 3 | Sign-in required, access denied, or approval denied |
+| 4 | Setup, permissions, credentials, or version compatibility blocks use |
+| 5 | Config or selection unavailable/unusable |
+| 6 | Required fresh online result unavailable |
+| 7 | Conflicting mutation or login is busy |
+| 8 | Caller/operation deadline or login expiry |
+| 9 | VPN/config operation failed |
+| 10 | Requested operation result unknown/expired |
+| 130 | Caller interrupted |
+
 ## Implementation And Validation
 
 The menu, browser auth, account-scoped inventory, packet provider, and
@@ -151,7 +273,9 @@ Provider stop completion waits for actual backend shutdown, including after
 the stop deadline. The app reports a stop timeout instead of starting a replacement.
 
 Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
-and packaging checks. Use `./scripts/test.sh macos --signed` for signed builds and
+and packaging checks, including 20 bounded packaged direct/symlink static CLI
+checks in temporary homes. Installer tests use temporary filesystems and do not
+edit your shell or installed app. Use `./scripts/test.sh macos --signed` for signed builds and
 profile/entitlement inspection. Use `ios` for the iOS regression gate and
 `apple` for both platforms. The default suite runs every target. Shared package
 tests run once per invocation. Automated checks do not activate extensions
@@ -163,7 +287,7 @@ It skips tests and dead-code scans and uses Apple Development signing.
 
 The first installation of the synchronized lifecycle needs a one-time controller
 restart because an older controller cannot perform the new handshake. Quit the
-old menu and wait for pending work and its 60-second idle grace period, or restart
+old menu and wait for pending work and any ten-minute result retention, or restart
 the job explicitly after accepted work finishes. Subsequent replacements are
 detected automatically, including local rebuilds with reused version numbers.
 
@@ -176,7 +300,7 @@ detected automatically, including local rebuilds with reused version numbers.
     -derivedDataPath Frontend/Apple/macOS/.build/Xcode \
     ARCHS=arm64 -allowProvisioningUpdates build
   python3 scripts/verify_macos_build.py \
-    Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed
+    Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed --cli-smoke
   if [ -e /Applications/CloudGateway.app ]; then
     trash /Applications/CloudGateway.app
     echo "Trashed previous app"

@@ -25,7 +25,8 @@ func cliState(account: String? = "uid1", retained: Bool = true, restoring: Bool 
               access: CloudGatewayMacAccessState = .online, inventory: CloudGatewayMacInventoryFreshness = .current,
               clients: [CloudGatewayMacClientMetadata] = [], profiles: [CloudGatewayMacObservedProfile] = [],
               isObserved: Bool = true, observedAt: Date? = cliObservedAt, selected: String? = nil,
-              browser: CloudGatewayMacBrowserAuthState? = nil) -> CloudGatewayMacControllerState {
+              browser: CloudGatewayMacBrowserAuthState? = nil,
+              setup: CloudGatewayMacSetupState = .ready) -> CloudGatewayMacControllerState {
     let snapshot = CloudGatewayMacControllerSnapshot(
         domain: .init(accountId: account, hasRetainedSession: retained, accessAuthorized: account != nil,
                       access: access, credentials: retained ? .available : .unknown, inventoryFreshness: inventory,
@@ -36,7 +37,7 @@ func cliState(account: String? = "uid1", retained: Bool = true, restoring: Bool 
         browserState: browser ?? account.map { .signedIn(AuthenticatedUser(uid: $0, email: nil)) } ?? .signedOut,
         isRestoringSession: restoring, isAuthSettling: false, canCreateClient: false, errorMessage: nil
     )
-    return .init(snapshot: snapshot, setupState: .ready, canUpdateExtension: false)
+    return .init(snapshot: snapshot, setupState: setup, canUpdateExtension: false)
 }
 
 func cliSuspendUntilCancelled() async throws {
@@ -96,11 +97,14 @@ final class CLIHarness {
     var bootstraps = 0
     var connects = 0
     var isUntrusted = false
+    var holdsClientCreation = false
     var states: [CloudGatewayMacControllerState] = []
     var status = CloudGatewayMacControllerStatus(hasActiveTunnel: false, needsStop: false, observationAvailable: true)
     var operation: CloudGatewayMacControllerOperation?
     var outcome: CloudGatewayMacCommandOutcome?
     var hungActions: Set<CloudGatewayMacControllerRequest.Action> = []
+    var onRequest: ((CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply?)?
+    var onBootstrap: (() async throws -> Void)?
     var actions: [CloudGatewayMacControllerRequest.Action] = []
     var output = ""
     var diagnostics = ""
@@ -124,9 +128,16 @@ final class CLIHarness {
             self.output += $0
         }, diagnostics: { self.diagnostics += $0 }, connect: {
             self.connects += 1
+            if self.holdsClientCreation {
+                self.clock.expire()
+                try await cliSuspendUntilCancelled()
+            }
             if self.isUntrusted { throw CocoaError(.fileReadCorruptFile) }
             return CloudGatewayMacFrontendClient(identity: cliBuild, transport: { try await self.send($0) },
-                                                 bootstrap: { self.bootstraps += 1 }, sleep: { _ in })
+                                                 bootstrap: {
+                                                     self.bootstraps += 1
+                                                     try await self.onBootstrap?()
+                                                 }, sleep: { _ in })
         })
         return await cli.run(arguments)
     }
@@ -143,6 +154,10 @@ final class CLIHarness {
             try await cliSuspendUntilCancelled()
         }
         var reply: CloudGatewayMacControllerReply
+        if var custom = try await onRequest?(request) {
+            custom.instanceId = instanceId
+            return custom
+        }
         switch request.action {
         case .lifecycle:
             if unavailableHandshakes > 0 {

@@ -17,13 +17,17 @@ extension CloudGatewayMacFrontendClient {
             return try await client.request(request)
         }, bootstrap: {
             let installed = URL(fileURLWithPath: "/Applications/CloudGateway.app")
-            _ = try CloudGatewayMacSignedBundle.installed(at: installed, teamIdentifier: team,
-                                                           bundleIdentifier: CloudGatewayMacControllerProtocol.appBundleIdentifier)
-            let launcher = try CloudGatewayMacControllerLauncher(
-                executableURL: installed.appendingPathComponent("Contents/MacOS/CloudGateway"),
-                directory: CloudGatewayMacControllerRuntime.directory
-            )
-            _ = try await launcher.bootstrap()
+            let directory = CloudGatewayMacControllerRuntime.directory
+            let task = Task.detached(priority: .utility) {
+                _ = try CloudGatewayMacSignedBundle.installed(at: installed, teamIdentifier: team,
+                    bundleIdentifier: CloudGatewayMacControllerProtocol.appBundleIdentifier)
+                try Task.checkCancellation()
+                let launcher = try CloudGatewayMacControllerLauncher(
+                    executableURL: installed.appendingPathComponent("Contents/MacOS/CloudGateway"), directory: directory
+                )
+                _ = try await launcher.bootstrap()
+            }
+            try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
         })
     }
 }

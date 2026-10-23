@@ -46,9 +46,7 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         let loaded = try await loadManagers()
         let profiles = try loaded.filter(Self.isOwned).map(Self.profile)
-        guard Set(profiles.map(\.identifier)).count == profiles.count else {
-            throw CloudGatewayMacVPNProfileError.duplicateProfile
-        }
+        try CloudGatewayMacProfileMetadata.validateUnique(profiles)
         return profiles
     }
 
@@ -141,19 +139,10 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
 
     private static func profile(_ manager: NETunnelProviderManager) throws -> CloudGatewayMacInstalledProfile {
         guard isOwned(manager),
-              let metadata = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
-              let identifier = metadata[CloudGatewayMacProviderKey.configId] as? String,
-              !identifier.isEmpty,
-              metadata[CloudGatewayProviderConfigurationKey.tunnelIdentifier] as? String == identifier,
-              let value = metadata[CloudGatewayMacProviderKey.secretReference] as? String,
-              let reference = try? CloudGatewayMacSecretReference(value: value) else {
+              let metadata = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration else {
             throw CloudGatewayMacVPNProfileError.invalidProfile
         }
-        return CloudGatewayMacInstalledProfile(
-            identifier: identifier,
-            reference: reference,
-            status: CloudGatewayTunnelStatus(manager.connection.status)
-        )
+        return try CloudGatewayMacProfileMetadata.decode(metadata, status: CloudGatewayTunnelStatus(manager.connection.status))
     }
 
     private static func needsConfirmedStop(_ status: NEVPNStatus) -> Bool {

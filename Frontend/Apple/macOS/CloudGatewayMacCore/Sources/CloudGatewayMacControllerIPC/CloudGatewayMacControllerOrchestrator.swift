@@ -4,6 +4,29 @@ import CloudGatewayMacIPC
 import Foundation
 
 @MainActor
+private final class InstalledIdentityReply {
+    typealias Reply = Result<CloudGatewayMacBuildIdentity?, CloudGatewayMacControllerFailure>
+    private var result: Reply?
+    private var continuations: [CheckedContinuation<Reply, Never>] = []
+    var timer: Task<Void, Never>?
+
+    func value() async -> Reply {
+        if let result { return result }
+        return await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func finish(_ result: Reply) {
+        guard self.result == nil else { return }
+        self.result = result
+        timer?.cancel()
+        timer = nil
+        let waiting = continuations
+        continuations = []
+        waiting.forEach { $0.resume(returning: result) }
+    }
+}
+
+@MainActor
 public struct CloudGatewayMacPreparedClient {
     public let regions: [CloudGatewayRegion]
     let submit: (String, String, @escaping @MainActor (CloudGatewayMacCommandOutcome) -> Void) -> Bool
@@ -27,9 +50,15 @@ public struct CloudGatewayMacControllerEffects {
     let setSetupState: (CloudGatewayMacSetupState) -> Void
     let hasAnyActiveTunnel: () async throws -> Bool
     let installedIdentity: () async -> CloudGatewayMacBuildIdentity?
+    let installationTimeout: Duration
+    let installationTimer: (Duration) async throws -> Void
     let extensionIdentity: () throws -> CloudGatewayMacBuildIdentity
     let ping: (CloudGatewayMacBuildIdentity) async throws -> CloudGatewayMacExtensionVersion?
     let registrationReadiness: () async -> CloudGatewayMacSetupState
+    let initializeRuntime: () -> Void
+    let isRuntimeInitialized: () -> Bool
+    let diagnostics: () async -> CloudGatewayMacControllerDiagnostics
+    let login: (CloudGatewayMacControllerRequest) -> CloudGatewayMacLoginStatus?
     let now: () -> Date
 
     public init(
@@ -43,9 +72,15 @@ public struct CloudGatewayMacControllerEffects {
         setSetupState: @escaping (CloudGatewayMacSetupState) -> Void,
         hasAnyActiveTunnel: @escaping () async throws -> Bool,
         installedIdentity: @escaping () async -> CloudGatewayMacBuildIdentity?,
+        installationTimeout: Duration = .seconds(3),
+        installationTimer: ((Duration) async throws -> Void)? = nil,
         extensionIdentity: @escaping () throws -> CloudGatewayMacBuildIdentity,
         ping: @escaping (CloudGatewayMacBuildIdentity) async throws -> CloudGatewayMacExtensionVersion?,
         registrationReadiness: @escaping () async -> CloudGatewayMacSetupState = { .required },
+        initializeRuntime: @escaping () -> Void = {},
+        isRuntimeInitialized: @escaping () -> Bool = { true },
+        diagnostics: @escaping () async -> CloudGatewayMacControllerDiagnostics = { .init(runtimeInitialized: false) },
+        login: @escaping (CloudGatewayMacControllerRequest) -> CloudGatewayMacLoginStatus? = { _ in nil },
         now: @escaping () -> Date = Date.init
     ) {
         self.snapshot = snapshot
@@ -58,9 +93,15 @@ public struct CloudGatewayMacControllerEffects {
         self.setSetupState = setSetupState
         self.hasAnyActiveTunnel = hasAnyActiveTunnel
         self.installedIdentity = installedIdentity
+        self.installationTimeout = installationTimeout
+        self.installationTimer = installationTimer ?? { try await Task.sleep(for: $0) }
         self.extensionIdentity = extensionIdentity
         self.ping = ping
         self.registrationReadiness = registrationReadiness
+        self.initializeRuntime = initializeRuntime
+        self.isRuntimeInitialized = isRuntimeInitialized
+        self.diagnostics = diagnostics
+        self.login = login
         self.now = now
     }
 }
@@ -96,6 +137,9 @@ public final class CloudGatewayMacControllerOrchestrator {
     private var lastActivity: Date
     private var readinessTask: Task<Void, Never>?
     private var checkingInstallation = false
+    private var hasObservedInstallation = false
+    private var installationObservation: (id: UUID, reply: InstalledIdentityReply)?
+    private var installationReadId: UUID?
     private var extensionIsIdle = false
     private var setupState = CloudGatewayMacSetupState.required
 
@@ -110,7 +154,7 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     public var canExit: Bool {
         guard activeRequests == 0, pending == nil, runningOperation == nil,
-              !effects.hasPendingWork(), readinessTask == nil else { return false }
+              !effects.hasPendingWork(), readinessTask == nil, installationObservation == nil else { return false }
         if update.canExit(hasPendingWork: false, activeRequests: 0) { return true }
         // A retained result keeps the controller reachable for its ten-minute recovery window
         return !extensionUpdates.hasPendingAttempt && requests.latest == nil
@@ -120,9 +164,8 @@ public final class CloudGatewayMacControllerOrchestrator {
     public func tick() async {
         guard !checkingInstallation else { return }
         checkingInstallation = true
-        let installed = await effects.installedIdentity()
+        try? await observeInstallation()
         checkingInstallation = false
-        update.observe(installed)
         if update.isDraining {
             creation = nil
             preparationTask?.cancel()
@@ -130,7 +173,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         expirePending()
         if effects.hasPendingWork() || runningOperation != nil { lastActivity = effects.now() }
         if canExit { return }
-        if update.canAcceptMutations { refreshReadiness() }
+        if update.canAcceptMutations, effects.isRuntimeInitialized() { refreshReadiness() }
     }
 
     public func handle(_ request: CloudGatewayMacControllerRequest) async -> CloudGatewayMacControllerReply {
@@ -141,10 +184,28 @@ public final class CloudGatewayMacControllerOrchestrator {
             if !update.isDraining { lastActivity = effects.now() }
         }
         expirePending()
+        // Lifecycle and doctor probes must leave a cold Firebase runtime untouched
+        if request.action != .lifecycle && request.action != .diagnostics {
+            let wasInitialized = effects.isRuntimeInitialized()
+            effects.initializeRuntime()
+            if !wasInitialized, update.canAcceptMutations {
+                setSetupState(.checkingConnection)
+                refreshReadiness()
+            }
+        }
         switch request.action {
         case .lifecycle:
+            if !hasObservedInstallation {
+                do { try await observeInstallation() }
+                catch { return .init(error: .timeout) }
+            }
             return .init(lifecycle: .init(running: update.running, installed: update.installed,
                                          state: update.isDraining ? .draining : update.installed == nil ? .invalidInstallation : .current))
+        case .diagnostics: return .init(diagnostics: await effects.diagnostics())
+        case .beginLogin, .loginStatus, .cancelLogin:
+            if request.action == .beginLogin, !update.canAcceptMutations { return .init(error: .busy) }
+            guard let login = effects.login(request) else { return .init(error: .invalidRequest) }
+            return .init(login: login)
         case .status: return controlReply(for: request)
         case .operation:
             guard let id = request.contextId else { return .init(error: .invalidRequest) }
@@ -179,6 +240,46 @@ public final class CloudGatewayMacControllerOrchestrator {
             return reply(refresh: result ?? .superseded)
         default: return .init(error: .invalidRequest)
         }
+    }
+
+    private func observeInstallation() async throws {
+        let observation: (id: UUID, reply: InstalledIdentityReply)
+        if let existing = installationObservation { observation = existing }
+        else {
+            // Native signature validation keeps its slot until it returns, even after the reply deadline
+            guard installationReadId == nil else { throw CloudGatewayMacControllerFailure.timeout }
+            observation = (UUID(), InstalledIdentityReply())
+            installationObservation = observation
+            installationReadId = observation.id
+            startInstallationObservation(id: observation.id, reply: observation.reply)
+        }
+        _ = try await observation.reply.value().get()
+    }
+
+    private func startInstallationObservation(id: UUID, reply: InstalledIdentityReply) {
+        let installedIdentity = effects.installedIdentity
+        Task { [weak self] in
+            let installed = await installedIdentity()
+            guard let self, installationReadId == id else { return }
+            installationReadId = nil
+            finishInstallationObservation(id: id, result: .success(installed))
+        }
+        let installationTimer = effects.installationTimer
+        let timeout = effects.installationTimeout
+        reply.timer = Task { [weak self] in
+            do { try await installationTimer(timeout) } catch { return }
+            self?.finishInstallationObservation(id: id, result: .failure(.timeout))
+        }
+    }
+
+    private func finishInstallationObservation(id: UUID, result: InstalledIdentityReply.Reply) {
+        guard let observation = installationObservation, observation.id == id else { return }
+        installationObservation = nil
+        if case .success(let installed) = result {
+            update.observe(installed)
+            hasObservedInstallation = true
+        }
+        observation.reply.finish(result)
     }
 
     private func admit(_ request: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {

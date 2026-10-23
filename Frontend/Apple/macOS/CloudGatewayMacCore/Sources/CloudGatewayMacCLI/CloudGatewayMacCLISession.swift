@@ -21,14 +21,14 @@ final class CloudGatewayMacCLISession {
     static let pollInterval = Duration.milliseconds(500)
     static let observationWait = Duration.seconds(5)
 
-    private let client: CloudGatewayMacFrontendClient
-    private let clock: CloudGatewayMacCLIClock
-    private let deadline: Duration
+    let client: CloudGatewayMacFrontendClient
+    let clock: CloudGatewayMacCLIClock
+    let deadline: Duration
 
-    init(client: CloudGatewayMacFrontendClient, clock: CloudGatewayMacCLIClock, timeout: Duration) {
+    init(client: CloudGatewayMacFrontendClient, clock: CloudGatewayMacCLIClock, timeout: Duration, startedAt: Duration? = nil) {
         self.client = client
         self.clock = clock
-        deadline = clock.now() + timeout
+        deadline = (startedAt ?? clock.now()) + timeout
     }
 
     func authStatus() async throws -> CloudGatewayMacCLIData {
@@ -41,7 +41,7 @@ final class CloudGatewayMacCLISession {
         try await requireCurrentBuild()
         let (reply, isSettled) = try await poll(.snapshot, until: deadline) {
             let state = try Self.state(of: $0)
-            return state.isPendingRestoration || state.inventory == .refreshing
+            return state.isPendingRestoration || state.isAwaitingVerification || state.inventory == .refreshing
         }
         let state = try Self.state(of: reply)
         guard isSettled else {
@@ -90,14 +90,14 @@ final class CloudGatewayMacCLISession {
         try await call { [client] in try await client.handshake() }
     }
 
-    private func requireCurrentBuild() async throws {
+    func requireCurrentBuild() async throws {
         let lifecycle = try await connect()
         guard client.isCurrentBuild else {
             throw CloudGatewayMacCLIError(lifecycle.state == .invalidInstallation ? .installationRequired : .incompatibleVersion)
         }
     }
 
-    private func poll(
+    func poll(
         _ action: CloudGatewayMacControllerRequest.Action, until limit: Duration,
         while isPending: (CloudGatewayMacControllerReply) throws -> Bool
     ) async throws -> (CloudGatewayMacControllerReply, isSettled: Bool) {
@@ -109,35 +109,71 @@ final class CloudGatewayMacCLISession {
         }
     }
 
-    private func call<Value: Sendable>(
+    func call<Value: Sendable>(
         _ work: @escaping @MainActor @Sendable () async throws -> Value
     ) async throws -> Value {
+        try await Self.call(clock: clock, deadline: deadline, work)
+    }
+
+    static func call<Value: Sendable>(clock: CloudGatewayMacCLIClock, deadline: Duration,
+                                      _ work: @escaping @MainActor @Sendable () async throws -> Value) async throws -> Value {
         let remaining = deadline - clock.now()
         guard remaining > .zero else { throw CloudGatewayMacControllerFailure.timeout }
-        let timer = clock.timer
-        return try await withThrowingTaskGroup(of: Value.self) { group in
-            group.addTask { try await work() }
-            group.addTask {
-                try await timer(remaining)
-                throw CloudGatewayMacControllerFailure.timeout
-            }
-            defer { group.cancelAll() }
-            guard let value = try await group.next() else { throw CloudGatewayMacControllerFailure.timeout }
-            return value
+        try Task.checkCancellation()
+        let race = CloudGatewayMacCLICallRace<Value>()
+        let request = Task {
+            do { race.finish(.success(try await work())) }
+            catch { race.finish(.failure(error)) }
+        }
+        let timer = Task { [clock] in
+            do { try await clock.timer(remaining) }
+            catch { return }
+            race.finish(.failure(CloudGatewayMacControllerFailure.timeout))
+        }
+        defer { request.cancel(); timer.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { race.start($0) }
+        } onCancel: {
+            Task { @MainActor in race.finish(.failure(CancellationError())) }
         }
     }
 
-    private static func state(of reply: CloudGatewayMacControllerReply) throws -> CloudGatewayMacControllerState {
+    static func state(of reply: CloudGatewayMacControllerReply) throws -> CloudGatewayMacControllerState {
         guard let state = reply.state else { throw CloudGatewayMacCLIError(.invalidResponse) }
         return state
     }
 
-    private static func status(of reply: CloudGatewayMacControllerReply) throws -> CloudGatewayMacControllerStatus {
+    static func status(of reply: CloudGatewayMacControllerReply) throws -> CloudGatewayMacControllerStatus {
         guard let status = reply.status else { throw CloudGatewayMacCLIError(.invalidResponse) }
         return status
     }
 
-    private static func operation(of reply: CloudGatewayMacControllerReply) -> CloudGatewayMacCLIOperation? {
+    static func operation(of reply: CloudGatewayMacControllerReply) -> CloudGatewayMacCLIOperation? {
         reply.operation.map { CloudGatewayMacCLIOperation($0, outcome: reply.outcome) }
+    }
+}
+
+@MainActor
+private final class CloudGatewayMacCLICallRace<Value: Sendable> {
+    private var continuation: CheckedContinuation<Value, any Error>?
+    private var result: Result<Value, any Error>?
+
+    func start(_ continuation: CheckedContinuation<Value, any Error>) {
+        if let result { continuation.resume(with: result) }
+        else { self.continuation = continuation }
+    }
+
+    func finish(_ result: Result<Value, any Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        continuation?.resume(with: result)
+        continuation = nil
+    }
+}
+
+extension CloudGatewayMacControllerState {
+    // Restoration can briefly clear its task before the authorized account is published
+    var isAwaitingVerification: Bool {
+        accountId == nil && hasRetainedSession && access == .unverified
     }
 }

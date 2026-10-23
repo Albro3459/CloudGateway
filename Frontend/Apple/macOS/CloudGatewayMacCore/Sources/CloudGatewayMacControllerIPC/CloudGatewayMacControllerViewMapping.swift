@@ -56,7 +56,7 @@ extension CloudGatewayMacControllerView {
             canRefresh: state.accountId != nil && !state.commandInFlight && state.inventory != .refreshing,
             canSignOut: state.accountId != nil || state.hasRetainedSession,
             accountId: state.accountId, lastSelectedIdentifier: state.selectedIdentifier,
-            browserState: state.auth, setupState: state.setup,
+            browserState: state.auth, login: state.login, setupState: state.setup,
             isRestoringSession: state.isRestoringSession, isAuthSettling: state.isAuthSettling,
             hasRetainedSession: state.hasRetainedSession, inventoryInFlight: state.inventory == .refreshing,
             canCreateClient: state.creationAllowed, errorMessage: state.errorMessage,

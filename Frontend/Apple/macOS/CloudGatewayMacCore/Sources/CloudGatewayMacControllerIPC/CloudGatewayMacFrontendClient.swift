@@ -128,9 +128,9 @@ public final class CloudGatewayMacFrontendClient {
     // Menu convenience: reserved mutations are confirmed at once, and failed or uncertain results throw
     public func request(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                         identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
-                        contextId: UUID? = nil) async throws -> CloudGatewayMacControllerReply {
+                        contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
         let reply = try await send(action, id: id, identifier: identifier, regionId: regionId,
-                                   clientName: clientName, contextId: contextId)
+                                   clientName: clientName, contextId: contextId, loginOrigin: loginOrigin)
         guard action.requiresConfirmation, reply.operation?.state == .accepted else { return reply }
         let confirmed = try await confirm(id)
         if let operation = confirmed.operation, operation.state == .failed {
@@ -143,7 +143,7 @@ public final class CloudGatewayMacFrontendClient {
     // Mutations come back reserved. Nothing runs until the caller confirms the same ID
     public func send(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                      identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
-                     contextId: UUID? = nil) async throws -> CloudGatewayMacControllerReply {
+                     contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         let callback: Set<CloudGatewayMacControllerRequest.Action> = [
             .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed
@@ -156,7 +156,7 @@ public final class CloudGatewayMacFrontendClient {
         let currentSequence = sequence
         let currentGeneration = generation
         let request = CloudGatewayMacControllerRequest(action: action, id: id, identifier: identifier,
-            regionId: regionId, clientName: clientName, contextId: contextId,
+            regionId: regionId, clientName: clientName, contextId: contextId, loginOrigin: loginOrigin,
             appVersion: identity.version, appBuild: identity.build, buildIdentity: identity)
         let reply: CloudGatewayMacControllerReply
         do { reply = try await transport(request) }

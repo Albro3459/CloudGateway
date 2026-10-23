@@ -113,6 +113,7 @@ public struct CloudGatewayMacControllerSnapshot: Equatable, Sendable {
     public let domain: CloudGatewayMacDomainSnapshot
     public let lastSelectedIdentifier: String?
     public let browserState: CloudGatewayMacBrowserAuthState
+    public var login: CloudGatewayMacLoginStatus? = nil
     public let isRestoringSession: Bool
     public let isAuthSettling: Bool
     public let canCreateClient: Bool

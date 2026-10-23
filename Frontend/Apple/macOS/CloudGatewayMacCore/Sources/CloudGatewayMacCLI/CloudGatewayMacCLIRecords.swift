@@ -6,7 +6,7 @@ import Foundation
 // Public JSON schema version 1. These types own the field names, so internal Codable changes cannot leak into output
 struct CloudGatewayMacCLIRecord: Encodable {
     enum Kind: String, Encodable {
-        case result, error
+        case accepted, result, error
     }
 
     struct Failure: Encodable {
@@ -42,6 +42,9 @@ indirect enum CloudGatewayMacCLIData: Encodable, Sendable {
     case auth(CloudGatewayMacCLIAuthStatus)
     case status(CloudGatewayMacCLIStatus)
     case inventory(CloudGatewayMacCLIInventory)
+    case mutation(CloudGatewayMacCLIMutation)
+    case refresh(CloudGatewayMacCLIRefresh)
+    case doctor(CloudGatewayMacCLIDoctorReport)
 
     func encode(to encoder: any Encoder) throws {
         switch self {
@@ -50,6 +53,9 @@ indirect enum CloudGatewayMacCLIData: Encodable, Sendable {
         case .auth(let value): try value.encode(to: encoder)
         case .status(let value): try value.encode(to: encoder)
         case .inventory(let value): try value.encode(to: encoder)
+        case .mutation(let value): try value.encode(to: encoder)
+        case .refresh(let value): try value.encode(to: encoder)
+        case .doctor(let value): try value.encode(to: encoder)
         }
     }
 }
@@ -282,7 +288,7 @@ struct CloudGatewayMacCLIInventory: Encodable {
     }
 
     enum Freshness: String, Encodable {
-        case current, cached
+        case current, cached, stale
     }
 
     struct Region: Encodable {
@@ -365,15 +371,18 @@ struct CloudGatewayMacCLIInventory: Encodable {
     @CloudGatewayMacCLINullable var regionId: String?
     let regions: [Region]
 
-    init(_ state: CloudGatewayMacControllerState, accountId: String, regionId: String?) {
+    init(_ state: CloudGatewayMacControllerState, accountId: String, regionId: String?, isStale: Bool = false,
+         eligibleOnly: Bool = false) {
         self.accountId = accountId
         scope = state.access == .offline ? .installed : .authorized
-        freshness = state.inventory == .cached ? .cached : .current
+        freshness = isStale ? .stale : state.inventory == .cached ? .cached : .current
         let observation = CloudGatewayMacCLIStatus.Tunnel.Observation(state)
         profileObservation = observation
         profilesObservedAt = state.profilesObservedAt
         self.regionId = regionId
-        let clients = state.clients.filter { regionId == nil || $0.regionId == regionId }
+        let clients = state.clients.filter {
+            (regionId == nil || $0.regionId == regionId) && (!eligibleOnly || $0.eligibility == .eligible)
+        }
         regions = Dictionary(grouping: clients, by: \.regionId).values.sorted { lhs, rhs in
             let left = lhs[0]
             let right = rhs[0]
@@ -389,6 +398,38 @@ struct CloudGatewayMacCLIInventory: Encodable {
             return Region(regionId: clients[0].regionId, name: CloudGatewayMacCLIText.sanitize(clients[0].regionName),
                           configs: configs)
         }
+    }
+}
+
+struct CloudGatewayMacCLIMutation: Encodable {
+    enum Command: String, Encodable { case up, down, logout }
+
+    let command: Command
+    let operation: CloudGatewayMacCLIOperation
+    let tunnel: CloudGatewayMacCLIStatus.Tunnel
+    @CloudGatewayMacCLINullable var choices: CloudGatewayMacCLIInventory?
+}
+
+struct CloudGatewayMacCLIRefresh: Encodable {
+    enum Result: String, Encodable {
+        case refreshed, unavailable, denied, skipped, superseded
+        case signInRequired = "sign_in_required", timedOut = "timed_out"
+    }
+
+    let result: Result
+    @CloudGatewayMacCLINullable var inventory: CloudGatewayMacCLIInventory?
+
+    init(_ result: CloudGatewayMacRefreshResult, inventory: CloudGatewayMacCLIInventory?) {
+        self.result = switch result {
+        case .refreshed: .refreshed
+        case .unavailable: .unavailable
+        case .denied: .denied
+        case .signInRequired: .signInRequired
+        case .skipped: .skipped
+        case .superseded: .superseded
+        case .timedOut: .timedOut
+        }
+        self.inventory = inventory
     }
 }
 

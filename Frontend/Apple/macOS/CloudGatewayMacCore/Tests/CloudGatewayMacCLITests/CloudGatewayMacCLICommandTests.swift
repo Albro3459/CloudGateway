@@ -38,14 +38,11 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
 }
 
 @MainActor
-@Test func cliUnimplementedCommandsFailBeforeConnecting() async {
+@Test func cliUnconfiguredDoctorFailsBeforeConnecting() async {
     let harness = CLIHarness()
-    for arguments in [["up"], ["down"], ["refresh"], ["doctor"], ["auth", "login"], ["auth", "logout"], ["list", "--refresh"]] {
-        harness.output = ""
-        #expect(await harness.run(arguments + ["--json"]) == 1)
-        #expect(harness.json?["type"] as? String == "error")
-        #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "not_implemented")
-    }
+    #expect(await harness.run("doctor", "--json") == 1)
+    #expect(harness.json?["type"] as? String == "error")
+    #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "not_implemented")
     #expect(harness.connects == 0)
 }
 

@@ -38,6 +38,14 @@ public final class CloudGatewayMacController {
     private var lastInventoryRefresh: ContinuousClock.Instant?
     private var restorationTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
+    private var isStopping = false
+    private var pendingLoginInventory: CloudGatewayMacSessionToken?
+    private var retainedLogin: CloudGatewayMacLoginStatus?
+    private var retainedLoginTimer: Task<Void, Never>?
+    private var retainedLoginDeadline: Duration?
+    private var retainedLoginTask: Task<Void, Never>?
+    private let loginTimer: @Sendable (Duration) async throws -> Void
+    private let loginNow: @Sendable () -> Duration
     private var inventoryCommitTask: Task<Void, Error>?
     private var hasAuthorizedInventory = false
     private var hasObservedProfiles = false
@@ -55,7 +63,10 @@ public final class CloudGatewayMacController {
         configs: CloudGatewayMacConfigCoordinator,
         dashboardOrigin: URL,
         inventoryAuthorizationDidCommit: @escaping @MainActor () async -> Void = {},
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        loginTimer: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        loginNow: (@Sendable () -> Duration)? = nil,
+        loginSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.auth = auth
         self.inventory = inventory
@@ -64,8 +75,13 @@ public final class CloudGatewayMacController {
         self.configs = configs
         self.inventoryAuthorizationDidCommit = inventoryAuthorizationDidCommit
         self.now = now
+        self.loginTimer = loginTimer
+        let loginClock = ContinuousClock()
+        let loginOrigin = loginClock.now
+        let monotonicNow: @Sendable () -> Duration = loginNow ?? { loginOrigin.duration(to: loginClock.now) }
+        self.loginNow = monotonicNow
         browser = CloudGatewayMacBrowserAuthCoordinator(
-            service: deviceAuth, auth: auth, dashboardOrigin: dashboardOrigin,
+            service: deviceAuth, auth: auth, dashboardOrigin: dashboardOrigin, openBrowser: { _ in },
             checkAccess: { [weak self] candidate in
                 guard let self else { return false }
                 let epoch = sessionEpoch
@@ -84,7 +100,7 @@ public final class CloudGatewayMacController {
                     accessResult = .denied
                     return false
                 }
-            }
+            }, now: monotonicNow, sleep: loginSleep, timer: loginTimer
         )
     }
 
@@ -135,7 +151,7 @@ public final class CloudGatewayMacController {
                 clients: clientMetadata
             ),
             lastSelectedIdentifier: lastSelectedIdentifier,
-            browserState: visibleBrowserState, isRestoringSession: restorationTask != nil,
+            browserState: visibleBrowserState, login: retainedLogin ?? browser.loginStatus, isRestoringSession: restorationTask != nil,
             isAuthSettling: auth.isCustomTokenSignInSettling,
             canCreateClient: canStartClientCreation, errorMessage: visibleErrorMessage
         )
@@ -162,6 +178,8 @@ public final class CloudGatewayMacController {
         profileTask = nil
         authRegistration?.cancel()
         authRegistration = nil
+        retainedLoginTimer?.cancel()
+        retainedLoginTask?.cancel()
         browser.onChange = nil
         if isStarted {
             cancelPendingWork()
@@ -197,7 +215,7 @@ public final class CloudGatewayMacController {
                 sessionFence.changeAccount(to: authorized.uid)
                 accessResult = nil
                 errorMessage = nil
-                refreshInventory()
+                refreshLoginInventory()
             }
         case .signedOut:
             if user != nil { clearAccountPresentation() }
@@ -236,13 +254,15 @@ public final class CloudGatewayMacController {
                 sessionFence.changeAccount(to: candidate.uid)
                 accessResult = nil
                 errorMessage = nil
-                refreshInventory()
+                completeRetainedLoginAuthorization()
+                refreshLoginInventory()
             } catch CloudGatewayMacInventoryError.offline {
                 guard sessionEpoch == epoch, !Task.isCancelled,
                       auth.currentUser?.uid == candidate.uid else { return }
                 let saved = try? await cache.load(accountId: candidate.uid)
                 guard sessionEpoch == epoch, !Task.isCancelled,
                       auth.currentUser?.uid == candidate.uid else { return }
+                do { try requireCurrent(epoch) } catch { return }
                 if let saved, CloudGatewayMacOfflinePolicy.canUseCache(
                     after: CloudGatewayMacInventoryError.offline.cacheFailure, cache: saved
                 ) {
@@ -254,6 +274,7 @@ public final class CloudGatewayMacController {
                     isOffline = true
                     hasAuthorizedInventory = true
                     errorMessage = nil
+                    completeRetainedLoginAuthorization()
                 } else {
                     accessResult = .unreachable
                     errorMessage = "Unable to reach CloudGateway to restore this account"
@@ -273,6 +294,19 @@ public final class CloudGatewayMacController {
             }
         }
         notifyChange()
+    }
+
+    private func refreshLoginInventory() {
+        if isStopping { pendingLoginInventory = sessionFence.currentToken }
+        else { refreshInventory() }
+    }
+
+    private func resumeLoginInventoryAfterStop() {
+        guard let token = pendingLoginInventory else { return }
+        pendingLoginInventory = nil
+        guard sessionFence.isCurrent(token), user?.uid == token.accountId,
+              auth.currentUser?.uid == token.accountId else { return }
+        refreshInventory()
     }
 
     private func refreshInventory(force: Bool = true) {
@@ -435,6 +469,7 @@ public final class CloudGatewayMacController {
         sessionEpoch &+= 1
         sessionFence.changeAccount(to: nil)
         lastSelectedIdentifier = nil
+        pendingLoginInventory = nil
         cancelPendingWork()
         user = nil
         options = []
@@ -446,15 +481,16 @@ public final class CloudGatewayMacController {
     }
 
     private func cancelPendingWork() {
-        let pendingCommand = commandTask
+        let preservingStop = isStopping
+        let pendingCommand = preservingStop ? nil : commandTask
         let pendingCommit = inventoryCommitTask
         inventoryTask?.cancel()
         inventoryEpoch &+= 1
         restorationTask?.cancel()
-        commandTask?.cancel()
+        if !preservingStop { commandTask?.cancel() }
         inventoryTask = nil
         restorationTask = nil
-        commandTask = nil
+        if !preservingStop { commandTask = nil }
         sessionFence.invalidate()
         cancellationEpoch &+= 1
         let epoch = cancellationEpoch
@@ -462,10 +498,10 @@ public final class CloudGatewayMacController {
         cancellationTask = Task { [weak self] in
             await previousCancellation?.value
             guard let self else { return }
-            await configs.cancelPendingWork()
+            if !preservingStop { await configs.cancelPendingWork() }
             await pendingCommand?.value
             _ = try? await pendingCommit?.value
-            await configs.waitForPendingWork()
+            if !preservingStop { await configs.waitForPendingWork() }
             guard cancellationEpoch == epoch else { return }
             cancellationTask = nil
             notifyChange()
@@ -474,6 +510,7 @@ public final class CloudGatewayMacController {
 
     private func requireCurrent(_ epoch: UInt64, token: CloudGatewayMacSessionToken? = nil) throws {
         guard isStarted, sessionEpoch == epoch, !Task.isCancelled, !isShuttingDown else { throw CancellationError() }
+        if let retainedLoginDeadline, loginNow() >= retainedLoginDeadline { throw CloudGatewayDeviceAuthError.expired }
         if let token {
             guard sessionFence.isCurrent(token), auth.currentUser?.uid == token.accountId else { throw CancellationError() }
         }
@@ -819,11 +856,14 @@ public final class CloudGatewayMacController {
             onCompletion?(.failed(.busy))
             return false
         }
+        isStopping = true
         commandTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var outcome = CloudGatewayMacCommandOutcome.unknown
             defer {
+                isStopping = false
                 commandTask = nil
+                resumeLoginInventoryAfterStop()
                 refreshProfiles()
                 notifyChange()
                 onCompletion?(outcome)
@@ -855,9 +895,86 @@ public final class CloudGatewayMacController {
     }
 
     public func cancelSignIn() {
-        guard isStarted, !isShuttingDown else { return }
-        clearAccountPresentation()
-        browser.cancel()
+        guard let status = browser.loginStatus else { return }
+        _ = cancelLogin(attemptId: status.attemptId)
+    }
+
+    public func beginLogin(attemptId: UUID, origin: CloudGatewayMacLoginOrigin) -> CloudGatewayMacLoginStatus {
+        if user != nil { return .init(attemptId: attemptId, origin: origin, phase: .finished, result: .authorized) }
+        if let current = retainedLogin ?? browser.loginStatus, current.attemptId == attemptId { return current }
+        if let current = browser.loginStatus, current.phase != .finished {
+            return .init(attemptId: attemptId, origin: origin, phase: .finished, result: .busy)
+        }
+        if let retainedLogin, retainedLogin.phase != .finished {
+            return .init(attemptId: attemptId, origin: origin, phase: .finished, result: .busy)
+        }
+        guard isStarted, !isShuttingDown else {
+            return .init(attemptId: attemptId, origin: origin, phase: .finished, result: .unavailable)
+        }
+        if auth.currentUser != nil, !auth.isCustomTokenSignInSettling {
+            restoreSession()
+            let status = CloudGatewayMacLoginStatus(attemptId: attemptId, origin: origin, phase: .restoring)
+            retainedLogin = status
+            let restoration = restorationTask
+            let end = loginNow() + .seconds(30)
+            retainedLoginDeadline = end
+            retainedLoginTimer = Task { [weak self, loginTimer, loginNow] in
+                do { try await loginTimer(max(.zero, end - loginNow())) } catch { return }
+                guard let self, retainedLogin?.attemptId == attemptId, retainedLogin?.phase != .finished else { return }
+                clearAccountPresentation()
+                finishRetainedLogin(attemptId, result: .expired)
+            }
+            retainedLoginTask = Task { [weak self] in
+                await restoration?.value
+                guard let self, !Task.isCancelled, retainedLogin?.attemptId == attemptId,
+                      retainedLogin?.phase != .finished else { return }
+                if loginNow() >= end {
+                    clearAccountPresentation()
+                    finishRetainedLogin(attemptId, result: .expired)
+                } else {
+                    finishRetainedLogin(attemptId, result: user != nil ? .authorized
+                        : accessResult == .denied ? .denied : .offline)
+                }
+            }
+            return status
+        }
+        retainedLogin = nil
+        guard browser.begin(attemptId: attemptId, origin: origin) else {
+            return .init(attemptId: attemptId, origin: origin, phase: .finished, result: .busy)
+        }
+        return browser.loginStatus!
+    }
+
+    public func loginStatus(attemptId: UUID) -> CloudGatewayMacLoginStatus {
+        if let current = retainedLogin ?? browser.loginStatus, current.attemptId == attemptId { return current }
+        if user != nil { return .init(attemptId: attemptId, origin: .cli, phase: .finished, result: .authorized) }
+        if restorationTask != nil { return .init(attemptId: attemptId, origin: .cli, phase: .restoring) }
+        return .init(attemptId: attemptId, origin: .cli, phase: .finished,
+                     result: accessResult == .denied ? .denied : .unavailable)
+    }
+
+    public func cancelLogin(attemptId: UUID) -> CloudGatewayMacLoginStatus {
+        if retainedLogin?.attemptId == attemptId, retainedLogin?.phase != .finished {
+            clearAccountPresentation()
+            finishRetainedLogin(attemptId, result: .cancelled)
+        } else { browser.cancel(attemptId: attemptId) }
+        notifyChange()
+        return loginStatus(attemptId: attemptId)
+    }
+
+    private func completeRetainedLoginAuthorization() {
+        guard let retainedLogin, retainedLogin.phase == .restoring else { return }
+        finishRetainedLogin(retainedLogin.attemptId, result: .authorized)
+    }
+
+    private func finishRetainedLogin(_ id: UUID, result: CloudGatewayMacLoginStatus.Result) {
+        guard let current = retainedLogin, current.attemptId == id else { return }
+        retainedLoginDeadline = nil
+        retainedLoginTimer?.cancel()
+        retainedLoginTimer = nil
+        retainedLoginTask?.cancel()
+        retainedLoginTask = nil
+        retainedLogin = .init(attemptId: id, origin: current.origin, phase: .finished, result: result)
         notifyChange()
     }
 
@@ -865,6 +982,7 @@ public final class CloudGatewayMacController {
     public func signOut() -> Bool {
         guard isStarted, !isShuttingDown else { return false }
         accessResult = nil
+        if let retainedLogin, retainedLogin.phase != .finished { finishRetainedLogin(retainedLogin.attemptId, result: .cancelled) }
         clearAccountPresentation()
         let didSignOut = browser.signOut()
         notifyChange()

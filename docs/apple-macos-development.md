@@ -20,6 +20,55 @@ System Keychain access, or networking on a real machine.
 
 ## Background controller checkpoint
 
+Current CLI implementation uses the same bundled executable and background
+controller for `auth login/status/logout`, `list`, `status`, `up`, `down`,
+`refresh`, and `doctor`. See the [macOS README](../Frontend/Apple/macOS/README.md#command-line-tool)
+for installation, options, schema version 1, exits, and command recovery.
+The historical checkpoint results below remain useful context. Signed runtime
+and pre-desktop SSH evidence remain release gates, not implementation blockers.
+
+`./scripts/test.sh macos` is the entry point for all automated CLI validation.
+It runs the host-free Swift fixtures, installer temporary-filesystem cases,
+Python verifier/release fixtures, strict Periphery scans, unsigned arm64 builds,
+and current-bundle `--cli-smoke` verification. The latter makes 20 direct/private
+`--cli` and temporary-symlink invocations for help, version, and invalid usage,
+each bounded to five seconds with redirected input and a temporary home.
+Help/version never need signing identity checks, AppKit startup, Firebase,
+credentials, or a controller. Operational unsigned commands retain signing
+requirements and are tested through injected effects. These checks never
+install the CLI, edit your real startup files, or exercise a live controller/VPN.
+
+The installer is Foundation/POSIX code in the macOS core, with an AppKit menu
+adapter. Its installed-app verification requires the captured running identity
+to match the fixed signed bundle. Directory operations reject symlinks and
+unsafe ownership/modes, and link creation never replaces a destination. A
+separate explicit zsh edit preserves startup contents/mode and refuses custom
+`ZDOTDIR`, `~/.zshenv`, linked/shared files, and existing PATH code. Always test
+SSH with `~/.local/bin/cloudgateway`, since `.zprofile` is not guaranteed there.
+
+VPN acceptance is flushed before confirmation and caller loss detaches accepted
+work. `status --operation <uuid>` retrieves the active/latest result for up to
+ten minutes; a newer result, restart, or replacement can make it unknown sooner.
+No caller retries uncertain work automatically. `up` reports successful start
+submission separately from observed connection; `down` needs confirmed stop.
+`refresh` leaves the VPN alone. Logout retains it and reports credential-cleanup
+failure. Status/disconnect remain available while signed out.
+
+Login polling is controller-owned and scoped to an attempt. Explicit cancellation
+or deadline cleans up that attempt; unexpected frontend loss leaves polling
+bounded by server expiry. Test terminal restoration, stdin EOF, output failure,
+and cancellation with injected terminal/clock/transport effects. Do not add
+live credentials or approval challenges to fixtures or logs.
+
+Doctor can bootstrap a passive authenticated controller before normal runtime
+initialization. A cold diagnostic read leaves auth/access/credentials unknown
+and does not restore/sign out a session, fetch inventory, or invalidate caches.
+Production checks use bounded supported signals for app/resources/platform,
+signature/link/PATH, controller/extension/preferences, existing auth evidence,
+network path/DNS/dashboard HTTPS, and optional known-region health. Probe
+failures cannot establish an unsupported permissions diagnosis. Setup failure
+precedes online failure; the overall deadline returns partial results.
+
 The menu now delegates service ownership to `CloudGatewayMacController` in the
 macOS core. The controller has injected auth, inventory, preferences, cache,
 and config services. The app composition layer creates the real adapters, and
@@ -53,8 +102,10 @@ reopen the fixed verified app; clients never select the replacement executable.
 Invalid or partial installations do not authorize a handoff. Older controllers
 need a one-time restart when first installing this lifecycle.
 
-The controller stays alive while requests or core work are pending. After 60
-idle seconds it exits; launchd can start it on demand again. It does not replay
+The controller stays alive while requests, core work, or a retained latest
+result are pending. With no retained result it exits after 60 idle seconds;
+the latest result extends that lifetime to its ten-minute expiry. launchd can
+start it on demand again. It does not replay
 commands across controller restarts. Recent request UUIDs and request digests
 persist for ten minutes, capped at 64 live entries without eviction. Acceptance
 confirms submission, and an unknown outcome never authorizes an automatic retry.
@@ -63,14 +114,14 @@ inspect all owned tunnel activity, and wait for idle without disconnecting.
 Approval and reboot states survive relaunch and reject stale readiness results.
 An activation interrupted by a controller restart conservatively requires a
 reboot if its result cannot be confirmed. The signed pre-desktop SSH/Keychain proof
-still gates the CLI. This implementation is a launch candidate, not proof that
+still gates release acceptance. This implementation is a launch candidate, not proof that
 every macOS security session permits its auth and VPN APIs. See the
 [controller plan](../TODO/macos-cli.md).
 
 Keep the installed menu app and active VPN running during host-free tests and
 builds. Do not launch another real controller alongside the old app: both would
 own Firebase session recovery. A later planned session will replace the app and
-exercise the menu before adding CLI commands. Test retained profiles first,
+exercise the menu and CLI. Test retained profiles first,
 then perform any agreed clean-setup checks. A build does not authorize profile
 deletion, extension replacement, or a reboot.
 
@@ -362,7 +413,8 @@ addresses, approval code, traffic, DNS queries, or connection history.
 3. Repeat connect/stop in the same extension process. Check sleep/wake and
    network changes. A stop timeout must prevent the next tunnel from starting.
 4. Quit and relaunch the menu app while connected. The VPN must remain running.
-   Sign-out must retain the VPN while hiding inventory and all VPN controls.
+   Sign-out must retain the VPN while hiding inventory. Local status and
+   disconnect remain available, including through the CLI.
 5. Verify offline connection only for the current account's previously
    authorized installed cache. A permission denial must clear presentation
    rather than reveal cached clients. Another account must not inherit it.
@@ -370,6 +422,14 @@ addresses, approval code, traffic, DNS queries, or connection history.
    cancellation, expiry, denial, consumed requests, and local sign-out.
 7. Change VPN status through macOS controls and reopen the menu. Check optional
    Launch at Login, including required approval. Launching never connects.
+8. From a downloaded notarized/stapled DMG installation, install the CLI while
+   signed out. Check repeat installation, conflicts, the separate PATH offer,
+   explicit-path noninteractive SSH, and link behavior after app replacement.
+9. Check Terminal/local agent, desktop plus SSH, pre-desktop reboot, final SSH
+   disconnect, lock/logout, and unavailable credentials in a planned session
+   with another access path. Recover an accepted operation by UUID without
+   replaying it. Confirm refresh does not reconnect, logout retains the VPN,
+   signed-out disconnect works, and doctor changes no auth/VPN state.
 
 Only sanitized activation/setup errors are suitable diagnostics. Discard raw
 WireGuard log payloads. OS crashes should be reported with sanitized context.

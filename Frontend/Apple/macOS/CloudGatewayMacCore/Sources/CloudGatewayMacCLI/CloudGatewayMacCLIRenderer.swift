@@ -35,6 +35,20 @@ struct CloudGatewayMacCLIRenderer {
         case .auth(let auth): lines = render(auth)
         case .status(let status): lines = render(status)
         case .inventory(let inventory): lines = render(inventory)
+        case .mutation(let mutation):
+            let summary = switch mutation.operation.result {
+            case .startRequested: "VPN start requested"
+            case .alreadyActive: "VPN already active"
+            case .completed where mutation.command == .down: "VPN stopped"
+            case .completed where mutation.command == .logout: "Signed out (VPN retained)"
+            default: "Command \(mutation.operation.state.rawValue)"
+            }
+            lines = [summary] + render(.init(tunnel: mutation.tunnel, operation: mutation.operation))
+                + (mutation.choices.map { ["", "Available configs:"] + render($0) } ?? [])
+        case .refresh(let refresh):
+            lines = ["Inventory refresh: \(label(refresh.result.rawValue))"]
+                + (refresh.inventory.map { [""] + render($0) } ?? [])
+        case .doctor(let report): return report.render()
         }
         return lines.map { $0 + "\n" }.joined()
     }

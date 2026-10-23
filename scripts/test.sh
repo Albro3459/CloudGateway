@@ -324,12 +324,12 @@ test_macos() {
     if [[ "$APPLE_SIGNED" -eq 1 ]]; then
       run_check "macOS bundle packaging and signing verification" \
         python3 scripts/verify_macos_build.py \
-          "$derived_data/Build/Products/$configuration/CloudGateway.app" --signed ||
+          "$derived_data/Build/Products/$configuration/CloudGateway.app" --signed --cli-smoke ||
         failed=1
     else
       run_check "macOS bundle packaging verification" \
         python3 scripts/verify_macos_build.py \
-          "$derived_data/Build/Products/$configuration/CloudGateway.app" ||
+          "$derived_data/Build/Products/$configuration/CloudGateway.app" --cli-smoke ||
         failed=1
     fi
   else

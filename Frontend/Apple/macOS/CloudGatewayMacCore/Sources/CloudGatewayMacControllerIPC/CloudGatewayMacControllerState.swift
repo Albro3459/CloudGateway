@@ -33,6 +33,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
 
     public let accountId: String?
     public let auth: CloudGatewayMacControllerView.BrowserState
+    public let login: CloudGatewayMacLoginStatus?
     public let hasRetainedSession: Bool
     public let isRestoringSession: Bool
     public let isAuthSettling: Bool
@@ -57,6 +58,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         let accountId = snapshot.domain.accountId
         self.accountId = accountId
         auth = .init(snapshot.browserState)
+        login = snapshot.login
         hasRetainedSession = snapshot.domain.hasRetainedSession
         isRestoringSession = snapshot.isRestoringSession
         isAuthSettling = snapshot.isAuthSettling

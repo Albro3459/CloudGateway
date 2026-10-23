@@ -30,19 +30,25 @@ public struct CloudGatewayMacCLI {
     private let clock: CloudGatewayMacCLIClock
     private let output: (String) throws -> Void
     private let diagnostics: (String) -> Void
-    private let connect: @MainActor () throws -> CloudGatewayMacFrontendClient
+    private let connect: @MainActor () async throws -> CloudGatewayMacFrontendClient
+    private let doctor: CloudGatewayMacCLIDoctor?
+    private let loginEffects: CloudGatewayMacCLILoginEffects
 
     // The controller client is only created for commands that need it, after help, version, and usage checks
-    public init(version: String, build: String, connect: @escaping @MainActor () throws -> CloudGatewayMacFrontendClient) {
+    public init(version: String, build: String, doctor: CloudGatewayMacCLIDoctor? = nil,
+                loginEffects: CloudGatewayMacCLILoginEffects = .init(),
+                connect: @escaping @MainActor () async throws -> CloudGatewayMacFrontendClient) {
         self.init(version: version, build: build, terminal: .current, clock: .continuous,
                   output: { try FileHandle.standardOutput.write(contentsOf: Data($0.utf8)) },
                   diagnostics: { try? FileHandle.standardError.write(contentsOf: Data($0.utf8)) },
-                  connect: connect)
+                  doctor: doctor, loginEffects: loginEffects, connect: connect)
     }
 
     init(version: String, build: String, terminal: CloudGatewayMacCLITerminal, clock: CloudGatewayMacCLIClock,
          output: @escaping (String) throws -> Void, diagnostics: @escaping (String) -> Void,
-         connect: @escaping @MainActor () throws -> CloudGatewayMacFrontendClient) {
+         doctor: CloudGatewayMacCLIDoctor? = nil,
+         loginEffects: CloudGatewayMacCLILoginEffects = .init(),
+         connect: @escaping @MainActor () async throws -> CloudGatewayMacFrontendClient) {
         self.version = version
         self.build = build
         self.terminal = terminal
@@ -50,6 +56,8 @@ public struct CloudGatewayMacCLI {
         self.output = output
         self.diagnostics = diagnostics
         self.connect = connect
+        self.doctor = doctor
+        self.loginEffects = loginEffects
     }
 
     public func run(_ arguments: [String]) async -> Int32 {
@@ -70,30 +78,69 @@ public struct CloudGatewayMacCLI {
             return emit(command: "version", .success(.version(version)),
                         isJSON: invocation.isJSON, isStyled: isStyled)
         case .run(let command):
+            if command == .doctor, let doctor {
+                return emit(command: command.name, await doctor.execute(timeout: invocation.timeout ?? .seconds(30)),
+                            isJSON: invocation.isJSON, isStyled: isStyled)
+            }
+            if case .authLogin(let showsQR) = command {
+                do {
+                    let startedAt = clock.now()
+                    let client = try await makeClient(until: startedAt + min(invocation.timeout ?? .seconds(30), .seconds(30)))
+                    let runner = CloudGatewayMacCLILogin(client: client, clock: clock, terminal: terminal,
+                                                        output: output, diagnostics: diagnostics, effects: loginEffects)
+                    return emit(command: command.name, await runner.run(invocation: invocation, showsQR: showsQR, startedAt: startedAt),
+                                isJSON: invocation.isJSON, isStyled: isStyled)
+                } catch {
+                    return emit(command: command.name, .failure(.init(error)),
+                                isJSON: invocation.isJSON, isStyled: isStyled)
+                }
+            }
             let operationId: UUID? = if case .status(let id) = command { id } else { nil }
-            return emit(command: command.name, operationId: operationId, await execute(command, timeout: invocation.timeout),
+            let result = await execute(command, timeout: invocation.timeout) { id in
+                let record = CloudGatewayMacCLIRecord(type: .accepted, command: command.name,
+                                                      operationId: id.uuidString.lowercased())
+                try output(invocation.isJSON ? record.line() : "Accepted operation \(id.uuidString.lowercased())\n")
+            }
+            return emit(command: command.name, operationId: operationId, result,
                         isJSON: invocation.isJSON, isStyled: isStyled)
         }
     }
 
     private func execute(_ command: CloudGatewayMacCLICommand,
-                         timeout: Duration?) async -> Result<CloudGatewayMacCLIData, CloudGatewayMacCLIError> {
+                         timeout: Duration?, accepted: (UUID) throws -> Void) async -> Result<CloudGatewayMacCLIData, CloudGatewayMacCLIError> {
         let session: CloudGatewayMacCLISession
         switch command {
-        case .authStatus, .status, .list(_, refresh: false): break
-        case .authLogin, .authLogout, .list(_, refresh: true), .up, .down, .refresh, .doctor:
+        case .authLogin, .doctor:
             return .failure(.init(.notImplemented, message: "`cloudgateway \(command.name)` is not available in this build yet"))
+        default: break
         }
-        do { session = CloudGatewayMacCLISession(client: try connect(), clock: clock, timeout: timeout ?? .seconds(30)) }
-        catch { return .failure(.init(.untrustedBuild)) }
+        let startedAt = clock.now()
+        do {
+            let client = try await makeClient(until: startedAt + (timeout ?? .seconds(30)))
+            session = CloudGatewayMacCLISession(client: client, clock: clock,
+                                                timeout: timeout ?? .seconds(30), startedAt: startedAt)
+        } catch { return .failure(.init(error)) }
         do {
             switch command {
             case .authStatus: return .success(try await session.authStatus())
             case .status(let id?): return .success(try await session.operation(id))
+            case .up(let id): return .success(try await session.mutate(.connect, identifier: id, accepted: accepted))
+            case .down: return .success(try await session.mutate(.turnOff, accepted: accepted))
+            case .authLogout: return .success(try await session.mutate(.signOut, accepted: accepted))
+            case .refresh: return .success(try await session.refresh(regionId: nil, isList: false))
+            case .list(let regionId, refresh: true): return .success(try await session.refresh(regionId: regionId, isList: true))
             case .list(let regionId, _): return .success(try await session.inventory(regionId: regionId))
             default: return .success(try await session.status())
             }
         } catch { return .failure(.init(error)) }
+    }
+
+    private func makeClient(until deadline: Duration) async throws -> CloudGatewayMacFrontendClient {
+        try await CloudGatewayMacCLISession.call(clock: clock, deadline: deadline) {
+            do { return try await connect() }
+            catch is CancellationError { throw CancellationError() }
+            catch { throw CloudGatewayMacCLIError(CloudGatewayMacCLIError.Code.untrustedBuild) }
+        }
     }
 
     private func emit(command: String?, operationId: UUID? = nil,
@@ -107,10 +154,12 @@ public struct CloudGatewayMacCLI {
                                               operationId: operationId?.uuidString.lowercased())
         switch result {
         case .success(let data):
+            if case .mutation(let mutation) = data { record.operationId = mutation.operation.id }
             record.data = data
             standardOutput = renderer.render(data)
         case .failure(let error):
             exitCode = error.code.exitCode
+            record.operationId = error.operationId?.uuidString.lowercased() ?? record.operationId
             record = .init(type: .error, command: command, operationId: record.operationId, data: error.data, error: .init(error))
             standardOutput = error.data.map(renderer.render) ?? ""
             standardError = renderer.render(error)

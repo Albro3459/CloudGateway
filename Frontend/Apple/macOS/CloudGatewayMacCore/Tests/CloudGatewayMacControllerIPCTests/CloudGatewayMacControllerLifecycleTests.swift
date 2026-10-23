@@ -102,7 +102,8 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
             regionId: action == .createClient ? "region" : nil,
             clientName: action == .createClient ? "Work Mac" : nil,
             contextId: [.createClient, .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart,
-                        .extensionUpdateFinished, .extensionUpdateFailed].contains(action) ? UUID() : nil,
+                        .extensionUpdateFinished, .extensionUpdateFailed, .loginStatus, .cancelLogin].contains(action) ? UUID() : nil,
+            loginOrigin: action == .beginLogin ? .cli : nil,
             buildIdentity: identity
         )
         let data = try CloudGatewayMacControllerProtocol.encodeRequest(
