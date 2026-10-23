@@ -1,6 +1,6 @@
 # Implement controller-owned CLI updates
 
-Status: implemented and unsigned validation passed, fresh Secure Sol High review in progress
+Status: implemented, reviewed, and unsigned validation passed
 
 Behavior contract:
 [macos-cli-update.md](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-update.md).
@@ -188,10 +188,13 @@ the live VPN as part of implementation validation.
 ## Validation checkpoint
 
 - Plans approved with Main Astra High and committed as `92adeef4`
-- Full implementation and both Main Sol High review rounds' findings addressed
-- Unsigned `./scripts/test.sh macos` passed: 581 macOS package tests, strict
-  Periphery scans, arm64 app/extension build, and 50 packaged CLI checks
-- Main Codex exhausted its usage. The user approved Secure Sol High for the
-  remaining fresh review loop, which is now in progress
-- Implementation remains uncommitted until the final review is complete
+- Main Sol High rounds 1–2 and Secure Sol High rounds 3–5 found durability,
+  handoff, restart, and warning gaps. All were fixed with regressions
+- Main and Secure Codex ran out of usage. The user approved Opus 5.5 xHigh as
+  equivalent for the remaining loop. Rounds 6–9 found only P3 restart and
+  storage-failure gaps, all fixed with regressions. Round 10 found no
+  actionable issues
+- Unsigned `./scripts/test.sh macos` passed after the last fix: macOS package
+  tests, strict Periphery scans, arm64 app/extension build, and 50 packaged
+  CLI checks
 - No signed tests or live VPN/extension actions performed

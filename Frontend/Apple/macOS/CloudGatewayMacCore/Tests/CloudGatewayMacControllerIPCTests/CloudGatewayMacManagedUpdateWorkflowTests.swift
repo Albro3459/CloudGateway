@@ -59,6 +59,7 @@ private final class ManagedWorkflowHarness {
     var stopCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
     var activationCompletion: (@MainActor (CloudGatewayMacExtensionActivationEvent) -> Void)?
     var beforeObservation: (() -> Void)?
+    var beforePing: (() -> Void)?
 
     func make() throws -> (CloudGatewayMacManagedUpdateWorkflow, CloudGatewayMacExtensionUpdateOrchestrator) {
         let gate = try CloudGatewayMacExtensionUpdateOrchestrator(
@@ -100,6 +101,7 @@ private final class ManagedWorkflowHarness {
                 self.now.addTimeInterval(Double(parts.seconds) + Double(parts.attoseconds) / 1e18)
             }, extensionIdentity: { self.target }, ping: { requested in
                 self.pings += 1
+                self.beforePing?()
                 #expect(requested == self.target)
                 guard self.authenticated else { return nil }
                 let identity = self.pingTarget ?? self.target
@@ -1013,4 +1015,267 @@ func managedUpdateRestoresUnacknowledgedOutcomesBeforeReadinessEvenAfterReceiptR
         #expect(harness.stopRequests == 1)
         #expect(gate.stored.managedAttemptId == nil)
     }
+}
+
+@MainActor
+@Test func managedUpdateRecoveredReadyReceiptReconnectsAfterOriginalReadinessWindow() async throws {
+    let harness = ManagedWorkflowHarness()
+    let id = try harness.seed(.restartRequired)
+    let receipt = CloudGatewayMacExtensionUpdateOrchestrator.TerminalReceipt(
+        id: id, outcome: .ready, expires: harness.now.addingTimeInterval(400)
+    )
+    harness.gateStored = .init(state: .terminal(receipt), receipts: [receipt])
+    harness.authenticated = true
+    let (workflow, _) = try harness.make()
+    try #require(await managedWorkflowDrive(workflow) { !workflow.isActionable })
+    #expect(workflow.status(accountId: harness.accountId)?.phase == .completed)
+    #expect(workflow.status(accountId: harness.accountId)?.error == nil)
+    #expect(harness.starts == [managedWorkflowConfig])
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+}
+
+@MainActor
+@Test func managedUpdateSupersededDuringReadinessPingStaysSuperseded() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.checkingReadiness)
+    harness.authenticated = true
+    let (workflow, _) = try harness.make()
+    harness.beforePing = {
+        harness.beforePing = nil
+        _ = workflow.supersede()
+    }
+    try #require(await managedWorkflowDrive(workflow) { !workflow.isActionable })
+    #expect(workflow.journal?.phase == .superseded)
+    #expect(workflow.journal?.error == .superseded)
+    #expect(try harness.savedJournal().phase == .superseded)
+    #expect(harness.starts.isEmpty)
+}
+
+@MainActor
+@Test func managedUpdateFailedSupersedeWriteFencesInFlightStop() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.stopping)
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    let (workflow, _) = try harness.make()
+    harness.beforeObservation = {
+        harness.beforeObservation = nil
+        harness.failJournal = { $0.phase == .superseded }
+        _ = workflow.supersede()
+    }
+    for _ in 0..<50 {
+        workflow.resume()
+        await Task.yield()
+    }
+    #expect(!workflow.isActionable)
+    #expect(workflow.journal?.phase == .superseded)
+    #expect(harness.stopRequests == 0)
+    #expect(try harness.savedJournal().phase == .stopping)
+    #expect(try harness.savedJournal().reconnect == false)
+}
+
+@MainActor
+@Test func managedUpdateRetriedActivationWriteLeavesNoSuppressionWarning() async throws {
+    let harness = ManagedWorkflowHarness()
+    harness.accountId = nil
+    let (workflow, _) = try harness.make()
+    let accepted = await harness.reserve(workflow)
+    await workflow.confirm(accepted.id)
+    try #require(await managedWorkflowDrive(workflow) { harness.activations.count == 1 })
+    harness.failJournal = { $0.phase == .checkingReadiness }
+    harness.emit(.completed)
+    #expect(workflow.isActionable)
+    #expect(workflow.status(accountId: nil)?.warning == nil)
+    harness.failJournal = nil
+    workflow.retryPendingActivationEvent()
+    harness.authenticated = true
+    try #require(await managedWorkflowDrive(workflow) { workflow.status(accountId: nil)?.phase == .completed })
+    #expect(workflow.status(accountId: nil)?.warning == nil)
+    #expect(try harness.savedJournal().warning == nil)
+}
+
+@MainActor
+@Test func managedUpdateUnreadableRevocationMarkerCompletesWithReconnectOff() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.activating)
+    harness.revocationData = Data("corrupt".utf8)
+    harness.authenticated = true
+    let (workflow, _) = try harness.make()
+    #expect(!workflow.isBlocked)
+    #expect(workflow.journal?.reconnect == false)
+    try #require(await managedWorkflowDrive(workflow) { workflow.status(accountId: harness.accountId)?.phase == .completed })
+    #expect(workflow.status(accountId: harness.accountId)?.warning == .reconnectSuppressed)
+    #expect(try harness.savedJournal().reconnect == false)
+    #expect(harness.starts.isEmpty)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+}
+
+@MainActor
+@Test func managedUpdateRetainedRebootAttemptReportsRestartRequired() async throws {
+    let harness = ManagedWorkflowHarness()
+    let attempt = CloudGatewayMacExtensionUpdateOrchestrator.Attempt(id: UUID(), target: harness.target, bootSession: harness.boot)
+    harness.gateStored.state = .rebootRequired(attempt)
+    let (workflow, _) = try harness.make()
+    #expect(await harness.reserve(workflow).error == .restartRequired)
+    #expect(harness.journalData == nil)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+}
+
+@MainActor
+@Test func managedUpdateSuppressionWarningSettlesOnceReconnectOffIsSaved() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.approvalRequired)
+    let (workflow, _) = try harness.make()
+    harness.failJournal = { _ in true }
+    harness.failRevocation = true
+    workflow.suppressReconnect()
+    #expect(workflow.status(accountId: harness.accountId)?.warning == .storageUnavailable)
+    harness.failJournal = nil
+    harness.failRevocation = false
+    harness.authenticated = true
+    try #require(await managedWorkflowDrive(workflow) { workflow.status(accountId: harness.accountId)?.phase == .completed })
+    #expect(workflow.status(accountId: harness.accountId)?.warning == .reconnectSuppressed)
+    #expect(try harness.savedJournal().warning == .reconnectSuppressed)
+    #expect(try harness.savedJournal().reconnect == false)
+    #expect(harness.starts.isEmpty)
+
+    let repeated = ManagedWorkflowHarness()
+    _ = try repeated.seed(.activating)
+    let (again, _) = try repeated.make()
+    again.suppressReconnect()
+    #expect(try repeated.savedJournal().reconnect == false)
+    repeated.failJournal = { _ in true }
+    repeated.failRevocation = true
+    again.suppressReconnect()
+    #expect(again.status(accountId: repeated.accountId)?.warning == .reconnectSuppressed)
+}
+
+@MainActor
+@Test func managedUpdateUnreadableRevocationMarkerNeverStopsUnrestorableTunnel() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.stopping)
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    harness.revocationData = Data("corrupt".utf8)
+    let (workflow, _) = try harness.make()
+    try #require(await managedWorkflowDrive(workflow) { !workflow.isActionable })
+    #expect(workflow.status(accountId: harness.accountId)?.phase == .failed)
+    #expect(workflow.status(accountId: harness.accountId)?.error == .storageUnavailable)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+    #expect(harness.profiles.contains { $0.needsStop })
+}
+
+@MainActor
+@Test func managedUpdateReservationReplacesUnreadableRevocationMarker() async throws {
+    let failing = ManagedWorkflowHarness()
+    failing.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    failing.revocationData = Data("corrupt".utf8)
+    failing.failRevocation = true
+    let (blocked, _) = try failing.make()
+    #expect(await failing.reserve(blocked).error == .storageUnavailable)
+    #expect(failing.journalData == nil)
+
+    let harness = ManagedWorkflowHarness()
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    harness.revocationData = Data("corrupt".utf8)
+    let (workflow, _) = try harness.make()
+    let accepted = await harness.reserve(workflow)
+    #expect(accepted.phase == .prepared)
+    #expect(accepted.reconnect)
+    let markerData = try #require(harness.revocationData)
+    let marker = try #require(try JSONSerialization.jsonObject(with: markerData) as? [String: Any])
+    #expect((marker["id"] as? String).flatMap(UUID.init(uuidString:)) != accepted.id)
+    let (restored, _) = try harness.make()
+    #expect(restored.journal?.reconnect == true)
+    #expect(restored.status(accountId: harness.accountId)?.warning == nil)
+}
+
+@MainActor
+@Test func managedUpdateRestartAfterCompletedStopProceedsWhileSessionRestores() async throws {
+    let harness = ManagedWorkflowHarness()
+    let id = try harness.seed(.stopping, deadline: 30)
+    harness.now.addTimeInterval(120)
+    harness.restoring = true
+    let (workflow, _) = try harness.make()
+    try #require(await managedWorkflowDrive(workflow) { harness.activations.count == 1 })
+    #expect(harness.activations.first?.0 == id)
+    #expect(workflow.journal?.error == nil)
+    #expect(harness.stopRequests == 0)
+    harness.emit(.completed)
+    harness.authenticated = true
+    harness.restoring = false
+    try #require(await managedWorkflowDrive(workflow) { workflow.journal?.phase == .completed })
+    #expect(harness.starts == [managedWorkflowConfig])
+}
+
+@MainActor
+@Test func managedUpdateRestartGrantsFreshRestorationWaitBeforeCapturedStop() async throws {
+    for restores in [true, false] {
+        let harness = ManagedWorkflowHarness()
+        _ = try harness.seed(.stopping, deadline: 30)
+        harness.now.addTimeInterval(120)
+        harness.accountId = nil
+        harness.restoring = true
+        harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+        let (workflow, _) = try harness.make()
+        for _ in 0..<20 { workflow.resume(); await Task.yield() }
+        #expect(workflow.isRunning)
+        #expect(workflow.journal?.error == nil)
+        #expect(try harness.savedJournal().deadline == harness.now.addingTimeInterval(30))
+        #expect(harness.stopRequests == 0)
+        if restores {
+            harness.accountId = "account"
+            harness.restoring = false
+            try #require(await managedWorkflowDrive(workflow) { harness.activations.count == 1 })
+            #expect(harness.stopRequests == 1)
+        } else {
+            harness.now.addTimeInterval(30)
+            try #require(await managedWorkflowDrive(workflow) { workflow.journal?.phase == .failed })
+            #expect(workflow.journal?.error == .signInRequired)
+            #expect(harness.stopRequests == 0)
+            #expect(harness.profiles.first?.identifier == managedWorkflowConfig)
+        }
+    }
+}
+
+@MainActor
+@Test func managedUpdateUnrestorableStopFenceSurvivesRestartDuringSessionRestoration() async throws {
+    let harness = ManagedWorkflowHarness()
+    _ = try harness.seed(.stopping, deadline: 30)
+    harness.now.addTimeInterval(120)
+    harness.restoring = true
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    harness.revocationData = Data("corrupt".utf8)
+    harness.failJournal = { $0.phase == .failed }
+    let (first, _) = try harness.make()
+    for _ in 0..<20 { first.resume(); await Task.yield() }
+    #expect(try harness.savedJournal().phase == .stopping)
+    #expect(try harness.savedJournal().reconnect)
+    #expect(harness.stopRequests == 0)
+
+    harness.failJournal = nil
+    harness.restoring = false
+    let (second, _) = try harness.make()
+    try #require(await managedWorkflowDrive(second) { !second.isActionable })
+    #expect(second.status(accountId: harness.accountId)?.error == .storageUnavailable)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+    #expect(harness.profiles.contains { $0.needsStop })
+}
+
+@MainActor
+@Test func managedUpdateUnrestorablePreparedReservationRefusesConfirmation() async throws {
+    let harness = ManagedWorkflowHarness()
+    let id = try harness.seed(.prepared)
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    harness.revocationData = Data("corrupt".utf8)
+    let (workflow, _) = try harness.make()
+    await workflow.confirm(id)
+    #expect(workflow.status(accountId: harness.accountId)?.phase == .failed)
+    #expect(workflow.status(accountId: harness.accountId)?.error == .storageUnavailable)
+    #expect(try harness.savedJournal().phase == .failed)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
 }

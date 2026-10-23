@@ -1,6 +1,6 @@
 # Update the VPN extension over SSH
 
-Status: implemented and unsigned validation passed, fresh Secure Sol High review in progress
+Status: implemented, reviewed, and unsigned validation passed
 
 ## Problem
 

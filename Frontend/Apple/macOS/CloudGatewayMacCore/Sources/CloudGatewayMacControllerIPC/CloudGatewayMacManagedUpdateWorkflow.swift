@@ -39,6 +39,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
     private var durableJournal: Journal?
     private(set) var isBlocked = false
     private var revoked: UUID?
+    private var revocationUnreadable = false
+    private var unrestorableStop: UUID?
+    private var restoredJournalId: UUID?
     private let persist: (Data) throws -> Void
     private let persistRevocation: (Data) throws -> Void
     private var effects: CloudGatewayMacControllerEffects?
@@ -71,7 +74,10 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 try Self.validate(value)
                 journal = value
                 durableJournal = value
+                restoredJournalId = value.id
             }
+        } catch { isBlocked = true }
+        do {
             if let data = try loadRevocation() {
                 guard data.count <= 1024 else { throw CloudGatewayMacControllerFailure.invalidRequest }
                 let marker = try JSONDecoder().decode(Revocation.self, from: data)
@@ -79,7 +85,16 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 revoked = marker.id
                 if journal?.id == marker.id { journal?.reconnect = false }
             }
-        } catch { isBlocked = true }
+        } catch {
+            // An unreadable marker may revoke this journal, so the update continues with reconnect off
+            // and never stops a tunnel it cannot restore
+            revocationUnreadable = true
+            if let value = journal, !value.phase.isTerminal, value.reconnect {
+                journal?.reconnect = false
+                journal?.warning = .reconnectSuppressed
+                unrestorableStop = value.id
+            }
+        }
     }
 
     func configure(effects: CloudGatewayMacControllerEffects, gate: CloudGatewayMacExtensionUpdateOrchestrator,
@@ -117,6 +132,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
         }
         guard let effects, let gate, !isBlocked, !storageFailed else {
             return rejected(request.id, target: fallbackTarget, reason: .storageUnavailable)
+        }
+        if !isActionable, case .rebootRequired = gate.state {
+            return rejected(request.id, target: fallbackTarget, reason: .restartRequired)
         }
         guard !isActionable, !gate.hasPendingAttempt, !effects.activationIsPending() else {
             return rejected(request.id, target: fallbackTarget, reason: .busy)
@@ -171,6 +189,12 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 identifier = active[0].identifier
             }
             guard try effects.extensionIdentity() == target else { throw CloudGatewayMacManagedUpdateFailure.targetChanged }
+            if identifier != nil, revocationUnreadable {
+                // Replace the unreadable marker with one that revokes nothing before capturing new intent
+                do { try persistRevocation(JSONEncoder().encode(Revocation(id: UUID()))) }
+                catch { throw CloudGatewayMacManagedUpdateFailure.storageUnavailable }
+                revocationUnreadable = false
+            }
             let value = Journal(id: request.id, target: target, appIdentity: ownerIdentity, allowDisconnect: request.allowDisconnect,
                                 accountId: identifier == nil ? nil : observation.accountId, identifier: identifier,
                                 reconnect: identifier != nil, phase: .prepared, confirmed: false,
@@ -193,6 +217,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
             guard journal == value else { return }
             let active = observation.profiles.filter(\.needsStop)
             if let identifier = value.identifier {
+                guard unrestorableStop != value.id else { throw CloudGatewayMacManagedUpdateFailure.storageUnavailable }
                 try requireAuthorization(value, observation: observation)
                 guard active.count == 1, active[0].identifier == identifier, active[0].status != .disconnecting else {
                     throw CloudGatewayMacManagedUpdateFailure.configUnavailable
@@ -244,7 +269,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 try persistRevocation(JSONEncoder().encode(Revocation(id: value.id)))
                 revoked = value.id
             } catch {
-                journal?.warning = .storageUnavailable
+                if durableReconnect { journal?.warning = .storageUnavailable }
             }
         }
     }
@@ -262,7 +287,12 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
         value.error = .superseded
         value.expires = now().addingTimeInterval(600)
         do { try save(value); return true }
-        catch { return false }
+        catch {
+            // Fence in-flight work in memory; the next controller supersedes the durable journal by app identity
+            storageFailed = true
+            journal = value
+            return false
+        }
     }
 
     private func advance() async {
@@ -282,7 +312,10 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                let receipt = gate.stored.receipts.first(where: {
                    $0.id == value.id && ($0.outcome == .activationFinished || $0.outcome == .ready)
                }) {
-                try transition(.checkingReadiness, deadline: receipt.expires.addingTimeInterval(-480))
+                // Only an unproven completion keeps its original deadline; a ready receipt already passed it
+                let deadline = receipt.outcome == .ready
+                    ? now().addingTimeInterval(120) : receipt.expires.addingTimeInterval(-480)
+                try transition(.checkingReadiness, deadline: deadline)
                 value = journal!
             }
             if value.phase == .checkingReadiness, value.deadline <= now() {
@@ -292,11 +325,22 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 if value.deadline <= now() { throw CloudGatewayMacManagedUpdateFailure.timeout }
                 return
             }
+            if restoredJournalId == value.id {
+                restoredJournalId = nil
+                // A restarted controller grants session restoration its own bounded wait. An unrestorable
+                // stop skips it, since saving here would persist reconnect off ahead of the stop refusal
+                if value.phase == .stopping || value.phase == .reconnecting, unrestorableStop != value.id,
+                   value.deadline < now().addingTimeInterval(30) {
+                    try transition(value.phase, deadline: now().addingTimeInterval(30))
+                    value = journal!
+                }
+            }
             var observation = try await effects.managedUpdateObservation()
             guard current(value.id) else { return }
             if try waitingForStoppingRestoration(value, observation: observation) { return }
             // Reconcile authenticated readiness before replaying any effect after restart
             if try await authenticatedThroughGate(value.target) {
+                guard current(value.id) else { return }
                 if journal?.phase == .reconnecting, reconnectSubmitted { return }
                 try await reconnectOrComplete(observation: observation)
                 return
@@ -317,6 +361,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                     guard let identifier = value.identifier, active.count == 1, active[0].identifier == identifier else {
                         throw CloudGatewayMacManagedUpdateFailure.reconnectSuppressed
                     }
+                    guard unrestorableStop != value.id else { throw CloudGatewayMacManagedUpdateFailure.storageUnavailable }
                     if journal?.reconnect == true { try requireAuthorization(value, observation: observation) }
                     // Re-save the intent immediately before the confirmed-stop effect
                     try save(journal!)
@@ -455,7 +500,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
             if pending.event != .approvalRequired { submittedHere = false }
             pendingActivationEvent = nil
         } catch {
-            journal?.warning = .storageUnavailable
+            // The retained event keeps work fenced and retries on the next tick
         }
     }
 
@@ -503,7 +548,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
     private func waitingForStoppingRestoration(
         _ value: Journal, observation: CloudGatewayMacManagedUpdateObservation
     ) throws -> Bool {
-        guard value.phase == .stopping, observation.isRestoringSession else { return false }
+        // Only the captured stop needs the account; a completed or unrestorable stop proceeds without it
+        guard value.phase == .stopping, observation.isRestoringSession, unrestorableStop != value.id,
+              observation.profiles.contains(where: { $0.needsStop && $0.identifier == value.identifier }) else { return false }
         guard value.deadline > now() else { throw CloudGatewayMacManagedUpdateFailure.signInRequired }
         return true
     }
@@ -539,7 +586,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
     }
 
     private func complete() throws {
-        guard var value = journal else { return }
+        guard var value = journal, !value.phase.isTerminal else { return }
         value.phase = .completed
         value.expires = now().addingTimeInterval(600)
         try save(value)
@@ -574,7 +621,10 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
         catch {
             storageFailed = true
             value.error = .storageUnavailable
-            value.warning = .storageUnavailable
+            // The warning means saved reconnect intent may survive restart
+            if durableJournal.map({ $0.id == value.id && $0.reconnect }) == true, revoked != value.id {
+                value.warning = .storageUnavailable
+            }
             journal = value
         }
     }
@@ -585,6 +635,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
     }
 
     private func save(_ value: Journal) throws {
+        var value = value
+        // A durable reconnect=false settles any earlier unsaved suppression
+        if value.warning == .storageUnavailable, !value.reconnect { value.warning = .reconnectSuppressed }
         do {
             try Self.validate(value)
             try persist(JSONEncoder().encode(value))
