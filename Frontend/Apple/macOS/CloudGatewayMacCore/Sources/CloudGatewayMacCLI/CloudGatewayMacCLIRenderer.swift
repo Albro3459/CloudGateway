@@ -124,23 +124,24 @@ struct CloudGatewayMacCLIRenderer {
             let idWidth = region.configs.map(\.configId.count).max() ?? 0
             let ipWidth = region.configs.map { ($0.internalIp ?? "-").count }.max() ?? 0
             for (config, name) in zip(region.configs, names) {
-                var labels = [config.installed ? "installed" : "not installed"]
+                var labels: [String] = []
                 if let tunnel = config.tunnel, tunnel != .disconnected || inventory.profileObservation == .stale {
                     labels.append(tunnel.rawValue + (inventory.profileObservation == .stale ? " (stale)" : ""))
                 }
                 if config.cloudState != .active { labels.append(config.cloudState.rawValue) }
                 if config.eligibility != .eligible { labels.append(label(config.eligibility.rawValue)) }
                 if config.selected { labels.append("selected") }
-                lines.append(["  " + name.padding(toLength: nameWidth, withPad: " ", startingAt: 0),
-                              config.configId.padding(toLength: idWidth, withPad: " ", startingAt: 0),
-                              (config.internalIp ?? "-").padding(toLength: ipWidth, withPad: " ", startingAt: 0),
-                              labels.joined(separator: ", ")].joined(separator: "  "))
+                var columns = ["  " + name.padding(toLength: nameWidth, withPad: " ", startingAt: 0),
+                               config.configId.padding(toLength: idWidth, withPad: " ", startingAt: 0),
+                               (config.internalIp ?? "-").padding(toLength: ipWidth, withPad: " ", startingAt: 0)]
+                if !labels.isEmpty { columns.append(labels.joined(separator: ", ")) }
+                lines.append(columns.joined(separator: "  "))
             }
         }
         lines.append("")
         lines.append("Tunnel observation: \(observationLabel(inventory.profileObservation, observedAt: inventory.profilesObservedAt))")
         lines.append(inventory.scope == .installed
-            ? "Offline: showing this account's installed configs from cached authorization"
+            ? "Offline: showing this account's saved configs from cached authorization"
             : "Inventory: \(inventory.freshness.rawValue)")
         return lines
     }

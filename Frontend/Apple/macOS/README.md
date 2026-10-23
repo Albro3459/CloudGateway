@@ -208,11 +208,13 @@ cloudgateway doctor --json
 ```
 
 IDs are canonical `FirebaseUID/regionId/clientId` values printed by `list`.
-Names are display labels. `up` uses the controller's authorized inventory/cache
-policy, installs or replaces an eligible stored config when needed, and reports
+Names are display labels. List rows show connection state, selection, and
+unavailable reasons without an installation label. `up` uses the controller's
+authorized inventory/cache policy, installs or replaces an eligible stored config
+when needed, and reports
 **VPN start requested** once macOS accepts the start. A later observed connected
 state is separate. An unchanged active config reports already active. Offline
-use is limited to this account's previously authorized installed configs.
+use is limited to this account's previously authorized saved configs.
 
 `refresh` and `list --refresh` await their own online authorization/inventory
 result without reconnecting. `auth logout` ends the controller session and hides

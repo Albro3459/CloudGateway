@@ -428,7 +428,7 @@ public final class CloudGatewayMacController {
                     hasAuthorizedInventory = false
                 }
                 isOffline = true
-                errorMessage = installed.isEmpty ? "Unable to reach CloudGateway. No installed configs are available for this account" : nil
+                errorMessage = installed.isEmpty ? "Unable to reach CloudGateway. No saved configs are available for this account" : nil
             } catch CloudGatewayMacInventoryError.accessDenied {
                 guard sessionEpoch == epoch, !Task.isCancelled else { return }
                 refreshResult = (refreshEpoch, .denied)

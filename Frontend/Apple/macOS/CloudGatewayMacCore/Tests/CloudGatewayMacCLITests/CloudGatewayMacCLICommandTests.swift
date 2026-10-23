@@ -97,11 +97,11 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     #expect(await harness.run("list") == 0)
     #expect(harness.output == """
         US East (us-east-1)
-          Mac  uid1/us-east-1/mac  10.0.0.2  installed, connected, selected
-          Old  uid1/us-east-1/old  -         not installed, removed, inactive
+          Mac  uid1/us-east-1/mac  10.0.0.2  connected, selected
+          Old  uid1/us-east-1/old  -         removed, inactive
 
         US West (us-west-2)
-          Laptop  uid1/us-west-2/laptop  10.0.0.2  not installed
+          Laptop  uid1/us-west-2/laptop  10.0.0.2
 
         Tunnel observation: current at 2027-01-15T08:00:00Z
         Inventory: current
@@ -129,7 +129,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     harness.states = [onlineState(isObserved: false)]
     harness.output = ""
     #expect(await harness.run("list") == 0)
-    #expect(harness.output.contains("installed, connected (stale), selected"))
+    #expect(harness.output.contains("connected (stale), selected"))
     #expect(harness.output.hasSuffix("Tunnel observation: stale, last observed at 2027-01-15T08:00:00Z\nInventory: current\n"))
 
     harness.output = ""
@@ -173,7 +173,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     #expect(data?["freshness"] as? String == "cached")
     harness.output = ""
     #expect(await harness.run("list") == 0)
-    #expect(harness.output.hasSuffix("\nOffline: showing this account's installed configs from cached authorization\n"))
+    #expect(harness.output.hasSuffix("\nOffline: showing this account's saved configs from cached authorization\n"))
 }
 
 @MainActor

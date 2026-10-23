@@ -332,13 +332,13 @@ numbered selector, or `--wait` in v1.
   inventory reveals changed contents, the next explicit `up` may replace and
   reconnect it using confirmed-stop sequencing
 - Online `list` includes authorized cloud configs, including those not installed
-  on this Mac. Show region/name, ID, assigned internal IP, cloud state, local
-  installation state, and observed local tunnel state. Label unusable rows
+  on this Mac. Show region/name, ID, assigned internal IP, cloud state, and
+  observed local tunnel state. Label unusable rows without installation labels
 - Plain `list` uses shared controller inventory, waits for startup restoration,
   and requests a stale refresh through the controller activity policy. Include
   freshness/source metadata. Do not promise a disk cache of all cloud
   configs, since the current persistent cache covers installed metadata only
-- Offline `list` contains only this account's previously authorized installed
+- Offline `list` contains only this account's previously authorized saved
   metadata and labels its reduced scope. Offline `up` additionally requires a
   retained valid session, permitted cached role, and an available committed
   secret. Recreate a missing profile from authorized installed metadata

@@ -104,7 +104,7 @@ enum ControllerVisibleError {
         "Unable to reach CloudGateway to restore this account",
         "Account access was denied. Sign in again after access is restored",
         "Unable to restore your session. Refresh to try again",
-        "Unable to reach CloudGateway. No installed configs are available for this account",
+        "Unable to reach CloudGateway. No saved configs are available for this account",
         "Unable to refresh inventory. Try Refresh again",
         "Unable to read VPN preferences. Try Refresh again",
         "Unable to save the VPN profile. Refresh before trying again",
