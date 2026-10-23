@@ -60,6 +60,9 @@ import Testing
     let mismatch = CloudGatewayMacExtensionVersion(infoDictionary: ["CFBundleVersion": "old",
         "CFBundleShortVersionString": target.version], codeHash: target.codeHash)
     #expect(CloudGatewayMacControllerDiagnostics.extensionReadiness(installed: target, observed: mismatch) == .incompatible)
+    let resigned = CloudGatewayMacExtensionVersion(infoDictionary: ["CFBundleVersion": target.build,
+        "CFBundleShortVersionString": target.version], codeHash: String(repeating: "e", count: 64))
+    #expect(CloudGatewayMacControllerDiagnostics.extensionReadiness(installed: target, observed: resigned) == .replacementBlocked)
     #expect(CloudGatewayMacControllerDiagnostics.extensionReadiness(installed: target, observed: nil) == .enabled)
 }
 

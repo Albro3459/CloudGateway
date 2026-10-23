@@ -113,7 +113,7 @@ private func waitForHeldValidation(_ release: DispatchSemaphore) {
 
 @MainActor
 @Test func doctorKeepsPreciseReadinessEvidenceAndSuggestionWithoutControllerMutation() async throws {
-    for code in ["extension_mismatch", "initial_setup_required", "approval_required", "restart_required",
+    for code in ["extension_mismatch", "extension_replacement_blocked", "initial_setup_required", "approval_required", "restart_required",
                  "invalid_bundle", "checking_readiness", "activation_failed"] {
         let doctor = CloudGatewayMacCLIDoctor(probes: [
             .init(name: "extension", requirement: .setup) {

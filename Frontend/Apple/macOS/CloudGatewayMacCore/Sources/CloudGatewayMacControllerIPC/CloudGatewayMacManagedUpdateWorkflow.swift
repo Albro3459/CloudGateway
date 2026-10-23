@@ -145,9 +145,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
         do {
             // A matching authenticated endpoint needs neither consent nor account authorization
             try await requireInstalledOwner()
-            let ready = try await authenticated(target)
+            let readiness = await readiness(target)
             guard try effects.extensionIdentity() == target else { throw CloudGatewayMacManagedUpdateFailure.targetChanged }
-            if ready {
+            if readiness == .ready {
                 let value = Journal(id: request.id, target: target, appIdentity: ownerIdentity, allowDisconnect: request.allowDisconnect,
                                     accountId: nil, identifier: nil, reconnect: false, phase: .completed, confirmed: true,
                                     created: now(), deadline: now(), expires: now().addingTimeInterval(600))
@@ -155,6 +155,8 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
                 setSetupState(.ready)
                 return status(accountId: nil)!
             }
+            // Activation cannot replace this copy, so refuse before stopping anything
+            if readiness == .replacementBlocked { throw CloudGatewayMacManagedUpdateFailure.replacementBlocked }
             guard !effects.hasPendingWork() else { throw CloudGatewayMacManagedUpdateFailure.busy }
             let registration = await effects.registrationReadiness()
             if registration == .required { throw CloudGatewayMacManagedUpdateFailure.initialSetupRequired }
@@ -523,10 +525,9 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
         guard installed == ownerIdentity else { throw CloudGatewayMacManagedUpdateFailure.superseded }
     }
 
-    private func authenticated(_ target: CloudGatewayMacBuildIdentity) async throws -> Bool {
-        guard let effects else { return false }
-        guard let version = try? await effects.ping(target) else { return false }
-        return version.bundleShortVersion == target.version && version.bundleVersion == target.build && version.codeHash == target.codeHash
+    private func readiness(_ target: CloudGatewayMacBuildIdentity) async -> CloudGatewayMacControllerDiagnostics.ExtensionState {
+        guard let effects else { return .unknown }
+        return CloudGatewayMacControllerDiagnostics.extensionReadiness(installed: target, observed: try? await effects.ping(target))
     }
 
     private func authenticatedThroughGate(_ target: CloudGatewayMacBuildIdentity) async throws -> Bool {
@@ -536,7 +537,7 @@ public final class CloudGatewayMacManagedUpdateWorkflow {
             guard let prepared = try gate.prepareReadiness(target: target) else { return false }
             token = prepared
         } catch { throw CloudGatewayMacManagedUpdateFailure.storageUnavailable }
-        let ready = try await authenticated(target)
+        let ready = await readiness(target) == .ready
         let installed = try effects.extensionIdentity()
         guard installed == target else { throw CloudGatewayMacManagedUpdateFailure.superseded }
         do {

@@ -220,7 +220,7 @@ private final class ExtensionRegistrationProbe: NSObject, OSSystemExtensionReque
         switch await diagnosticReadiness() {
         case .ready, .enabled: return .updateRequired
         case .awaitingApproval: return .awaitingApproval
-        case .incompatible: return .updateRequired
+        case .incompatible, .replacementBlocked: return .updateRequired
         case .disabled, .missing, .unknown: return .required
         }
     }

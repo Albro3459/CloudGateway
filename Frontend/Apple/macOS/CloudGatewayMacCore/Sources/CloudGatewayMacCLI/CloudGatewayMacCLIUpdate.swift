@@ -69,7 +69,8 @@ extension CloudGatewayMacCLISession {
             throw CloudGatewayMacCLIError(.invalidResponse)
         }
         if reply.operation?.state != .accepted {
-            return try updateResult(reply, id: id)
+            // A refused reservation is never retained, so there is no operation to look up
+            return try updateResult(reply, id: id, isRetained: reply.operation?.state == .completed)
         }
         guard reply.update?.phase == .prepared else { throw CloudGatewayMacCLIError(.invalidResponse) }
         // Output must succeed before confirmation can authorize any effects
@@ -92,7 +93,7 @@ extension CloudGatewayMacCLISession {
         }
     }
 
-    private func updateResult(_ reply: CloudGatewayMacControllerReply, id: UUID) throws -> CloudGatewayMacCLIData {
+    private func updateResult(_ reply: CloudGatewayMacControllerReply, id: UUID, isRetained: Bool = true) throws -> CloudGatewayMacCLIData {
         guard reply.operation?.id == id, let operation = Self.operation(of: reply) else {
             throw CloudGatewayMacCLIError(.invalidResponse)
         }
@@ -102,7 +103,7 @@ extension CloudGatewayMacCLISession {
         let data = CloudGatewayMacCLIData.mutation(.init(command: .update, operation: operation, tunnel: tunnel,
                                                         update: update.map(CloudGatewayMacCLIUpdate.init)))
         if let failure = Self.updateFailure(update) ?? operation.failure {
-            var failure = Self.updateObservationFailure(failure, id: id)
+            var failure = isRetained ? Self.updateObservationFailure(failure, id: id) : failure
             failure.data = data
             throw failure
         }

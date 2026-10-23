@@ -71,15 +71,14 @@ public enum CloudGatewayMacSignedBundle {
               let version = plist["CFBundleShortVersionString"] as? String,
               let build = plist["CFBundleVersion"] as? String,
               let unique = signingInformation[kSecCodeInfoUnique as String] as? Data, !unique.isEmpty,
-              let cms = signingInformation[kSecCodeInfoCMS as String] as? Data, !cms.isEmpty else {
+              (signingInformation[kSecCodeInfoCMS as String] as? Data)?.isEmpty == false else {
             throw CloudGatewayMacSecretError.invalidRequest
         }
-        var hash = SHA256()
-        hash.update(data: unique)
-        hash.update(data: Data(SHA256.hash(data: cms)))
+        // The code directory hash covers code, resources, entitlements, and requirements. The CMS
+        // wrapper is excluded because re-signing identical code changes it without changing the code
         let identity = CloudGatewayMacBuildIdentity(
             version: version, build: build,
-            codeHash: hash.finalize().map { String(format: "%02x", $0) }.joined()
+            codeHash: SHA256.hash(data: unique).map { String(format: "%02x", $0) }.joined()
         )
         try identity.validate()
         return identity

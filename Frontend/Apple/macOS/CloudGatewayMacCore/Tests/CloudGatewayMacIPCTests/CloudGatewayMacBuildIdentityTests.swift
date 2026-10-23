@@ -37,25 +37,25 @@ func macBuildIdentityRejectsInvalidCodeHash(hash: String) {
     }
 }
 
-@Test func macBuildIdentityDistinguishesCodeAndCMSChangesAtTheSameVersion() throws {
+@Test func macBuildIdentityDistinguishesCodeChangesButNotResigningAtTheSameVersion() throws {
     let information = macBuildSigningInformation()
     let identity = try CloudGatewayMacSignedBundle.identity(
         signingInformation: information, bundleIdentifier: macBuildBundleIdentifier
     )
+    #expect(identity.codeHash == "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81")
+    var changedCode = information
+    changedCode[kSecCodeInfoUnique as String] = Data([4, 5, 6])
+    let replacement = try CloudGatewayMacSignedBundle.identity(
+        signingInformation: changedCode, bundleIdentifier: macBuildBundleIdentifier
+    )
+    #expect(replacement.version == identity.version)
+    #expect(replacement.build == identity.build)
+    #expect(replacement.codeHash != identity.codeHash)
+    var resigned = information
+    resigned[kSecCodeInfoCMS as String] = Data([4, 5, 6])
     #expect(try CloudGatewayMacSignedBundle.identity(
-        signingInformation: information, bundleIdentifier: macBuildBundleIdentifier
+        signingInformation: resigned, bundleIdentifier: macBuildBundleIdentifier
     ) == identity)
-    for key in [kSecCodeInfoUnique as String, kSecCodeInfoCMS as String] {
-        var changed = information
-        changed[key] = Data([4, 5, 6])
-        let replacement = try CloudGatewayMacSignedBundle.identity(
-            signingInformation: changed, bundleIdentifier: macBuildBundleIdentifier
-        )
-        #expect(replacement.version == identity.version)
-        #expect(replacement.build == identity.build)
-        #expect(replacement.codeHash != identity.codeHash)
-        #expect(replacement != identity)
-    }
 }
 
 @Test(arguments: [kSecCodeInfoUnique as String, kSecCodeInfoCMS as String])

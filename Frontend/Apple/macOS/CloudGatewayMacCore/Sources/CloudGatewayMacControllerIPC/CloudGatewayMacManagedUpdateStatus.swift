@@ -5,7 +5,7 @@ public enum CloudGatewayMacManagedUpdateFailure: String, Error, Codable, Sendabl
     case disconnectRequired, initialSetupRequired, approvalRequired, restartRequired, invalidBundle
     case storageUnavailable, configUnavailable, signInRequired, accessDenied, networkUnavailable, busy, timeout
     case stopTimedOut, activationFailed, readinessFailed, superseded, reconnectSuppressed, observationUnavailable
-    case confirmationExpired, targetChanged, vpnFailed
+    case confirmationExpired, targetChanged, vpnFailed, replacementBlocked
 }
 
 public enum CloudGatewayMacExtensionActivationEvent: Equatable, Sendable {

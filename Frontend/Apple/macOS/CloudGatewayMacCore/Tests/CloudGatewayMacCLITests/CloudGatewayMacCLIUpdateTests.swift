@@ -141,7 +141,8 @@ private func updateHarness(reconnect: Bool = true,
     let record = try #require(try updateRecords(harness).last)
     #expect(record["type"] as? String == "error")
     #expect((record["error"] as? [String: Any])?["code"] as? String == "disconnect_required")
-    #expect((record["error"] as? [String: Any])?["suggestion"] as? String != nil)
+    let suggestion = try #require((record["error"] as? [String: Any])?["suggestion"] as? String)
+    #expect(!suggestion.contains("status --operation"))
     #expect(harness.output.contains("--allow-disconnect"))
     #expect(harness.actions == [.lifecycle, .userActivity, .update])
 }
@@ -395,4 +396,20 @@ private func updateHarness(reconnect: Bool = true,
         #expect((error["suggestion"] as? String)?.contains(suggestion) == true)
         #expect(!harness.actions.contains(.update))
     }
+}
+
+@MainActor
+@Test func cliUpdateReportsBlockedReplacementBeforeConfirmation() async throws {
+    let state = cliState(profiles: [.init(identifier: updateConfig, status: .connected)])
+    let harness = CLIHarness(state)
+    harness.onRequest = { request in
+        guard request.action == .update else { return nil }
+        return .init(state: state, operation: .init(id: request.id, state: .failed, failure: .commandFailed),
+                     update: .init(id: request.id, phase: .failed, target: cliBuild, error: .replacementBlocked))
+    }
+    #expect(await harness.run("update", "--allow-disconnect", "--json") == 4)
+    let error = try #require(try updateRecords(harness).last?["error"] as? [String: Any])
+    #expect(error["code"] as? String == "extension_replacement_blocked")
+    #expect((error["suggestion"] as? String)?.contains("higher VPN extension build number") == true)
+    #expect(harness.actions == [.lifecycle, .userActivity, .update])
 }

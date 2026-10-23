@@ -122,9 +122,11 @@ before the next opening. The status icon keeps updating. Controller requests sti
 state when an action is selected. It never starts
 another Firebase owner as a fallback. A version-independent authenticated
 lifecycle handshake reports the captured running identity and verified installed
-target. Normal commands also require the exact startup fingerprint, including
-the signed CodeDirectory and CMS digest, so reused version numbers do not hide
-different code or signing. A valid installed replacement closes mutation
+target. Normal commands also require the exact startup fingerprint, a digest of
+the signed CodeDirectory, so reused version numbers do not hide different code,
+resources, entitlements, or requirements. Re-signing identical code with the
+same certificate and profile keeps the same fingerprint. A valid installed
+replacement closes mutation
 admission, drains accepted work, and exits without stopping the VPN. Stale menus
 reopen the fixed verified app; clients never select the replacement executable.
 Invalid or partial installations do not authorize a handoff. Older controllers
@@ -267,9 +269,13 @@ embedded extension requires reinstalling the app. Existing VPNs are retained
 until an explicit command or macOS replacement changes them.
 
 Increment the extension's project build number whenever its implementation,
-linked code, or signing changes. App-only releases can reuse the exact signed
-extension artifact. Readiness also compares the signed artifact hash, so a
-rebuild with identical versions can require an update.
+linked code, entitlements, or signing requirements change. App-only releases can
+reuse the exact extension artifact. Readiness also compares the CodeDirectory
+digest, so changed code with identical versions never becomes ready.
+`cloudgateway update` refuses that case before stopping the VPN, and doctor
+reports `extension_replacement_blocked`. That refusal also applies in System
+Extension developer mode, where macOS could replace the copy. Bump the build or
+use the menu's **Update VPN Extension** there.
 macOS skips the replacement callback when both extension versions match outside
 System Extension developer mode, even if the signed artifact differs. An
 activation log containing `alreadyActive` and `existing entry of same version`,

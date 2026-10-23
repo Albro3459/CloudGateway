@@ -1279,3 +1279,23 @@ func managedUpdateRestoresUnacknowledgedOutcomesBeforeReadinessEvenAfterReceiptR
     #expect(harness.stopRequests == 0)
     #expect(harness.activations.isEmpty)
 }
+
+@MainActor
+@Test func managedUpdateRefusesSameVersionDifferentCodeBeforeStopping() async throws {
+    let harness = ManagedWorkflowHarness()
+    harness.profiles = [.init(identifier: managedWorkflowConfig, status: .connected)]
+    harness.authenticated = true
+    harness.pingTarget = .init(version: harness.target.version, build: harness.target.build,
+                               codeHash: String(repeating: "e", count: 64))
+    let (workflow, _) = try harness.make()
+    let rejected = await harness.reserve(workflow)
+    #expect(rejected.phase == .failed)
+    #expect(rejected.error == .replacementBlocked)
+    #expect(harness.journalData == nil)
+    #expect(harness.stopRequests == 0)
+    #expect(harness.activations.isEmpty)
+
+    harness.pingTarget = managedWorkflowReplacement
+    let (other, _) = try harness.make()
+    #expect(await harness.reserve(other).phase == .prepared)
+}

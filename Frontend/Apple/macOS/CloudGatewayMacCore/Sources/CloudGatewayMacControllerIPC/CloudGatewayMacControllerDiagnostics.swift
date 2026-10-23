@@ -8,7 +8,7 @@ public struct CloudGatewayMacControllerDiagnostics: Codable, Equatable, Sendable
     }
 
     public enum ExtensionState: String, Codable, Sendable {
-        case ready, enabled, incompatible, awaitingApproval, disabled, missing, unknown
+        case ready, enabled, incompatible, replacementBlocked, awaitingApproval, disabled, missing, unknown
     }
 
     public let runtimeInitialized: Bool
@@ -47,7 +47,8 @@ public struct CloudGatewayMacControllerDiagnostics: Codable, Equatable, Sendable
     public static func extensionReadiness(installed: CloudGatewayMacBuildIdentity,
                                           observed: CloudGatewayMacExtensionVersion?) -> ExtensionState {
         guard let observed else { return .enabled }
-        return observed.codeHash == installed.codeHash && observed.bundleVersion == installed.build
-            && observed.bundleShortVersion == installed.version ? .ready : .incompatible
+        guard observed.bundleVersion == installed.build, observed.bundleShortVersion == installed.version else { return .incompatible }
+        // macOS keeps an active extension with the same version numbers, so activation cannot replace it
+        return observed.codeHash == installed.codeHash ? .ready : .replacementBlocked
     }
 }

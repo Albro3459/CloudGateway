@@ -18,6 +18,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case timeout, stopTimedOut = "stop_timed_out"
         case vpnFailed = "vpn_failed", commandFailed = "command_failed"
         case extensionMismatch = "extension_mismatch", initialSetupRequired = "initial_setup_required"
+        case extensionReplacementBlocked = "extension_replacement_blocked"
         case approvalRequired = "approval_required", restartRequired = "restart_required"
         case invalidBundle = "invalid_bundle", checkingReadiness = "checking_readiness"
         case activationFailed = "activation_failed", readinessFailed = "readiness_failed"
@@ -33,7 +34,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .signInRequired, .accessDenied: 3
             case .setupRequired, .credentialsUnavailable, .incompatibleVersion, .untrustedBuild,
                  .installationRequired, .controllerUnavailable, .controllerRejected,
-                 .extensionMismatch, .initialSetupRequired, .approvalRequired, .restartRequired,
+                 .extensionMismatch, .extensionReplacementBlocked, .initialSetupRequired, .approvalRequired, .restartRequired,
                  .invalidBundle, .checkingReadiness, .disconnectRequired: 4
             case .configUnavailable, .selectionUnavailable: 5
             case .networkUnavailable, .refreshSkipped, .storageUnavailable, .observationUnavailable: 6
@@ -74,6 +75,8 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .vpnFailed: ("The VPN operation failed", "Run: cloudgateway status")
             case .commandFailed: ("The command failed", "Run: cloudgateway status")
             case .extensionMismatch: ("The running VPN extension does not match the installed app", "Run: cloudgateway update")
+            case .extensionReplacementBlocked: ("The running VPN extension has the installed version and build number but different code, so macOS will not replace it",
+                                                "Install a CloudGateway build with a higher VPN extension build number, then run: cloudgateway update")
             case .initialSetupRequired: ("Initial VPN setup is required", "Open CloudGateway on this Mac to finish initial setup")
             case .approvalRequired: ("macOS approval is required for the VPN extension",
                                      "Approve CloudGateway in System Settings on this Mac, then check the operation")
@@ -156,6 +159,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case .observationUnavailable: self.init(Code.observationUnavailable)
         case .confirmationExpired: self.init(Code.operationExpired)
         case .vpnFailed: self.init(Code.vpnFailed)
+        case .replacementBlocked: self.init(Code.extensionReplacementBlocked)
         }
     }
 
