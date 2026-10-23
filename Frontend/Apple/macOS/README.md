@@ -209,6 +209,8 @@ cloudgateway auth logout
 cloudgateway down
 cloudgateway down chicago 2        # Stop only this config
 cloudgateway doctor --json
+cloudgateway update                # Update the extension from the installed app
+cloudgateway update --allow-disconnect --json
 ```
 
 `ls` aliases `list`. Rows show a region-local index starting at 1, client name
@@ -252,7 +254,7 @@ VPN commands flush an operation ID before confirming execution. A timeout,
 Ctrl-C, broken pipe, or lost SSH connection detaches the caller after confirmation
 and leaves controller-owned VPN work running. Reconnect and use
 `cloudgateway status --operation '<operation-id>'`. Never replay uncertain work
-automatically. Only the active/latest result is retained in memory for ten
+automatically. For ordinary VPN commands, only the active/latest result is retained in memory for ten
 minutes. A newer result, app replacement, crash, or reboot can end recovery
 earlier. Unknown/expired results do not establish whether a VPN action ran.
 Operation lookup reports the current observed tunnel with the same config ID,
@@ -270,6 +272,52 @@ and optional known-region health. Unsupported or uninitialized evidence stays
 unknown. Required setup failure takes exit precedence over required online
 failure; a caller deadline returns partial results.
 
+### Update from the CLI or SSH
+
+`cloudgateway update` installs/activates the VPN extension bundled in the signed
+app already installed at `/Applications/CloudGateway.app`. It does not download
+a release or build/install the app. Initial desktop setup remains in the GUI,
+and `doctor` never starts an update.
+
+```sh
+cloudgateway doctor
+cloudgateway update
+# If connected, explicitly allow the update to stop and restore the VPN:
+cloudgateway update --allow-disconnect
+# After reconnecting SSH, inspect the operation ID printed before execution:
+cloudgateway status --operation '<operation-id>' --json
+```
+
+An already matching extension is a no-op and leaves the VPN running. Otherwise,
+an active VPN requires `--allow-disconnect`. The controller saves the current
+client's stable identifier, confirms the local stop, updates the extension,
+checks its authenticated identity, and requests a start of the same client.
+Normal authorization/config revision rules apply. It does not use a later last
+selection, switch to another client, or stop a different VPN that became active.
+If the VPN was disconnected when the update was reserved, it stays disconnected.
+
+The controller saves update intent before effects and owns the OS request. The
+CLI flushes the accepted operation ID before confirming execution. A lost SSH
+connection, caller timeout, or Ctrl-C after confirmation detaches observation and
+leaves the update running. **If SSH uses this VPN, accepting disconnection can
+drop the SSH session.** The controller continues the stop/update/reconnect flow.
+An accepted reservation that was never confirmed expires without changes.
+
+One private, bounded update record survives controller restart. Recovery on the
+next controller start checks actual extension/profile state before continuing;
+an initially off update never starts a tunnel. Pending updates remain observable,
+and a terminal update result is retained for ten minutes. The journal stores no
+WireGuard config, key, or auth token. A newer `down`, scoped stop of the captured
+client, logout, or account change suppresses automatic reconnect. If persistence
+fails, local stop remains available and reports any suppression durability warning.
+
+Apple may require approval or a restart. The CLI returns exit 4 with that specific
+pending state and operation ID while the durable workflow remains pending. Use
+the GUI/System Settings or restart only when that outcome is reported. A successful
+activation callback still needs authenticated readiness before reconnect. An
+update failure leaves the VPN off; reconnect success means start submitted or
+already active, not a claim that traffic connectivity was verified.
+
 JSON stdout is NDJSON schema version 1. Each line is a complete object with
 `schemaVersion`, `type`, `command`, `operationId`, `data`, and `error`. Reads emit
 one result. Login first emits `login_required`; VPN mutations first emit
@@ -283,6 +331,9 @@ Inventory records add `clientId`, region-local `index`, and nullable
 `FirebaseUID/regionId/clientId` value. `--long` changes human formatting only,
 so JSON returns the same complete metadata with or without it. Version aliases
 also support `--json` and never connect to the controller.
+Update/status records add an `update` object when relevant, with the durable
+phase, target identity, reconnect decision, and account-filtered config ID.
+Old records without update work retain their existing shape.
 
 | Exit | Meaning |
 | --- | --- |
@@ -359,7 +410,12 @@ Extension replacement still requires the extension build increment described abo
 )
 ```
 
-Open `/Applications/CloudGateway.app` after the command succeeds.
+After the command succeeds, run `cloudgateway update` to reconcile the running
+VPN extension with the installed bundle. If a VPN is active and replacement is
+needed, use `cloudgateway update --allow-disconnect` to authorize stop/update/
+reconnect. Opening the menu app is optional for this request. Initial setup or
+actual Apple approval still needs the GUI. Keep the printed operation ID for
+lookup if SSH disappears.
 
 The controller checks the fixed installed bundle's signature and fingerprint
 every five seconds. A verified replacement closes admission to new mutations,
@@ -371,9 +427,10 @@ handoff for ten minutes, with a maximum of 64 live receipts. The controller firs
 returns an operation ID and reserves the command. The frontend confirms receipt
 before execution can change routes. Unconfirmed reservations expire after 30
 seconds. Accepted, running, completed, failed, and unknown outcomes are separate
-from observed tunnel status. Only the active/latest result stays in memory,
+from observed tunnel status. Ordinary active/latest results stay in memory,
 without a connection history. Results become unknown after controller restart,
-and uncertain work is never replayed automatically.
+and uncertain ordinary commands are never replayed automatically. The managed
+CLI update has its own durable record and reconciled recovery described above.
 
 Status and idempotent local disconnect use a small authenticated compatibility
 contract while a replaced controller drains. The menu labels retained observations

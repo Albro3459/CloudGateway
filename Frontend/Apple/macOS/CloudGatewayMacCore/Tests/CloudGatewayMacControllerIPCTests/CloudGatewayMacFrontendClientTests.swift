@@ -13,6 +13,7 @@ private final class FrontendTransport {
     var lifecycleState = CloudGatewayMacControllerLifecycle.State.current
     var active = false
     var state: CloudGatewayMacControllerState?
+    var managedUpdate: CloudGatewayMacManagedUpdateStatus?
     var unavailable = false
     var bootstrapMakesAvailable = false
     var suspended: Set<CloudGatewayMacControllerRequest.Action> = []
@@ -50,9 +51,10 @@ private final class FrontendTransport {
         case .lifecycle:
             return envelope(.init(lifecycle: .init(running: controllerBoundaryBuild, installed: installed, state: lifecycleState)))
         case .snapshot, .menuWillOpen, .userActivity, .recordActivity:
-            return envelope(.init(state: state ?? controllerBoundaryState(active: active)))
+            return envelope(.init(state: state ?? controllerBoundaryState(active: active), update: managedUpdate))
         case .status:
-            return envelope(.init(status: .init(hasActiveTunnel: active, needsStop: active, observationAvailable: true)))
+            return envelope(.init(status: .init(hasActiveTunnel: active, needsStop: active, observationAvailable: true),
+                                  update: managedUpdate))
         case .turnOff, .connect:
             return envelope(.init(operation: .init(id: request.id, state: .accepted), accepted: true, operationId: request.id))
         case .confirmOperation:
@@ -814,4 +816,167 @@ func frontendCancelledOrShutdownInteractionCannotSendItsAction(shutdown: Bool) a
     #expect(item.title == row.title)
     #expect(item.representedObject as? String == row.identifier)
     #expect(item.action == NSSelectorFromString("selectClient:"))
+}
+
+
+@MainActor
+@Test func frontendLostUpdateConfirmationDetachesWithoutCancellingControllerWork() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    let instanceId = UUID()
+    var actions: [CloudGatewayMacControllerRequest] = []
+    let client = CloudGatewayMacFrontendClient(identity: controllerBoundaryBuild, transport: { request in
+        actions.append(request)
+        var reply = await controller.handle(request)
+        reply.instanceId = instanceId
+        if request.action == .confirmOperation { throw CloudGatewayMacControllerFailure.unavailable }
+        return reply
+    }, bootstrap: {})
+    defer { client.shutdown() }
+    let id = UUID()
+    await #expect(throws: CloudGatewayMacControllerFailure.outcomeUnknown) {
+        try await client.userRequest(.update, id: id, allowDisconnect: true)
+    }
+    client.shutdown()
+    #expect(actions.filter { $0.action == .update }.map(\.allowDisconnect) == [true])
+    #expect(actions.filter { $0.action == .confirmOperation }.map(\.contextId) == [id])
+    try #require(await controllerBoundaryEventually { effects.performed == [.disconnectClient] })
+    #expect(effects.managedJournal?.confirmed == true)
+    #expect(effects.activationIds.isEmpty)
+    effects.active = false
+    effects.completion?(.completed(warning: nil))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [id] })
+    effects.sendActivation(.approvalRequired)
+    #expect(effects.reconnects.isEmpty)
+    effects.sendActivation(.completed)
+    effects.authenticated = true
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.reconnects == ["account/region/client"] })
+    effects.reconnectCompletion?(.startRequested(identifier: "account/region/client", warning: nil))
+    let completed = await controller.handle(controllerBoundaryRequest(.operation, contextId: id))
+    #expect(completed.operation == .init(id: id, state: .completed))
+    #expect(completed.update?.phase == .completed)
+    #expect(effects.activationIds == [id])
+    #expect(effects.performed == [.disconnectClient])
+}
+
+@MainActor
+@Test func frontendMenuUpdateUsesControllerActivationAndPublishesPendingApprovalAndRestart() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    let instanceId = UUID()
+    var actions: [CloudGatewayMacControllerRequest] = []
+    let client = CloudGatewayMacFrontendClient(identity: controllerBoundaryBuild, transport: { request in
+        actions.append(request)
+        var reply = await controller.handle(request)
+        reply.instanceId = instanceId
+        return reply
+    }, bootstrap: {})
+    defer { client.shutdown() }
+    let id = UUID()
+    #expect(try await client.userRequest(.update, id: id, allowDisconnect: false).operation?.state == .running)
+    try #require(await controllerBoundaryEventually { effects.activationIds == [id] })
+    #expect(actions.filter { $0.action == .update }.map(\.allowDisconnect) == [false])
+    #expect(actions.filter { $0.action == .confirmOperation }.map(\.contextId) == [id])
+    #expect(!actions.contains { $0.action == .extensionUpdateStarted })
+    effects.sendActivation(.approvalRequired)
+    _ = try await client.request(.snapshot)
+    #expect(client.managedUpdate?.id == id)
+    #expect(client.managedUpdate?.phase == .approvalRequired)
+    #expect(client.presentation.setupState == .awaitingApproval)
+    #expect(!client.presentation.canUpdateExtension)
+    #expect(!client.presentation.hasActiveTunnel)
+    await #expect(throws: CloudGatewayMacControllerFailure.busy) { try await client.userRequest(.prepareExtensionUpdate) }
+    #expect(effects.activationIds == [id])
+    effects.sendActivation(.restartRequired)
+    _ = try await client.request(.snapshot)
+    #expect(client.managedUpdate?.phase == .restartRequired)
+    #expect(client.presentation.setupState == .awaitingRestart)
+    #expect(effects.reconnects.isEmpty)
+    client.shutdown()
+    #expect(client.managedUpdate == nil)
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: id)).update?.phase == .restartRequired)
+}
+
+@MainActor
+@Test func frontendOlderManagedStatusCannotUndoANewerUpdatePhase() async throws {
+    let transport = FrontendTransport()
+    let id = UUID()
+    let approval = CloudGatewayMacManagedUpdateStatus(id: id, phase: .approvalRequired, target: controllerBoundaryBuild)
+    let restart = CloudGatewayMacManagedUpdateStatus(id: id, phase: .restartRequired, target: controllerBoundaryBuild)
+    transport.managedUpdate = approval
+    let client = transport.make()
+    defer { client.shutdown() }
+    try await client.poll()
+    #expect(client.managedUpdate == approval)
+    transport.suspended = [.snapshot]
+    let oldId = UUID()
+    let old = Task { try await client.request(.snapshot, id: oldId) }
+    try #require(await controllerBoundaryEventually { transport.pending[oldId] != nil })
+    transport.suspended = []
+    transport.managedUpdate = restart
+    _ = try await client.request(.snapshot)
+    try transport.resolve(oldId, with: transport.envelope(.init(state: controllerBoundaryState(), update: approval)))
+    _ = try await old.value
+    #expect(client.managedUpdate == restart)
+    #expect(client.isSnapshotFresh)
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func frontendManagedStatusIsClearedWhenTheControllerFailsOrHandsOff(draining: Bool) async throws {
+    let transport = FrontendTransport()
+    transport.managedUpdate = .init(id: UUID(), phase: .approvalRequired, target: controllerBoundaryBuild)
+    let client = transport.make()
+    defer { client.shutdown() }
+    try await client.poll()
+    #expect(client.managedUpdate?.phase == .approvalRequired)
+    if draining {
+        transport.installed = controllerBoundaryReplacement
+        transport.lifecycleState = .draining
+        try await client.poll()
+        #expect(client.connectionState == .draining)
+    } else {
+        transport.unavailable = true
+        await #expect(throws: CloudGatewayMacControllerFailure.unavailable) { try await client.request(.snapshot) }
+        #expect(client.connectionState == .reconnecting)
+    }
+    #expect(client.managedUpdate == nil)
+    #expect(!client.isSnapshotFresh)
+}
+
+
+@MainActor
+@Test func frontendOrdinaryOperationLookupDoesNotExposeARetainedManagedUpdate() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    effects.authenticated = true
+    effects.performHandler = { _, done in done(.completed(warning: nil)); return true }
+    let instanceId = UUID()
+    let client = CloudGatewayMacFrontendClient(identity: controllerBoundaryBuild, transport: { request in
+        var reply = await controller.handle(request)
+        reply.instanceId = instanceId
+        return reply
+    }, bootstrap: {})
+    defer { client.shutdown() }
+    let updateId = UUID()
+    #expect(try await client.userRequest(.update, id: updateId, allowDisconnect: false).update?.phase == .completed)
+    #expect(client.managedUpdate?.id == updateId)
+    let stopId = UUID()
+    let stop = try await client.userRequest(.turnOff, id: stopId)
+    #expect(stop.operation == .init(id: stopId, state: .completed))
+    #expect(stop.update == nil)
+    let ordinary = try await client.request(.operation, contextId: stopId)
+    #expect(ordinary.operation?.id == stopId)
+    #expect(ordinary.update == nil)
+    #expect(client.managedUpdate == nil)
+    let unknownId = UUID()
+    let unknown = try await client.request(.operation, contextId: unknownId)
+    #expect(unknown.operation == .init(id: unknownId, state: .unknown))
+    #expect(unknown.update == nil)
+    _ = try await client.request(.snapshot)
+    #expect(client.managedUpdate?.id == updateId)
+    let matching = try await client.request(.operation, contextId: updateId)
+    #expect(matching.operation == .init(id: updateId, state: .completed))
+    #expect(matching.update?.id == updateId)
 }

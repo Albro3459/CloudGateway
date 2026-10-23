@@ -40,7 +40,7 @@ public final class CloudGatewayMacControllerRequests {
 
     public func lookup(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation? {
         let digest = Self.digest(request)
-        if request.action == .turnOff {
+        if request.action == .turnOff || request.action == .disconnectClient {
             guard let stop, stop.id == request.id, let result = latest else { return nil }
             guard stop.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
             return result.state == .failed || result.state == .unknown ? nil : result
@@ -65,7 +65,7 @@ public final class CloudGatewayMacControllerRequests {
     public func accept(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation {
         let operation = CloudGatewayMacControllerOperation(id: request.id, state: .accepted)
         let expires = now().addingTimeInterval(600)
-        if request.action == .turnOff {
+        if request.action == .turnOff || request.action == .disconnectClient {
             stop = (request.id, Self.digest(request))
         } else {
             var next = storage
@@ -86,10 +86,11 @@ public final class CloudGatewayMacControllerRequests {
 
     @discardableResult
     public func finish(id: UUID, state: CloudGatewayMacControllerOperation.State,
-                       failure: CloudGatewayMacControllerFailure? = nil, outcome: CloudGatewayMacCommandOutcome? = nil,
+                       failure: CloudGatewayMacControllerFailure? = nil, warning: CloudGatewayMacCommandWarning? = nil,
+                       outcome: CloudGatewayMacCommandOutcome? = nil,
                        session: CloudGatewayMacSessionToken? = nil) -> CloudGatewayMacControllerOperation {
         guard result?.id == id else { return .init(id: id, state: .unknown) }
-        let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure)
+        let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure, warning: warning)
         // Admission already prevents replay, results stay in memory only
         result = operation
         self.outcome = outcome

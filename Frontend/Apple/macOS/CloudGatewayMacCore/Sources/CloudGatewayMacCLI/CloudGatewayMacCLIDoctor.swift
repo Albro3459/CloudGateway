@@ -10,12 +10,14 @@ public struct CloudGatewayMacCLIDoctorReport: Encodable, Sendable {
         public let status: Status
         public let evidence: String
         @CloudGatewayMacCLINullable var suggestion: String?
+        public let failureCode: String?
 
-        public init(name: String, status: Status, evidence: String, suggestion: String? = nil) {
+        public init(name: String, status: Status, evidence: String, suggestion: String? = nil, failureCode: String? = nil) {
             self.name = CloudGatewayMacCLIText.sanitize(name)
             self.status = status
             self.evidence = CloudGatewayMacCLIText.sanitize(evidence)
             self.suggestion = suggestion.map(CloudGatewayMacCLIText.sanitize)
+            self.failureCode = failureCode.flatMap { CloudGatewayMacCLIError.Code(rawValue: $0) }?.rawValue
         }
     }
 
@@ -66,7 +68,7 @@ public struct CloudGatewayMacCLIDoctor {
     func execute(timeout: Duration) async -> Result<CloudGatewayMacCLIData, CloudGatewayMacCLIError> {
         let deadline = clock.now() + timeout
         var checks: [CloudGatewayMacCLIDoctorReport.Check] = []
-        var setupFailed = false
+        var setupFailure: CloudGatewayMacCLIError?
         var onlineFailed = false
         var timedOut = false
         for probe in probes {
@@ -75,7 +77,10 @@ public struct CloudGatewayMacCLIDoctor {
             let check = await bounded(probe, timeout: min(probe.timeout, remaining))
             checks.append(check)
             if check.status == .fail {
-                if probe.requirement == .setup { setupFailed = true }
+                if probe.requirement == .setup, setupFailure == nil {
+                    setupFailure = .init(check.failureCode.flatMap(CloudGatewayMacCLIError.Code.init(rawValue:)) ?? .setupRequired,
+                                         message: check.evidence, suggestion: check.suggestion)
+                }
                 if probe.requirement == .online { onlineFailed = true }
             }
             if Task.isCancelled { break }
@@ -84,7 +89,10 @@ public struct CloudGatewayMacCLIDoctor {
         let data = CloudGatewayMacCLIData.doctor(.init(checks: checks, timedOut: timedOut))
         if Task.isCancelled { return .failure(.init(.interrupted, data: data)) }
         if timedOut { return .failure(.init(.timeout, data: data)) }
-        if setupFailed { return .failure(.init(.setupRequired, data: data)) }
+        if var setupFailure {
+            setupFailure.data = data
+            return .failure(setupFailure)
+        }
         if onlineFailed { return .failure(.init(.networkUnavailable, data: data)) }
         return .success(data)
     }

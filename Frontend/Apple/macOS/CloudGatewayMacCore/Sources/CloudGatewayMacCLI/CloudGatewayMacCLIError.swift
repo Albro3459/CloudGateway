@@ -17,6 +17,13 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case busy
         case timeout, stopTimedOut = "stop_timed_out"
         case vpnFailed = "vpn_failed", commandFailed = "command_failed"
+        case extensionMismatch = "extension_mismatch", initialSetupRequired = "initial_setup_required"
+        case approvalRequired = "approval_required", restartRequired = "restart_required"
+        case invalidBundle = "invalid_bundle", checkingReadiness = "checking_readiness"
+        case activationFailed = "activation_failed", readinessFailed = "readiness_failed"
+        case disconnectRequired = "disconnect_required", storageUnavailable = "storage_unavailable"
+        case observationUnavailable = "observation_unavailable"
+        case updateSuperseded = "update_superseded", reconnectSuppressed = "reconnect_suppressed"
         case operationUnknown = "operation_unknown", operationExpired = "operation_expired"
 
         var exitCode: Int32 {
@@ -25,13 +32,15 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .usage: 2
             case .signInRequired, .accessDenied: 3
             case .setupRequired, .credentialsUnavailable, .incompatibleVersion, .untrustedBuild,
-                 .installationRequired, .controllerUnavailable, .controllerRejected: 4
+                 .installationRequired, .controllerUnavailable, .controllerRejected,
+                 .extensionMismatch, .initialSetupRequired, .approvalRequired, .restartRequired,
+                 .invalidBundle, .checkingReadiness, .disconnectRequired: 4
             case .configUnavailable, .selectionUnavailable: 5
-            case .networkUnavailable, .refreshSkipped: 6
+            case .networkUnavailable, .refreshSkipped, .storageUnavailable, .observationUnavailable: 6
             case .busy, .refreshSuperseded: 7
             case .timeout, .stopTimedOut: 8
-            case .vpnFailed, .commandFailed: 9
-            case .operationUnknown, .operationExpired: 10
+            case .vpnFailed, .commandFailed, .activationFailed, .readinessFailed: 9
+            case .operationUnknown, .operationExpired, .updateSuperseded, .reconnectSuppressed: 10
             case .interrupted: 130
             }
         }
@@ -64,6 +73,23 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .stopTimedOut: ("The VPN has not confirmed stop", "Run: cloudgateway status")
             case .vpnFailed: ("The VPN operation failed", "Run: cloudgateway status")
             case .commandFailed: ("The command failed", "Run: cloudgateway status")
+            case .extensionMismatch: ("The running VPN extension does not match the installed app", "Run: cloudgateway update")
+            case .initialSetupRequired: ("Initial VPN setup is required", "Open CloudGateway on this Mac to finish initial setup")
+            case .approvalRequired: ("macOS approval is required for the VPN extension",
+                                     "Approve CloudGateway in System Settings on this Mac, then check the operation")
+            case .restartRequired: ("macOS must restart to finish the VPN extension update",
+                                    "Restart this Mac, then check the operation. The controller resumes when next started")
+            case .invalidBundle: ("The installed VPN extension bundle is invalid", "Reinstall CloudGateway in /Applications")
+            case .checkingReadiness: ("CloudGateway is still checking VPN extension readiness", "Run: cloudgateway status")
+            case .activationFailed: ("macOS could not activate the VPN extension", "Run: cloudgateway doctor")
+            case .readinessFailed: ("The updated VPN extension did not pass authenticated readiness checks", "Run: cloudgateway doctor")
+            case .disconnectRequired: ("Updating the VPN extension requires stopping the active VPN",
+                                       "Run: cloudgateway update --allow-disconnect. This can disconnect SSH if it uses the VPN")
+            case .storageUnavailable: ("CloudGateway could not persist the update safely", "Check this Mac's available storage and permissions")
+            case .observationUnavailable: ("CloudGateway cannot observe the current VPN profiles", "Run: cloudgateway status")
+            case .updateSuperseded: ("The installed app changed during this update", "Check the operation before requesting another update")
+            case .reconnectSuppressed: ("The VPN update did not reconnect because its original connection is no longer authorized",
+                                       "Check the current VPN state and account before requesting a start")
             case .operationUnknown: ("The operation result is unknown or no longer retained",
                                      "Run cloudgateway status before trying again")
             case .operationExpired: ("The operation expired before it ran", "Run the command again")
@@ -84,11 +110,18 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         self.data = data
     }
 
-    init(_ failure: CloudGatewayMacCommandFailure) {
+    init(commandFailure failure: CloudGatewayMacCommandFailure) {
         switch failure {
         case .signInRequired: self.init(Code.signInRequired)
         case .accessDenied: self.init(Code.accessDenied)
         case .setupRequired: self.init(Code.setupRequired)
+        case .extensionMismatch: self.init(Code.extensionMismatch)
+        case .initialSetupRequired: self.init(Code.initialSetupRequired)
+        case .approvalRequired: self.init(Code.approvalRequired)
+        case .restartRequired: self.init(Code.restartRequired)
+        case .invalidBundle: self.init(Code.invalidBundle)
+        case .checkingReadiness: self.init(Code.checkingReadiness)
+        case .activationFailed: self.init(Code.activationFailed)
         case .credentialsUnavailable: self.init(Code.credentialsUnavailable)
         case .incompatibleVersion: self.init(Code.incompatibleVersion)
         case .configUnavailable: self.init(Code.configUnavailable)
@@ -101,7 +134,32 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         }
     }
 
-    init(_ failure: CloudGatewayMacControllerFailure) {
+    init(updateFailure failure: CloudGatewayMacManagedUpdateFailure) {
+        switch failure {
+        case .disconnectRequired: self.init(Code.disconnectRequired)
+        case .initialSetupRequired: self.init(Code.initialSetupRequired)
+        case .approvalRequired: self.init(Code.approvalRequired)
+        case .restartRequired: self.init(Code.restartRequired)
+        case .invalidBundle: self.init(Code.invalidBundle)
+        case .storageUnavailable: self.init(Code.storageUnavailable)
+        case .configUnavailable: self.init(Code.configUnavailable)
+        case .signInRequired: self.init(Code.signInRequired)
+        case .accessDenied: self.init(Code.accessDenied)
+        case .networkUnavailable: self.init(Code.networkUnavailable)
+        case .busy: self.init(Code.busy)
+        case .timeout: self.init(Code.timeout)
+        case .stopTimedOut: self.init(Code.stopTimedOut)
+        case .activationFailed: self.init(Code.activationFailed)
+        case .readinessFailed: self.init(Code.readinessFailed)
+        case .superseded, .targetChanged: self.init(Code.updateSuperseded)
+        case .reconnectSuppressed: self.init(Code.reconnectSuppressed)
+        case .observationUnavailable: self.init(Code.observationUnavailable)
+        case .confirmationExpired: self.init(Code.operationExpired)
+        case .vpnFailed: self.init(Code.vpnFailed)
+        }
+    }
+
+    init(controllerFailure failure: CloudGatewayMacControllerFailure) {
         switch failure {
         case .invalidRequest: self.init(Code.invalidResponse)
         case .incompatibleVersion: self.init(Code.incompatibleVersion)
@@ -121,7 +179,8 @@ struct CloudGatewayMacCLIError: Error, Sendable {
     init(_ error: any Error) {
         switch error {
         case let error as Self: self = error
-        case let failure as CloudGatewayMacControllerFailure: self.init(failure)
+        case let failure as CloudGatewayMacControllerFailure: self.init(controllerFailure: failure)
+        case let failure as CloudGatewayMacManagedUpdateFailure: self.init(updateFailure: failure)
         case is CancellationError: self.init(.interrupted)
         case CloudGatewayMacControllerLaunchError.installationRequired, CloudGatewayMacControllerLaunchError.unsafeLocation:
             self.init(.installationRequired)

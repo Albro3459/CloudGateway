@@ -93,6 +93,7 @@ cloudgateway refresh
 cloudgateway doctor
 cloudgateway help [command...]
 cloudgateway version
+cloudgateway update [--allow-disconnect]
 ```
 
 Keep account administration and cloud client creation/removal out of the CLI.
@@ -309,6 +310,7 @@ cloudgateway auth login --help
 | `down [<client-uuid> \| <region> <index>]` | Common options | Stop the selected target only, or all app-owned active/transitional profiles when no selector is supplied. Bare `down` works while signed out |
 | `refresh` | Common options | Recheck authorization and fetch current cloud inventory/metadata |
 | `doctor` | Common options | Inspect local setup, permissions where observable, auth, and network/service reachability |
+| `update` | `--allow-disconnect` | Update the extension from the installed app. Explicitly authorize stopping an active VPN and restoring the same client after readiness |
 | `help [command...]` | Common help/output options | Show usage, options, examples, and the meaning of request acceptance |
 | `version` | Common options | Show the same local app version/build as `--version` or `-v` |
 
@@ -316,6 +318,14 @@ All commands accept the common options where applicable. `help --json` and
 `--version --json` use the same versioned result envelope without IPC.
 No `--yes`, password/token argument, config export, name-prefix selector,
 or `--wait` in v1.
+
+Controller-owned CLI extension updates and their durable stop/update/reconnect
+contract are defined in
+[the update plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-update.md).
+Initial setup stays in the GUI. `doctor` remains read-only. Confirmed updates
+continue after SSH loss, retain operation status across controller restart, and
+leave an initially disconnected VPN off. Apple approval/reboot are pending
+outcomes with CLI exit 4, not cancellation of the durable operation.
 
 ### IDs, inventory, and offline access
 

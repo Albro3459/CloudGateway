@@ -102,6 +102,7 @@ final class CLIHarness {
     var status = CloudGatewayMacControllerStatus(hasActiveTunnel: false, needsStop: false, observationAvailable: true)
     var operation: CloudGatewayMacControllerOperation?
     var outcome: CloudGatewayMacCommandOutcome?
+    var update: CloudGatewayMacManagedUpdateStatus?
     var hungActions: Set<CloudGatewayMacControllerRequest.Action> = []
     var onRequest: ((CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply?)?
     var onBootstrap: (() async throws -> Void)?
@@ -169,14 +170,14 @@ final class CLIHarness {
             reply = .init()
         case .snapshot:
             let state = states.count > 1 ? states.removeFirst() : try #require(states.first)
-            reply = .init(state: state, operation: operation, outcome: outcome)
+            reply = .init(state: state, operation: operation, outcome: outcome, update: update)
         case .status:
             reply = .init(status: status, operation: operation, outcome: outcome)
         case .operation:
             let id = try #require(request.contextId)
             let isRetained = operation?.id == id
             reply = .init(status: status, operation: isRetained ? operation : .init(id: id, state: .unknown),
-                          outcome: isRetained ? outcome : nil)
+                          outcome: isRetained ? outcome : nil, update: isRetained ? update : nil)
         default:
             Issue.record("Unexpected controller request \(request.action)")
             throw CloudGatewayMacControllerFailure.invalidRequest

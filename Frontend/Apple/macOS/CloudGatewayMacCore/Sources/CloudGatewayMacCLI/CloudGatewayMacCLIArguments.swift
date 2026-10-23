@@ -1,7 +1,7 @@
 import Foundation
 
 enum CloudGatewayMacCLIOption: CaseIterable {
-    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation, long
+    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation, long, allowDisconnect
 
     static let common: [Self] = [.help, .json, .nonInteractive, .timeout]
 
@@ -17,6 +17,7 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .refresh: ["--refresh"]
         case .operation: ["--operation"]
         case .long: ["-l", "--long"]
+        case .allowDisconnect: ["--allow-disconnect"]
         }
     }
 
@@ -34,20 +35,21 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .help: "Show help for the current command"
         case .json: "Print versioned JSON records, one per line, without decoration or shortcuts"
         case .nonInteractive: "Disable keyboard shortcuts and prompts, even in a terminal"
-        case .timeout: "Stop waiting after this many seconds (default 30). Accepted VPN work keeps running"
+        case .timeout: "Stop waiting after this many seconds (default 30). Confirmed VPN work keeps running"
         case .version: "Show the app version and build"
         case .noQR: "Hide the QR code. The approval link and code still print"
         case .region: "Show only configs in this region"
         case .refresh: "Fetch current inventory before listing"
         case .operation: "Look up a retained operation by ID"
         case .long: "Show VPN details for each config"
+        case .allowDisconnect: "Allow stopping the active VPN to replace its extension and restore the same config"
         }
     }
 }
 
 struct CloudGatewayMacCLITopic {
     enum Kind {
-        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, refresh, doctor, help, version
+        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, update, refresh, doctor, help, version
     }
 
     let kind: Kind
@@ -112,7 +114,7 @@ struct CloudGatewayMacCLITopic {
                       "Indices restart at 1 in each region. Rerun `ls` after inventory changes. Use a UUID in scripts"],
               examples: ["cloudgateway ls", "cloudgateway ls -l", "cloudgateway list --region sanjose --json"]),
         .init(kind: .status, path: ["status"], arguments: nil, options: [.operation],
-              summary: "Show the observed VPN state and the latest command result",
+              summary: "Show the observed VPN state, active update, and latest command result",
               notes: ["A successful status read does not mean the VPN is connected"],
               examples: ["cloudgateway status", "cloudgateway status --operation <operation-id>"]),
         .init(kind: .up, path: ["up"], arguments: "[<client-uuid> | <region> <index>]", options: [],
@@ -127,6 +129,20 @@ struct CloudGatewayMacCLITopic {
               summary: "Stop the CloudGateway VPN, even while signed out",
               notes: ["Saved configs stay on this Mac", "A selector stops only that config and requires sign-in"],
               examples: ["cloudgateway down", "cloudgateway down chicago 1"]),
+        .init(kind: .update, path: ["update"], arguments: nil, options: [.allowDisconnect],
+              summary: "Activate the VPN extension bundled in the installed CloudGateway app",
+              notes: [
+                  "Uses /Applications/CloudGateway.app. Does not download or install an app release. Initial setup stays in the GUI",
+                  "An already matching extension succeeds without stopping the VPN. An initially disconnected VPN stays off",
+                  "Replacing an active VPN requires --allow-disconnect. It can disconnect this SSH session if SSH uses the VPN",
+                  "The accepted ID prints before execution is confirmed. Output failure before confirmation leaves work unconfirmed",
+                  "After confirmation, timeout, Ctrl-C, or SSH loss detaches observation. The controller keeps running the update",
+                  "Reconnect requests the same captured config after readiness checks. Check status for the observed tunnel state",
+                  "Apple approval or reboot returns exit 4 while the operation remains running. Use status --operation to follow it"
+              ],
+              examples: ["cloudgateway update", "cloudgateway update --allow-disconnect --json",
+                         "ssh my-mac cloudgateway update --allow-disconnect",
+                         "cloudgateway status --operation <operation-id>"]),
         .init(kind: .refresh, path: ["refresh"], arguments: nil, options: [],
               summary: "Recheck access and fetch current inventory without reconnecting",
               notes: [], examples: ["cloudgateway refresh"]),
@@ -149,6 +165,7 @@ enum CloudGatewayMacCLICommand: Equatable {
     case status(operationId: UUID?)
     case up(selector: CloudGatewayMacCLISelector?)
     case downTarget(CloudGatewayMacCLISelector)
+    case update(allowDisconnect: Bool)
     case down, refresh, doctor
 
     var name: String {
@@ -160,6 +177,7 @@ enum CloudGatewayMacCLICommand: Equatable {
         case .status: "status"
         case .up: "up"
         case .down, .downTarget: "down"
+        case .update: "update"
         case .refresh: "refresh"
         case .doctor: "doctor"
         }
@@ -276,6 +294,7 @@ enum CloudGatewayMacCLIParser {
         case .up: command = .up(selector: try selector(operands, topic: topic))
         case .down: command = try selector(operands, topic: topic).map(CloudGatewayMacCLICommand.downTarget) ?? .down
         case .version: return invocation(.version)
+        case .update: command = .update(allowDisconnect: flags.contains(.allowDisconnect))
         case .refresh: command = .refresh
         case .doctor: command = .doctor
         }

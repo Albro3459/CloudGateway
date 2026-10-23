@@ -180,12 +180,14 @@ public final class CloudGatewayMacControllerOwnership: Sendable {
 
 public enum CloudGatewayMacControllerUpdateStorage {
     public enum Record: Sendable {
-        case requests, extensionUpdates
+        case requests, extensionUpdates, managedUpdate, managedUpdateRevocation
 
         fileprivate var name: String {
             switch self {
             case .requests: "controller-receipts.json"
             case .extensionUpdates: "controller-extension-updates.json"
+            case .managedUpdate: "controller-managed-update.json"
+            case .managedUpdateRevocation: "controller-managed-update-revocation.json"
             }
         }
     }

@@ -49,8 +49,21 @@ public protocol CloudGatewayMacProfileAdapter: Sendable {
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile]
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws
     func start(identifier: String, grant: String) async throws
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws
     func stopAndWait(identifier: String) async throws
     func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
+}
+
+public extension CloudGatewayMacProfileAdapter {
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws {
+        if !displacingOtherProfiles {
+            let current = try await installedProfiles()
+            guard !current.contains(where: { $0.needsConfirmedStop && $0.identifier != identifier }) else {
+                throw CloudGatewayMacConfigError.busy
+            }
+        }
+        try await start(identifier: identifier, grant: grant)
+    }
 }
 
 public protocol CloudGatewayMacSnapshotPersisting: Sendable {
@@ -213,13 +226,13 @@ public actor CloudGatewayMacConfigCoordinator {
 
     // False means the matching profile was already active, so no start was submitted
     @discardableResult
-    public func connect(_ config: CloudGatewayMacInstalledConfig) async throws -> Bool {
+    public func connect(_ config: CloudGatewayMacInstalledConfig, displacingOtherProfiles: Bool = true) async throws -> Bool {
         try await runCommand { command in
-            try await self.performConnect(config, command: command)
+            try await self.performConnect(config, command: command, displacingOtherProfiles: displacingOtherProfiles)
         }
     }
 
-    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64) async throws -> Bool {
+    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64, displacingOtherProfiles: Bool) async throws -> Bool {
         let reference = try config.reference
         try await requireAvailableSecret(reference: reference, identifier: config.identifier)
         try requireCurrent(command)
@@ -231,6 +244,9 @@ public actor CloudGatewayMacConfigCoordinator {
             throw CloudGatewayMacConfigError.unavailable
         }
         let activeProfiles = installedProfiles.filter(\.needsConfirmedStop)
+        guard displacingOtherProfiles || !activeProfiles.contains(where: { $0.identifier != config.identifier }) else {
+            throw CloudGatewayMacConfigError.busy
+        }
         if selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
             return false
         }
@@ -241,7 +257,7 @@ public actor CloudGatewayMacConfigCoordinator {
         try requireCurrent(command)
         let grant = try await secrets.authorizeStart(reference: reference, configId: config.identifier)
         try requireCurrent(command)
-        try await profiles.start(identifier: config.identifier, grant: grant)
+        try await profiles.start(identifier: config.identifier, grant: grant, displacingOtherProfiles: displacingOtherProfiles)
         return true
     }
 

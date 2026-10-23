@@ -1,6 +1,6 @@
 # Update the VPN extension over SSH
 
-Status: approved with Main Astra High, implementation pending
+Status: implemented and unsigned validation passed, fresh Secure Sol High review in progress
 
 ## Problem
 

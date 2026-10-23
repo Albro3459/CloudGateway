@@ -6,6 +6,9 @@ import Foundation
 @MainActor
 public final class CloudGatewayMacController {
     public var onChange: (() -> Void)?
+    public var onAuthenticationChange: (() -> Void)?
+    private var observedAuthAccount: String?
+    private var hasObservedAuthAccount = false
 
     private let auth: any CloudGatewayMacControllerAuthServicing
     private let inventory: any CloudGatewayMacInventoryServicing
@@ -44,6 +47,8 @@ public final class CloudGatewayMacController {
     private var restorationTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
     private var isStopping = false
+    private var managedReconnectIdentifier: String?
+    private var managedStopTask: Task<Void, Never>?
     private var pendingLoginInventory: CloudGatewayMacSessionToken?
     private var retainedLogin: CloudGatewayMacLoginStatus?
     private var retainedLoginTimer: Task<Void, Never>?
@@ -135,7 +140,7 @@ public final class CloudGatewayMacController {
 
     public var hasPendingWork: Bool {
         if inventoryTask != nil || deferredInventoryRefresh || inventoryCommitTask != nil || restorationTask != nil || commandTask != nil
-            || cancellationTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
+            || cancellationTask != nil || managedStopTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
             return true
         }
         switch browser.state {
@@ -228,11 +233,17 @@ public final class CloudGatewayMacController {
             cancelPendingWork()
             browser.cancel()
         }
+        managedStopTask?.cancel()
+        managedStopTask = nil
         onChange = nil
+        onAuthenticationChange = nil
     }
 
     private func authChanged(_ candidate: AuthenticatedUser?) {
         guard isStarted, !isShuttingDown else { return }
+        if hasObservedAuthAccount, observedAuthAccount != candidate?.uid { onAuthenticationChange?() }
+        observedAuthAccount = candidate?.uid
+        hasObservedAuthAccount = true
         switch browser.state {
         case .requestingCode, .waitingForApproval, .exchangingToken: return
         default: break
@@ -605,7 +616,7 @@ public final class CloudGatewayMacController {
     }
 
     private var canIssueLocalCommand: Bool {
-        isStarted && !isShuttingDown && commandTask == nil && cancellationTask == nil
+        isStarted && !isShuttingDown && commandTask == nil && cancellationTask == nil && managedStopTask == nil
     }
 
     private var accessState: CloudGatewayMacAccessState {
@@ -687,15 +698,35 @@ public final class CloudGatewayMacController {
         onChange?()
     }
 
+    public func managedUpdateObservation() async throws -> CloudGatewayMacManagedUpdateObservation {
+        let epoch = sessionEpoch
+        let observed = try await profiles.installedProfiles()
+        guard epoch == sessionEpoch, !isShuttingDown else { throw CloudGatewayMacConfigError.cancelled }
+        return .init(accountId: user?.uid, profiles: observed.map { .init(identifier: $0.identifier, status: $0.status) },
+                     authorizedIdentifiers: clientMetadata.filter { $0.eligibility == .eligible }.map(\.identifier),
+                     isRestoringSession: restorationTask != nil || auth.isCustomTokenSignInSettling
+                        || !hasAuthorizedInventory && (inventoryTask != nil || inventoryCommitTask != nil
+                            || deferredInventoryRefresh || pendingLoginInventory != nil),
+                     accessAuthorized: hasAuthorizedInventory && user != nil && user?.uid == auth.currentUser?.uid)
+    }
+
+    public func cancelManagedReconnect(identifier: String) async {
+        guard managedReconnectIdentifier == identifier, let connection = commandTask else { return }
+        connection.cancel()
+        await connection.value
+        await cancellationTask?.value
+    }
+
     @discardableResult
     // A nil identifier starts this account's last selection
     public func connectClient(
         identifier requested: String?,
+        displacingOtherProfiles: Bool = true,
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
         let resolved = requested ?? lastSelectedIdentifier
         let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
-            else if setupState != .ready { .setupRequired }
+            else if setupState != .ready { setupState.commandFailure }
             else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
             else if let resolved, hasConnectableConfig(identifier: resolved, accountId: user?.uid ?? "") { nil }
             else { requested == nil ? .selectionUnavailable : .configUnavailable }
@@ -709,12 +740,14 @@ public final class CloudGatewayMacController {
         inventoryTask?.cancel()
         inventoryTask = nil
         inventoryEpoch &+= 1
+        managedReconnectIdentifier = displacingOtherProfiles ? nil : identifier
         commandTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var outcome = CloudGatewayMacCommandOutcome.failed(.vpnFailed)
             var connectInFlight = false
             var startRequested: Bool?
             defer {
+                managedReconnectIdentifier = nil
                 if sessionEpoch == epoch { commandTask = nil; resumeDeferredInventoryRefresh(); refreshProfiles(); notifyChange() }
                 onCompletion?(outcome)
             }
@@ -728,6 +761,9 @@ public final class CloudGatewayMacController {
                 let saved = installed.first { $0.identifier == identifier && $0.accountId == account.uid }
                 let latestProfiles = try await profiles.installedProfiles()
                 try requireCurrent(epoch, token: token)
+                if !displacingOtherProfiles, latestProfiles.contains(where: { $0.needsConfirmedStop && $0.identifier != identifier }) {
+                    throw CloudGatewayMacConfigError.busy
+                }
                 let savedProfileExists = saved.map { config in
                     latestProfiles.contains { $0.identifier == config.identifier && $0.reference == (try? config.reference) }
                 } ?? false
@@ -748,7 +784,7 @@ public final class CloudGatewayMacController {
                     if config == saved, !savedProfileExists { try await configs.restore(config) }
                     try requireCurrent(epoch, token: token)
                     connectInFlight = true
-                    startRequested = try await configs.connect(config)
+                    startRequested = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
                 } catch CloudGatewayMacConfigError.unavailable {
                     connectInFlight = false
                     try requireCurrent(epoch, token: token)
@@ -756,7 +792,7 @@ public final class CloudGatewayMacController {
                     config = try await configs.install(option: option, accountId: account.uid)
                     try requireCurrent(epoch, token: token)
                     connectInFlight = true
-                    startRequested = try await configs.connect(config)
+                    startRequested = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
                 }
                 connectInFlight = false
                 try requireCurrent(epoch, token: token)
@@ -941,6 +977,7 @@ public final class CloudGatewayMacController {
         identifier: String,
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
+        if managedReconnectIdentifier != nil { return stopAfterManagedReconnect(identifier: identifier, onCompletion: onCompletion) }
         let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
             else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
             else if !hasAuthorizedInventory { .accessDenied }
@@ -986,8 +1023,29 @@ public final class CloudGatewayMacController {
         return true
     }
 
+    private func stopAfterManagedReconnect(
+        identifier: String?, onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
+    ) -> Bool {
+        guard managedStopTask == nil, let connection = commandTask, isStarted, !isShuttingDown else {
+            onCompletion?(.failed(.busy))
+            return false
+        }
+        if identifier == nil || identifier == managedReconnectIdentifier { connection.cancel() }
+        managedStopTask = Task { [weak self] in
+            await connection.value
+            guard let self else { onCompletion?(.unknown); return }
+            await cancellationTask?.value
+            guard !isShuttingDown, !Task.isCancelled else { onCompletion?(.unknown); return }
+            managedStopTask = nil
+            if let identifier { _ = disconnectClient(identifier: identifier, onCompletion: onCompletion) }
+            else { _ = turnOff(onCompletion: onCompletion) }
+        }
+        return true
+    }
+
     @discardableResult
     public func turnOff(onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil) -> Bool {
+        if managedReconnectIdentifier != nil { return stopAfterManagedReconnect(identifier: nil, onCompletion: onCompletion) }
         guard canIssueLocalCommand else {
             onCompletion?(.failed(.busy))
             return false
@@ -1118,6 +1176,7 @@ public final class CloudGatewayMacController {
     @discardableResult
     public func signOut() -> Bool {
         guard isStarted, !isShuttingDown else { return false }
+        onAuthenticationChange?()
         accessResult = nil
         if let retainedLogin, retainedLogin.phase != .finished { finishRetainedLogin(retainedLogin.attemptId, result: .cancelled) }
         clearAccountPresentation()

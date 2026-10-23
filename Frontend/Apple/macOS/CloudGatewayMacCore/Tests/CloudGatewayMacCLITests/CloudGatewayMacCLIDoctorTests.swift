@@ -110,3 +110,25 @@ import Testing
 private func waitForHeldValidation(_ release: DispatchSemaphore) {
     release.wait()
 }
+
+@MainActor
+@Test func doctorKeepsPreciseReadinessEvidenceAndSuggestionWithoutControllerMutation() async throws {
+    for code in ["extension_mismatch", "initial_setup_required", "approval_required", "restart_required",
+                 "invalid_bundle", "checking_readiness", "activation_failed"] {
+        let doctor = CloudGatewayMacCLIDoctor(probes: [
+            .init(name: "extension", requirement: .setup) {
+                .init(name: "extension", status: .fail, evidence: "Specific extension state",
+                      suggestion: "Run: cloudgateway update", failureCode: code)
+            }
+        ])
+        guard case .failure(let error) = await doctor.execute(timeout: .seconds(30)) else {
+            Issue.record("Missing precise setup failure"); return
+        }
+        #expect(error.code.rawValue == code)
+        #expect(error.code.exitCode == (code == "activation_failed" ? 9 : 4))
+        #expect(error.message == "Specific extension state")
+        #expect(error.suggestion == "Run: cloudgateway update")
+        guard case .doctor(let report) = error.data else { Issue.record("Missing diagnostics"); return }
+        #expect(report.checks.first?.failureCode == code)
+    }
+}

@@ -59,7 +59,7 @@ final class CloudGatewayMacDoctor {
             && FileManager.default.fileExists(atPath: extensionURL.path)
         return .init(name: "resources", status: valid ? .pass : .fail,
                      evidence: valid ? "Firebase configuration and VPN extension are present" : "Required app resources are missing",
-                     suggestion: valid ? nil : "Reinstall the complete CloudGateway app")
+                     suggestion: valid ? nil : "Reinstall the complete CloudGateway app", failureCode: valid ? nil : "invalid_bundle")
     }
 
     nonisolated private func platform() -> Check {
@@ -89,7 +89,7 @@ final class CloudGatewayMacDoctor {
                              suggestion: running == app ? nil : "Run the installed command after the update finishes")
             } catch {
                 return .init(name: "identity", status: .fail, evidence: "Component identities could not be verified",
-                             suggestion: "Reinstall CloudGateway in /Applications")
+                             suggestion: "Reinstall CloudGateway in /Applications", failureCode: "invalid_bundle")
             }
         }.value
     }
@@ -135,13 +135,38 @@ final class CloudGatewayMacDoctor {
     }
 
     private func extensionCheck() -> Check {
+        if evidence?.extensionState != .ready {
+            switch evidence?.setupState {
+            case .awaitingRestart:
+                return .init(name: "extension", status: .fail,
+                             evidence: "The controller recorded that extension activation requires a restart",
+                             suggestion: "Restart this Mac, then check the update operation again", failureCode: "restart_required")
+            case .awaitingApproval:
+                return .init(name: "extension", status: .fail,
+                             evidence: "Extension activation is waiting for Apple approval",
+                             suggestion: "Finish extension approval in System Settings on this Mac", failureCode: "approval_required")
+            case .invalidBundle:
+                return .init(name: "extension", status: .fail,
+                             evidence: "The controller could not verify the installed VPN extension",
+                             suggestion: "Reinstall the complete CloudGateway app in /Applications", failureCode: "invalid_bundle")
+            case .failed(let code):
+                return .init(name: "extension", status: .fail,
+                             evidence: "The controller recorded extension activation failure (error \(code))",
+                             suggestion: "Check extension approval and signing, then retry cloudgateway update", failureCode: "activation_failed")
+            case .activating, .checkingConnection:
+                return .init(name: "extension", status: .fail,
+                             evidence: "The controller is activating or checking the VPN extension",
+                             suggestion: "Wait for the update operation and check its status", failureCode: "checking_readiness")
+            default: break
+            }
+        }
         switch evidence?.extensionState {
         case .ready: return .init(name: "extension", status: .pass, evidence: "The installed VPN extension answered an authenticated probe")
         case .enabled: return .init(name: "extension", status: .warning, evidence: "The extension is enabled, but runtime readiness is unverified")
-        case .incompatible: return .init(name: "extension", status: .fail, evidence: "The authenticated running extension does not match the installed build", suggestion: "Open CloudGateway to finish the VPN extension update")
-        case .awaitingApproval: return .init(name: "extension", status: .fail, evidence: "System Extensions reports pending user approval", suggestion: "Finish extension approval in System Settings on this Mac")
-        case .disabled: return .init(name: "extension", status: .fail, evidence: "System Extensions reports the installed extension is disabled", suggestion: "Open CloudGateway to finish VPN setup")
-        case .missing: return .init(name: "extension", status: .fail, evidence: "System Extensions did not report an installed extension", suggestion: "Open CloudGateway to install the VPN extension")
+        case .incompatible: return .init(name: "extension", status: .fail, evidence: "The authenticated running extension does not match the installed build", suggestion: "Run cloudgateway update to replace the VPN extension from the installed app", failureCode: "extension_mismatch")
+        case .awaitingApproval: return .init(name: "extension", status: .fail, evidence: "System Extensions reports pending user approval", suggestion: "Finish extension approval in System Settings on this Mac", failureCode: "approval_required")
+        case .disabled: return .init(name: "extension", status: .fail, evidence: "System Extensions reports the installed extension is disabled", suggestion: "Open CloudGateway to finish VPN setup", failureCode: "initial_setup_required")
+        case .missing: return .init(name: "extension", status: .fail, evidence: "System Extensions did not report an installed extension", suggestion: "Open CloudGateway to install the VPN extension", failureCode: "initial_setup_required")
         case .unknown, nil: return .init(name: "extension", status: .unknown, evidence: "Extension approval and readiness could not be established")
         }
     }

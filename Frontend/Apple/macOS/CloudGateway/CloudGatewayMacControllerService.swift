@@ -44,13 +44,21 @@ final class CloudGatewayMacControllerService {
                                                             record: .extensionUpdates)
             try CloudGatewayMacControllerUpdateStorage.save(data, directory: directory)
         }
+        weak var orchestratorReference: CloudGatewayMacControllerOrchestrator?
         let runtime = CloudGatewayMacPassiveRuntime {
             let runtime = CloudGatewayMacControllerRuntime()
+            runtime.controller.onAuthenticationChange = { [weak orchestrator = orchestratorReference] in
+                orchestrator?.authenticationDidChange()
+            }
             runtime.controller.start()
             return runtime
         }
         self.runtime = runtime
         let installedURL = URL(fileURLWithPath: "/Applications/CloudGateway.app")
+        let activation = CloudGatewayExtensionActivationCoordinator(
+            installedURL: installedURL, teamIdentifier: team, appIdentity: identity
+        )
+        let managed = CloudGatewayMacManagedUpdateWorkflow(directory: directory)
         let effects = CloudGatewayMacControllerEffects(
             snapshot: { state, canUpdate in
                 .init(snapshot: runtime.require().controller.snapshot(), setupState: state,
@@ -151,10 +159,24 @@ final class CloudGatewayMacControllerService {
             refreshInventoryIfDue: { runtime.initialized?.controller.refreshInventoryIfDue() },
             setAutomaticInventoryRefreshAllowed: {
                 runtime.initialized?.controller.setAutomaticInventoryRefreshAllowed($0, discardDeferred: $1)
-            }
+            },
+            managedUpdateObservation: { try await runtime.require().controller.managedUpdateObservation() },
+            reconnectClient: { identifier, complete in
+                runtime.require().controller.connectClient(identifier: identifier, displacingOtherProfiles: false,
+                                                           onCompletion: complete)
+            },
+            cancelManagedReconnect: { identifier in
+                await runtime.require().controller.cancelManagedReconnect(identifier: identifier)
+            },
+            activateExtension: { id, target, event in
+                activation.activate(attemptId: id, target: target, onEvent: event)
+            },
+            activationIsPending: { activation.isPending }
         )
         let orchestrator = CloudGatewayMacControllerOrchestrator(identity: identity, effects: effects,
-                                                                 requests: requests, extensionUpdates: updates)
+                                                                 requests: requests, extensionUpdates: updates,
+                                                                 managedUpdates: managed)
+        orchestratorReference = orchestrator
         self.orchestrator = orchestrator
         server = try CloudGatewayMacControllerServer(teamIdentifier: team, appVersion: identity.version,
                                                      appBuild: identity.build, buildIdentity: identity) {
@@ -163,10 +185,11 @@ final class CloudGatewayMacControllerService {
     }
 
     func run() {
-        server.resume()
         Task { [weak self] in
+            guard let self else { return }
+            await orchestrator.bootstrapManagedUpdate()
+            server.resume()
             while !Task.isCancelled {
-                guard let self else { return }
                 await orchestrator.tick()
                 if orchestrator.canExit, server.invalidateIfIdle() {
                     runtime.initialized?.shutdown()

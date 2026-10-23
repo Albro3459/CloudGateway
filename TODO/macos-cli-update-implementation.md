@@ -1,6 +1,6 @@
 # Implement controller-owned CLI updates
 
-Status: approved with Main Astra High, implementation pending
+Status: implemented and unsigned validation passed, fresh Secure Sol High review in progress
 
 Behavior contract:
 [macos-cli-update.md](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-update.md).
@@ -184,3 +184,14 @@ Preserve existing ordinary command semantics and all current unsigned checks.
 Record live SystemExtensions/SSH behavior as unverified until an explicitly
 authorized signed runtime exercise occurs. Do not run signed tests or mutate
 the live VPN as part of implementation validation.
+
+## Validation checkpoint
+
+- Plans approved with Main Astra High and committed as `92adeef4`
+- Full implementation and both Main Sol High review rounds' findings addressed
+- Unsigned `./scripts/test.sh macos` passed: 581 macOS package tests, strict
+  Periphery scans, arm64 app/extension build, and 50 packaged CLI checks
+- Main Codex exhausted its usage. The user approved Secure Sol High for the
+  remaining fresh review loop, which is now in progress
+- Implementation remains uncommitted until the final review is complete
+- No signed tests or live VPN/extension actions performed

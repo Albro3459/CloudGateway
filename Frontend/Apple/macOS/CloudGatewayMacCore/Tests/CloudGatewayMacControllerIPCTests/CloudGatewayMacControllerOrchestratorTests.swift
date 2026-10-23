@@ -45,6 +45,8 @@ final class ControllerOrchestratorEffects {
 
     var now = Date(timeIntervalSince1970: 1_000)
     var installed: CloudGatewayMacBuildIdentity? = controllerBoundaryBuild
+    var extensionTarget = controllerBoundaryBuild
+    var failExtensionWrites = false
     var active = false
     var snapshotState: CloudGatewayMacControllerState?
     var authenticated = true
@@ -53,6 +55,7 @@ final class ControllerOrchestratorEffects {
     var writes = 0
     var data: Data?
     var performed: [CloudGatewayMacControllerRequest.Action] = []
+    var performedRequests: [CloudGatewayMacControllerRequest] = []
     var completion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
     var performHandler: ((CloudGatewayMacControllerRequest, @MainActor (CloudGatewayMacCommandOutcome) -> Void) -> Bool)?
     var sessions = CloudGatewayMacSessionFence()
@@ -75,6 +78,25 @@ final class ControllerOrchestratorEffects {
     var pings = 0
     var inventoryAdmission = false
     var discardsDeferredInventory = false
+    var registration = CloudGatewayMacSetupState.required
+    var managedData: Data?
+    var revocationData: Data?
+    var failManagedWrites = false
+    var failRevocationWrites = false
+    var observationAccountId: String? = "account"
+    var authorizedIdentifiers = ["account/region/client"]
+    var runtimeInitialized = true
+    var runtimeInitializations = 0
+    var activationIds: [UUID] = []
+    var activationTargets: [CloudGatewayMacBuildIdentity] = []
+    var activationPending = false
+    var activationEvent: (@MainActor (CloudGatewayMacExtensionActivationEvent) -> Void)?
+    var reconnects: [String] = []
+    var reconnectCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
+
+    var managedJournal: CloudGatewayMacManagedUpdateWorkflow.Journal? {
+        managedData.flatMap { try? JSONDecoder().decode(CloudGatewayMacManagedUpdateWorkflow.Journal.self, from: $0) }
+    }
 
     func makeRequests() throws -> CloudGatewayMacControllerRequests {
         try .init(data: data, now: { self.now }) { data in
@@ -84,10 +106,22 @@ final class ControllerOrchestratorEffects {
         }
     }
 
-    func make(requests: CloudGatewayMacControllerRequests? = nil) throws -> CloudGatewayMacControllerOrchestrator {
+    func make(requests: CloudGatewayMacControllerRequests? = nil,
+              managed: Bool = false,
+              identity: CloudGatewayMacBuildIdentity = controllerBoundaryBuild) throws -> CloudGatewayMacControllerOrchestrator {
         let updates = try CloudGatewayMacExtensionUpdateOrchestrator(
-            stored: storedUpdates, now: { self.now }, bootSession: { "boot" }, persist: { self.storedUpdates = $0 }
+            stored: storedUpdates, now: { self.now }, bootSession: { "boot" }, persist: {
+                if self.failExtensionWrites { throw Failure.persistence }
+                self.storedUpdates = $0
+            }
         )
+        let workflow = managed ? CloudGatewayMacManagedUpdateWorkflow(load: { self.managedData }, persist: {
+            if self.failManagedWrites { throw Failure.persistence }
+            self.managedData = $0
+        }, loadRevocation: { self.revocationData }, persistRevocation: {
+            if self.failRevocationWrites { throw Failure.persistence }
+            self.revocationData = $0
+        }) : nil
         let effects = CloudGatewayMacControllerEffects(
             snapshot: { setup, canUpdate in
                 self.snapshotState ?? controllerBoundaryState(active: self.active, setup: setup, canUpdateExtension: canUpdate)
@@ -95,6 +129,7 @@ final class ControllerOrchestratorEffects {
             hasPendingWork: { self.hasPendingWork },
             perform: { request, completion in
                 self.performed.append(request.action)
+                self.performedRequests.append(request)
                 self.completion = completion
                 return self.performHandler?(request, completion) ?? true
             },
@@ -118,7 +153,7 @@ final class ControllerOrchestratorEffects {
                 }
             },
             setSetupState: { self.setup = $0 }, hasAnyActiveTunnel: { self.active },
-            installedIdentity: { self.installed }, extensionIdentity: { controllerBoundaryBuild },
+            installedIdentity: { self.installed }, extensionIdentity: { self.extensionTarget },
             ping: { identity in
                 self.pings += 1
                 if self.holdsPing { await withCheckedContinuation { self.releasePing = $0 } }
@@ -126,13 +161,55 @@ final class ControllerOrchestratorEffects {
                 return CloudGatewayMacExtensionVersion(infoDictionary: [
                     "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version,
                 ], codeHash: identity.codeHash)
-            }, userActivity: { self.activity.append($0) },
+            }, registrationReadiness: { self.registration },
+            initializeRuntime: {
+                if !self.runtimeInitialized { self.runtimeInitializations += 1; self.runtimeInitialized = true }
+            },
+            isRuntimeInitialized: { self.runtimeInitialized },
+            diagnostics: { .init(runtimeInitialized: self.runtimeInitialized,
+                                 extensionState: self.authenticated ? .ready : .enabled) },
+            userActivity: { self.activity.append($0) },
             refreshInventoryIfDue: { self.automaticRefreshes += 1 },
             setAutomaticInventoryRefreshAllowed: { self.inventoryAdmission = $0; self.discardsDeferredInventory = $1 },
-            monotonicNow: { .seconds(self.now.timeIntervalSince1970) }, now: { self.now }
+            monotonicNow: { .seconds(self.now.timeIntervalSince1970) }, now: { self.now },
+            managedUpdateObservation: {
+                .init(accountId: self.observationAccountId,
+                      profiles: [.init(identifier: "account/region/client", status: self.active ? .connected : .disconnected)],
+                      authorizedIdentifiers: self.authorizedIdentifiers)
+            },
+            reconnectClient: { identifier, complete in
+                self.reconnects.append(identifier)
+                self.reconnectCompletion = complete
+                return true
+            },
+            activateExtension: { id, target, event in
+                self.activationIds.append(id)
+                self.activationTargets.append(target)
+                self.activationPending = true
+                self.activationEvent = event
+                return true
+            },
+            activationIsPending: { self.activationPending }
         )
-        return try .init(identity: controllerBoundaryBuild, effects: effects,
-                         requests: requests ?? makeRequests(), extensionUpdates: updates)
+        return try .init(identity: identity, effects: effects,
+                         requests: requests ?? makeRequests(), extensionUpdates: updates, managedUpdates: workflow)
+    }
+
+    func makeManaged(active: Bool = false,
+                     identity: CloudGatewayMacBuildIdentity = controllerBoundaryBuild) throws -> CloudGatewayMacControllerOrchestrator {
+        self.active = active
+        authenticated = false
+        registration = .updateRequired
+        sessions.changeAccount(to: "account")
+        return try make(managed: true, identity: identity)
+    }
+
+    func sendActivation(_ event: CloudGatewayMacExtensionActivationEvent) {
+        switch event {
+        case .approvalRequired: break
+        case .completed, .restartRequired, .failed: activationPending = false
+        }
+        activationEvent?(event)
     }
 
     func ready(_ controller: CloudGatewayMacControllerOrchestrator) async throws {
@@ -144,9 +221,11 @@ final class ControllerOrchestratorEffects {
 
 func controllerBoundaryRequest(_ action: CloudGatewayMacControllerRequest.Action,
                                        id: UUID = UUID(), contextId: UUID? = nil,
-                                       build: CloudGatewayMacBuildIdentity = controllerBoundaryBuild) -> CloudGatewayMacControllerRequest {
+                                       build: CloudGatewayMacBuildIdentity = controllerBoundaryBuild,
+                                       allowDisconnect: Bool? = nil) -> CloudGatewayMacControllerRequest {
     .init(action: action, id: id, identifier: action == .connect || action == .disconnectClient ? "account/region/client" : nil,
-          contextId: contextId, appVersion: build.version, appBuild: build.build, buildIdentity: build)
+          contextId: contextId, allowDisconnect: allowDisconnect,
+          appVersion: build.version, appBuild: build.build, buildIdentity: build)
 }
 
 @MainActor
@@ -797,4 +876,557 @@ func controllerOrchestratorKeepsSignOutOutcomeAfterTheSessionEnds(cleanupSucceed
     #expect(lookup.operation?.failure == .rejected)
     #expect(lookup.outcome == .failed(.configUnavailable))
     #expect(effects.performed == [.connect])
+}
+
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerManagedUpdateConfirmsBeforeEffectsAndRestoresOnlyTheCapturedConnection(active: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: active)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let request = controllerBoundaryRequest(.update, allowDisconnect: active)
+    let prepared = await controller.handle(request)
+    #expect(prepared.operation?.state == .accepted)
+    #expect(prepared.update?.phase == .prepared)
+    #expect(prepared.update?.reconnect == active)
+    #expect(effects.managedJournal?.confirmed == false)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.activationIds.isEmpty)
+    #expect(await controller.handle(request).operation?.id == request.id)
+
+    let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: request.id)
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    if active {
+        try #require(await controllerBoundaryEventually { effects.performed == [.disconnectClient] })
+        #expect(effects.managedJournal?.confirmed == true)
+        #expect(effects.managedJournal?.phase == .stopping)
+        #expect(effects.performedRequests.first?.identifier == "account/region/client")
+        #expect(effects.activationIds.isEmpty)
+        effects.active = false
+        effects.completion?(.completed(warning: nil))
+    }
+    try #require(await controllerBoundaryEventually { effects.activationIds == [request.id] })
+    #expect(effects.activationTargets == [controllerBoundaryBuild])
+    #expect(effects.reconnects.isEmpty)
+    effects.sendActivation(.approvalRequired)
+    let approval = await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(approval.update?.phase == .approvalRequired)
+    #expect(approval.operation?.state == .running)
+    #expect(approval.status?.hasActiveTunnel == false)
+    #expect(!controller.canExit)
+    #expect(await controller.handle(controllerBoundaryRequest(.diagnostics)).diagnostics?.setupState == .awaitingApproval)
+    #expect(await controller.handle(controllerBoundaryRequest(.snapshot)).state?.setup == .awaitingApproval)
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    #expect(effects.activationIds == [request.id])
+
+    effects.sendActivation(.completed)
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.managedJournal?.phase == .checkingReadiness })
+    #expect(effects.reconnects.isEmpty)
+    effects.authenticated = true
+    await controller.tick()
+    if active {
+        try #require(await controllerBoundaryEventually { effects.reconnects == ["account/region/client"] })
+        effects.reconnectCompletion?(.startRequested(identifier: "account/region/client", warning: nil))
+    }
+    try #require(await controllerBoundaryEventually { effects.managedJournal?.phase == .completed })
+    let completed = await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(completed.operation == .init(id: request.id, state: .completed))
+    #expect(completed.update?.identifier == (active ? "account/region/client" : nil))
+    #expect(completed.status?.hasActiveTunnel == false)
+    #expect(effects.performed == (active ? [.disconnectClient] : []))
+    #expect(effects.reconnects == (active ? ["account/region/client"] : []))
+}
+
+@MainActor
+@Test func controllerManagedUpdateRejectsDisconnectWithoutConsentAndKeepsTheMatchingBuildANoOp() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let denied = await controller.handle(controllerBoundaryRequest(.update, allowDisconnect: false))
+    #expect(denied.update?.error == .disconnectRequired)
+    #expect(denied.accepted == false)
+    #expect(effects.managedData == nil)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.activationIds.isEmpty)
+
+    effects.authenticated = true
+    effects.sessions.changeAccount(to: nil)
+    effects.observationAccountId = nil
+    let unchanged = await controller.handle(controllerBoundaryRequest(.update, allowDisconnect: false))
+    #expect(unchanged.operation?.state == .completed)
+    #expect(unchanged.update?.phase == .completed)
+    #expect(unchanged.update?.reconnect == false)
+    #expect(effects.active)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.activationIds.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+}
+
+@MainActor
+@Test func controllerManagedUpdateAndInitialMenuSetupShareOneActivationGate() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let initial = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    let initialId = try #require(initial.operationId)
+    #expect(initial.accepted == true)
+    #expect(effects.activationIds == [initialId])
+    effects.sendActivation(.approvalRequired)
+    await controller.bootstrapManagedUpdate()
+    #expect(effects.storedUpdates.state.attempt?.id == initialId)
+    #expect(effects.activationIds == [initialId])
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    let blocked = await controller.handle(controllerBoundaryRequest(.update, allowDisconnect: false))
+    #expect(blocked.update?.error == .busy)
+    #expect(effects.managedData == nil)
+    #expect(effects.activationIds == [initialId])
+
+    effects.sendActivation(.failed(17))
+    try #require(await controllerBoundaryEventually { effects.storedUpdates.state.attempt == nil })
+    let request = controllerBoundaryRequest(.update, allowDisconnect: false)
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [initialId, request.id] })
+    for action in [CloudGatewayMacControllerRequest.Action.connect, .refresh, .prepareClient, .prepareExtensionUpdate, .beginLogin] {
+        #expect(await controller.handle(controllerBoundaryRequest(action)).error == .busy)
+    }
+    #expect(await controller.handle(controllerBoundaryRequest(.update)).update?.error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.extensionUpdateFinished, contextId: request.id)).error == .extensionAttemptChanged)
+    #expect(effects.activationIds == [initialId, request.id])
+    #expect(effects.performed.isEmpty)
+    effects.sendActivation(.failed(18))
+}
+
+@MainActor
+@Test func controllerManagedUpdateBootstrapRecoversDurableLookupWithoutAFrontend() async throws {
+    let previous = ControllerOrchestratorEffects()
+    let oldController = try previous.makeManaged()
+    _ = await oldController.handle(controllerBoundaryRequest(.lifecycle))
+    let request = controllerBoundaryRequest(.update, allowDisconnect: false)
+    #expect(await oldController.handle(request).operation?.state == .accepted)
+    _ = await oldController.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    try #require(await controllerBoundaryEventually { previous.activationIds == [request.id] })
+    previous.sendActivation(.approvalRequired)
+
+    let effects = ControllerOrchestratorEffects()
+    effects.now = previous.now
+    effects.managedData = previous.managedData
+    effects.storedUpdates = previous.storedUpdates
+    let restored = try effects.makeManaged()
+    effects.runtimeInitialized = false
+    await restored.bootstrapManagedUpdate()
+    #expect(effects.runtimeInitializations == 1)
+    try #require(await controllerBoundaryEventually { effects.activationIds == [request.id] })
+    let lookup = await restored.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(lookup.operation?.id == request.id)
+    #expect(lookup.operation?.state == .running)
+    #expect(lookup.update?.target == controllerBoundaryBuild)
+    #expect(lookup.update?.reconnect == false)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+
+    effects.sendActivation(.restartRequired)
+    #expect(await restored.handle(controllerBoundaryRequest(.diagnostics)).diagnostics?.setupState == .awaitingRestart)
+    #expect(await restored.handle(controllerBoundaryRequest(.operation, contextId: request.id)).update?.phase == .restartRequired)
+    #expect(!restored.canExit)
+    previous.sendActivation(.failed(1))
+}
+
+@MainActor
+@Test func controllerManagedBootstrapLeavesColdRuntimeAloneAndExpiresUnconfirmedWorkWithoutEffects() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    effects.runtimeInitialized = false
+    await controller.bootstrapManagedUpdate()
+    #expect(effects.runtimeInitializations == 0)
+    #expect(await controller.handle(controllerBoundaryRequest(.diagnostics)).diagnostics?.runtimeInitialized == false)
+    #expect(effects.runtimeInitializations == 0)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let request = controllerBoundaryRequest(.update, allowDisconnect: false)
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    effects.now.addTimeInterval(31)
+    let restored = try effects.make(managed: true)
+    await restored.bootstrapManagedUpdate()
+    let expired = await restored.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(expired.update?.error == .confirmationExpired)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.activationIds.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+}
+
+@MainActor
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .disconnectClient, .signOut])
+func controllerManagedUpdateExplicitStopOrLogoutSuppressesReconnectBeforeTheEffect(action: CloudGatewayMacControllerRequest.Action) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let update = controllerBoundaryRequest(.update, allowDisconnect: true)
+    #expect(await controller.handle(update).operation?.state == .accepted)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: update.id))
+    try #require(await controllerBoundaryEventually { effects.performed == [.disconnectClient] })
+    effects.active = false
+    effects.completion?(.completed(warning: nil))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [update.id] })
+    effects.sendActivation(.approvalRequired)
+    let stop = controllerBoundaryRequest(action)
+    #expect(await controller.handle(stop).operation?.state == .accepted)
+    #expect(effects.managedJournal?.reconnect == true)
+    effects.performHandler = { _, complete in
+        #expect(effects.managedJournal?.reconnect == false)
+        #expect(effects.managedJournal?.warning == .reconnectSuppressed)
+        if action == .signOut {
+            effects.sessions.changeAccount(to: nil)
+            effects.observationAccountId = nil
+        }
+        complete(.completed(warning: nil))
+        return true
+    }
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: stop.id)).operation?.state == .completed)
+    #expect(effects.activationPending)
+    #expect(!controller.canExit)
+    effects.sessions.changeAccount(to: "account")
+    effects.observationAccountId = "account"
+    effects.sendActivation(.completed)
+    effects.authenticated = true
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.managedJournal?.phase == .completed })
+    #expect(effects.reconnects.isEmpty)
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: update.id)).update?.warning == .reconnectSuppressed)
+}
+
+@MainActor
+@Test func controllerManagedAuthenticationHookIrreversiblyRevokesReconnectAcrossSameAccountLogin() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let update = controllerBoundaryRequest(.update, allowDisconnect: true)
+    _ = await controller.handle(update)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: update.id))
+    try #require(await controllerBoundaryEventually { effects.performed == [.disconnectClient] })
+    effects.active = false
+    effects.completion?(.completed(warning: nil))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [update.id] })
+    effects.sendActivation(.approvalRequired)
+    effects.sessions.changeAccount(to: nil)
+    effects.observationAccountId = nil
+    controller.authenticationDidChange()
+    #expect(effects.managedJournal?.reconnect == false)
+    let redacted = await controller.handle(controllerBoundaryRequest(.operation, contextId: update.id))
+    #expect(redacted.update?.identifier == nil)
+    #expect(redacted.update?.reconnect == false)
+    #expect(redacted.update?.warning == nil)
+    effects.sessions.changeAccount(to: "account")
+    effects.observationAccountId = "account"
+    controller.authenticationDidChange()
+    effects.sendActivation(.completed)
+    effects.authenticated = true
+    await controller.tick()
+    try #require(await controllerBoundaryEventually { effects.managedJournal?.phase == .completed })
+    #expect(effects.reconnects.isEmpty)
+    #expect(effects.performed == [.disconnectClient])
+}
+
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerHandoffReconcilesSupersededApprovalInTheSameBootAfterTheOldOwnerExits(extensionChanged: Bool) async throws {
+    let nextTarget = extensionChanged ? controllerBoundaryReplacement : controllerBoundaryBuild
+    let previous = ControllerOrchestratorEffects()
+    let oldController = try previous.makeManaged()
+    _ = await oldController.handle(controllerBoundaryRequest(.lifecycle))
+    let oldUpdate = controllerBoundaryRequest(.update, allowDisconnect: false)
+    _ = await oldController.handle(oldUpdate)
+    _ = await oldController.handle(controllerBoundaryRequest(.confirmOperation, contextId: oldUpdate.id))
+    try #require(await controllerBoundaryEventually { previous.activationIds == [oldUpdate.id] })
+    previous.sendActivation(.approvalRequired)
+    previous.installed = controllerBoundaryReplacement
+    previous.extensionTarget = nextTarget
+    await oldController.tick()
+    #expect(previous.managedJournal?.phase == .superseded)
+    #expect(previous.activationPending)
+    #expect(previous.storedUpdates.state.attempt?.id == oldUpdate.id)
+    await oldController.bootstrapManagedUpdate()
+    #expect(previous.storedUpdates.state.attempt?.id == oldUpdate.id)
+    #expect(oldController.canExit)
+
+    let effects = ControllerOrchestratorEffects()
+    effects.managedData = previous.managedData
+    effects.storedUpdates = previous.storedUpdates
+    effects.installed = controllerBoundaryReplacement
+    effects.extensionTarget = nextTarget
+    effects.runtimeInitialized = false
+    let restored = try effects.makeManaged(identity: controllerBoundaryReplacement)
+    effects.failExtensionWrites = true
+    await restored.bootstrapManagedUpdate()
+    #expect(effects.storedUpdates.state.attempt?.id == oldUpdate.id)
+    #expect(effects.activationIds.isEmpty)
+    await restored.tick()
+    #expect(effects.storedUpdates.state.attempt?.id == oldUpdate.id)
+    #expect(!restored.canExit)
+    effects.failExtensionWrites = false
+    await restored.tick()
+    #expect(effects.runtimeInitializations == 0)
+    #expect(effects.storedUpdates.state.attempt == nil)
+    #expect(effects.storedUpdates.receipts.contains { $0.id == oldUpdate.id && $0.outcome == .superseded })
+    let oldResult = await restored.handle(controllerBoundaryRequest(.operation, contextId: oldUpdate.id,
+                                                                    build: controllerBoundaryReplacement))
+    #expect(oldResult.update?.phase == .superseded)
+    let newUpdate = controllerBoundaryRequest(.update, build: controllerBoundaryReplacement, allowDisconnect: false)
+    #expect(await restored.handle(newUpdate).operation?.state == .accepted)
+    _ = await restored.handle(controllerBoundaryRequest(.confirmOperation, contextId: newUpdate.id,
+                                                        build: controllerBoundaryReplacement))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [newUpdate.id] })
+    #expect(effects.activationTargets == [nextTarget])
+    #expect(effects.reconnects.isEmpty)
+    #expect(effects.performed.isEmpty)
+    effects.sendActivation(.failed(1))
+    previous.sendActivation(.failed(1))
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerBootstrapReconcilesAnOrphanAttemptWithoutBorrowingItsReconnectAuthority(confirmedOwner: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let original = try effects.makeManaged()
+    _ = await original.handle(controllerBoundaryRequest(.lifecycle))
+    let update = controllerBoundaryRequest(.update, allowDisconnect: false)
+    if confirmedOwner {
+        #expect(await original.handle(update).operation?.state == .accepted)
+        var journal = try #require(effects.managedJournal)
+        journal.confirmed = true
+        journal.phase = .activating
+        effects.managedData = try JSONEncoder().encode(journal)
+    }
+    let orphan = CloudGatewayMacExtensionUpdateOrchestrator.Attempt(
+        id: UUID(), target: controllerBoundaryBuild, bootSession: "boot"
+    )
+    effects.storedUpdates = .init(state: .approvalPending(orphan))
+    let restored = try effects.make(managed: true)
+    await restored.bootstrapManagedUpdate()
+    #expect(effects.storedUpdates.receipts.contains { $0.id == orphan.id && $0.outcome == .superseded })
+    if confirmedOwner {
+        try #require(await controllerBoundaryEventually { effects.activationIds == [update.id] })
+        #expect(effects.managedJournal?.id == update.id)
+        effects.sendActivation(.failed(1))
+    } else {
+        #expect(effects.activationIds.isEmpty)
+        #expect(effects.managedData == nil)
+        #expect(await restored.handle(update).operation?.state == .accepted)
+        #expect(effects.activationIds.isEmpty)
+    }
+    #expect(effects.performed.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerOperationLookupIncludesOnlyTheRequestedManagedUpdate(pending: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    effects.authenticated = !pending
+    let update = controllerBoundaryRequest(.update, allowDisconnect: false)
+    _ = await controller.handle(update)
+    if pending {
+        _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: update.id))
+        try #require(await controllerBoundaryEventually { effects.activationIds == [update.id] })
+        effects.sendActivation(.approvalRequired)
+    }
+    effects.performHandler = { _, done in done(.completed(warning: nil)); return true }
+    let stop = controllerBoundaryRequest(.turnOff)
+    #expect(await controller.handle(stop).operation?.state == .accepted)
+    let confirmed = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: stop.id))
+    #expect(confirmed.operation?.id == stop.id)
+    #expect(confirmed.update == nil)
+    let ordinary = await controller.handle(controllerBoundaryRequest(.operation, contextId: stop.id))
+    #expect(ordinary.operation == .init(id: stop.id, state: .completed))
+    #expect(ordinary.update == nil)
+    let unknownId = UUID()
+    let unknown = await controller.handle(controllerBoundaryRequest(.operation, contextId: unknownId))
+    #expect(unknown.operation == .init(id: unknownId, state: .unknown))
+    #expect(unknown.update == nil)
+    let managed = await controller.handle(controllerBoundaryRequest(.operation, contextId: update.id))
+    #expect(managed.operation?.id == update.id)
+    #expect(managed.update?.id == update.id)
+    #expect(await controller.handle(controllerBoundaryRequest(.status)).update?.id == update.id)
+    #expect(await controller.handle(controllerBoundaryRequest(.snapshot)).update?.id == update.id)
+    if pending { effects.sendActivation(.failed(1)) }
+}
+
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerBootstrapExpiresPreparedOrphansAndPreservesAnActualRestartRequirement(restartRequired: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let attempt = CloudGatewayMacExtensionUpdateOrchestrator.Attempt(
+        id: UUID(), target: controllerBoundaryBuild, bootSession: "boot"
+    )
+    effects.storedUpdates = .init(state: restartRequired ? .rebootRequired(attempt)
+        : .prepared(attempt, deadline: effects.now.addingTimeInterval(30)))
+    let controller = try effects.makeManaged()
+    await controller.bootstrapManagedUpdate()
+    if restartRequired {
+        #expect(effects.storedUpdates.state == .rebootRequired(attempt))
+        #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    } else {
+        #expect(effects.storedUpdates.state.attempt == nil)
+        #expect(effects.storedUpdates.receipts.contains { $0.id == attempt.id && $0.outcome == .expired })
+    }
+    #expect(effects.activationIds.isEmpty)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+}
+
+
+@MainActor
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .signOut])
+func controllerStopRetainsDurabilityWarningWithoutAttachingAnotherOperationUpdate(action: CloudGatewayMacControllerRequest.Action) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let update = controllerBoundaryRequest(.update, allowDisconnect: true)
+    _ = await controller.handle(update)
+    _ = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: update.id))
+    try #require(await controllerBoundaryEventually { effects.performed == [.disconnectClient] })
+    effects.active = false
+    effects.completion?(.completed(warning: nil))
+    try #require(await controllerBoundaryEventually { effects.activationIds == [update.id] })
+    effects.sendActivation(.approvalRequired)
+    let stop = controllerBoundaryRequest(action)
+    #expect(await controller.handle(stop).operation?.state == .accepted)
+    effects.failWrites = true
+    effects.failManagedWrites = true
+    effects.failRevocationWrites = true
+    effects.performHandler = { _, complete in
+        if action == .signOut {
+            effects.sessions.changeAccount(to: nil)
+            effects.observationAccountId = nil
+            controller.authenticationDidChange()
+        }
+        complete(.completed(warning: nil))
+        return true
+    }
+    let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: stop.id)
+    let confirmed = await controller.handle(confirmation)
+    #expect(confirmed.operation == .init(id: stop.id, state: .completed))
+    #expect(confirmed.outcome == .completed(warning: .reconnectSuppressionNotPersisted))
+    #expect(confirmed.update == nil)
+    #expect(effects.managedJournal?.reconnect == true)
+    #expect(effects.revocationData == nil)
+    let lookup = await controller.handle(controllerBoundaryRequest(.operation, contextId: stop.id))
+    #expect(lookup.outcome == .completed(warning: .reconnectSuppressionNotPersisted))
+    #expect(lookup.update == nil)
+    #expect(await controller.handle(confirmation).outcome == lookup.outcome)
+    let olderBuild = await controller.handle(controllerBoundaryRequest(.operation, contextId: stop.id,
+                                                                       build: controllerBoundaryReplacement))
+    #expect(olderBuild.operation?.state == .completed)
+    #expect(olderBuild.outcome == nil)
+    #expect(olderBuild.update == nil)
+    #expect(effects.performed == [.disconnectClient, action])
+    #expect(effects.reconnects.isEmpty)
+    effects.sendActivation(.failed(1))
+}
+
+
+@MainActor
+@Test(arguments: [CloudGatewayMacExtensionActivationEvent.completed, .restartRequired, .failed(7)])
+func controllerLegacyActivationRetriesItsTerminalCallbackAfterStorageRecovers(event: CloudGatewayMacExtensionActivationEvent) async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged()
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let initial = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    let id = try #require(initial.operationId)
+    #expect(effects.activationIds == [id])
+    effects.sendActivation(.approvalRequired)
+    effects.failExtensionWrites = true
+    effects.sendActivation(event)
+    #expect(!effects.activationPending)
+    #expect(effects.storedUpdates.state.attempt?.id == id)
+    // A late approval cannot replace the terminal callback waiting for persistence
+    effects.sendActivation(.approvalRequired)
+    effects.now.addTimeInterval(900)
+    await controller.tick()
+    #expect(!controller.canExit)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.connect)).error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.update)).error == .busy)
+    #expect(effects.activationIds == [id])
+    #expect(effects.performed.isEmpty)
+    effects.now.addTimeInterval(900)
+    effects.failExtensionWrites = false
+    effects.authenticated = event == .completed
+    await controller.tick()
+    switch event {
+    case .completed:
+        try #require(await controllerBoundaryEventually { effects.setup == .ready })
+        #expect(effects.storedUpdates.receipts.contains { $0.id == id && $0.outcome == .activationFinished })
+        #expect(effects.storedUpdates.state.attempt == nil)
+        try #require(await controllerBoundaryEventually { controller.canExit })
+    case .restartRequired:
+        #expect(effects.setup == .awaitingRestart)
+        #expect(effects.storedUpdates.state.attempt?.id == id)
+        #expect(!controller.canExit)
+        #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    case .failed:
+        try #require(await controllerBoundaryEventually { effects.setup == .updateRequired })
+        #expect(effects.storedUpdates.receipts.contains { $0.id == id && $0.outcome == .failed })
+        #expect(effects.storedUpdates.state.attempt == nil)
+        try #require(await controllerBoundaryEventually { controller.canExit })
+    case .approvalRequired:
+        Issue.record("Expected a terminal adapter callback")
+    }
+    #expect(effects.activationIds == [id])
+    #expect(effects.managedData == nil)
+    #expect(effects.reconnects.isEmpty)
+}
+
+@MainActor
+@Test func controllerAppReplacementCannotResumeReconnectAfterTheOldOwnerCrashes() async throws {
+    let previous = ControllerOrchestratorEffects()
+    let old = try previous.makeManaged(active: true)
+    _ = await old.handle(controllerBoundaryRequest(.lifecycle))
+    let request = controllerBoundaryRequest(.update, allowDisconnect: true)
+    _ = await old.handle(request)
+    _ = await old.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    try #require(await controllerBoundaryEventually { previous.performed == [.disconnectClient] })
+    previous.active = false
+    previous.completion?(.completed(warning: nil))
+    try #require(await controllerBoundaryEventually { previous.activationIds == [request.id] })
+    previous.sendActivation(.approvalRequired)
+    #expect(previous.managedJournal?.appIdentity == controllerBoundaryBuild)
+
+    let effects = ControllerOrchestratorEffects()
+    effects.managedData = previous.managedData
+    effects.storedUpdates = previous.storedUpdates
+    effects.installed = controllerBoundaryReplacement
+    effects.extensionTarget = controllerBoundaryBuild
+    let replacement = try effects.makeManaged(identity: controllerBoundaryReplacement)
+    await replacement.bootstrapManagedUpdate()
+    try #require(await controllerBoundaryEventually { effects.managedJournal?.phase == .superseded })
+    #expect(effects.managedJournal?.reconnect == false)
+    #expect(effects.activationIds.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.storedUpdates.state.attempt == nil)
+    previous.sendActivation(.failed(1))
+}
+
+@MainActor
+@Test func controllerUpdateChecksAuthenticatedNoopBeforeColdRuntimeWork() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.makeManaged(active: true)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    effects.hasPendingWork = true
+    effects.authenticated = true
+    let request = controllerBoundaryRequest(.update, allowDisconnect: false)
+    let reply = await controller.handle(request)
+    #expect(reply.operation?.state == .completed)
+    #expect(reply.update?.phase == .completed)
+    #expect(reply.update?.reconnect == false)
+    #expect(effects.performed.isEmpty)
+    #expect(effects.activationIds.isEmpty)
+    #expect(effects.reconnects.isEmpty)
+    #expect(effects.pings > 0)
 }

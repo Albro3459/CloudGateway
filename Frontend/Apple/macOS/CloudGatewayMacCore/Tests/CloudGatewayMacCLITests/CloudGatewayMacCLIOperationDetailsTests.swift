@@ -1,3 +1,4 @@
+import CloudGatewayMacIPC
 import Foundation
 import Testing
 @testable import CloudGatewayMacCLI
@@ -124,4 +125,133 @@ private let operationConfig = "uid1/us-sanjose-1/78ab8633-ae25-4287-885f-57bbbf6
     #expect(tunnel["observedAt"] is NSNull)
     #expect(harness.actions == [.lifecycle, .operation])
     #expect(!harness.output.contains("uid1/"))
+}
+
+@MainActor
+@Test func cliRealControllerOperationLookupKeepsOrdinaryAndUnknownIDsSeparateFromRetainedUpdate() async throws {
+    let harness = CLIHarness(cliState())
+    let now = cliObservedAt
+    var journalData: Data?
+    let workflow = CloudGatewayMacManagedUpdateWorkflow(load: { journalData }, persist: { journalData = $0 })
+    let requests = try CloudGatewayMacControllerRequests(data: nil, now: { now }, persist: { _ in })
+    let gate = try CloudGatewayMacExtensionUpdateOrchestrator(now: { now }, bootSession: { "lookup-boot" }, persist: { _ in })
+    let effects = CloudGatewayMacControllerEffects(
+        snapshot: { _, _ in cliState() }, hasPendingWork: { false },
+        perform: { request, completion in
+            #expect(request.action == .turnOff)
+            completion(.completed(warning: nil))
+            return true
+        }, refresh: { .refreshed }, prepareClient: { throw CloudGatewayMacControllerFailure.invalidRequest },
+        setSetupState: { _ in }, hasAnyActiveTunnel: { false }, installedIdentity: { cliBuild },
+        extensionIdentity: { cliBuild }, ping: { identity in
+            CloudGatewayMacExtensionVersion(
+                infoDictionary: ["CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version],
+                codeHash: identity.codeHash
+            )
+        }, now: { now }
+    )
+    let controller = CloudGatewayMacControllerOrchestrator(identity: cliBuild, effects: effects, requests: requests,
+                                                          extensionUpdates: gate, managedUpdates: workflow)
+    harness.onRequest = { await controller.handle($0) }
+    #expect(await harness.run("update", "--json") == 0)
+    let updateId = try #require(workflow.journal?.id)
+    #expect(workflow.journal?.phase == .completed)
+
+    harness.output = ""
+    #expect(await harness.run("down", "--json") == 0)
+    let ordinaryIdText = try #require(harness.json?["operationId"] as? String)
+    let ordinaryId = try #require(UUID(uuidString: ordinaryIdText))
+    #expect(ordinaryId != updateId)
+    for requested in [ordinaryId, UUID()] {
+        harness.output = ""
+        let isUnknown = requested != ordinaryId
+        #expect(await harness.run("status", "--operation", requested.uuidString, "--json") == (isUnknown ? 10 : 0))
+        let record = try #require(harness.json)
+        let data = try #require(record["data"] as? [String: Any])
+        let operation = try #require(data["operation"] as? [String: Any])
+        #expect(operation["id"] as? String == requested.uuidString.lowercased())
+        #expect(operation["state"] as? String == (isUnknown ? "unknown" : "completed"))
+        #expect(data["update"] == nil)
+        if isUnknown {
+            #expect((record["error"] as? [String: Any])?["code"] as? String == "operation_unknown")
+        } else {
+            #expect(record["error"] is NSNull)
+            #expect(operation["result"] as? String == "completed")
+        }
+    }
+
+    harness.output = ""
+    #expect(await harness.run("status", "--operation", updateId.uuidString, "--json") == 0)
+    let updateData = try #require(harness.json?["data"] as? [String: Any])
+    #expect((updateData["update"] as? [String: Any])?["id"] as? String == updateId.uuidString.lowercased())
+    #expect(harness.diagnostics.isEmpty)
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func cliRealControllerRevokingCommandAndLookupRetainFailedSuppressionWarningWithoutUnrelatedUpdate(fails: Bool) async throws {
+    for arguments in [["down"], ["auth", "logout"]] {
+        let harness = CLIHarness(cliState())
+        let now = cliObservedAt
+        let updateId = UUID()
+        let journalData = try JSONEncoder().encode(CloudGatewayMacManagedUpdateWorkflow.Journal(
+            id: updateId, target: cliBuild, appIdentity: cliBuild, allowDisconnect: true, accountId: "uid1", identifier: operationConfig,
+            reconnect: true, phase: .activating, confirmed: true, created: now, deadline: now.addingTimeInterval(30)
+        ))
+        var journalWrites = 0
+        var markerWrites = 0
+        let workflow = CloudGatewayMacManagedUpdateWorkflow(load: { journalData }, persist: { _ in
+            journalWrites += 1
+            throw CocoaError(.fileWriteUnknown)
+        }, persistRevocation: { _ in
+            markerWrites += 1
+            throw CocoaError(.fileWriteUnknown)
+        })
+        let requests = try CloudGatewayMacControllerRequests(data: nil, now: { now }, persist: { _ in })
+        let gate = try CloudGatewayMacExtensionUpdateOrchestrator(now: { now }, bootSession: { "warning-boot" }, persist: { _ in })
+        var fence = CloudGatewayMacSessionFence()
+        fence.changeAccount(to: "uid1")
+        let session = fence.currentToken
+        var performed: [CloudGatewayMacControllerRequest.Action] = []
+        let effects = CloudGatewayMacControllerEffects(
+            snapshot: { _, _ in cliState() }, hasPendingWork: { false },
+            perform: { request, completion in
+                performed.append(request.action)
+                completion(fails ? .failed(.vpnFailed) : .completed(warning: nil))
+                return true
+            }, session: { session }, refresh: { .refreshed },
+            prepareClient: { throw CloudGatewayMacControllerFailure.invalidRequest },
+            setSetupState: { _ in }, hasAnyActiveTunnel: { false }, installedIdentity: { cliBuild },
+            extensionIdentity: { cliBuild }, ping: { _ in nil }, now: { now }
+        )
+        let controller = CloudGatewayMacControllerOrchestrator(identity: cliBuild, effects: effects, requests: requests,
+                                                              extensionUpdates: gate, managedUpdates: workflow)
+        harness.onRequest = { await controller.handle($0) }
+        #expect(await harness.run(arguments + ["--json"]) == (fails ? 9 : 0))
+        let line = try #require(harness.output.split(separator: "\n").last)
+        let record = try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        let id = try #require(record["operationId"] as? String)
+        #expect(id != updateId.uuidString.lowercased())
+        #expect(record["type"] as? String == (fails ? "error" : "result"))
+        #expect((record["error"] is NSNull) == !fails)
+        let data = try #require(record["data"] as? [String: Any])
+        let operation = try #require(data["operation"] as? [String: Any])
+        #expect(operation["state"] as? String == (fails ? "failed" : "completed"))
+        #expect(operation["warning"] as? String == "reconnect_suppression_not_persisted")
+        #expect(data["update"] == nil)
+        #expect(journalWrites > 0)
+        #expect(markerWrites > 0)
+        #expect(performed == [arguments == ["down"] ? .turnOff : .signOut])
+
+        harness.output = ""
+        #expect(await harness.run("status", "--operation", id, "--json") == (fails ? 9 : 0))
+        let retained = try #require(harness.json?["data"] as? [String: Any])
+        #expect((retained["operation"] as? [String: Any])?["warning"] as? String == "reconnect_suppression_not_persisted")
+        #expect(retained["update"] == nil)
+        harness.output = ""
+        #expect(await harness.run("status", "--operation", id) == (fails ? 9 : 0))
+        #expect(harness.output.contains("Reconnect suppression cannot be guaranteed after controller restart"))
+        #expect(!harness.output.contains(updateId.uuidString.lowercased()))
+        #expect(harness.diagnostics.isEmpty == !fails)
+    }
 }

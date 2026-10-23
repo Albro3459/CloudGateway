@@ -103,7 +103,8 @@ extension CloudGatewayMacCLISession {
                 }
             }
             let command: CloudGatewayMacCLIMutation.Command = action == .connect ? .up : (action == .turnOff || action == .disconnectClient) ? .down : .logout
-            let data = CloudGatewayMacCLIData.mutation(.init(command: command, operation: operation, tunnel: tunnel, choices: choices))
+            let data = CloudGatewayMacCLIData.mutation(.init(command: command, operation: operation, tunnel: tunnel, choices: choices,
+                                                            update: reply.update.map(CloudGatewayMacCLIUpdate.init)))
             if var failure = operation.failure {
                 failure.data = data
                 failure.operationId = id

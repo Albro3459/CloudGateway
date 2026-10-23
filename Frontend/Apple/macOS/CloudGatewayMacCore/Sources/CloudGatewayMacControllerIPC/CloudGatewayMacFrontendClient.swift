@@ -12,6 +12,7 @@ public final class CloudGatewayMacFrontendClient {
     public var onReplacement: ((CloudGatewayMacBuildIdentity) -> Void)?
     public private(set) var connectionState = ConnectionState.reconnecting
     public private(set) var snapshot: CloudGatewayMacControllerView?
+    public private(set) var managedUpdate: CloudGatewayMacManagedUpdateStatus?
     public private(set) var isSnapshotFresh = false
     private(set) var isPollingPaused = false
     public private(set) var errorMessage: String?
@@ -162,7 +163,8 @@ public final class CloudGatewayMacFrontendClient {
     // Only real interactions resume idle polling or authorize another controller launch
     public func userRequest(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                             identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
-                            contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
+                            contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
+                            allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         try Task.checkCancellation()
         lastActivity = now()
@@ -175,7 +177,7 @@ public final class CloudGatewayMacFrontendClient {
             _ = try await request(.recordActivity)
         }
         return try await request(action, id: id, identifier: identifier, regionId: regionId,
-                                 clientName: clientName, contextId: contextId, loginOrigin: loginOrigin)
+                                 clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect)
     }
 
     private func prepareForInteraction() async throws {
@@ -238,14 +240,16 @@ public final class CloudGatewayMacFrontendClient {
         interactionTask = nil
         onChange = nil
         onReplacement = nil
+        managedUpdate = nil
     }
 
     // Menu convenience: reserved mutations are confirmed at once, and failed or uncertain results throw
     public func request(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                         identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
-                        contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
+                        contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
+                        allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
         let reply = try await send(action, id: id, identifier: identifier, regionId: regionId,
-                                   clientName: clientName, contextId: contextId, loginOrigin: loginOrigin)
+                                   clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect)
         guard action.requiresConfirmation, reply.operation?.state == .accepted else { return reply }
         let confirmed = try await confirm(id)
         if let operation = confirmed.operation, operation.state == .failed {
@@ -258,7 +262,8 @@ public final class CloudGatewayMacFrontendClient {
     // Mutations come back reserved. Nothing runs until the caller confirms the same ID
     public func send(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                      identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
-                     contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil) async throws -> CloudGatewayMacControllerReply {
+                     contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
+                     allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         let callback: Set<CloudGatewayMacControllerRequest.Action> = [
             .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed
@@ -271,7 +276,7 @@ public final class CloudGatewayMacFrontendClient {
         let currentSequence = sequence
         let currentGeneration = generation
         let request = CloudGatewayMacControllerRequest(action: action, id: id, identifier: identifier,
-            regionId: regionId, clientName: clientName, contextId: contextId, loginOrigin: loginOrigin,
+            regionId: regionId, clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect,
             appVersion: identity.version, appBuild: identity.build, buildIdentity: identity)
         let reply: CloudGatewayMacControllerReply
         do { reply = try await transport(request) }
@@ -279,6 +284,7 @@ public final class CloudGatewayMacFrontendClient {
             if !(error is CancellationError), currentGeneration == generation, currentSequence >= appliedSequence {
                 appliedSequence = currentSequence
                 isSnapshotFresh = false
+                managedUpdate = nil
                 safeStatus = nil
                 connectionState = error as? CloudGatewayMacControllerFailure == .incompatibleVersion ? .incompatible : .reconnecting
                 errorMessage = message(for: error)
@@ -295,18 +301,20 @@ public final class CloudGatewayMacFrontendClient {
             if instanceId != nil, instanceId != reply.instanceId {
                 generation &+= 1
                 isSnapshotFresh = false
+                managedUpdate = nil
                 safeStatus = nil
             }
             instanceId = reply.instanceId
             connectionState = lifecycle.state == .current && lifecycle.running == identity && lifecycle.installed == identity
                 ? .connected : .draining
-            if connectionState != .connected { isSnapshotFresh = false }
+            if connectionState != .connected { isSnapshotFresh = false; managedUpdate = nil }
             errorMessage = connectionState == .draining ? "CloudGateway is updating. Finishing current operations…" : nil
             onChange?()
         } else if currentSequence >= appliedSequence {
             guard reply.instanceId == instanceId else {
                 generation &+= 1
                 isSnapshotFresh = false
+                managedUpdate = nil
                 safeStatus = nil
                 connectionState = .reconnecting
                 errorMessage = "The controller restarted. Reconnecting…"
@@ -314,6 +322,7 @@ public final class CloudGatewayMacFrontendClient {
                 throw Self.fencedFailure(for: action)
             }
             appliedSequence = currentSequence
+            managedUpdate = isCurrentBuild ? reply.update : nil
             if let state = reply.state, isCurrentBuild {
                 snapshot = .init(state: state)
                 isSnapshotFresh = !hasStarted || shouldPoll

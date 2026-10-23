@@ -10,6 +10,7 @@ enum CloudGatewayMacVPNProfileError: Error {
     case missingProfile
     case missingSession
     case invalidGrant
+    case anotherProfileIsActive
 }
 
 @MainActor
@@ -92,9 +93,14 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
     }
 
     func start(identifier: String, grant: String) async throws {
+        try await start(identifier: identifier, grant: grant, displacingOtherProfiles: true)
+    }
+
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws {
         guard Data(base64Encoded: grant)?.count == 32 else { throw CloudGatewayMacVPNProfileError.invalidGrant }
         let manager = try await installedManager(identifier: identifier)
         try Task.checkCancellation()
+        if !displacingOtherProfiles { try await requireNoOtherActiveProfile(identifier: identifier) }
         if !manager.isEnabled {
             manager.isEnabled = true
             try await manager.saveToPreferences()
@@ -107,7 +113,18 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
             throw CloudGatewayMacVPNProfileError.missingSession
         }
         try Task.checkCancellation()
+        if !displacingOtherProfiles { try await requireNoOtherActiveProfile(identifier: identifier) }
+        try Task.checkCancellation()
         try session.startTunnel(options: [CloudGatewayMacProviderKey.startGrant: grant as NSString])
+    }
+
+    private func requireNoOtherActiveProfile(identifier: String) async throws {
+        let loaded = try await loadManagers()
+        for manager in loaded where Self.needsConfirmedStop(manager.connection.status) {
+            guard Self.isOwned(manager), try Self.profile(manager).identifier == identifier else {
+                throw CloudGatewayMacVPNProfileError.anotherProfileIsActive
+            }
+        }
     }
 
     func stopAndWait(identifier: String) async throws {

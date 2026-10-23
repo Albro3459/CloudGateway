@@ -41,9 +41,11 @@ struct CloudGatewayMacCLIRenderer {
             case .alreadyActive: "VPN already active"
             case .completed where mutation.command == .down: "VPN stopped"
             case .completed where mutation.command == .logout: "Signed out (VPN retained)"
+            case .completed where mutation.command == .update: "VPN extension update completed"
+            case _ where mutation.command == .update: "VPN extension update \(mutation.operation.state.rawValue)"
             default: "Command \(mutation.operation.state.rawValue)"
             }
-            lines = [summary] + render(.init(tunnel: mutation.tunnel, operation: mutation.operation))
+            lines = [summary] + render(.init(tunnel: mutation.tunnel, operation: mutation.operation, update: mutation.update))
                 + (mutation.choices.map { ["", "Available configs:"] + render($0) } ?? [])
         case .refresh(let refresh):
             lines = ["Inventory refresh: \(label(refresh.result.rawValue))"]
@@ -102,11 +104,42 @@ struct CloudGatewayMacCLIRenderer {
             var detail = "\(operation.id) \(operation.state.rawValue)"
             if let result = operation.result { detail += ", \(label(result.rawValue))" }
             if let configId = operation.configId { detail += " for \(configId)" }
-            if let warning = operation.warning { detail += " (\(label(warning.rawValue)))" }
+            if let warning = operation.warning {
+                let message = warning == .reconnectSuppressionNotPersisted
+                    ? "Reconnect suppression cannot be guaranteed after controller restart because it could not be saved"
+                    : label(warning.rawValue)
+                detail += " (\(message))"
+            }
             rows.append(("Operation", detail))
             if let error = operation.error { rows.append(("Result", error.message)) }
         } else {
             rows.append(("Operation", "none retained"))
+        }
+        if let update = status.update {
+            let phase = switch update.phase {
+            case .prepared: "prepared, awaiting execution confirmation"
+            case .stopping: "stopping the captured VPN and waiting for confirmed stop"
+            case .activating: "activating the installed VPN extension"
+            case .approvalRequired: "macOS approval required (operation still running)"
+            case .restartRequired: "Mac restart required (operation still running)"
+            case .checkingReadiness: "checking authenticated extension readiness"
+            case .reconnecting: "requesting a start of the captured config"
+            case .completed: "completed"
+            case .failed: "failed"
+            case .superseded: "superseded by a changed installed app"
+            }
+            rows.append(("Update", "\(update.id) \(phase)"))
+            rows.append(("Target", "\(update.target.version) (\(update.target.build))"))
+            if let configId = update.configId { rows.append(("Update config", configId)) }
+            if update.reconnect {
+                rows.append(("Reconnect", update.phase == .completed
+                    ? "start submitted or same config already active. See observed VPN state above"
+                    : "captured config, subject to readiness and current authorization"))
+            } else {
+                rows.append(("Reconnect", "disabled"))
+            }
+            if let error = update.error { rows.append(("Update error", error.message)) }
+            if let warning = update.warning { rows.append(("Update warning", warning.message)) }
         }
         return table(rows)
     }

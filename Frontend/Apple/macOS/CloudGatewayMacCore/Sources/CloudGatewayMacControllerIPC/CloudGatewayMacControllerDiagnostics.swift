@@ -17,17 +17,24 @@ public struct CloudGatewayMacControllerDiagnostics: Codable, Equatable, Sendable
     public let extensionState: ExtensionState
     public let preferences: Evidence
     public let regionId: String?
+    public let setupState: CloudGatewayMacControllerView.SetupState?
 
     public init(runtimeInitialized: Bool, access: CloudGatewayMacAccessState? = nil,
                 credentials: CloudGatewayMacCredentialEvidence? = nil,
                 extensionState: ExtensionState = .unknown, preferences: Evidence = .unknown,
-                regionId: String? = nil) {
+                regionId: String? = nil, setupState: CloudGatewayMacControllerView.SetupState? = nil) {
         self.runtimeInitialized = runtimeInitialized
         self.access = access
         self.credentials = credentials
         self.extensionState = extensionState
         self.preferences = preferences
         self.regionId = regionId
+        self.setupState = setupState
+    }
+
+    func withSetupState(_ state: CloudGatewayMacSetupState) -> Self {
+        .init(runtimeInitialized: runtimeInitialized, access: access, credentials: credentials,
+              extensionState: extensionState, preferences: preferences, regionId: regionId, setupState: .init(state))
     }
 
     func validate() throws {

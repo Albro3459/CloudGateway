@@ -207,6 +207,7 @@ struct CloudGatewayMacCLIStatus: Encodable {
 
     let tunnel: Tunnel
     @CloudGatewayMacCLINullable var operation: CloudGatewayMacCLIOperation?
+    var update: CloudGatewayMacCLIUpdate? = nil
 }
 
 struct CloudGatewayMacCLIOperation: Encodable {
@@ -220,6 +221,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
 
     enum Warning: String, Encodable {
         case selectionNotSaved = "selection_not_saved", inventoryNotRefreshed = "inventory_not_refreshed"
+        case reconnectSuppressionNotPersisted = "reconnect_suppression_not_persisted"
     }
 
     let id: String
@@ -245,6 +247,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
         case .unknown: .unknown
         }
         var failure: CloudGatewayMacCLIError?
+        warning = operation.warning.map(Self.warning)
         switch outcome {
         case .startRequested(let identifier, let warning):
             result = .startRequested
@@ -259,7 +262,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
             self.warning = warning.map(Self.warning)
         case .failed(let reason):
             result = .failed
-            failure = .init(reason)
+            failure = .init(commandFailure: reason)
         case .unknown:
             result = .unknown
             failure = .init(.operationUnknown)
@@ -267,8 +270,8 @@ struct CloudGatewayMacCLIOperation: Encodable {
             result = .expired
             failure = .init(.operationExpired)
         case nil:
-            if operation.state == .failed { failure = .init(operation.failure ?? .commandFailed) }
-            else if operation.state == .unknown { failure = .init(operation.failure ?? .outcomeUnknown) }
+            if operation.state == .failed { failure = .init(controllerFailure: operation.failure ?? .commandFailed) }
+            else if operation.state == .unknown { failure = .init(controllerFailure: operation.failure ?? .outcomeUnknown) }
         }
         self.failure = failure
         error = failure.map(CloudGatewayMacCLIRecord.Failure.init)
@@ -278,6 +281,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
         switch warning {
         case .selectionNotSaved: .selectionNotSaved
         case .inventoryNotRefreshed: .inventoryNotRefreshed
+        case .reconnectSuppressionNotPersisted: .reconnectSuppressionNotPersisted
         }
     }
 }
@@ -405,12 +409,13 @@ struct CloudGatewayMacCLIInventory: Encodable {
 }
 
 struct CloudGatewayMacCLIMutation: Encodable {
-    enum Command: String, Encodable { case up, down, logout }
+    enum Command: String, Encodable { case up, down, logout, update }
 
     let command: Command
     let operation: CloudGatewayMacCLIOperation
     let tunnel: CloudGatewayMacCLIStatus.Tunnel
     @CloudGatewayMacCLINullable var choices: CloudGatewayMacCLIInventory?
+    var update: CloudGatewayMacCLIUpdate? = nil
 }
 
 struct CloudGatewayMacCLIRefresh: Encodable {

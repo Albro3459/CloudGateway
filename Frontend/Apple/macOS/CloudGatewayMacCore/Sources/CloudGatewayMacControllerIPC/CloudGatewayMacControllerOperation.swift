@@ -9,11 +9,14 @@ public struct CloudGatewayMacControllerOperation: Codable, Equatable, Sendable {
     public let id: UUID
     public let state: State
     public let failure: CloudGatewayMacControllerFailure?
+    public let warning: CloudGatewayMacCommandWarning?
 
-    public init(id: UUID, state: State, failure: CloudGatewayMacControllerFailure? = nil) {
+    public init(id: UUID, state: State, failure: CloudGatewayMacControllerFailure? = nil,
+                warning: CloudGatewayMacCommandWarning? = nil) {
         self.id = id
         self.state = state
         self.failure = failure
+        self.warning = warning
     }
 
     func validate() throws {

@@ -71,7 +71,8 @@ final class CloudGatewayMacCLISession {
         let limit = min(deadline, clock.now() + Self.observationWait)
         if client.isCurrentBuild {
             let (reply, _) = try await poll(.snapshot, until: limit) { try !Self.state(of: $0).observationAvailable }
-            return .status(.init(tunnel: .init(try Self.state(of: reply)), operation: Self.operation(of: reply)))
+            return .status(.init(tunnel: .init(try Self.state(of: reply)), operation: Self.operation(of: reply),
+                                 update: reply.update.map(CloudGatewayMacCLIUpdate.init)))
         }
         let (reply, _) = try await poll(.status, until: limit) { try !Self.status(of: $0).observationAvailable }
         return .status(.init(tunnel: .init(try Self.status(of: reply)), operation: Self.operation(of: reply)))
@@ -86,8 +87,12 @@ final class CloudGatewayMacCLISession {
         }
         let tunnel: CloudGatewayMacCLIStatus.Tunnel = if client.isCurrentBuild, let state = reply.state { .init(state) }
             else { .init(try Self.status(of: reply)) }
-        let data = CloudGatewayMacCLIData.status(.init(tunnel: tunnel, operation: operation))
-        guard var failure = operation.failure else { return data }
+        let update = client.isCurrentBuild ? reply.update : nil
+        if let update, update.id != id { throw CloudGatewayMacCLIError(.invalidResponse) }
+        let data = CloudGatewayMacCLIData.status(.init(tunnel: tunnel, operation: operation,
+                                                     update: update.map(CloudGatewayMacCLIUpdate.init)))
+        guard var failure = Self.updateFailure(update) ?? operation.failure else { return data }
+        if update != nil { failure = Self.updateObservationFailure(failure, id: id) }
         failure.data = data
         throw failure
     }

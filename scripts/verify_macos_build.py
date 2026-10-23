@@ -254,10 +254,15 @@ def verify_cli(app: Path) -> None:
         (["ls", "--help"], 0, "help", False),
         (["ls", "-l", "--help", "--json"], 0, "help", True),
         (["help", "ls", "--json"], 0, "help", True),
+        (["update", "--help"], 0, "help", False),
+        (["help", "update", "--json"], 0, "help", True),
+        (["update", "--allow-disconnect", "--help", "--json"], 0, "help", True),
         (["--unknown-option"], 2, None, False),
         (["auth", "login", "--timeout", "0", "--json"], 2, "auth login", True),
         (["status", "--unexpected", "--json"], 2, "status", True),
         (["ls", "--unexpected", "--json"], 2, "list", True),
+        (["update", "--unexpected", "--json"], 2, "update", True),
+        (["update", "--allow-disconnect", "--timeout", "0", "--json"], 2, "update", True),
     ]
     with tempfile.TemporaryDirectory(prefix="cloudgateway-cli-smoke-") as directory:
         root = Path(directory)

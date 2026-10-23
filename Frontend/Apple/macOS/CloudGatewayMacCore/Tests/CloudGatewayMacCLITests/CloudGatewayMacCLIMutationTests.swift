@@ -241,3 +241,43 @@ private func mutationHarness(_ outcome: CloudGatewayMacCommandOutcome, state: Cl
         if action != .turnOff { #expect(harness.diagnostics.contains("cloudgateway status --operation")) }
     }
 }
+
+@MainActor
+@Test func cliSuccessfulStopAndLogoutExposeUpdateSuppressionDurabilityWarning() async throws {
+    for arguments in [["down"], ["auth", "logout"]] {
+        for isJSON in [false, true] {
+            let harness = mutationHarness(.completed(warning: nil))
+            let send = harness.onRequest
+            let updateId = UUID()
+            harness.onRequest = { request in
+                guard request.action == .confirmOperation else { return try await send?(request) }
+                return .init(status: harness.status, operation: .init(id: request.contextId!, state: .completed),
+                             outcome: .completed(warning: nil),
+                             update: .init(id: updateId, phase: .activating, target: cliBuild,
+                                           identifier: mutationConfig, reconnect: false, warning: .storageUnavailable))
+            }
+            #expect(await harness.run(arguments + (isJSON ? ["--json"] : [])) == 0)
+            if isJSON {
+                let line = try #require(harness.output.split(separator: "\n").last)
+                let record = try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+                #expect(record["type"] as? String == "result")
+                #expect(record["error"] is NSNull)
+                let data = try #require(record["data"] as? [String: Any])
+                let update = try #require(data["update"] as? [String: Any])
+                #expect(update["id"] as? String == updateId.uuidString.lowercased())
+                #expect(update["reconnect"] as? Bool == false)
+                #expect((update["warning"] as? [String: Any])?["code"] as? String == "storage_unavailable")
+                #expect(((update["warning"] as? [String: Any])?["message"] as? String)?
+                    .contains("Reconnect suppression cannot be guaranteed after controller restart") == true)
+                #expect((data["operation"] as? [String: Any])?["state"] as? String == "completed")
+            } else {
+                #expect(harness.output.contains(arguments == ["down"] ? "VPN stopped" : "Signed out (VPN retained)"))
+                #expect(harness.output.contains("Update warning:"))
+                #expect(harness.output.contains("CloudGateway could not persist the update safely"))
+                #expect(harness.output.contains("Reconnect suppression cannot be guaranteed after controller restart"))
+            }
+            #expect(harness.diagnostics.isEmpty)
+            #expect(!harness.actions.contains(.update))
+        }
+    }
+}

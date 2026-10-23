@@ -25,12 +25,13 @@ public struct CloudGatewayMacClientCreationContext: Equatable, Sendable {
 public enum CloudGatewayMacCommandFailure: String, Codable, Sendable {
     case signInRequired, accessDenied
     case setupRequired, credentialsUnavailable, incompatibleVersion
+    case extensionMismatch, initialSetupRequired, approvalRequired, restartRequired, invalidBundle, checkingReadiness, activationFailed
     case configUnavailable, selectionUnavailable, networkUnavailable, busy
     case stopTimedOut, vpnFailed, internalError
 }
 
 public enum CloudGatewayMacCommandWarning: String, Codable, Sendable {
-    case selectionNotSaved, inventoryNotRefreshed
+    case selectionNotSaved, inventoryNotRefreshed, reconnectSuppressionNotPersisted
 }
 
 // A start result means macOS accepted the request, not that the tunnel connected
