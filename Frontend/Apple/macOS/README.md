@@ -154,11 +154,19 @@ at that location rather than copying its entitled executable out of the bundle.
 
 The separate **Add to Zsh PATH…** action appends
 `export PATH="$HOME/.local/bin:$PATH"` to an ordinary `~/.zprofile` once. It
-preserves existing contents and mode. Automatic editing requires `/bin/zsh`,
+first checks the app's current PATH and reads common PATH assignments in
+`~/.zshrc` and `~/.zprofile`. Existing entries leave shell files unchanged.
+Startup-file inspection does not execute shell code. The app reports which file
+contains an entry, or that its current PATH already contains the local bin
+directory. Terminal and SSH may have different environments, so check with
+`which cloudgateway` in the shell you use.
+
+Automatic editing preserves existing contents and mode and requires `/bin/zsh`,
 no `ZDOTDIR` or `~/.zshenv`, a regular user-owned startup file containing only
 comments and simple exports, and no existing PATH customization.
-Linked/shared files, unsupported shells, and custom startup
-configuration receive manual guidance. Open a new login shell after an edit.
+Linked/shared files are inspected without editing. Unsupported shells and
+unrecognized custom startup configuration receive manual guidance when the app's
+PATH does not already include the local bin directory. Open a new login shell after an edit.
 The menu's environment does not establish Terminal or SSH's PATH.
 
 Noninteractive SSH may skip login startup files. Use the explicit path:

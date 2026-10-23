@@ -122,7 +122,7 @@ import Testing
     let expected = "# existing setup\nexport EDITOR=vi\nexport PATH=\"$HOME/.local/bin:$PATH\"\n"
     #expect(try String(contentsOf: profile, encoding: .utf8) == expected)
     #expect(try (FileManager.default.attributesOfItem(atPath: profile.path)[.posixPermissions] as? NSNumber)?.intValue == 0o640)
-    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured)
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured(file: ".zprofile"))
     #expect(try String(contentsOf: profile, encoding: .utf8) == expected)
 }
 
@@ -193,16 +193,123 @@ import Testing
     }
 }
 
-@Test func cliInstallerPathEditRejectsAssignmentsBeforeOrAfterManagedLine() throws {
+@Test func cliInstallerPathEditRejectsOverridesAfterManagedLine() throws {
     let fixture = try CLIInstallerFixture()
     defer { fixture.cleanup() }
     let profile = fixture.home.appendingPathComponent(".zprofile")
     let managed = "export PATH=\"$HOME/.local/bin:$PATH\"\n"
-    for contents in [managed + "export PATH=/usr/bin\n", "export PATH=/usr/bin\n" + managed, managed + managed] {
+    for contents in [managed + "export PATH=/usr/bin\n", managed + "path=(/usr/bin)\n"] {
         try Data(contents.utf8).write(to: profile)
         #expect(throws: CloudGatewayMacCLIInstallError.manualShellConfiguration) {
             try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:])
         }
+        #expect(try String(contentsOf: profile, encoding: .utf8) == contents)
+    }
+}
+
+@Test func cliInstallerRecognizesEnvironmentPathBeforeInspectingShellFiles() throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let bin = fixture.installer.executableURL.deletingLastPathComponent().path
+    try Data("keep".utf8).write(to: fixture.home.appendingPathComponent(".zshenv"))
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/bash", environment: [
+        "PATH": "/usr/bin:\(bin)/:/bin", "ZDOTDIR": "/custom"
+    ]) == .alreadyOnPath)
+    #expect(!FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(".zprofile").path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(".zshrc").path))
+}
+
+@Test func cliInstallerEnvironmentPathRequiresWholeDirectory() throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let bin = fixture.installer.executableURL.deletingLastPathComponent().path
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: ["PATH": "\(bin)-other:/usr/bin"]) == .added)
+}
+
+@Test(arguments: [
+    "export PATH=\"$HOME/.local/bin:$PATH\"",
+    "PATH=\"$PATH:${HOME}/.local/bin\" # CLI tools",
+    "export PATH=$HOME/.local/bin:$PATH",
+    "PATH=~/.local/bin:$PATH",
+    "PATH+=:$HOME/.local/bin/",
+    "PATH+=/other:$HOME/.local/bin",
+    "path=(\"$HOME/.local/bin\" $path)",
+    "path+=(~/.local/bin)",
+    "path=(\"/other bin\" \"$HOME/.local/bin\" $path)",
+    "export path=(${HOME}/.local/bin $path)",
+    "PATH=\"$HOME/.local/bin:$PATH\"\nexport PATH=\"$PATH:/opt/homebrew/bin\"",
+    "PATH=\"$HOME/.local/bin:$PATH\"\nPATH+=:/opt/homebrew/bin",
+    "PATH=\"$HOME/.local/bin:$PATH\"\npath=($path /opt/homebrew/bin)",
+    "path=(~/.local/bin $path)\npath+=(/opt/homebrew/bin)"
+])
+func cliInstallerRecognizesStartupPathWithoutChangingFiles(line: String) throws {
+    for name in [".zshrc", ".zprofile"] {
+        let fixture = try CLIInstallerFixture()
+        defer { fixture.cleanup() }
+        let file = fixture.home.appendingPathComponent(name)
+        let contents = "# custom shell setup\nsource ~/.shell-config\n\(line)\n"
+        try Data(contents.utf8).write(to: file)
+        #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured(file: name))
+        #expect(try String(contentsOf: file, encoding: .utf8) == contents)
+        let other = fixture.home.appendingPathComponent(name == ".zshrc" ? ".zprofile" : ".zshrc")
+        #expect(!FileManager.default.fileExists(atPath: other.path))
+    }
+}
+
+@Test func cliInstallerRecognizesAbsoluteAndLinkedStartupConfiguration() throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let target = fixture.root.appendingPathComponent("zshrc")
+    let bin = fixture.installer.executableURL.deletingLastPathComponent().path
+    let contents = "export PATH='\(bin):/usr/bin'\n"
+    try Data(contents.utf8).write(to: target)
+    try Data("# existing environment setup\n".utf8).write(to: fixture.home.appendingPathComponent(".zshenv"))
+    let rc = fixture.home.appendingPathComponent(".zshrc")
+    try FileManager.default.createSymbolicLink(at: rc, withDestinationURL: target)
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured(file: ".zshrc"))
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: rc.path) == target.path)
+    #expect(try String(contentsOf: target, encoding: .utf8) == contents)
+    #expect(!FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(".zprofile").path))
+}
+
+@Test(arguments: [
+    "# export PATH=\"$HOME/.local/bin:$PATH\"",
+    "echo '$HOME/.local/bin'",
+    "export PATH='$HOME/.local/bin:/usr/bin'",
+    "export PATH=\"~/.local/bin:$PATH\"",
+    "export PATH=\"$HOME/.local/bin-other:$PATH\"",
+    "export PATH=\"$PATH:$HOME/.local/bin",
+    "path=(\"\\$HOME/.local/bin\" $path)",
+    "PATH=/usr/bin:/bin\nPATH+=\"$HOME/.local/bin\"",
+    "path=(\"$HOME/.local/bin\"-other $path)",
+    "path=($HOME/.local/bin\"-other\" $path)",
+    "path=(\"prefix $HOME/.local/bin suffix\"-other /usr/bin /bin)",
+    "path=(\"prefix $HOME/.local/bin suffix $path)",
+    "export PATH=\"$HOME/.local/bin\"#old",
+    "export PATH=\"$(printf '%s' '/usr/bin:$HOME/.local/bin:/bin')\"",
+    "export PATH=\"`printf '%s' '/usr/bin:$HOME/.local/bin:/bin'`\"",
+    "export PATH=\"${PATH:-/usr/bin:$HOME/.local/bin:/bin}\"",
+    "PATH=\"$HOME/.local/bin\"\nPATH=\"$PATH:h\"",
+    "path=(${OTHER:-prefix $HOME/.local/bin suffix} $path)",
+    "path=($path # $HOME/.local/bin)"
+])
+func cliInstallerIgnoresUnexpandedPathsCommentsAndSimilarDirectories(line: String) throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let rc = fixture.home.appendingPathComponent(".zshrc")
+    try Data(line.utf8).write(to: rc)
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .added)
+    #expect(try String(contentsOf: rc, encoding: .utf8) == line)
+}
+
+@Test func cliInstallerRecognizesFinalConfiguredAssignmentAndAvoidsAddingMoreDuplicates() throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let profile = fixture.home.appendingPathComponent(".zprofile")
+    let managed = "export PATH=\"$HOME/.local/bin:$PATH\"\n"
+    for contents in ["export PATH=/usr/bin\n" + managed, managed + managed] {
+        try Data(contents.utf8).write(to: profile)
+        #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured(file: ".zprofile"))
         #expect(try String(contentsOf: profile, encoding: .utf8) == contents)
     }
 }

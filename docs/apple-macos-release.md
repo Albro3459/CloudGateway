@@ -180,9 +180,11 @@ Use **Install Command Line Tool…** while signed out and verify the user-local
 link targets the executable inside `/Applications/CloudGateway.app`. Repeat
 installation, conflict/broken-link handling, and the separate zsh PATH offer.
 Test `~/.local/bin/cloudgateway --version` and `help` from Terminal and
-noninteractive SSH without relying on `.zprofile`. Custom `ZDOTDIR`, `~/.zshenv`,
-linked startup files, existing PATH code, and unsupported shells must receive
-manual guidance. App replacement at the same path keeps the link valid; app
+noninteractive SSH without relying on `.zprofile`. Verify setup recognizes the
+app's existing PATH and common entries in `~/.zshrc` or `~/.zprofile` without
+changing files. Unrecognized custom configuration, linked startup files, and
+unsupported shells must receive manual guidance before any edit. App replacement
+at the same path keeps the link valid; app
 movement/removal leaves it broken without replacing another user's file.
 
 Complete one-time desktop extension/VPN approval, then run the planned signed

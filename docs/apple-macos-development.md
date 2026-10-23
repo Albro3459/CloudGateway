@@ -45,6 +45,10 @@ unsafe ownership/modes, and link creation never replaces a destination. A
 separate explicit zsh edit preserves startup contents/mode and refuses custom
 `ZDOTDIR`, `~/.zshenv`, linked/shared files, and existing PATH code. Always test
 SSH with `~/.local/bin/cloudgateway`, since `.zprofile` is not guaranteed there.
+Before editing, setup checks the app's PATH and reads common PATH assignments
+and zsh `path` arrays in `~/.zshrc` and `~/.zprofile`. Recognized entries produce
+a notice without changing files, including linked startup files. Inspection
+never executes shell code or establishes the PATH of another Terminal/SSH session.
 
 VPN acceptance is flushed before confirmation and caller loss detaches accepted
 work. `status --operation <uuid>` retrieves the active/latest result for up to

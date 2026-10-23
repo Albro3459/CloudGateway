@@ -402,8 +402,18 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             let shell = getpwuid(getuid()).flatMap { $0.pointee.pw_shell }.map { String(cString: $0) }
             let pathResult = try installer.addToZshPath(shell: shell, environment: environment)
             let notice = NSAlert()
-            notice.messageText = pathResult == .added ? "Zsh PATH Updated" : "Zsh PATH Already Configured"
-            notice.informativeText = "Open a new zsh login shell to use cloudgateway. For noninteractive SSH, use \(explicitCommand)."
+            switch pathResult {
+            case .added:
+                notice.messageText = "Zsh PATH Updated"
+                notice.informativeText = "Open a new zsh login shell to use cloudgateway."
+            case .alreadyOnPath:
+                notice.messageText = "Command Line Tool Is on PATH"
+                notice.informativeText = "Your local bin directory is already on this app's PATH. No shell files were changed. Terminal and SSH can use a different PATH."
+            case .alreadyConfigured(let file):
+                notice.messageText = "Existing Zsh PATH Setup Found"
+                notice.informativeText = "Found your local bin directory in ~/\(file). No shell files were changed. Open a new zsh shell and run which cloudgateway to check."
+            }
+            notice.informativeText += "\n\nFor noninteractive SSH, use \(explicitCommand)."
             notice.runModal()
         } catch {
             let notice = NSAlert()
