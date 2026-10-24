@@ -68,7 +68,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
     public let hasRetainedSession: Bool
     public let inventoryInFlight: Bool
     public let canCreateClient: Bool
-    public let canReviewClient: Bool
+    public let canRemoveClient: Bool
     public let errorMessage: String?
     public let hasUnlistedActiveProfile: Bool
     public let canUpdateExtension: Bool
@@ -81,7 +81,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         browserState: BrowserState = .signedOut, login: CloudGatewayMacLoginStatus? = nil, setupState: SetupState = .required,
         isRestoringSession: Bool = false, isAuthSettling: Bool = false,
         hasRetainedSession: Bool = false, inventoryInFlight: Bool = false,
-        canCreateClient: Bool = false, canReviewClient: Bool = false, errorMessage: String? = nil,
+        canCreateClient: Bool = false, canRemoveClient: Bool = false, errorMessage: String? = nil,
         hasUnlistedActiveProfile: Bool = false, canUpdateExtension: Bool = false
     ) {
         self.groups = groups
@@ -102,7 +102,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         self.hasRetainedSession = hasRetainedSession
         self.inventoryInFlight = inventoryInFlight
         self.canCreateClient = canCreateClient
-        self.canReviewClient = canReviewClient
+        self.canRemoveClient = canRemoveClient
         self.errorMessage = errorMessage
         self.hasUnlistedActiveProfile = hasUnlistedActiveProfile
         self.canUpdateExtension = canUpdateExtension

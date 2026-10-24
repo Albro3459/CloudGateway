@@ -10,7 +10,7 @@ extension CloudGatewayMacControllerView {
         let isTransitioning = state.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
         let canConnect = state.accountId != nil && state.accessAuthorized && !state.commandInFlight
             && !state.isRestoringSession && !state.isAuthSettling && state.setup == .ready
-        let canReview = state.reviewAllowed && state.accountId != nil && state.auth == .signedIn && state.accessAuthorized
+        let canRemove = state.removalAllowed && state.accountId != nil && state.auth == .signedIn && state.accessAuthorized
             && !state.commandInFlight && !state.isRestoringSession && !state.isAuthSettling
             && (state.inventory == .current || state.inventory == .cached)
         let activeIdentifiers = Set(state.observedProfiles.filter {
@@ -67,7 +67,7 @@ extension CloudGatewayMacControllerView {
             browserState: state.auth, login: state.login, setupState: state.setup,
             isRestoringSession: state.isRestoringSession, isAuthSettling: state.isAuthSettling,
             hasRetainedSession: state.hasRetainedSession, inventoryInFlight: state.inventory == .refreshing,
-            canCreateClient: state.creationAllowed, canReviewClient: canReview, errorMessage: state.errorMessage,
+            canCreateClient: state.creationAllowed, canRemoveClient: canRemove, errorMessage: state.errorMessage,
             hasUnlistedActiveProfile: state.observedProfiles.contains { profile in
                 profile.status != .invalid && profile.status != .disconnected
                     && !state.clients.contains { $0.identifier == profile.identifier }

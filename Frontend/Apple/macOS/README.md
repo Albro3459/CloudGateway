@@ -40,11 +40,11 @@ name while availability loads. Create becomes available once a region has room.
 After an inventory transport failure, Add Client remains available once pending
 work finishes so the dialog can retry region/capacity requests. Submission still
 requires a fresh access check; cached inventory does not authorize cloud creation.
-Review client appears immediately below Add Client. Select a region, then a
+Remove Client appears immediately below Add Client. Select a region, then a
 config, and choose Delete to remove the cloud client and its local VPN profile.
 Deletion cannot be undone. Disconnect the selected config and wait for it to
 stop first. Connecting, connected, reconnecting, and disconnecting configs
-cannot be deleted. A different active config can stay connected. Review client
+cannot be deleted. A different active config can stay connected. Remove Client
 does not connect a config or change the last-used selection.
 
 Delete stays disabled when VPN status is unavailable. The dialog closes if the

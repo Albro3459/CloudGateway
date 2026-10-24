@@ -1,19 +1,19 @@
 import AppKit
 
 @MainActor
-public final class CloudGatewayMacClientReviewDialog: NSObject, NSMenuDelegate {
+public final class CloudGatewayMacClientRemovalDialog: NSObject, NSMenuDelegate {
     private let alert = NSAlert()
     let regionPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
     let configPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26), pullsDown: false)
     private let explanation = NSTextField(wrappingLabelWithString: "")
-    private var selection: CloudGatewayMacClientReviewSelection
+    private var selection: CloudGatewayMacClientRemovalSelection
     private var continuation: CheckedContinuation<String?, Error>?
     private var isTrackingPicker = false
 
     public init(snapshot: CloudGatewayMacControllerView) {
         selection = .init(snapshot: snapshot)
         super.init()
-        alert.messageText = "Review client"
+        alert.messageText = "Remove Client"
         alert.informativeText = "Select a region, then the config you want to delete. Deletion cannot be undone."
         alert.addButton(withTitle: "Delete").isEnabled = false
         alert.addButton(withTitle: "Cancel")

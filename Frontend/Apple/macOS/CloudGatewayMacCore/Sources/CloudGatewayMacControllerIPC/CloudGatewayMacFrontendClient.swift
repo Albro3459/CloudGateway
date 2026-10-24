@@ -174,7 +174,7 @@ public final class CloudGatewayMacFrontendClient {
         try Task.checkCancellation()
         if action == .removeClient {
             guard let identifier, isSnapshotFresh, isCurrentBuild,
-                  presentation.canReviewClient,
+                  presentation.canRemoveClient,
                   CloudGatewayMacControllerState.belongs(identifier, to: presentation.accountId),
                   presentation.groups.flatMap(\.rows).contains(where: {
                       $0.identifier == identifier && $0.removalPermission == .inactive

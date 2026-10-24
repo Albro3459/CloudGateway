@@ -6,9 +6,9 @@ import Testing
 @testable import CloudGatewayMacCore
 @testable import CloudGatewayMacControllerIPC
 
-private let reviewIdentifier = "account/region/client"
+private let removalIdentifier = "account/region/client"
 
-private func reviewState(
+private func removalState(
     accountId: String? = "account", profiles: [CloudGatewayMacObservedProfile] = [],
     observationIsFresh: Bool = true, eligibility: CloudGatewayMacClientEligibility = .eligible,
     installed: Bool = false, authorized: Bool = true, busy: Bool = false,
@@ -18,16 +18,16 @@ private func reviewState(
     .init(snapshot: .init(domain: .init(
         accountId: accountId, hasRetainedSession: accountId != nil, accessAuthorized: authorized,
         access: authorized ? .online : .unverified, credentials: .available, inventoryFreshness: inventory,
-        installedIdentifiers: installed ? [reviewIdentifier] : [], observedProfiles: profiles,
+        installedIdentifiers: installed ? [removalIdentifier] : [], observedProfiles: profiles,
         observationIsFresh: observationIsFresh, profilesObservedAt: nil, commandInFlight: busy,
-        clients: clients ?? [reviewClient(reviewIdentifier, eligibility: eligibility, installed: installed)]
-    ), lastSelectedIdentifier: reviewIdentifier,
+        clients: clients ?? [removalClient(removalIdentifier, eligibility: eligibility, installed: installed)]
+    ), lastSelectedIdentifier: removalIdentifier,
        browserState: accountId.map { .signedIn(.init(uid: $0, email: nil)) } ?? .signedOut,
        isRestoringSession: restoring, isAuthSettling: settling, canCreateClient: false, errorMessage: nil),
           setupState: setup, canUpdateExtension: false)
 }
 
-private func reviewClient(_ identifier: String, regionId: String = "region", regionOrder: Int = 0,
+private func removalClient(_ identifier: String, regionId: String = "region", regionOrder: Int = 0,
                           eligibility: CloudGatewayMacClientEligibility = .eligible,
                           installed: Bool = false) -> CloudGatewayMacClientMetadata {
     .init(identifier: identifier, regionId: regionId, regionName: "Region", regionOrder: regionOrder,
@@ -36,20 +36,20 @@ private func reviewClient(_ identifier: String, regionId: String = "region", reg
           readAt: Date(timeIntervalSince1970: 0), updatedAt: nil, status: nil)
 }
 
-@Test func reviewProjectionUsesObservedCanonicalIdentityForEveryTunnelStatus() throws {
+@Test func removalProjectionUsesObservedCanonicalIdentityForEveryTunnelStatus() throws {
     for (status, permission) in [
         (CloudGatewayTunnelStatus.invalid, CloudGatewayMacControllerView.RemovalPermission.inactive),
         (.disconnected, .inactive), (.connecting, .active), (.connected, .active),
         (.reasserting, .active), (.disconnecting, .active)
     ] {
-        let state = reviewState(profiles: [.init(identifier: reviewIdentifier, status: status)], installed: true)
+        let state = removalState(profiles: [.init(identifier: removalIdentifier, status: status)], installed: true)
         let view = CloudGatewayMacControllerView(state: state)
         let row = try #require(view.groups.first?.rows.first)
         #expect(row.status == nil)
         #expect(row.removalPermission == permission)
-        var selection = CloudGatewayMacClientReviewSelection(snapshot: view)
+        var selection = CloudGatewayMacClientRemovalSelection(snapshot: view)
         selection.selectRegion("region")
-        selection.selectClient(reviewIdentifier)
+        selection.selectClient(removalIdentifier)
         #expect(selection.canDelete == (permission == .inactive))
         if permission == .active {
             #expect(selection.message == "Disconnect this config and wait for it to stop before deleting it")
@@ -57,37 +57,37 @@ private func reviewClient(_ identifier: String, regionId: String = "region", reg
     }
 }
 
-@Test func reviewAllowsMissingConfigsAndAnUnrelatedActiveProfileWithoutSetupOrCreationCapacity() throws {
+@Test func removalAllowsMissingConfigsAndAnUnrelatedActiveProfileWithoutSetupOrCreationCapacity() throws {
     for eligibility in [CloudGatewayMacClientEligibility.eligible, .inactive, .configMissing, .regionUnavailable] {
         for installed in [false, true] {
-            let view = CloudGatewayMacControllerView(state: reviewState(
+            let view = CloudGatewayMacControllerView(state: removalState(
                 profiles: [.init(identifier: "account/region/other", status: .connected)],
                 eligibility: eligibility, installed: installed, setup: .unavailable
             ))
-            #expect(view.canReviewClient)
+            #expect(view.canRemoveClient)
             #expect(!view.canCreateClient)
-            #expect(view.lastSelectedIdentifier == reviewIdentifier)
+            #expect(view.lastSelectedIdentifier == removalIdentifier)
             #expect(view.groups.first?.rows.first?.isEnabled == false)
             #expect(view.groups.first?.rows.first?.removalPermission == .inactive)
         }
     }
-    let mixed = CloudGatewayMacControllerView(state: reviewState(profiles: [
-        .init(identifier: reviewIdentifier, status: .disconnected),
-        .init(identifier: reviewIdentifier, status: .connecting)
+    let mixed = CloudGatewayMacControllerView(state: removalState(profiles: [
+        .init(identifier: removalIdentifier, status: .disconnected),
+        .init(identifier: removalIdentifier, status: .connecting)
     ]))
     #expect(mixed.groups.first?.rows.first?.removalPermission == .active)
 }
 
-@Test func reviewSelectionKeepsIDsAndOwnerLabelsAndResetsConfigOnRegionChange() throws {
+@Test func removalSelectionKeepsIDsAndOwnerLabelsAndResetsConfigOnRegionChange() throws {
     let first = "account/east/client"
     let second = "account/east/other"
     let west = "account/west/client"
-    let view = CloudGatewayMacControllerView(state: reviewState(clients: [
-        reviewClient(second, regionId: "east", regionOrder: 2),
-        reviewClient(first, regionId: "east", regionOrder: 2),
-        reviewClient(west, regionId: "west", regionOrder: 1)
+    let view = CloudGatewayMacControllerView(state: removalState(clients: [
+        removalClient(second, regionId: "east", regionOrder: 2),
+        removalClient(first, regionId: "east", regionOrder: 2),
+        removalClient(west, regionId: "west", regionOrder: 1)
     ]))
-    var selection = CloudGatewayMacClientReviewSelection(snapshot: view)
+    var selection = CloudGatewayMacClientRemovalSelection(snapshot: view)
     #expect(selection.groups.map(\.regionId) == ["west", "east"])
     #expect(selection.groups.map(\.title) == ["Region", "Region"])
     #expect(!selection.canDelete)
@@ -113,68 +113,68 @@ private func reviewClient(_ identifier: String, regionId: String = "region", reg
     #expect(selection.identifier == nil)
 }
 
-@Test func reviewSelectionHandlesEmptyRemovedAndNewlyActiveSelections() {
-    var selection = CloudGatewayMacClientReviewSelection(snapshot: .init(state: reviewState()))
+@Test func removalSelectionHandlesEmptyRemovedAndNewlyActiveSelections() {
+    var selection = CloudGatewayMacClientRemovalSelection(snapshot: .init(state: removalState()))
     selection.selectRegion("region")
-    selection.selectClient(reviewIdentifier)
+    selection.selectClient(removalIdentifier)
     #expect(selection.canDelete)
-    selection.update(snapshot: .init(state: reviewState(profiles: [
-        .init(identifier: reviewIdentifier, status: .disconnecting)
+    selection.update(snapshot: .init(state: removalState(profiles: [
+        .init(identifier: removalIdentifier, status: .disconnecting)
     ])), isSnapshotFresh: true, isCurrentBuild: true)
-    #expect(selection.identifier == reviewIdentifier)
+    #expect(selection.identifier == removalIdentifier)
     #expect(!selection.canDelete)
-    selection.update(snapshot: .init(state: reviewState()), isSnapshotFresh: true, isCurrentBuild: true)
+    selection.update(snapshot: .init(state: removalState()), isSnapshotFresh: true, isCurrentBuild: true)
     #expect(selection.canDelete)
-    selection.update(snapshot: .init(state: reviewState(clients: [])), isSnapshotFresh: true, isCurrentBuild: true)
+    selection.update(snapshot: .init(state: removalState(clients: [])), isSnapshotFresh: true, isCurrentBuild: true)
     #expect(selection.isValid)
     #expect(selection.regionId == nil)
     #expect(selection.identifier == nil)
     #expect(!selection.canDelete)
-    #expect(selection.message == "No clients are available to review")
+    #expect(selection.message == "No clients are available to remove")
 }
 
-@Test func reviewNeverEnablesDeleteForUnavailableObservations() {
-    for profiles in [[], [.init(identifier: reviewIdentifier, status: .disconnected)]] as [[CloudGatewayMacObservedProfile]] {
-        let view = CloudGatewayMacControllerView(state: reviewState(profiles: profiles, observationIsFresh: false))
-        #expect(view.canReviewClient)
+@Test func removalNeverEnablesDeleteForUnavailableObservations() {
+    for profiles in [[], [.init(identifier: removalIdentifier, status: .disconnected)]] as [[CloudGatewayMacObservedProfile]] {
+        let view = CloudGatewayMacControllerView(state: removalState(profiles: profiles, observationIsFresh: false))
+        #expect(view.canRemoveClient)
         #expect(view.groups.first?.rows.first?.removalPermission == .unavailable)
-        var selection = CloudGatewayMacClientReviewSelection(snapshot: view)
+        var selection = CloudGatewayMacClientRemovalSelection(snapshot: view)
         selection.selectRegion("region")
-        selection.selectClient(reviewIdentifier)
+        selection.selectClient(removalIdentifier)
         #expect(!selection.canDelete)
         #expect(selection.message == "VPN status is unavailable. Cancel and choose Refresh before deleting this config")
     }
 }
 
-@Test func reviewInvalidatesForSessionInventoryBuildAndSnapshotChanges() {
-    var blockedByOwner = reviewState()
-    blockedByOwner.reviewAllowed = false
+@Test func removalInvalidatesForSessionInventoryBuildAndSnapshotChanges() {
+    var blockedByOwner = removalState()
+    blockedByOwner.removalAllowed = false
     let invalidStates = [
-        reviewState(accountId: nil), reviewState(accountId: "other"), reviewState(authorized: false),
-        reviewState(busy: true), reviewState(restoring: true), reviewState(settling: true),
-        reviewState(inventory: .refreshing), reviewState(inventory: .unavailable), blockedByOwner
+        removalState(accountId: nil), removalState(accountId: "other"), removalState(authorized: false),
+        removalState(busy: true), removalState(restoring: true), removalState(settling: true),
+        removalState(inventory: .refreshing), removalState(inventory: .unavailable), blockedByOwner
     ]
     for state in invalidStates {
-        var selection = CloudGatewayMacClientReviewSelection(snapshot: .init(state: reviewState()))
+        var selection = CloudGatewayMacClientRemovalSelection(snapshot: .init(state: removalState()))
         selection.selectRegion("region")
-        selection.selectClient(reviewIdentifier)
+        selection.selectClient(removalIdentifier)
         selection.update(snapshot: .init(state: state), isSnapshotFresh: true, isCurrentBuild: true)
         #expect(!selection.isValid)
         #expect(!selection.canDelete)
         #expect(selection.identifier == nil)
     }
     for (fresh, current) in [(false, true), (true, false)] {
-        var selection = CloudGatewayMacClientReviewSelection(snapshot: .init(state: reviewState()))
+        var selection = CloudGatewayMacClientRemovalSelection(snapshot: .init(state: removalState()))
         selection.selectRegion("region")
-        selection.selectClient(reviewIdentifier)
-        selection.update(snapshot: .init(state: reviewState()), isSnapshotFresh: fresh, isCurrentBuild: current)
+        selection.selectClient(removalIdentifier)
+        selection.update(snapshot: .init(state: removalState()), isSnapshotFresh: fresh, isCurrentBuild: current)
         #expect(!selection.isValid)
-        selection.update(snapshot: .init(state: reviewState()), isSnapshotFresh: true, isCurrentBuild: true)
+        selection.update(snapshot: .init(state: removalState()), isSnapshotFresh: true, isCurrentBuild: true)
         #expect(!selection.isValid)
     }
-    var cancelled = CloudGatewayMacClientReviewSelection(snapshot: .init(state: reviewState()))
+    var cancelled = CloudGatewayMacClientRemovalSelection(snapshot: .init(state: removalState()))
     cancelled.selectRegion("region")
-    cancelled.selectClient(reviewIdentifier)
+    cancelled.selectClient(removalIdentifier)
     cancelled.invalidate()
     #expect(cancelled.identifier == nil)
     #expect(!cancelled.canDelete)
@@ -195,10 +195,23 @@ private func reviewClient(_ identifier: String, regionId: String = "region", reg
 }
 
 @MainActor
-@Test func reviewDialogPreservesPickerItemsAcrossRepeatedSnapshots() throws {
+@Test func removalDialogShowsRemoveClientTitle() throws {
     _ = NSApplication.shared
-    let view = CloudGatewayMacControllerView(state: reviewState())
-    let dialog = CloudGatewayMacClientReviewDialog(snapshot: view)
+    let dialog = CloudGatewayMacClientRemovalDialog(snapshot: .init(state: removalState()))
+    var views = [try #require(dialog.regionPicker.window?.contentView)]
+    var labels: [String] = []
+    while let view = views.popLast() {
+        if let label = view as? NSTextField { labels.append(label.stringValue) }
+        views.append(contentsOf: view.subviews)
+    }
+    #expect(labels.contains("Remove Client"))
+}
+
+@MainActor
+@Test func removalDialogPreservesPickerItemsAcrossRepeatedSnapshots() throws {
+    _ = NSApplication.shared
+    let view = CloudGatewayMacControllerView(state: removalState())
+    let dialog = CloudGatewayMacClientRemovalDialog(snapshot: view)
     dialog.regionPicker.selectItem(at: 1)
     #expect(dialog.regionPicker.sendAction(try #require(dialog.regionPicker.action), to: dialog.regionPicker.target))
     let regionItems = dialog.regionPicker.itemArray
@@ -214,37 +227,37 @@ private func reviewClient(_ identifier: String, regionId: String = "region", reg
 }
 
 @MainActor
-@Test func reviewDialogDefersInventoryChangesUntilPickerTrackingEnds() async throws {
+@Test func removalDialogDefersInventoryChangesUntilPickerTrackingEnds() async throws {
     _ = NSApplication.shared
-    let dialog = CloudGatewayMacClientReviewDialog(snapshot: .init(state: reviewState()))
+    let dialog = CloudGatewayMacClientRemovalDialog(snapshot: .init(state: removalState()))
     dialog.regionPicker.selectItem(at: 1)
     #expect(dialog.regionPicker.sendAction(try #require(dialog.regionPicker.action), to: dialog.regionPicker.target))
     let menu = try #require(dialog.configPicker.menu)
     let configItem = try #require(dialog.configPicker.item(at: 1))
     dialog.menuWillOpen(menu)
-    dialog.update(snapshot: .init(state: reviewState(clients: [
-        reviewClient(reviewIdentifier), reviewClient("account/region/other")
+    dialog.update(snapshot: .init(state: removalState(clients: [
+        removalClient(removalIdentifier), removalClient("account/region/other")
     ])), isSnapshotFresh: true, isCurrentBuild: true)
     #expect(dialog.configPicker.numberOfItems == 2)
     #expect(dialog.configPicker.item(at: 1) === configItem)
     dialog.menuDidClose(menu)
     try #require(await controllerBoundaryEventually { dialog.configPicker.numberOfItems == 3 })
     #expect(dialog.configPicker.itemArray.dropFirst().compactMap { $0.representedObject as? String }
-        == [reviewIdentifier, "account/region/other"])
+        == [removalIdentifier, "account/region/other"])
 }
 
 @MainActor
-@Test func reviewDialogInvalidationBeforePresentationReturnsNoSelection() async throws {
+@Test func removalDialogInvalidationBeforePresentationReturnsNoSelection() async throws {
     _ = NSApplication.shared
-    let dialog = CloudGatewayMacClientReviewDialog(snapshot: .init(state: reviewState()))
-    dialog.update(snapshot: .init(state: reviewState(accountId: nil)), isSnapshotFresh: true, isCurrentBuild: true)
+    let dialog = CloudGatewayMacClientRemovalDialog(snapshot: .init(state: removalState()))
+    dialog.update(snapshot: .init(state: removalState(accountId: nil)), isSnapshotFresh: true, isCurrentBuild: true)
     #expect(try await dialog.prompt() == nil)
 }
 
 @MainActor
-@Test func reviewDialogCancellationBeforePresentationThrowsWithoutReturningASelection() async throws {
+@Test func removalDialogCancellationBeforePresentationThrowsWithoutReturningASelection() async throws {
     _ = NSApplication.shared
-    let dialog = CloudGatewayMacClientReviewDialog(snapshot: .init(state: reviewState()))
+    let dialog = CloudGatewayMacClientRemovalDialog(snapshot: .init(state: removalState()))
     let task = Task { try await dialog.prompt() }
     task.cancel()
     await #expect(throws: CancellationError.self) { try await task.value }

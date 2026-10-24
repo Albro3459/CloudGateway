@@ -5,7 +5,7 @@ import Testing
 @testable import CloudGatewayMacControllerIPC
 
 @MainActor
-private final class ReviewFrontendHarness {
+private final class RemovalFrontendHarness {
     let effects = ControllerOrchestratorEffects()
     let controller: CloudGatewayMacControllerOrchestrator
     let instanceId = UUID()
@@ -56,13 +56,13 @@ private final class ReviewFrontendHarness {
     }
 
     func remove(id: UUID = UUID(), timeout: Duration = .seconds(5)) async throws -> CloudGatewayMacCommandOutcome {
-        try await client.removeReviewedClient(identifier: "account/region/client", accountId: "account", id: id, timeout: timeout)
+        try await client.removeClient(identifier: "account/region/client", accountId: "account", id: id, timeout: timeout)
     }
 }
 
 @MainActor
-@Test func reviewFrontendSubmitsTheFullIdentifierAndKeepsImmediateTypedFailure() async throws {
-    let harness = try await ReviewFrontendHarness()
+@Test func removalFrontendSubmitsTheFullIdentifierAndKeepsImmediateTypedFailure() async throws {
+    let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
     harness.immediateOutcome = .failed(.clientActive)
     let id = UUID()
@@ -80,8 +80,8 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendWaitsForDelayedTypedFailureWithTheSameOperation() async throws {
-    let harness = try await ReviewFrontendHarness()
+@Test func removalFrontendWaitsForDelayedTypedFailureWithTheSameOperation() async throws {
+    let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
     harness.delayedOutcome = .failed(.clientActive)
     harness.completeAtLookup = 2
@@ -89,7 +89,7 @@ private final class ReviewFrontendHarness {
     let task = Task { try await harness.remove(id: id) }
     try #require(await controllerBoundaryEventually { harness.lookups == 1 })
     #expect(harness.effects.performed == [.removeClient])
-    #expect(!harness.client.presentation.canReviewClient)
+    #expect(!harness.client.presentation.canRemoveClient)
     let outcome = try await task.value
     #expect(outcome == .failed(.clientActive))
     #expect(harness.lookups == 2)
@@ -99,13 +99,13 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendPreservesCompletedRemovalWarnings() async throws {
+@Test func removalFrontendPreservesCompletedRemovalWarnings() async throws {
     for (warning, message) in [
         (nil as CloudGatewayMacCommandWarning?, "Client was removed"),
         (.localCleanupIncomplete, "Client was removed, but its local VPN profile could not be cleaned up. Choose Refresh"),
         (.inventoryNotRefreshed, "Client was removed, but the client list could not refresh. Choose Refresh")
     ] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         harness.immediateOutcome = .completed(warning: warning)
         let outcome = try await harness.remove()
@@ -113,7 +113,7 @@ private final class ReviewFrontendHarness {
         #expect(harness.client.message(forRemoval: outcome) == message)
         #expect(harness.effects.performed == [.removeClient])
     }
-    let harness = try await ReviewFrontendHarness()
+    let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
     harness.delayedOutcome = .completed(warning: .localCleanupIncomplete)
     #expect(try await harness.remove() == .completed(warning: .localCleanupIncomplete))
@@ -121,9 +121,9 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendRecoversLostConfirmationWithoutResendingRemovalOrConfirmation() async throws {
+@Test func removalFrontendRecoversLostConfirmationWithoutResendingRemovalOrConfirmation() async throws {
     for outcome in [CloudGatewayMacCommandOutcome.failed(.clientActive), .completed(warning: .inventoryNotRefreshed)] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         harness.loseConfirmation = true
         harness.delayedOutcome = outcome
@@ -137,9 +137,9 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendPreservesDefiniteAdmissionErrorsWithoutOutcomeLookup() async throws {
+@Test func removalFrontendPreservesDefiniteAdmissionErrorsWithoutOutcomeLookup() async throws {
     for error in [CloudGatewayMacControllerFailure.busy, .rejected, .invalidRequest, .incompatibleVersion] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         harness.admissionError = error
         await #expect(throws: error) { try await harness.remove() }
@@ -150,9 +150,9 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendTreatsTimeoutUnknownLookupFailureAndChangedSessionAsUncertain() async throws {
+@Test func removalFrontendTreatsTimeoutUnknownLookupFailureAndChangedSessionAsUncertain() async throws {
     for scenario in ["timeout", "unknown", "lookupFailure", "sessionChanged"] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         switch scenario {
         case "unknown": harness.immediateOutcome = .unknown
@@ -173,14 +173,14 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendRejectsChangedAccountActiveSelectionStaleSnapshotAndSettlingSession() async throws {
+@Test func removalFrontendRejectsChangedAccountActiveSelectionStaleSnapshotAndSettlingSession() async throws {
     for scenario in ["account", "active", "stale", "settling"] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         switch scenario {
         case "account":
             await #expect(throws: CloudGatewayMacControllerFailure.rejected) {
-                try await harness.client.removeReviewedClient(identifier: "account/region/client", accountId: "other")
+                try await harness.client.removeClient(identifier: "account/region/client", accountId: "other")
             }
         case "active":
             harness.effects.active = true
@@ -200,8 +200,8 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendCancellationDetachesWithoutReplayingTheRemoval() async throws {
-    let harness = try await ReviewFrontendHarness()
+@Test func removalFrontendCancellationDetachesWithoutReplayingTheRemoval() async throws {
+    let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
     let task = Task { try await harness.remove() }
     try #require(await controllerBoundaryEventually { harness.lookups == 1 })
@@ -214,16 +214,16 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewFrontendShowsFixedSafeAccessNetworkAndGenericFailures() async throws {
+@Test func removalFrontendShowsFixedSafeAccessNetworkAndGenericFailures() async throws {
     for (failure, message) in [
         (CloudGatewayMacCommandFailure.accessDenied, "Account access was denied. Sign in again after access is restored"),
         (.networkUnavailable, "Unable to reach CloudGateway. Choose Refresh before trying again"),
-        (.signInRequired, "Your session changed. Sign in and review the client again"),
+        (.signInRequired, "Your session changed. Sign in and select the client again"),
         (.busy, "Another operation is in progress. Wait for it to finish and try again"),
-        (.configUnavailable, "The client list changed. Choose Refresh and review the client again"),
+        (.configUnavailable, "The client list changed. Choose Refresh and select the client again"),
         (.internalError, "Client could not be removed. Refresh before trying again")
     ] {
-        let harness = try await ReviewFrontendHarness()
+        let harness = try await RemovalFrontendHarness()
         defer { harness.client.shutdown() }
         harness.immediateOutcome = .failed(failure)
         let outcome = try await harness.remove()
@@ -233,25 +233,25 @@ private final class ReviewFrontendHarness {
 }
 
 @MainActor
-@Test func reviewAvailabilityFollowsOwnerAdmissionAcrossPendingRunningAndExtensionWork() async throws {
-    let harness = try await ReviewFrontendHarness()
+@Test func removalAvailabilityFollowsOwnerAdmissionAcrossPendingRunningAndExtensionWork() async throws {
+    let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
-    #expect(harness.client.presentation.canReviewClient)
+    #expect(harness.client.presentation.canRemoveClient)
     harness.effects.activationPending = true
     _ = try await harness.client.request(.snapshot)
-    #expect(!harness.client.presentation.canReviewClient)
+    #expect(!harness.client.presentation.canRemoveClient)
     harness.effects.activationPending = false
     harness.effects.hasPendingWork = true
     _ = try await harness.client.request(.snapshot)
-    #expect(!harness.client.presentation.canReviewClient)
+    #expect(!harness.client.presentation.canRemoveClient)
     harness.effects.hasPendingWork = false
     let id = UUID()
     _ = try await harness.client.send(.connect, id: id, identifier: "account/region/client")
-    #expect(!harness.client.presentation.canReviewClient)
+    #expect(!harness.client.presentation.canRemoveClient)
     _ = try await harness.client.confirm(id)
     _ = try await harness.client.request(.snapshot)
-    #expect(!harness.client.presentation.canReviewClient)
+    #expect(!harness.client.presentation.canRemoveClient)
     harness.effects.completion?(.completed(warning: nil))
     _ = try await harness.client.request(.snapshot)
-    #expect(harness.client.presentation.canReviewClient)
+    #expect(harness.client.presentation.canRemoveClient)
 }

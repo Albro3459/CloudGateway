@@ -698,7 +698,7 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     private func frontendSnapshot(canUpdateExtension: Bool) -> CloudGatewayMacControllerState {
         var snapshot = effects.snapshot(setupState, canUpdateExtension)
-        snapshot.reviewAllowed = canAdmitRemoval && pending == nil && runningOperation == nil
+        snapshot.removalAllowed = canAdmitRemoval && pending == nil && runningOperation == nil
         return snapshot
     }
 

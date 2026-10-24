@@ -1,4 +1,4 @@
-# Review client from the macOS menu
+# Remove Client from the macOS menu
 
 Base: `ceeeb5c816c35aa7d3733601c90c87a7fdc121b2` on branch `mac-review-client`.
 Worktree: `/Users/alexbrodsky/GitHub/CloudGateway-mac-review-client`.
@@ -7,8 +7,8 @@ plan alone. Keep all commits local.
 
 ## User flow
 
-Add **Review client…** immediately below **Add Client…** in the signed-in menu.
-Use the requested Review client label even though the action removes a client.
+Add **Remove Client…** immediately below **Add Client…** in the signed-in menu.
+Use Remove Client for the menu action and modal title.
 Open a modal with a Region picker, a Config picker limited to that region, a
 Delete button, and Cancel. Show the selected client name and region clearly.
 Deleting removes the cloud client and its local profile through the existing
@@ -35,24 +35,24 @@ cancellation are the local pattern to follow.
 
 Connection eligibility is separate from removal eligibility. Missing config
 bytes, region capacity, or an unavailable extension must not by themselves
-prevent a user from reviewing a cloud client for deletion. The owner remains
+prevent a user from selecting a cloud client for deletion. The owner remains
 responsible for fresh authorization and profile checks.
 
 ## Implementation checkpoints
 
 - [x] 1. Finish plan review with SOL xhigh, resolve findings, record the result,
   and commit this plan before implementation
-- [x] 2. Add a small testable review selection model at the macOS frontend
+- [x] 2. Add a small testable removal selection model at the macOS frontend
   boundary. Use account/region/client identifiers as identity, never labels or
   picker indexes. Preserve the existing region/client sort order and owner
   labels. Distinguish duplicate names and regions with the same display name.
   Reset the config selection when its region changes. Handle no clients and no
   selection without enabling Delete
-- [x] 3. Derive review availability from current authenticated controller state,
+- [x] 3. Derive removal availability from current authenticated controller state,
   independently of Add Client capacity and connect eligibility. Require current
   snapshot/build, settled authorized session, and no conflicting operation.
-  Extend the menu projection with minimal review data, including stable region
-  IDs, review availability, and per-client removal eligibility. Derive inactivity
+  Extend the menu projection with minimal removal data, including stable region
+  IDs, removal availability, and per-client removal eligibility. Derive inactivity
   from fresh `observedProfiles` matched by canonical identifier. Neither nullable
   client status nor connect enablement proves inactivity: a cached row with a
   mismatched secret reference can have nil status while its profile is active.
@@ -83,7 +83,7 @@ responsible for fresh authorization and profile checks.
   outcomes are not resent. Cover nil cached-row status hiding an active observed
   profile, immediate and delayed failures, and completed cleanup warnings.
   Retain existing controller/CLI removal regressions
-- [x] 7. Update macOS user/development docs with Review client and the
+- [x] 7. Update macOS user/development docs with Remove Client and the
   disconnect-first rule. Record automated and manual checks with their actual
   results. Leave checks open when the environment cannot exercise them
 - [x] 8. Run the repository validation entry point, resolve SOL code review,
@@ -101,7 +101,7 @@ changes are not planned.
 
 Manual acceptance checklist:
 
-- [ ] Review client appears directly under Add Client in the signed-in menu
+- [ ] Remove Client appears directly under Add Client in the signed-in menu
 - [ ] Region selection shows only configs from that region, including duplicate
   display names with distinct identifiers
 - [ ] Delete is disabled for the active config with a disconnect-first message
@@ -119,7 +119,7 @@ resolutions. Do not overlap edits to the same files. The parent owns commits.
 ## Review record
 
 Plan review: SOL `gpt-6.1-sol`, xhigh, `codex_secure`, 2026-10-24. Two P2
-findings resolved in checkpoints 3, 5, and 6: project explicit review data from
+findings resolved in checkpoints 3, 5, and 6: project explicit removal data from
 fresh observed profiles, and recover typed terminal outcomes after confirmation
 errors. Reviewer marked the plan ready after these additions. No unresolved
 plan findings.
@@ -145,3 +145,15 @@ were used without reaching an account limit.
 
 The manual acceptance checklist remains a signed, live-account release check.
 No app was installed and no real cloud config was deleted during this task.
+
+Remove Client naming correction:
+
+- [x] Name the menu action and modal Remove Client, with removal names in code,
+  tests, and docs
+- [x] Keep deletion routed through the existing controller `.removeClient`
+  command and require an inactive target
+- [x] Add a native AppKit regression for the Remove Client title
+- [x] Complete SOL xhigh review on `codex_secure`, with no findings
+- [x] Complete the macOS validation rerun and commit the correction locally.
+  All 742 macOS tests, shared tests, strict Periphery scans, unsigned arm64
+  app/system extension build, packaging, and 58 packaged CLI smoke checks passed

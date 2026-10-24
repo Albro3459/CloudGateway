@@ -1,6 +1,6 @@
 import Foundation
 
-struct CloudGatewayMacClientReviewSelection {
+struct CloudGatewayMacClientRemovalSelection {
     let accountId: String?
     private(set) var groups: [CloudGatewayMacControllerView.Region] = []
     private(set) var regionId: String?
@@ -23,8 +23,8 @@ struct CloudGatewayMacClientReviewSelection {
     var canDelete: Bool { isValid && selectedClient?.removalPermission == .inactive }
 
     var message: String {
-        guard !groups.isEmpty else { return "No clients are available to review" }
-        guard let selectedClient else { return "Select a region and config to review" }
+        guard !groups.isEmpty else { return "No clients are available to remove" }
+        guard let selectedClient else { return "Select a region and config to remove" }
         switch selectedClient.removalPermission {
         case .inactive: return "Deleting this client removes its cloud config and local VPN profile. This cannot be undone"
         case .active: return "Disconnect this config and wait for it to stop before deleting it"
@@ -44,7 +44,7 @@ struct CloudGatewayMacClientReviewSelection {
 
     mutating func update(snapshot: CloudGatewayMacControllerView, isSnapshotFresh: Bool, isCurrentBuild: Bool) {
         guard isValid, isSnapshotFresh, isCurrentBuild, accountId != nil,
-              snapshot.accountId == accountId, snapshot.canReviewClient else {
+              snapshot.accountId == accountId, snapshot.canRemoveClient else {
             invalidate()
             return
         }

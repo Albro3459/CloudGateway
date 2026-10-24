@@ -369,14 +369,14 @@ Creation does not install or connect the new profile. A successful API response
 followed by a failed inventory refresh tells the user to refresh before trying
 again, preventing accidental duplicate clients.
 
-Review client appears directly below Add Client. Its modal groups configs by
+Remove Client appears directly below Add Client. Its modal groups configs by
 region and submits the selected canonical client identifier through the existing
 owner-controller removal command. The user must disconnect that config and wait
 for it to stop first. All active and transitional statuses block Delete. Fresh
 profile observations determine inactivity, even when a cached client row has no
 usable config or matching secret reference. Other active configs stay connected.
 Region capacity, connect eligibility, and last-used selection do not determine
-whether a client can be reviewed for deletion.
+whether a client can be selected for deletion.
 
 The dialog updates as controller snapshots change and closes when its account
 or controller is no longer current. Deletion uses one operation ID through
