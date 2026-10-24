@@ -56,17 +56,17 @@ zero DELETE requests. An older refresh cannot publish after the eviction.
 Primary files: [config coordinator and profile protocol](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacConfigCoordinator.swift)
 and [production profile adapter](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacVPNProfileAdapter.swift).
 
-- [ ] Add coordinator support for fresh target-inactive validation and removal
+- [x] Add coordinator support for fresh target-inactive validation and removal
   under existing `runCommand` serialization/generation checks. Require the
   controller authorization closure at awaited boundaries
-- [ ] Add an adapter remove operation for an exact canonical identifier. Load
+- [x] Add an adapter remove operation for an exact canonical identifier. Load
   app-owned managers, reject duplicate/invalid matches, allow absence, require
   the matching profile's `needsConfirmedStop == false`, then use preferences
   removal and reload to confirm absence. Revalidate ownership/identity/status
   at the final mutation boundary
-- [ ] Fail closed on unreadable preferences. Never fall back to the first
+- [x] Fail closed on unreadable preferences. Never fall back to the first
   manager or selected manager. Do not call stop, start, install, or replacement
-- [ ] Keep reference/ownership matching within existing metadata rules. Do not
+- [x] Keep reference/ownership matching within existing metadata rules. Do not
   use `secrets.rollback` for committed secrets or add a committed-secret delete
   API. Retained secret garbage collection remains separate work
 
@@ -227,3 +227,11 @@ High review round 1 passed with no actionable findings. Full unsigned macOS
 validation passed: 637 core/IPC tests, both strict Periphery scans, app/extension
 build, packaging, and CLI smoke checks. Task 5 connects the controller eviction
 seam to DELETE and adds dispatch-order assertions.
+
+### Task 3: exact inactive-profile removal
+
+Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
+Full unsigned macOS validation passed: 662 macOS tests, both strict Periphery
+scans, app/extension build, packaging, and 58 CLI smoke checks. Production uses
+the same removal helper covered by preference-failure and activation-race tests.
+Task 5 connects the coordinator APIs and removes their temporary annotations.

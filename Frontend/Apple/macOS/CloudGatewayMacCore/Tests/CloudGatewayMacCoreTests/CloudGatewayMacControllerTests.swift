@@ -2077,6 +2077,13 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
                 : $0
         }
     }
+
+    func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
+        try Task.checkCancellation()
+        try await authorize()
+        _ = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: values)
+        values.removeAll { $0.identifier == identifier }
+    }
 }
 
 private actor MacControllerSecrets: CloudGatewayMacSecretClient {

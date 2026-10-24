@@ -136,6 +136,23 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
         try await MacVPNStopWaiter(connection: manager.connection, timeout: stopTimeout).stopAndWait(authorize: authorize)
     }
 
+    func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
+        try await CloudGatewayMacProfileRemoval.perform(identifier: identifier, authorize: authorize, load: {
+            try await self.loadManagers().filter(Self.isOwned)
+        }, profile: { manager in
+            let profile = try Self.profile(manager)
+            // Fail closed when a future NE status maps to invalid
+            guard profile.needsConfirmedStop == Self.needsConfirmedStop(manager.connection.status) else {
+                throw CloudGatewayMacConfigError.unavailable
+            }
+            return profile
+        }, reload: { manager in
+            try await manager.loadFromPreferences()
+        }, remove: { manager in
+            try await manager.removeFromPreferences()
+        })
+    }
+
     private func installedManager(identifier: String) async throws -> NETunnelProviderManager {
         let loaded = try await loadManagers()
         let matching = try loaded.filter(Self.isOwned).filter { try Self.profile($0).identifier == identifier }

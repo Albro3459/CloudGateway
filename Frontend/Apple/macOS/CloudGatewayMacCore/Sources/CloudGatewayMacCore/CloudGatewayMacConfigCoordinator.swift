@@ -52,6 +52,7 @@ public protocol CloudGatewayMacProfileAdapter: Sendable {
     func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws
     func stopAndWait(identifier: String) async throws
     func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
+    func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
 }
 
 public extension CloudGatewayMacProfileAdapter {
@@ -72,6 +73,7 @@ public protocol CloudGatewayMacSnapshotPersisting: Sendable {
 
 public enum CloudGatewayMacConfigError: Error, Equatable, Sendable {
     case busy
+    case clientActive
     case cancelled
     case invalidConfig
     case profileInstallationFailed
@@ -283,6 +285,46 @@ public actor CloudGatewayMacConfigCoordinator {
                 try await authorize()
             }
         }
+    }
+
+    // periphery:ignore - Task 5 uses this gate before the client DELETE handoff
+    public func validateInactiveClient(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await self.requireInactiveProfile(identifier: identifier, command: command, authorize: authorize)
+        }
+    }
+
+    // periphery:ignore - Task 5 removes the profile after confirmed cloud removal
+    public func removeClientProfile(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await self.requireInactiveProfile(identifier: identifier, command: command, authorize: authorize)
+            try await self.profiles.remove(identifier: identifier, authorize: authorize)
+            try await authorize()
+            try await self.requireCurrent(command)
+        }
+    }
+
+    private func requireInactiveProfile(
+        identifier: String,
+        command: UInt64,
+        authorize: @MainActor @Sendable () throws -> Void
+    ) async throws {
+        guard CloudGatewayMacProfileMetadata.validIdentifier(identifier) else {
+            throw CloudGatewayMacConfigError.invalidConfig
+        }
+        try requireCurrent(command)
+        try await authorize()
+        try requireCurrent(command)
+        let installed = try await profiles.installedProfiles()
+        try await authorize()
+        try requireCurrent(command)
+        _ = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: installed)
     }
 
     private func requireAvailableSecret(reference: CloudGatewayMacSecretReference, identifier: String) async throws {
