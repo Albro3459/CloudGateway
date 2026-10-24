@@ -10,7 +10,7 @@ let controllerBoundaryBuild = CloudGatewayMacBuildIdentity(version: "1.0", build
 let controllerBoundaryReplacement = CloudGatewayMacBuildIdentity(version: "1.0", build: "3", codeHash: String(repeating: "b", count: 64))
 
 func controllerBoundaryState(active: Bool = false, setup: CloudGatewayMacSetupState = .ready,
-                             canUpdateExtension: Bool = false) -> CloudGatewayMacControllerState {
+                             canUpdateExtension: Bool = false, authSettling: Bool = false) -> CloudGatewayMacControllerState {
     let identifier = "account/region/client"
     let snapshot = CloudGatewayMacControllerSnapshot(
         domain: .init(accountId: "account", hasRetainedSession: true, accessAuthorized: true,
@@ -25,7 +25,7 @@ func controllerBoundaryState(active: Bool = false, setup: CloudGatewayMacSetupSt
                                       status: active ? .connected : .disconnected)]),
         lastSelectedIdentifier: identifier,
         browserState: .signedIn(AuthenticatedUser(uid: "account", email: nil)),
-        isRestoringSession: false, isAuthSettling: false, canCreateClient: true, errorMessage: nil
+        isRestoringSession: false, isAuthSettling: authSettling, canCreateClient: true, errorMessage: nil
     )
     return .init(snapshot: snapshot, setupState: setup, canUpdateExtension: canUpdateExtension)
 }

@@ -886,7 +886,6 @@ public final class CloudGatewayMacController {
         }
     }
 
-    // periphery:ignore - The production service calls this in task 6
     @discardableResult
     public func removeClient(
         identifier: String,

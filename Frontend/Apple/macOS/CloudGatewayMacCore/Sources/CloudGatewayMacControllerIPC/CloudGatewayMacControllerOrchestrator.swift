@@ -289,11 +289,15 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         let activity: Set<CloudGatewayMacControllerRequest.Action> = [
             .userActivity, .recordActivity, .menuWillOpen, .connect, .turnOff, .disconnectClient, .signIn, .cancelSignIn, .signOut,
-            .refresh, .awaitRefresh, .prepareClient, .createClient, .beginLogin, .cancelLogin, .update
+            .refresh, .awaitRefresh, .prepareClient, .createClient, .removeClient, .beginLogin, .cancelLogin, .update
         ]
         if activity.contains(request.action), update.canAcceptMutations || request.action == .turnOff {
             lastActivity = effects.monotonicNow()
             effects.userActivity(request.action == .userActivity)
+        }
+        if request.action == .removeClient,
+           request.buildIdentity != update.running || request.appVersion != update.running.version || request.appBuild != update.running.build {
+            return .init(error: .incompatibleVersion)
         }
         switch request.action {
         case .lifecycle:
@@ -313,8 +317,6 @@ public final class CloudGatewayMacControllerOrchestrator {
             guard let login = effects.login(request) else { return .init(error: .invalidRequest) }
             return .init(login: login)
         case .status: return controlReply(for: request)
-        // TODO: Admit removal after the domain operation is wired in task 6
-        case .removeClient: return .init(error: .unavailable)
         case .operation:
             guard let id = request.contextId else { return .init(error: .invalidRequest) }
             if managedUpdates?.owns(id) == true { return managedReply(for: request) }
@@ -430,6 +432,10 @@ public final class CloudGatewayMacControllerOrchestrator {
                 return operationReply(operation, request: request)
             }
             guard !preparingManagedUpdate, pending == nil, runningOperation == nil else { return .init(error: .busy) }
+            if request.action == .removeClient {
+                guard canAdmitRemoval else { return .init(error: .busy) }
+                guard removalSessionIsSettled(request) else { return .init(error: .rejected) }
+            }
             if request.action == .disconnectClient {
                 let snapshot = effects.snapshot(setupState, false)
                 guard let session = effects.session(), session.accountId == snapshot.accountId,
@@ -453,6 +459,21 @@ public final class CloudGatewayMacControllerOrchestrator {
         } catch { return .init(error: error as? CloudGatewayMacControllerFailure ?? .unavailable) }
     }
 
+    private var canAdmitRemoval: Bool {
+        update.canAcceptMutations && !startupReconciliationPending && pendingLegacyActivationEvent == nil
+            && !preparingManagedUpdate && managedUpdates?.isActionable != true
+            && !extensionUpdates.hasPendingAttempt && !effects.activationIsPending()
+            && preparationTask == nil && !effects.hasPendingWork()
+    }
+
+    private func removalSessionIsSettled(_ request: CloudGatewayMacControllerRequest) -> Bool {
+        let snapshot = effects.snapshot(setupState, false)
+        guard let session = effects.session(), session.accountId == snapshot.accountId,
+              snapshot.accessAuthorized, !snapshot.isRestoringSession, !snapshot.isAuthSettling,
+              let identifier = request.identifier else { return false }
+        return identifier.split(separator: "/").first == Substring(session.accountId)
+    }
+
     private func confirm(_ confirmation: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
         defer { updateInventoryAdmission() }
         guard let id = confirmation.contextId else { return .init(error: .invalidRequest) }
@@ -473,6 +494,19 @@ public final class CloudGatewayMacControllerOrchestrator {
             return controlReply(for: confirmation, operation: requests.finish(
                 id: id, state: .failed, failure: .rejected, outcome: .failed(.signInRequired), session: pending.session
             ))
+        }
+        if request.action == .removeClient {
+            let failure: CloudGatewayMacCommandFailure? = if !canAdmitRemoval { .busy }
+                else if !removalSessionIsSettled(request) { .signInRequired }
+                else if confirmation.appVersion != update.running.version || confirmation.appBuild != update.running.build { .incompatibleVersion }
+                else { nil }
+            if let failure {
+                self.pending = nil
+                return controlReply(for: confirmation, operation: requests.finish(
+                    id: id, state: .failed, failure: failure == .busy ? .busy : .rejected,
+                    outcome: .failed(failure), session: pending.session
+                ))
+            }
         }
         if request.action == .disconnectClient {
             let snapshot = effects.snapshot(setupState, false)

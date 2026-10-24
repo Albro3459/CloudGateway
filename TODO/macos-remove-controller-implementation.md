@@ -155,22 +155,22 @@ offline fallback are tested through the real domain controller and cache.
 
 ## 6. Expose the operation to both clients through IPC
 
-- [ ] Route `.removeClient` in [the production service](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
+- [x] Route `.removeClient` in [the production service](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacControllerService.swift)
   to the domain method through the existing effects boundary
-- [ ] In [the orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift),
+- [x] In [the orchestrator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerOrchestrator.swift),
   include removal in activity and normal mutation admission. Bind reservations
   to a settled current session and explicit account-scoped identifier. Recheck
   session on confirmation, then let the domain refresh/revalidate the target
-- [ ] Reuse the existing persisted request receipt, 30-second unconfirmed expiry,
+- [x] Reuse the existing persisted request receipt, 30-second unconfirmed expiry,
   independent execution, operation polling, and result TTL. Confirm once.
   Within the receipt lifetime, duplicate requests return their existing/unknown
   operation and do not redispatch. Receipts expire 600 seconds after acceptance.
   Results expire 600 seconds after completion, with existing running-result
   behavior. Startup drops expired receipts, so replay protection after restart
   ends at receipt expiry. Never automate a resend of an uncertain DELETE
-- [ ] Refuse removal during managed update, startup reconciliation, activation,
+- [x] Refuse removal during managed update, startup reconciliation, activation,
   or draining. Keep signed-out global stop available under its existing rules
-- [ ] Verify cancellation, detach, and restart behavior through the actual
+- [x] Verify cancellation, detach, and restart behavior through the actual
   orchestrator/domain handoff, not only injected final outcomes
 
 Acceptance: two frontend clients cannot race removes or remove during a start.
@@ -253,3 +253,13 @@ tests cover durable eviction before HTTP, fresh owner/admin authorization,
 active-profile rejection, response loss, account changes, offline restart, and
 sticky success. Confirmed removals stay excluded from the original session.
 Task 6 connects production service and IPC and removes the last method annotation.
+
+### Task 6: shared IPC removal handoff
+
+Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
+Full unsigned macOS validation passed: 717 core/IPC tests, both strict Periphery
+scans, app/extension build, packaging, and 58 CLI smoke checks. Real frontend,
+orchestrator, controller, and HTTP-helper coverage verifies confirmation,
+caller detach, session changes, bounded receipt replay protection, independent
+result retention, and changed-payload rejection. All temporary removal stubs and
+Periphery annotations are gone. Frontend removal commands and UI remain deferred.

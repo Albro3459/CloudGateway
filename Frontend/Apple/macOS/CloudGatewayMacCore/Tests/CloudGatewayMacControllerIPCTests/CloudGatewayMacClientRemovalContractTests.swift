@@ -74,13 +74,24 @@ private let removalIdentifier = "account/region/client"
 }
 
 @MainActor
-@Test func removalContractDoesNotDispatchBeforeDomainIntegration() async throws {
+@Test func removalContractReservesWithoutDispatchAndConfirmsOnce() async throws {
     let effects = ControllerOrchestratorEffects()
     let controller = try effects.make()
-    let request = CloudGatewayMacControllerRequest(action: .removeClient, identifier: removalIdentifier)
-    #expect(await controller.handle(request).error == .unavailable)
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    effects.sessions.changeAccount(to: "account")
+    let request = CloudGatewayMacControllerRequest(
+        action: .removeClient, identifier: removalIdentifier,
+        appVersion: controllerBoundaryBuild.version, appBuild: controllerBoundaryBuild.build,
+        buildIdentity: controllerBoundaryBuild
+    )
+    #expect(await controller.handle(request).operation?.state == .accepted)
     #expect(effects.performed.isEmpty)
-    #expect(effects.writes == 0)
+    #expect(effects.writes == 1)
+    #expect(effects.activity == [false])
+    let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: request.id)
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    #expect(effects.performed == [.removeClient])
 }
 
 @MainActor
@@ -171,4 +182,95 @@ private let removalIdentifier = "account/region/client"
             )
         }
     }
+}
+
+@MainActor
+@Test(arguments: ["managed", "startup", "activation", "extension", "draining", "domain", "preparation"])
+func removalAdmissionRefusesLifecycleWork(state: String) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    if state == "startup" {
+        let attempt = CloudGatewayMacExtensionUpdateOrchestrator.Attempt(id: UUID(), target: controllerBoundaryBuild, bootSession: "boot")
+        effects.storedUpdates = .init(state: .approvalPending(attempt))
+    }
+    let controller = try effects.make(managed: state == "managed")
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    var preparation: Task<CloudGatewayMacControllerReply, Never>?
+    switch state {
+    case "managed":
+        effects.authenticated = false
+        effects.registration = .updateRequired
+        _ = await controller.handle(controllerBoundaryRequest(.update, allowDisconnect: false))
+    case "activation": effects.activationPending = true
+    case "extension": _ = await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate))
+    case "draining":
+        effects.installed = controllerBoundaryReplacement
+        await controller.tick()
+    case "domain": effects.hasPendingWork = true
+    case "preparation":
+        effects.ignorePreparationCancellation = true
+        preparation = Task { await controller.handle(controllerBoundaryRequest(.prepareClient)) }
+        try #require(await controllerBoundaryEventually { effects.releasePreparation != nil })
+    default: break
+    }
+    let request = CloudGatewayMacControllerRequest(
+        action: .removeClient, identifier: removalIdentifier,
+        appVersion: controllerBoundaryBuild.version, appBuild: controllerBoundaryBuild.build,
+        buildIdentity: controllerBoundaryBuild
+    )
+    #expect(await controller.handle(request).error == .busy)
+    #expect(effects.performed.isEmpty)
+    effects.releasePreparation?.resume()
+    _ = await preparation?.value
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func removalConfirmationRechecksActivationAndSessionSettling(settling: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    let controller = try effects.make()
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    let request = CloudGatewayMacControllerRequest(
+        action: .removeClient, identifier: removalIdentifier,
+        appVersion: controllerBoundaryBuild.version, appBuild: controllerBoundaryBuild.build,
+        buildIdentity: controllerBoundaryBuild
+    )
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    if settling {
+        effects.snapshotState = controllerBoundaryState(authSettling: true)
+    } else { effects.activationPending = true }
+    let result = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    #expect(result.operation?.state == .failed)
+    #expect(result.outcome == .failed(settling ? .signInRequired : .busy))
+    #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func removalRequiresMatchingBuildAndAccountNamespaceWhileSignedOutStopStaysCompatible() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    _ = await controller.handle(controllerBoundaryRequest(.lifecycle))
+    for account in [nil, "other", "account"] {
+        effects.sessions.changeAccount(to: account)
+        let request = CloudGatewayMacControllerRequest(
+            action: .removeClient, identifier: account == "account" ? "other/region/client" : removalIdentifier,
+            appVersion: controllerBoundaryBuild.version, appBuild: controllerBoundaryBuild.build,
+            buildIdentity: controllerBoundaryBuild
+        )
+        #expect(await controller.handle(request).error == .rejected)
+    }
+    let request = CloudGatewayMacControllerRequest(
+        action: .removeClient, identifier: removalIdentifier,
+        appVersion: controllerBoundaryReplacement.version, appBuild: controllerBoundaryReplacement.build,
+        buildIdentity: controllerBoundaryReplacement
+    )
+    #expect(await controller.handle(request).error == .incompatibleVersion)
+    #expect(effects.writes == 0)
+    effects.sessions.changeAccount(to: nil)
+    let stop = controllerBoundaryRequest(.turnOff, build: controllerBoundaryReplacement)
+    #expect(await controller.handle(stop).operation?.state == .accepted)
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: stop.id,
+                                                              build: controllerBoundaryReplacement)).operation?.state == .running)
+    #expect(effects.performed == [.turnOff])
 }

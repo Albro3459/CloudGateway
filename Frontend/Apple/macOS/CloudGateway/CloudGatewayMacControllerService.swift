@@ -72,6 +72,9 @@ final class CloudGatewayMacControllerService {
                 case .disconnectClient:
                     guard let identifier = request.identifier else { return false }
                     return runtime.require().controller.disconnectClient(identifier: identifier, onCompletion: complete)
+                case .removeClient:
+                    guard let identifier = request.identifier else { return false }
+                    return runtime.require().controller.removeClient(identifier: identifier, onCompletion: complete)
                 case .turnOff: return runtime.require().controller.turnOff(onCompletion: complete)
                 case .signIn:
                     let state = runtime.require().controller.snapshot()
