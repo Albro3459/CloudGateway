@@ -165,6 +165,24 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
         try write(payload)
     }
 
+    @discardableResult
+    public func evict(identifier: String, accountId: String) throws -> CloudGatewayMacAccountCacheSnapshot {
+        try Task.checkCancellation()
+        try validate(accountId: accountId)
+        let parts = identifier.split(separator: "/", omittingEmptySubsequences: false)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        guard parts.count == 3, parts.first == Substring(accountId), parts.allSatisfy({
+            !$0.isEmpty && $0.utf8.count <= 256 && $0 != "." && $0 != ".."
+                && $0.unicodeScalars.allSatisfy { allowed.contains($0) }
+        }) else { throw CloudGatewayMacCacheError.invalidMetadata }
+        var payload = try loadPayload(accountId: accountId)
+        payload.snapshot.configs.removeAll { $0.identifier == identifier }
+        payload.authorizedConfigHashes.removeValue(forKey: identifier)
+        if payload.snapshot.selectedIdentifier == identifier { payload.snapshot.selectedIdentifier = nil }
+        try write(payload)
+        return payload.snapshot
+    }
+
     private func write(_ payload: Payload) throws {
         let accountId = payload.accountId
         try validate(accountId: accountId)

@@ -34,17 +34,17 @@ work, and existing app/CLI callers and compatible stop/status keep compiling.
 
 ## 2. Add target-scoped durable cache eviction
 
-- [ ] In [the account cache](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift),
+- [x] In [the account cache](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift),
   add an atomic account/identifier-scoped eviction. Remove the config snapshot,
   matching authorized hash, and selection only if selected. Validate namespace
   and retain other configs, role, access flag, and hashes
-- [ ] Eviction must succeed even for an authorized client that was never
+- [x] Eviction must succeed even for an authorized client that was never
   installed. Failure to persist aborts remote dispatch. Avoid a broad account
   deny for an ordinary single-client removal
-- [ ] In the controller, drain existing inventory tasks/commits before removal
+- [x] In the controller, drain existing inventory tasks/commits before removal
   admission or refuse while they run. Hold new refresh publication until the
   command finishes using existing command/deferred-refresh ownership
-- [ ] Keep installed metadata and presentation in sync with eviction, including
+- [x] Keep installed metadata and presentation in sync with eviction, including
   the empty-options fallback path that can otherwise render installed cache
 
 Acceptance: reloading a new cache instance cannot restore the evicted client or
@@ -219,3 +219,11 @@ with no actionable findings. `./scripts/test.sh macos` passed: 627 macOS tests,
 strict Periphery scans, unsigned arm64 app/extension build, packaging, and 58
 CLI smoke checks. Temporary unavailable inventory/IPC stubs and a narrow
 protocol Periphery annotation are removed by the later integration tasks.
+
+### Task 2: durable target cache eviction
+
+Implemented on Secure after Main reached its usage limit. Secure Codex 6.1 Sol
+High review round 1 passed with no actionable findings. Full unsigned macOS
+validation passed: 637 core/IPC tests, both strict Periphery scans, app/extension
+build, packaging, and CLI smoke checks. Task 5 connects the controller eviction
+seam to DELETE and adds dispatch-order assertions.

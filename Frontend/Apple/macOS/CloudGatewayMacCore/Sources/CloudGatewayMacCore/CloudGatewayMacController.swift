@@ -169,7 +169,7 @@ public final class CloudGatewayMacController {
             lastSelectedIdentifier: lastSelectedIdentifier,
             browserState: visibleBrowserState, login: retainedLogin ?? browser.loginStatus, isRestoringSession: restorationTask != nil,
             isAuthSettling: auth.isCustomTokenSignInSettling,
-            canCreateClient: canStartClientCreation, errorMessage: visibleErrorMessage
+            canCreateClient: canStartInventoryMutation, errorMessage: visibleErrorMessage
         )
     }
 
@@ -609,10 +609,14 @@ public final class CloudGatewayMacController {
         return browser.state
     }
 
-    private var canStartClientCreation: Bool {
-        user != nil && inventoryTask == nil && commandTask == nil
-            && cancellationTask == nil && isStarted && !isShuttingDown
-            && auth.currentUser?.uid == user?.uid
+    var canStartInventoryMutation: Bool {
+        guard canIssueLocalCommand, user != nil, auth.currentUser?.uid == user?.uid,
+              inventoryTask == nil, inventoryCommitTask == nil, restorationTask == nil,
+              !auth.isCustomTokenSignInSettling else { return false }
+        switch browser.state {
+        case .requestingCode, .waitingForApproval, .exchangingToken: return false
+        default: return true
+        }
     }
 
     private var canIssueLocalCommand: Bool {
@@ -627,6 +631,23 @@ public final class CloudGatewayMacController {
 
     public var session: CloudGatewayMacSessionToken? {
         sessionFence.currentToken
+    }
+
+    // periphery:ignore - Task 5 calls this inside the accepted removal command
+    func evictCachedClient(identifier: String, session: CloudGatewayMacSessionToken) async throws {
+        let epoch = sessionEpoch
+        try requireCurrent(epoch, token: session)
+        guard user?.uid == session.accountId, commandTask != nil,
+              inventoryTask == nil, inventoryCommitTask == nil, restorationTask == nil,
+              cancellationTask == nil, managedStopTask == nil, !auth.isCustomTokenSignInSettling else {
+            throw CloudGatewayMacConfigError.busy
+        }
+        let saved = try await cache.evict(identifier: identifier, accountId: session.accountId)
+        try requireCurrent(epoch, token: session)
+        installed = saved.configs
+        lastSelectedIdentifier = saved.selectedIdentifier
+        options.removeAll { "\(session.accountId)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
+        notifyChange()
     }
 
     private var clientMetadata: [CloudGatewayMacClientMetadata] {
@@ -861,12 +882,12 @@ public final class CloudGatewayMacController {
     }
 
     public func clientCreationContext() -> CloudGatewayMacClientCreationContext? {
-        guard canStartClientCreation, let session = sessionFence.currentToken else { return nil }
+        guard canStartInventoryMutation, let session = sessionFence.currentToken else { return nil }
         return CloudGatewayMacClientCreationContext(session: session, controllerId: controllerId)
     }
 
     public func loadCreateRegions(context: CloudGatewayMacClientCreationContext) async throws -> [CloudGatewayRegion] {
-        guard canStartClientCreation, let account = user,
+        guard canStartInventoryMutation, let account = user,
               context.controllerId == controllerId, sessionFence.isCurrent(context.session),
               context.session.accountId == account.uid else {
             throw CancellationError()
@@ -908,7 +929,7 @@ public final class CloudGatewayMacController {
         context: CloudGatewayMacClientCreationContext,
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
-        guard canStartClientCreation, let account = user,
+        guard canStartInventoryMutation, let account = user,
               context.controllerId == controllerId, sessionFence.isCurrent(context.session),
               context.session.accountId == account.uid else { return false }
         let epoch = sessionEpoch

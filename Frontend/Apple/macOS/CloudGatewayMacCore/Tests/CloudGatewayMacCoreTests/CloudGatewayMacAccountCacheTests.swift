@@ -284,8 +284,126 @@ func observingUnchangedRolePreservesOfflineInventory(role: CloudGatewayMacAccoun
     await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await cache.save(config) }
 }
 
+@Test(arguments: [false, true], [CloudGatewayMacAccountRole.user, .admin])
+func evictionPreservesOtherClientsAuthorizationRoleAndSelection(selectedTarget: Bool, role: CloudGatewayMacAccountRole) async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (target, targetOption) = try accountCacheFixture(accountId: "user-a")
+    let (remaining, remainingOption) = try accountCacheFixture(accountId: "user-a", clientId: "client-b")
+    let (otherAccount, otherOption) = try accountCacheFixture(accountId: "user-b")
+    try await cache.authorize(accountId: "user-a", role: role, options: [targetOption, remainingOption])
+    try await cache.save(target)
+    try await cache.save(remaining)
+    try await cache.select(identifier: selectedTarget ? target.identifier : remaining.identifier, accountId: "user-a")
+    try await cache.authorize(accountId: "user-b", role: .user, options: [otherOption])
+    try await cache.save(otherAccount)
+    try await cache.select(identifier: otherAccount.identifier, accountId: "user-b")
+    let otherBefore = try await cache.load(accountId: "user-b")
+
+    let evicted = try await cache.evict(identifier: target.identifier, accountId: "user-a")
+    #expect(evicted.configs == [remaining])
+    #expect(evicted.selectedIdentifier == (selectedTarget ? nil : remaining.identifier))
+    #expect(evicted.accessAllowed)
+    let reopened = CloudGatewayMacAccountCache(directory: directory)
+    #expect(try await reopened.load(accountId: "user-a") == evicted)
+    #expect(try await reopened.load(accountId: "user-b") == otherBefore)
+    #expect(try await reopened.observeRole(accountId: "user-a", role: role) == false)
+    #expect(CloudGatewayMacOfflinePolicy.canUseCache(after: .transport, cache: evicted))
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await reopened.save(target) }
+    await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) {
+        try await reopened.select(identifier: target.identifier, accountId: "user-a")
+    }
+    try await reopened.save(remaining)
+    try await reopened.select(identifier: remaining.identifier, accountId: "user-a")
+    #expect(try await reopened.load(accountId: "user-a").selectedIdentifier == remaining.identifier)
+    #expect(try await reopened.observeRole(accountId: "user-a", role: .user) == (role == .admin))
+}
+
+@Test func evictionRevokesANeverInstalledClientAndIsIdempotent() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (target, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    let evicted = try await cache.evict(identifier: target.identifier, accountId: "user-a")
+    #expect(evicted == .init(accessAllowed: true))
+    let reopened = CloudGatewayMacAccountCache(directory: directory)
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await reopened.save(target) }
+    #expect(try await reopened.evict(identifier: target.identifier, accountId: "user-a") == evicted)
+    try await reopened.authorize(accountId: "user-a", role: .user, options: [option])
+    try await reopened.save(target)
+    #expect(try await reopened.load(accountId: "user-a").configs == [target])
+    #expect(try await reopened.load(accountId: "user-a").selectedIdentifier == nil)
+}
+
+@Test(arguments: [
+    "user-b/us-a/client-a", "user-a/us-a/", "user-a//client-a", "/us-a/client-a",
+    "user-a/us-a/client-a/extra", "user-a/../client-a", "user-a/./client-a",
+    "user-a/us a/client-a", "user-a/us-a/client\na", "user-a/us-a/clïent-a",
+    "user-a/us-a/" + String(repeating: "a", count: 257), "user-a-prefix/us-a/client-a"
+])
+func evictionRejectsInvalidNamespacesWithoutChangingCache(identifier: String) async throws {
+    let cache = CloudGatewayMacAccountCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())"))
+    let (config, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(config)
+    try await cache.select(identifier: config.identifier, accountId: "user-a")
+    let before = try await cache.load(accountId: "user-a")
+    await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) {
+        try await cache.evict(identifier: identifier, accountId: "user-a")
+    }
+    #expect(try await cache.load(accountId: "user-a") == before)
+    try await cache.save(config)
+}
+
+@Test(arguments: ["", "user\na", "user/a", ".", "..", String(repeating: "a", count: 129)])
+func evictionRejectsInvalidAccountNamespaces(accountId: String) async throws {
+    let cache = CloudGatewayMacAccountCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())"))
+    await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) {
+        try await cache.evict(identifier: "\(accountId)/us-a/client-a", accountId: accountId)
+    }
+}
+
+@Test func evictionReportsFailedPersistenceAndLeavesExistingCacheIntact() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (target, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(target)
+    try await cache.select(identifier: target.identifier, accountId: "user-a")
+    let before = try await cache.load(accountId: "user-a")
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+    let backup = directory.appendingPathComponent("backup")
+    try FileManager.default.moveItem(at: accountDirectory, to: backup)
+    try Data().write(to: accountDirectory)
+    await #expect(throws: CloudGatewayMacCacheError.unavailable) {
+        try await cache.evict(identifier: target.identifier, accountId: "user-a")
+    }
+    try FileManager.default.moveItem(at: accountDirectory, to: directory.appendingPathComponent("blocker"))
+    try FileManager.default.moveItem(at: backup, to: accountDirectory)
+    #expect(try await CloudGatewayMacAccountCache(directory: directory).load(accountId: "user-a") == before)
+}
+
+@Test func evictionDoesNotOverwriteAnInvalidPayload() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayCacheTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (target, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(target)
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+    let path = accountDirectory.appendingPathComponent("inventory.json")
+    var payload = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+    payload["authorizedConfigHashes"] = [String: String]()
+    let invalid = try JSONSerialization.data(withJSONObject: payload)
+    try invalid.write(to: path, options: .atomic)
+    await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) {
+        try await cache.evict(identifier: target.identifier, accountId: "user-a")
+    }
+    #expect(try Data(contentsOf: path) == invalid)
+}
+
 private func accountCacheFixture(
     accountId: String,
+    clientId: String = "client-a",
     address: String = "10.0.0.2/32",
     clientName: String = "Mac",
     regionName: String = "US",
@@ -300,7 +418,7 @@ private func accountCacheFixture(
     Endpoint = wg.example.com:51820
     AllowedIPs = 0.0.0.0/0
     """
-    let client = CloudGatewayClient(clientId: "client-a", clientName: clientName, regionId: "us-a", status: .active, wireGuardConfig: rawConfig, ownerUid: ownerUid ?? accountId)
+    let client = CloudGatewayClient(clientId: clientId, clientName: clientName, regionId: "us-a", status: .active, wireGuardConfig: rawConfig, ownerUid: ownerUid ?? accountId)
     let option = CloudGatewayClientOption(client: client, region: CloudGatewayRegion(regionId: "us-a", displayName: regionName, enabled: true))
     let snapshot = CloudGatewayConfigSnapshot(
         clientId: client.clientId, regionId: client.regionId, clientName: client.clientName,
@@ -309,5 +427,5 @@ private func accountCacheFixture(
         secretReference: CloudGatewayConfigSecretReference(service: CloudGatewayMacInstalledConfig.secretService, account: UUID().uuidString.lowercased()),
         readAt: Date(timeIntervalSince1970: 1), updatedAt: nil
     )
-    return (CloudGatewayMacInstalledConfig(accountId: accountId, identifier: "\(accountId)/us-a/client-a", snapshot: snapshot), option)
+    return (CloudGatewayMacInstalledConfig(accountId: accountId, identifier: "\(accountId)/us-a/\(clientId)", snapshot: snapshot), option)
 }
