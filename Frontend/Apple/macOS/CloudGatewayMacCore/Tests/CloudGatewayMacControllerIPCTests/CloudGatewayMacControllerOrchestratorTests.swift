@@ -67,6 +67,9 @@ final class ControllerOrchestratorEffects {
     var preparationEvents: AsyncStream<Void>?
     var preparations = 0
     var submissions = 0
+    var creationCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)?
+    var holdCreation = false
+    var rejectCreation = false
     var ignorePreparationCancellation = false
     var releasePreparation: CheckedContinuation<Void, Never>?
     var storedUpdates = CloudGatewayMacExtensionUpdateOrchestrator.StoredState()
@@ -148,7 +151,9 @@ final class ControllerOrchestratorEffects {
                 try Task.checkCancellation()
                 return .init(regions: []) { _, _, completion in
                     self.submissions += 1
-                    completion(.completed(warning: nil))
+                    self.creationCompletion = completion
+                    if self.rejectCreation { completion(.failed(.configUnavailable)); return false }
+                    if !self.holdCreation { completion(.completed(warning: nil)) }
                     return true
                 }
             },
@@ -1429,4 +1434,114 @@ func controllerLegacyActivationRetriesItsTerminalCallbackAfterStorageRecovers(ev
     #expect(effects.activationIds.isEmpty)
     #expect(effects.reconnects.isEmpty)
     #expect(effects.pings > 0)
+}
+
+@MainActor
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .disconnectClient], 0..<4)
+func controllerOrchestratorCreationAndStopReserveAndConfirmInEitherOrder(
+    action: CloudGatewayMacControllerRequest.Action, order: Int
+) async throws {
+    let reserveStopFirst = order >= 2
+    let confirmStopFirst = order % 2 == 1
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    effects.holdCreation = true
+    let requests = try effects.makeRequests()
+    let controller = try effects.make(requests: requests)
+    try await effects.ready(controller)
+    let prepared = try #require(await controller.handle(controllerBoundaryRequest(.prepareClient)).creation)
+    let add = CloudGatewayMacControllerRequest(action: .createClient, regionId: "region", clientName: "Mac",
+                                               contextId: prepared.id, buildIdentity: controllerBoundaryBuild)
+    let stop = controllerBoundaryRequest(action)
+    for request in reserveStopFirst ? [stop, add] : [add, stop] {
+        #expect(await controller.handle(request).operation?.state == .accepted)
+    }
+    #expect(effects.submissions == 0)
+    #expect(effects.performed.isEmpty)
+    for request in confirmStopFirst ? [stop, add] : [add, stop] {
+        let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: request.id)
+        #expect(await controller.handle(confirmation).operation?.state == .running)
+        #expect(await controller.handle(confirmation).operation?.state == .running)
+    }
+    #expect(effects.submissions == 1)
+    #expect(effects.performed == [action])
+    #expect(!controller.canExit)
+    #expect(!effects.inventoryAdmission)
+    for action in [CloudGatewayMacControllerRequest.Action.connect, .removeClient, .signIn, .signOut,
+                   .prepareClient, .prepareExtensionUpdate, .refresh, .awaitRefresh, .update] {
+        #expect(await controller.handle(controllerBoundaryRequest(action)).error == .busy)
+    }
+    effects.creationCompletion?(.completed(warning: nil))
+    #expect(requests.operation(id: add.id).state == .completed)
+    #expect(requests.operation(id: stop.id).state == .running)
+    #expect(!effects.inventoryAdmission)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareClient)).error == .busy)
+    effects.completion?(.completed(warning: nil))
+    for id in [add.id, stop.id] {
+        let reply = await controller.handle(controllerBoundaryRequest(.operation, contextId: id))
+        #expect(reply.operation?.state == .completed)
+        #expect(reply.outcome == .completed(warning: nil))
+    }
+    #expect(effects.inventoryAdmission)
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerOrchestratorCreationAndStopSynchronousRejectionBelongsToItsConfirmation(rejectCreation: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    effects.holdCreation = true
+    effects.rejectCreation = rejectCreation
+    effects.performHandler = { _, complete in
+        if !rejectCreation { complete(.failed(.vpnFailed)); return false }
+        return true
+    }
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let prepared = try #require(await controller.handle(controllerBoundaryRequest(.prepareClient)).creation)
+    let add = CloudGatewayMacControllerRequest(action: .createClient, regionId: "region", clientName: "Mac",
+                                               contextId: prepared.id, buildIdentity: controllerBoundaryBuild)
+    let stop = controllerBoundaryRequest(.turnOff)
+    _ = await controller.handle(add)
+    _ = await controller.handle(stop)
+    let rejected = rejectCreation ? add : stop
+    let held = rejectCreation ? stop : add
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: held.id)).operation?.state == .running)
+    let reply = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: rejected.id))
+    #expect(reply.operation?.state == .failed)
+    #expect(reply.operation?.failure == .rejected)
+    #expect(reply.outcome == .failed(rejectCreation ? .configUnavailable : .vpnFailed))
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: held.id)).operation?.state == .running)
+    if rejectCreation { effects.completion?(.completed(warning: nil)) }
+    else { effects.creationCompletion?(.completed(warning: nil)) }
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: held.id)).outcome == .completed(warning: nil))
+    #expect(effects.submissions == 1)
+    #expect(effects.performed == [.turnOff])
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func controllerOrchestratorExpiresOnlyTheUnconfirmedSlot(expireCreation: Bool) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    effects.holdCreation = true
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let prepared = try #require(await controller.handle(controllerBoundaryRequest(.prepareClient)).creation)
+    let add = CloudGatewayMacControllerRequest(action: .createClient, regionId: "region", clientName: "Mac",
+                                               contextId: prepared.id, buildIdentity: controllerBoundaryBuild)
+    let stop = controllerBoundaryRequest(.turnOff)
+    let expiring = expireCreation ? add : stop
+    let running = expireCreation ? stop : add
+    _ = await controller.handle(expiring)
+    _ = await controller.handle(running)
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: running.id)).operation?.state == .running)
+    effects.now.addTimeInterval(31)
+    #expect(await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: expiring.id)).operation?.state == .unknown)
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: running.id)).operation?.state == .running)
+    if expireCreation { effects.completion?(.completed(warning: nil)) }
+    else { effects.creationCompletion?(.completed(warning: nil)) }
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: running.id)).operation?.state == .completed)
+    #expect(effects.submissions == (expireCreation ? 0 : 1))
+    #expect(effects.performed == (expireCreation ? [.turnOff] : []))
 }

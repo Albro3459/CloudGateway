@@ -301,6 +301,15 @@ creation leaves the VPN unchanged. Run `cloudgateway ls` to get the new client's
 UUID. If the inventory refresh fails after creation, success includes the
 `inventory_not_refreshed` warning. After a timeout or lost confirmation, look up
 the operation before retrying, since another add could create a duplicate client.
+Ordinary HTTP creation failures, including quota/capacity and server errors,
+report `operation_unknown` (exit 10) because the current API error does not prove
+whether the request changed cloud state. Inspect inventory before another add.
+Actual HTTP 401/403 still invalidate account access.
+
+Local Disconnect and `down` remain available while add is reserved or awaiting
+cloud work. Stopping does not cancel add. Each command keeps its own operation
+ID and result for lookup, including when they finish in either order. The menu
+keeps Disconnect available while connect, refresh, and another add remain blocked.
 
 `ls` aliases `list`. Rows show a region-local index starting at 1, client name
 and owner email, client UUID, and any connection/selection/unavailable state.

@@ -49,6 +49,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
     public let observationAvailable: Bool
     public let profilesObservedAt: Date?
     public let commandInFlight: Bool
+    public let stopAllowed: Bool?
     public let selectedIdentifier: String?
     public let setup: CloudGatewayMacControllerView.SetupState
     public let canUpdateExtension: Bool
@@ -88,6 +89,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         observationAvailable = snapshot.domain.observationIsFresh
         profilesObservedAt = snapshot.domain.profilesObservedAt
         commandInFlight = snapshot.domain.commandInFlight
+        stopAllowed = snapshot.domain.stopAllowed
         selectedIdentifier = snapshot.lastSelectedIdentifier.flatMap { Self.belongs($0, to: accountId) ? $0 : nil }
         setup = .init(setupState)
         self.canUpdateExtension = canUpdateExtension

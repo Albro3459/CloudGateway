@@ -240,7 +240,7 @@ import Testing
 private func controllerSnapshot(
     clientName: String = "Work Mac", regionName: String = "US Central", ownerLabel: String? = nil,
     errorMessage: String? = nil, accountId: String? = "account-A._", clients: [CloudGatewayMacClientMetadata]? = nil,
-    isEligible: Bool = true, accessAuthorized: Bool = true, commandInFlight: Bool = false,
+    isEligible: Bool = true, accessAuthorized: Bool = true, commandInFlight: Bool = false, stopAllowed: Bool? = nil,
     isRestoringSession: Bool = false, isAuthSettling: Bool = false, installedIdentifiers: [String]? = nil,
     observedProfiles: [CloudGatewayMacObservedProfile]? = nil, selectedIdentifier: String? = "account-A._/r_E-1/c_Z.9",
     observationIsFresh: Bool = true, hasRetainedSession: Bool? = nil,
@@ -253,7 +253,7 @@ private func controllerSnapshot(
             access: accessAuthorized ? .online : .unverified, credentials: .unknown,
             inventoryFreshness: inventoryFreshness, installedIdentifiers: installedIdentifiers ?? [identifier],
             observedProfiles: observedProfiles ?? [.init(identifier: identifier, status: .connected)],
-            observationIsFresh: observationIsFresh, profilesObservedAt: nil, commandInFlight: commandInFlight,
+            observationIsFresh: observationIsFresh, profilesObservedAt: nil, commandInFlight: commandInFlight, stopAllowed: stopAllowed,
             clients: clients ?? [controllerClient(
                 identifier, regionId: "r_E-1", regionName: regionName, clientName: clientName, ownerLabel: ownerLabel,
                 isEligible: isEligible, isInstalled: installedIdentifiers?.contains(identifier) ?? true, status: .connected
@@ -283,4 +283,30 @@ private func controllerClient(
           clientName: clientName, ownerLabel: ownerLabel, internalIp: nil, cloudState: .active,
           eligibility: isEligible ? .eligible : .configMissing, isInstalled: isInstalled, source: .cloud,
           readAt: Date(timeIntervalSince1970: 0), updatedAt: nil, status: status)
+}
+
+@Test(arguments: [false, true])
+func controllerFrontendCanStopDuringCreationWhileOtherCommandsStayDisabled(allowed: Bool) throws {
+    let state = try controllerRoundTrip(.init(
+        snapshot: controllerSnapshot(commandInFlight: true, stopAllowed: allowed), setupState: .ready, canUpdateExtension: false
+    ))
+    #expect(state.stopAllowed == allowed)
+    let view = CloudGatewayMacControllerView(state: state)
+    #expect(view.canTurnOff == allowed)
+    #expect(view.canToggleVPN == allowed)
+    #expect(!view.canRefresh)
+    #expect(view.reconnectIdentifier == nil)
+    #expect(view.groups.allSatisfy { $0.rows.allSatisfy { !$0.isEnabled } })
+}
+
+@Test(arguments: [false, true])
+func controllerFrontendMissingStopCapabilityUsesLegacyCommandAdmission(busy: Bool) throws {
+    let original = CloudGatewayMacControllerState(
+        snapshot: controllerSnapshot(commandInFlight: busy), setupState: .ready, canUpdateExtension: false
+    )
+    var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+    json.removeValue(forKey: "stopAllowed")
+    let state = try JSONDecoder().decode(CloudGatewayMacControllerState.self, from: JSONSerialization.data(withJSONObject: json))
+    #expect(state.stopAllowed == nil)
+    #expect(CloudGatewayMacControllerView(state: state).canTurnOff == !busy)
 }

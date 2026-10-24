@@ -13,13 +13,24 @@ public final class CloudGatewayMacControllerRequests {
         var receipts: [UUID: Receipt]
     }
 
+    private struct Record {
+        var operation: CloudGatewayMacControllerOperation
+        let digest: String
+        let isStop: Bool
+        let isAccountBound: Bool
+        var outcome: CloudGatewayMacCommandOutcome?
+        var owner: CloudGatewayMacSessionToken?
+        var expires: Date
+
+        func isLive(at now: Date) -> Bool {
+            operation.state == .accepted || operation.state == .running || expires > now
+        }
+    }
+
     private var storage: Storage
-    private var stop: (id: UUID, digest: String)?
-    private var result: CloudGatewayMacControllerOperation?
-    private var outcome: CloudGatewayMacCommandOutcome?
-    private var owner: CloudGatewayMacSessionToken?
-    private var isAccountBound = false
-    private var resultExpires = Date.distantPast
+    private var creation: Record?
+    private var command: Record?
+    private var latestId: UUID?
     private let now: () -> Date
     private let persist: (Data) throws -> Void
 
@@ -34,53 +45,54 @@ public final class CloudGatewayMacControllerRequests {
     }
 
     public var latest: CloudGatewayMacControllerOperation? {
-        guard let result else { return nil }
-        return result.state == .accepted || result.state == .running || resultExpires > now() ? result : nil
+        let live = [creation, command].compactMap { $0 }.filter { $0.isLive(at: now()) }
+        return (live.first { $0.operation.id == latestId } ?? live.first)?.operation
+    }
+
+    private func record(id: UUID) -> Record? {
+        [creation, command].compactMap { $0 }.first { $0.operation.id == id && $0.isLive(at: now()) }
     }
 
     public func lookup(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation? {
         let digest = Self.digest(request)
-        if request.action == .turnOff || request.action == .disconnectClient {
-            guard let stop, stop.id == request.id, let result = latest else { return nil }
-            guard stop.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
-            return result.state == .failed || result.state == .unknown ? nil : result
+        if let record = record(id: request.id) {
+            guard record.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
+            if record.isStop, record.operation.state == .failed || record.operation.state == .unknown { return nil }
+            return record.operation
         }
-        guard let receipt = storage.receipts[request.id],
-              receipt.expires > now() || latest?.id == request.id else { return nil }
+        guard let receipt = storage.receipts[request.id], receipt.expires > now() else { return nil }
         guard receipt.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
         return operation(id: request.id)
     }
 
     public func operation(id: UUID) -> CloudGatewayMacControllerOperation {
-        guard let latest, latest.id == id else { return .init(id: id, state: .unknown) }
-        return latest
+        record(id: id)?.operation ?? .init(id: id, state: .unknown)
     }
 
     // Account-bound outcomes are hidden after logout or account change
     public func outcome(id: UUID, session: CloudGatewayMacSessionToken?) -> CloudGatewayMacCommandOutcome? {
-        guard latest?.id == id else { return nil }
-        return !isAccountBound || owner == session ? outcome : nil
+        guard let record = record(id: id) else { return nil }
+        return !record.isAccountBound || record.owner == session ? record.outcome : nil
     }
 
     public func accept(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation {
+        if let existing = try lookup(request) { return existing }
         let operation = CloudGatewayMacControllerOperation(id: request.id, state: .accepted)
         let expires = now().addingTimeInterval(600)
-        if request.action == .turnOff || request.action == .disconnectClient {
-            stop = (request.id, Self.digest(request))
-        } else {
+        let isStop = request.action == .turnOff || request.action == .disconnectClient
+        if !isStop {
             var next = storage
             next.receipts = next.receipts.filter { $0.value.expires > now() }
             guard next.receipts.count < 64 else { throw CloudGatewayMacControllerFailure.unavailable }
             next.receipts[request.id] = Receipt(digest: Self.digest(request), expires: expires)
             try persist(JSONEncoder().encode(next))
             storage = next
-            stop = nil
         }
-        result = operation
-        outcome = nil
-        owner = nil
-        isAccountBound = request.action.hasAccountBoundOutcome
-        resultExpires = expires
+        let record = Record(operation: operation, digest: Self.digest(request), isStop: isStop,
+                            isAccountBound: request.action.hasAccountBoundOutcome, expires: expires)
+        if request.action == .createClient { creation = record }
+        else { command = record }
+        latestId = request.id
         return operation
     }
 
@@ -89,13 +101,15 @@ public final class CloudGatewayMacControllerRequests {
                        failure: CloudGatewayMacControllerFailure? = nil, warning: CloudGatewayMacCommandWarning? = nil,
                        outcome: CloudGatewayMacCommandOutcome? = nil,
                        session: CloudGatewayMacSessionToken? = nil) -> CloudGatewayMacControllerOperation {
-        guard result?.id == id else { return .init(id: id, state: .unknown) }
+        guard var record = record(id: id) else { return .init(id: id, state: .unknown) }
         let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure, warning: warning)
         // Admission already prevents replay, results stay in memory only
-        result = operation
-        self.outcome = outcome
-        owner = session
-        if state != .accepted && state != .running { resultExpires = now().addingTimeInterval(600) }
+        record.operation = operation
+        record.outcome = outcome
+        record.owner = session
+        if state != .accepted && state != .running { record.expires = now().addingTimeInterval(600) }
+        if creation?.operation.id == id { creation = record }
+        else { command = record }
         return operation
     }
 

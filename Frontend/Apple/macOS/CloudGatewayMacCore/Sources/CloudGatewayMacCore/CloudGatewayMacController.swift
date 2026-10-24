@@ -48,6 +48,8 @@ public final class CloudGatewayMacController {
     private var automaticInventoryRefreshAllowed = true
     private var restorationTask: Task<Void, Never>?
     private var commandTask: Task<Void, Never>?
+    private var creationTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
     private var isStopping = false
     private var managedReconnectIdentifier: String?
     private var managedStopTask: Task<Void, Never>?
@@ -144,7 +146,7 @@ public final class CloudGatewayMacController {
 
     public var hasPendingWork: Bool {
         if inventoryTask != nil || deferredInventoryRefresh || inventoryCommitTask != nil || restorationTask != nil || commandTask != nil
-            || cancellationTask != nil || managedStopTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
+            || creationTask != nil || stopTask != nil || cancellationTask != nil || managedStopTask != nil || profileTask != nil || auth.isCustomTokenSignInSettling {
             return true
         }
         switch browser.state {
@@ -167,7 +169,7 @@ public final class CloudGatewayMacController {
                 },
                 observationIsFresh: hasObservedProfiles && profileTask == nil && profileObservation.errorMessage == nil,
                 profilesObservedAt: profilesObservedAt,
-                commandInFlight: !canIssueLocalCommand,
+                commandInFlight: !canIssueLocalCommand, stopAllowed: canIssueStop,
                 clients: clientMetadata
             ),
             lastSelectedIdentifier: lastSelectedIdentifier,
@@ -197,7 +199,7 @@ public final class CloudGatewayMacController {
 
     public func refreshInventoryIfDue() {
         guard isStarted, !isShuttingDown, inventoryTask == nil, inventoryCommitTask == nil,
-              restorationTask == nil, commandTask == nil, cancellationTask == nil,
+              restorationTask == nil, commandTask == nil, creationTask == nil, stopTask == nil, cancellationTask == nil,
               automaticInventoryRefreshAllowed, inventorySchedule.isDue(at: inventoryNow()) else { return }
         switch browser.state {
         case .requestingCode, .waitingForApproval, .exchangingToken: return
@@ -372,7 +374,7 @@ public final class CloudGatewayMacController {
     private func refreshInventory(force: Bool = true) {
         guard let account = user, inventoryTask == nil, !isShuttingDown else { return }
         if !force, !inventorySchedule.isStale(at: inventoryNow()) { return }
-        guard commandTask == nil, cancellationTask == nil, inventoryCommitTask == nil,
+        guard commandTask == nil, creationTask == nil, stopTask == nil, cancellationTask == nil, inventoryCommitTask == nil,
               force || automaticInventoryRefreshAllowed else {
             deferredInventoryRefreshIsAutomatic = deferredInventoryRefresh ? deferredInventoryRefreshIsAutomatic && !force : !force
             deferredInventoryRefresh = true
@@ -561,15 +563,21 @@ public final class CloudGatewayMacController {
 
     private func cancelPendingWork() {
         let preservingStop = isStopping
-        let pendingCommand = preservingStop ? nil : commandTask
+        let pendingCommand = commandTask
+        let pendingCreation = creationTask
+        let pendingStop = preservingStop ? nil : stopTask
         let pendingCommit = inventoryCommitTask
         inventoryTask?.cancel()
         inventoryEpoch &+= 1
         restorationTask?.cancel()
-        if !preservingStop { commandTask?.cancel() }
+        commandTask?.cancel()
+        creationTask?.cancel()
+        if !preservingStop { stopTask?.cancel() }
         inventoryTask = nil
         restorationTask = nil
-        if !preservingStop { commandTask = nil }
+        commandTask = nil
+        creationTask = nil
+        if !preservingStop { stopTask = nil }
         sessionFence.invalidate()
         cancellationEpoch &+= 1
         let epoch = cancellationEpoch
@@ -579,6 +587,8 @@ public final class CloudGatewayMacController {
             guard let self else { return }
             if !preservingStop { await configs.cancelPendingWork() }
             await pendingCommand?.value
+            await pendingCreation?.value
+            await pendingStop?.value
             _ = try? await pendingCommit?.value
             if !preservingStop { await configs.waitForPendingWork() }
             guard cancellationEpoch == epoch else { return }
@@ -618,7 +628,12 @@ public final class CloudGatewayMacController {
     }
 
     var canStartInventoryMutation: Bool {
-        guard canIssueLocalCommand, user != nil, auth.currentUser?.uid == user?.uid,
+        stopTask == nil && canSubmitCreation
+    }
+
+    private var canSubmitCreation: Bool {
+        guard isStarted, !isShuttingDown, commandTask == nil, creationTask == nil, cancellationTask == nil,
+              managedStopTask == nil, user != nil, auth.currentUser?.uid == user?.uid,
               inventoryTask == nil, inventoryCommitTask == nil, restorationTask == nil,
               !auth.isCustomTokenSignInSettling else { return false }
         switch browser.state {
@@ -628,7 +643,11 @@ public final class CloudGatewayMacController {
     }
 
     private var canIssueLocalCommand: Bool {
-        isStarted && !isShuttingDown && commandTask == nil && cancellationTask == nil && managedStopTask == nil
+        canIssueStop && creationTask == nil
+    }
+
+    private var canIssueStop: Bool {
+        isStarted && !isShuttingDown && commandTask == nil && stopTask == nil && cancellationTask == nil && managedStopTask == nil
     }
 
     private var accessState: CloudGatewayMacAccessState {
@@ -1069,18 +1088,18 @@ public final class CloudGatewayMacController {
         context: CloudGatewayMacClientCreationContext,
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
-        guard canStartInventoryMutation, let account = user,
+        guard canSubmitCreation, let account = user,
               context.controllerId == controllerId, sessionFence.isCurrent(context.session),
               context.session.accountId == account.uid else { return false }
         let epoch = sessionEpoch
         let token = context.session
-        commandTask = Task { [weak self] in
+        creationTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var clientWasCreated = false
             var creationAttempted = false
             var outcome = CloudGatewayMacCommandOutcome.failed(.internalError)
             defer {
-                if sessionEpoch == epoch { commandTask = nil; resumeDeferredInventoryRefresh(); notifyChange() }
+                if sessionEpoch == epoch { creationTask = nil; resumeDeferredInventoryRefresh(); notifyChange() }
                 onCompletion?(clientWasCreated && outcome != .completed(warning: nil)
                     ? .completed(warning: .inventoryNotRefreshed) : outcome)
             }
@@ -1111,10 +1130,6 @@ public final class CloudGatewayMacController {
                 signOut()
                 accessResult = .denied
                 errorMessage = "Account access was denied. Sign in again after access is restored"
-            } catch CloudGatewayAppError.accessDenied(let message) {
-                outcome = .failed(.accessDenied)
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                errorMessage = message
             } catch {
                 if creationAttempted || isShuttingDown { outcome = .unknown }
                 else if error is CancellationError { outcome = .failed(.signInRequired) }
@@ -1139,7 +1154,7 @@ public final class CloudGatewayMacController {
         onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
     ) -> Bool {
         if managedReconnectIdentifier != nil { return stopAfterManagedReconnect(identifier: identifier, onCompletion: onCompletion) }
-        let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
+        let rejection: CloudGatewayMacCommandFailure? = if !canIssueStop { .busy }
             else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
             else if !hasAuthorizedInventory { .accessDenied }
             else if clientMetadata.filter({ $0.identifier == identifier }).count != 1 { .configUnavailable }
@@ -1149,12 +1164,12 @@ public final class CloudGatewayMacController {
             return false
         }
         let epoch = sessionEpoch
-        commandTask = Task { [weak self] in
+        stopTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var outcome = CloudGatewayMacCommandOutcome.unknown
             defer {
                 if sessionEpoch == epoch {
-                    commandTask = nil
+                    stopTask = nil
                     resumeDeferredInventoryRefresh()
                     refreshProfiles()
                     notifyChange()
@@ -1207,17 +1222,17 @@ public final class CloudGatewayMacController {
     @discardableResult
     public func turnOff(onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil) -> Bool {
         if managedReconnectIdentifier != nil { return stopAfterManagedReconnect(identifier: nil, onCompletion: onCompletion) }
-        guard canIssueLocalCommand else {
+        guard canIssueStop else {
             onCompletion?(.failed(.busy))
             return false
         }
         isStopping = true
-        commandTask = Task { [weak self] in
+        stopTask = Task { [weak self] in
             guard let self else { onCompletion?(.unknown); return }
             var outcome = CloudGatewayMacCommandOutcome.unknown
             defer {
                 isStopping = false
-                commandTask = nil
+                stopTask = nil
                 resumeLoginInventoryAfterStop()
                 resumeDeferredInventoryRefresh()
                 refreshProfiles()
@@ -1377,6 +1392,8 @@ public final class CloudGatewayMacController {
         if deferredInventoryRefresh {
             let token = sessionFence.currentToken
             await commandTask?.value
+            await creationTask?.value
+            await stopTask?.value
             await cancellationTask?.value
             _ = try? await inventoryCommitTask?.value
             guard token == sessionFence.currentToken, !isShuttingDown else { return .superseded }

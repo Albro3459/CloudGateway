@@ -1232,12 +1232,11 @@ import Testing
     try await fixture.start()
     defer { fixture.controller.shutdown() }
     let session = try #require(fixture.controller.session)
-    let context = try #require(fixture.controller.clientCreationContext())
     let command = MacControllerGate()
-    fixture.inventory.createGate = command
-    fixture.inventory.createError = CloudGatewayMacInventoryError.offline
+    fixture.inventory.accessGate = command
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
     var completed = false
-    #expect(fixture.controller.createClient(regionId: "region", clientName: "New Mac", context: context) { _ in completed = true })
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { _ in completed = true })
     try await controllerWaitUntil { await command.entered }
     let before = fixture.domainSnapshot
     let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: fixture.directory, includingPropertiesForKeys: nil).first)
@@ -1967,6 +1966,7 @@ private actor MacControllerDeviceAuth: CloudGatewayDeviceAuthServicing {
 private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     private let auth: MacControllerAuth
     let removalSession = MacClientRemovalSession()
+    var creationSession: MacClientRemovalSession?
     var options: [CloudGatewayClientOption] = []
     var accessError: (any Error)?
     var regionsError: (any Error)?
@@ -2006,15 +2006,23 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
         regionsCount += 1
         await regionsGate?.arriveAndWait()
         if let regionsError { throw regionsError }
-        return [CloudGatewayRegion(regionId: "region", displayName: "Region", enabled: true)]
+        return [CloudGatewayRegion(regionId: "region", displayName: "Region", enabled: true,
+                                   capacity: .known(limit: 10, allocated: 1))]
     }
 
-    func createClient(regionId _: String, clientName: String, for user: AuthenticatedUser) async throws -> String {
+    func createClient(regionId: String, clientName: String, for user: AuthenticatedUser) async throws -> String {
         createdNames.append(clientName)
         createdAccountIds.append(user.uid)
         await createGate?.arriveAndWait()
         try Task.checkCancellation()
         if let createError { throw createError }
+        if let creationSession {
+            let client = CloudGatewayControlPlaneClient(originHost: "gocloudlaunch.com", session: creationSession)
+            let response = try await client.createClient(regionId: regionId, clientName: clientName, idToken: "fixture-token")
+            try Task.checkCancellation()
+            guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+            return response.clientName
+        }
         return clientName
     }
 
@@ -3344,7 +3352,15 @@ private final class MacControllerRemovalIPC {
             },
             session: { fixture.controller.session },
             refresh: { await fixture.controller.awaitRefresh() },
-            prepareClient: { throw CloudGatewayMacControllerFailure.busy },
+            prepareClient: {
+                guard let context = fixture.controller.clientCreationContext() else {
+                    throw CloudGatewayMacControllerFailure.busy
+                }
+                let regions = try await fixture.controller.loadCreateRegions(context: context)
+                return CloudGatewayMacPreparedClient(regions: regions) { region, name, complete in
+                    fixture.controller.createClient(regionId: region, clientName: name, context: context, onCompletion: complete)
+                }
+            },
             setSetupState: { fixture.controller.setSetupState($0) },
             hasAnyActiveTunnel: { fixture.snapshot.hasActiveTunnel },
             installedIdentity: { self.identity }, extensionIdentity: { self.identity },
@@ -3386,6 +3402,49 @@ private final class MacControllerRemovalIPC {
             appVersion: identity.version, appBuild: identity.build, action: request.action
         )
     }
+}
+
+@Test(arguments: [401, 403, 409, 500, 503], [false, true])
+@MainActor func macControllerCreationHTTPFailuresReachTheCLIWithoutFalseAuthDenial(status: Int, json: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let session = MacClientRemovalSession()
+    session.statusCode = status
+    session.body = #"{"error":{"code":"LIMIT_REACHED","message":"fixture API failure"}}"#
+    fixture.inventory.creationSession = session
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let originalSession = fixture.controller.session
+    var output = ""
+    var diagnostics = ""
+    let cli = CloudGatewayMacCLI(
+        version: ipc.identity.version, build: ipc.identity.build,
+        terminal: .init(isOutputTerminal: false, variables: [:]), clock: .continuous,
+        output: { output += $0 }, diagnostics: { diagnostics += $0 }, connect: { try await ipc.client() }
+    )
+    let denied = status == 401 || status == 403
+    #expect(await cli.run(["add", "region", "Mac mini"] + (json ? ["--json"] : [])) == (denied ? 9 : 10))
+    let operation = try #require(ipc.requests.latest)
+    let expected: CloudGatewayMacCommandOutcome = denied ? .failed(.accessDenied) : .unknown
+    #expect(operation.state == (denied ? .failed : .unknown))
+    #expect(ipc.requests.outcome(id: operation.id, session: originalSession) == expected)
+    #expect(try await ipc.client().request(.operation, contextId: operation.id).outcome == (denied ? nil : expected))
+    #expect(output.contains(denied ? "command_failed" : "operation_unknown") == json)
+    #expect((json ? output : diagnostics).contains("cloudgateway status"))
+    #expect(!output.contains("access_denied"))
+    #expect(output.contains(operation.id.uuidString.lowercased()))
+    if !denied {
+        #expect(!output.contains("Account access was denied"))
+        #expect(!output.contains("Sign in again"))
+    }
+    #expect(fixture.domainSnapshot.domain.accountId == (denied ? nil : "user-a"))
+    #expect(fixture.domainSnapshot.domain.accessAuthorized == !denied)
+    #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed == !denied)
+    #expect(session.requests.count == 1)
+    #expect(session.requests.first?.httpMethod == "POST")
+    #expect(session.requests.first?.url?.absoluteString == "https://region.gocloudlaunch.com/api/clients")
 }
 
 @Test @MainActor func macControllerRemovalIPCTwoFrontendsReserveOneSideEffectFreeOperation() async throws {
@@ -3834,4 +3893,195 @@ private final class MacControllerRemovalIPC {
     #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
     #expect(await fixture.profiles.savedIdentifiers.isEmpty)
     #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .disconnectClient], [false, true])
+@MainActor func macControllerCreationIPCAllowsStopDuringPOSTAndFinalInventory(
+    action: CloudGatewayMacControllerRequest.Action, finalInventory: Bool
+) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    let other = CloudGatewayMacInstalledProfile(identifier: "other-account/region/other", reference: try fixture.config.reference,
+                                                 status: action == .disconnectClient ? .connected : .disconnected)
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected), other])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let session = MacClientRemovalSession()
+    session.body = #"{"clientId":"new","regionId":"region","clientName":"New Mac","status":"active","wireguardConfig":"fixture config"}"#
+    fixture.inventory.creationSession = session
+    let response = ClientRemovalGate()
+    let fetch = MacControllerGate()
+    if finalInventory { fixture.inventory.fetchGate = fetch }
+    else { session.responseGate = response }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let adding = try await ipc.client()
+    let stopping = try await ipc.client()
+    let preparation = try #require(try await adding.request(.prepareClient).creation)
+    let addId = UUID()
+    #expect(try await adding.request(.createClient, id: addId, regionId: "region", clientName: "New Mac", contextId: preparation.id).operation?.state == .running)
+    if finalInventory { try await controllerWaitUntil { await fetch.entered } }
+    else { try await controllerWaitUntil { response.entered } }
+    #expect(fixture.snapshot.canTurnOff)
+    #expect(!fixture.snapshot.canRefresh)
+    #expect(!fixture.snapshot.canCreateClient)
+    #expect(fixture.snapshot.groups.allSatisfy { $0.rows.allSatisfy { !$0.isEnabled } })
+    let stopId = UUID()
+    _ = try await stopping.request(action, id: stopId, identifier: action == .disconnectClient ? fixture.config.identifier : nil)
+    try await controllerWaitUntil { ipc.requests.operation(id: stopId).state == .completed }
+    #expect(ipc.requests.operation(id: addId).state == .running)
+    #expect(try await stopping.request(.operation, contextId: stopId).outcome == .completed(warning: nil))
+    #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+    #expect(try await fixture.profiles.installedProfiles().first { $0.identifier == other.identifier }?.status == other.status)
+    #expect(fixture.controller.hasPendingWork)
+    #expect(await ipc.orchestrator.handle(.init(action: .prepareClient, buildIdentity: ipc.identity)).error == .busy)
+    let fetches = fixture.inventory.fetchCount
+    fixture.controller.refresh()
+    #expect(fixture.inventory.fetchCount == fetches)
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier))
+    #expect(!fixture.controller.removeClient(identifier: fixture.config.identifier))
+    #expect(try await adding.confirm(addId).operation?.state == .running)
+    if finalInventory { fixture.inventory.fetchGate = nil; await fetch.release() }
+    else { session.responseGate = nil; response.resume() }
+    try await controllerWaitUntil { ipc.requests.operation(id: addId).state == .completed && !fixture.controller.hasPendingWork }
+    #expect(try await adding.request(.operation, contextId: addId).outcome == .completed(warning: nil))
+    #expect(try await stopping.confirm(stopId).outcome == .completed(warning: nil))
+    #expect(session.requests.count == 1)
+    #expect(session.requests.first?.httpMethod == "POST")
+    #expect(fixture.inventory.createdNames == ["New Mac"])
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .disconnectClient], 0..<4)
+@MainActor func macControllerCreationIPCFinishesWhileStopIsHeld(
+    action: CloudGatewayMacControllerRequest.Action, order: Int
+) async throws {
+    let reserveStopFirst = order >= 2
+    let confirmStopFirst = order % 2 == 1
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let adding = try await ipc.client()
+    let stopping = try await ipc.client()
+    let preparation = try #require(try await adding.request(.prepareClient).creation)
+    let stop = MacControllerGate()
+    await fixture.profiles.pauseStop(stop)
+    let addId = UUID()
+    let stopId = UUID()
+    let session = MacClientRemovalSession()
+    session.body = #"{"clientId":"new","regionId":"region","clientName":"New Mac","status":"active","wireguardConfig":"fixture config"}"#
+    fixture.inventory.creationSession = session
+    let creation = MacControllerGate()
+    fixture.inventory.createGate = creation
+    if reserveStopFirst {
+        #expect(try await stopping.send(action, id: stopId, identifier: action == .disconnectClient ? fixture.config.identifier : nil).operation?.state == .accepted)
+    }
+    #expect(try await adding.send(.createClient, id: addId, regionId: "region", clientName: "New Mac", contextId: preparation.id).operation?.state == .accepted)
+    if !reserveStopFirst {
+        #expect(try await stopping.send(action, id: stopId, identifier: action == .disconnectClient ? fixture.config.identifier : nil).operation?.state == .accepted)
+    }
+    #expect(fixture.inventory.createdNames.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    if confirmStopFirst {
+        #expect(try await stopping.confirm(stopId).operation?.state == .running)
+        try await controllerWaitUntil { await stop.entered }
+        #expect(fixture.controller.clientCreationContext() == nil)
+        await #expect(throws: CloudGatewayMacControllerFailure.busy) { try await adding.request(.prepareClient) }
+    }
+    #expect(try await adding.confirm(addId).operation?.state == .running)
+    try await controllerWaitUntil { await creation.entered }
+    if !confirmStopFirst {
+        #expect(try await stopping.confirm(stopId).operation?.state == .running)
+        try await controllerWaitUntil { await stop.entered }
+    }
+    let fetches = fixture.inventory.fetchCount
+    var refreshed: CloudGatewayMacRefreshResult?
+    var refreshStarted = false
+    let refresh = Task {
+        refreshStarted = true
+        refreshed = await fixture.controller.awaitRefresh()
+    }
+    try await controllerWaitUntil { refreshStarted }
+    await creation.release()
+    try await controllerWaitUntil { ipc.requests.operation(id: addId).state == .completed }
+    #expect(fixture.inventory.fetchCount == fetches + 1)
+    #expect(refreshed == nil)
+    #expect(ipc.requests.operation(id: stopId).state == .running)
+    #expect(fixture.controller.hasPendingWork)
+    #expect(!fixture.snapshot.canCreateClient)
+    #expect(!fixture.snapshot.canTurnOff)
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier))
+    #expect(try await adding.confirm(addId).outcome == .completed(warning: nil))
+    await stop.release()
+    try await controllerWaitUntil { ipc.requests.operation(id: stopId).state == .completed && !fixture.controller.hasPendingWork }
+    await refresh.value
+    #expect(refreshed == .refreshed)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    #expect(try await stopping.confirm(stopId).outcome == .completed(warning: nil))
+    #expect(try await adding.request(.operation, contextId: addId).outcome == .completed(warning: nil))
+    #expect(fixture.inventory.createdNames == ["New Mac"])
+    #expect(session.requests.count == 1)
+    #expect(session.requests.first?.httpMethod == "POST")
+    #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+}
+
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.turnOff, .disconnectClient], [false, true])
+@MainActor func macControllerCreationIPCSessionChangeCancelsAccountWorkButPreservesGlobalStop(
+    action: CloudGatewayMacControllerRequest.Action, loginAgain: Bool
+) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let client = try await ipc.client()
+    let originalSession = try #require(fixture.controller.session)
+    let preparation = try #require(try await client.request(.prepareClient).creation)
+    let session = MacClientRemovalSession()
+    session.body = #"{"clientId":"new","regionId":"region","clientName":"New Mac","status":"active","wireguardConfig":"fixture config"}"#
+    let response = ClientRemovalGate()
+    session.responseGate = response
+    fixture.inventory.creationSession = session
+    let addId = UUID()
+    _ = try await client.request(.createClient, id: addId, regionId: "region", clientName: "New Mac", contextId: preparation.id)
+    try await controllerWaitUntil { response.entered }
+    let stop = MacControllerGate()
+    await fixture.profiles.pauseStop(stop)
+    let stopId = UUID()
+    _ = try await client.request(action, id: stopId, identifier: action == .disconnectClient ? fixture.config.identifier : nil)
+    try await controllerWaitUntil { await stop.entered }
+    #expect(fixture.controller.signOut())
+    if loginAgain { fixture.auth.emit(AuthenticatedUser(uid: "user-b", email: nil)) }
+    session.responseGate = nil
+    response.resume()
+    try await controllerWaitUntil { ipc.requests.operation(id: addId).state == .unknown }
+    #expect(ipc.requests.outcome(id: addId, session: originalSession) == .unknown)
+    #expect(try await client.request(.operation, contextId: addId).outcome == nil)
+    #expect(ipc.requests.operation(id: stopId).state == .running)
+    #expect(session.requests.count == 1)
+    #expect(fixture.inventory.createdAccountIds == ["user-a"])
+    await stop.release()
+    try await controllerWaitUntil { ipc.requests.operation(id: stopId).state != .running && !fixture.controller.hasPendingWork }
+    let stopped = try await client.request(.operation, contextId: stopId)
+    if action == .turnOff {
+        #expect(stopped.operation?.state == .completed)
+        #expect(stopped.outcome == .completed(warning: nil))
+        #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+    } else {
+        #expect(stopped.operation?.state == .unknown)
+        #expect(stopped.outcome == nil)
+        #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    }
+    #expect(fixture.domainSnapshot.domain.accountId == (loginAgain ? "user-b" : nil))
+    #expect(!fixture.domainSnapshot.domain.clients.contains { $0.identifier.hasPrefix("user-a/") })
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
 }

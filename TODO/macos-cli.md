@@ -32,9 +32,11 @@ dead-code scans, and app/extension build and packaging verification. Round 1's
 seven findings are fixed. Both fresh Secure Codex Sol High reviewers in round 2
 found no actionable defects in the final source at `8589488f`.
 The original Main reviewer later resumed and found that Add Client blocks local
-Disconnect during cloud work, including handoff. This is confirmed in the newer
-checkout and remains open in the controller review. The source review gate is
-reopened until both command gates allow local stop and coverage verifies it.
+Disconnect during cloud work, including handoff. This is resolved in
+[the add/removal review](/Users/alexbrodsky/GitHub/CloudGateway-review-ceeeb5c8/TODO/macos-client-add-remove-review.md).
+Creation and local stop now have independent task, handoff, and result ownership.
+Main/Secure reviews and the full unsigned macOS runner passed with 732 macOS
+package tests, both strict dead-code scans, app/extension build, and 58 CLI checks.
 The user reported a passing `./scripts/test.sh macos --signed` run from their
 terminal on 2026-10-22, including packaging, entitlements, profiles, and Hardened
 Runtime verification. Agent-session signing attempts failed separately.
@@ -862,7 +864,7 @@ below for release acceptance, without claiming it has already passed.
   ownership, idempotency, switching, and IPC validation
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
-- [ ] Resolve the delayed Sol High finding: Add Client must allow local Disconnect
+- [x] Resolve the delayed Sol High finding: Add Client must allow local Disconnect
   during cloud work and handoff, with coverage through the production domain path
 - [x] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
   The user supplied a passing terminal run on 2026-10-22. Agent-session attempts

@@ -6,7 +6,7 @@ import Foundation
 extension CloudGatewayMacControllerView {
     public init(state: CloudGatewayMacControllerState) {
         let status = state.status
-        let canStop = !state.commandInFlight && status.needsStop
+        let canStop = (state.stopAllowed ?? !state.commandInFlight) && status.needsStop
         let isTransitioning = state.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
         let canConnect = state.accountId != nil && state.accessAuthorized && !state.commandInFlight
             && !state.isRestoringSession && !state.isAuthSettling && state.setup == .ready

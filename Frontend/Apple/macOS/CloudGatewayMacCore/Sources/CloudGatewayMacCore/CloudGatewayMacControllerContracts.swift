@@ -90,6 +90,7 @@ public struct CloudGatewayMacDomainSnapshot: Equatable, Sendable {
     public let observationIsFresh: Bool
     public let profilesObservedAt: Date?
     public let commandInFlight: Bool
+    public var stopAllowed: Bool? = nil
     public let clients: [CloudGatewayMacClientMetadata]
 }
 

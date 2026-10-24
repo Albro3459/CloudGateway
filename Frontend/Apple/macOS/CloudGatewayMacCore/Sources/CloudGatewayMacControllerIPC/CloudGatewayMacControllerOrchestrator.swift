@@ -156,13 +156,13 @@ public final class CloudGatewayMacControllerOrchestrator {
     private let managedUpdates: CloudGatewayMacManagedUpdateWorkflow?
     private var update: CloudGatewayMacUpdateLifecycle
     private var pending: Pending?
+    private var pendingCreation: Pending?
     private var preparingManagedUpdate = false
     private var startupReconciliationPending: Bool
     private var pendingLegacyActivationEvent: CloudGatewayMacControllerRequest?
     private var runningOperation: UUID?
-    // Valid because confirm hands work to effects synchronously, without suspending
-    private var submitting: UUID?
-    private var heldOutcome: CloudGatewayMacCommandOutcome?
+    private var runningAction: CloudGatewayMacControllerRequest.Action?
+    private var runningCreation: UUID?
     private var creation: Creation?
     private var preparationTask: Task<CloudGatewayMacPreparedClient, any Error>?
     private var preparationId: UUID?
@@ -237,7 +237,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         if !update.isDraining, startupReconciliationPending || pendingLegacyActivationEvent != nil { return false }
         if update.isDraining, managedUpdates?.isActionable == true { return false }
         if !update.isDraining, managedUpdates?.isActionable == true || effects.activationIsPending() { return false }
-        guard activeRequests == 0, pending == nil, runningOperation == nil,
+        guard activeRequests == 0, pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil,
               !effects.hasPendingWork(), readinessTask == nil, installationObservation == nil else { return false }
         if update.canExit(hasPendingWork: false, activeRequests: 0) { return true }
         // A retained result keeps the controller reachable for its ten-minute recovery window
@@ -264,7 +264,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         updateInventoryAdmission()
         if canExit { return }
         if startupReconciled, pendingLegacyActivationEvent == nil, update.canAcceptMutations, effects.isRuntimeInitialized() {
-            if pending == nil, runningOperation == nil, preparationTask == nil, managedUpdates?.isActionable != true,
+            if pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil, preparationTask == nil, managedUpdates?.isActionable != true,
                !extensionUpdates.hasPendingAttempt, readinessTask == nil, !effects.hasPendingWork() {
                 effects.refreshInventoryIfDue()
             }
@@ -350,7 +350,7 @@ public final class CloudGatewayMacControllerOrchestrator {
                              operationId: status.id, update: status)
             }
             guard !startupReconciliationPending, pendingLegacyActivationEvent == nil,
-                  !preparingManagedUpdate, pending == nil, runningOperation == nil, preparationTask == nil,
+                  !preparingManagedUpdate, pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil, preparationTask == nil,
                   let managedUpdates else { return .init(error: .busy) }
             preparingManagedUpdate = true
             defer { preparingManagedUpdate = false; updateInventoryAdmission() }
@@ -368,10 +368,12 @@ public final class CloudGatewayMacControllerOrchestrator {
         case .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
             return reportExtensionUpdate(request)
         case .refresh, .menuWillOpen:
+            if request.action == .refresh, pendingCreation != nil || runningCreation != nil { return .init(error: .busy) }
             _ = effects.perform(request, { _ in })
             refreshReadiness()
             return reply()
         case .awaitRefresh:
+            guard pendingCreation == nil, runningCreation == nil else { return .init(error: .busy) }
             refreshReadiness()
             let result = try? await CloudGatewayMacInventoryRequest.read(
                 timeout: effects.refreshTimeout, onTimeout: { .success(.timedOut) }
@@ -431,7 +433,18 @@ public final class CloudGatewayMacControllerOrchestrator {
             if let operation = try requests.lookup(request) {
                 return operationReply(operation, request: request)
             }
-            guard !preparingManagedUpdate, pending == nil, runningOperation == nil else { return .init(error: .busy) }
+            guard !preparingManagedUpdate else { return .init(error: .busy) }
+            let isStop = request.action == .turnOff || request.action == .disconnectClient
+            if request.action == .createClient {
+                guard pendingCreation == nil, runningCreation == nil,
+                      pending == nil || pending?.request.action == .turnOff || pending?.request.action == .disconnectClient,
+                      runningOperation == nil || runningAction == .turnOff || runningAction == .disconnectClient else {
+                    return .init(error: .busy)
+                }
+            } else {
+                guard pending == nil, runningOperation == nil,
+                      isStop || pendingCreation == nil && runningCreation == nil else { return .init(error: .busy) }
+            }
             if request.action == .removeClient {
                 guard canAdmitRemoval else { return .init(error: .busy) }
                 guard removalSessionIsSettled(request) else { return .init(error: .rejected) }
@@ -453,8 +466,10 @@ public final class CloudGatewayMacControllerOrchestrator {
                 prepared = creation.value
             }
             let operation = try requests.accept(request)
-            pending = Pending(request: request, session: effects.session(),
-                              deadline: effects.now().addingTimeInterval(30), preparation: prepared)
+            let reservation = Pending(request: request, session: effects.session(),
+                                      deadline: effects.now().addingTimeInterval(30), preparation: prepared)
+            if request.action == .createClient { pendingCreation = reservation }
+            else { pending = reservation }
             return operationReply(operation, request: request)
         } catch { return .init(error: error as? CloudGatewayMacControllerFailure ?? .unavailable) }
     }
@@ -477,20 +492,20 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func confirm(_ confirmation: CloudGatewayMacControllerRequest) -> CloudGatewayMacControllerReply {
         defer { updateInventoryAdmission() }
         guard let id = confirmation.contextId else { return .init(error: .invalidRequest) }
-        guard let pending, pending.request.id == id else {
+        guard let pending = [pendingCreation, pending].compactMap({ $0 }).first(where: { $0.request.id == id }) else {
             return controlReply(for: confirmation, operation: requests.operation(id: id))
         }
         let request = pending.request
         let session = effects.session()
         guard request.action == .turnOff || (update.canAcceptMutations && confirmation.buildIdentity == update.running) else {
-            self.pending = nil
+            clearPending(id: id)
             return controlReply(for: confirmation, operation: requests.finish(
                 id: id, state: .failed, failure: .incompatibleVersion, outcome: .failed(.incompatibleVersion), session: pending.session
             ))
         }
         // Account work runs only for the session that reserved it
         if request.action.hasAccountBoundOutcome, session != pending.session {
-            self.pending = nil
+            clearPending(id: id)
             return controlReply(for: confirmation, operation: requests.finish(
                 id: id, state: .failed, failure: .rejected, outcome: .failed(.signInRequired), session: pending.session
             ))
@@ -501,7 +516,7 @@ public final class CloudGatewayMacControllerOrchestrator {
                 else if confirmation.appVersion != update.running.version || confirmation.appBuild != update.running.build { .incompatibleVersion }
                 else { nil }
             if let failure {
-                self.pending = nil
+                clearPending(id: id)
                 return controlReply(for: confirmation, operation: requests.finish(
                     id: id, state: .failed, failure: failure == .busy ? .busy : .rejected,
                     outcome: .failed(failure), session: pending.session
@@ -513,7 +528,7 @@ public final class CloudGatewayMacControllerOrchestrator {
             guard session != nil, session?.accountId == snapshot.accountId, snapshot.accessAuthorized,
                   let identifier = request.identifier,
                   snapshot.clients.filter({ $0.identifier == identifier }).count == 1 else {
-                self.pending = nil
+                clearPending(id: id)
                 return controlReply(for: confirmation, operation: requests.finish(
                     id: id, state: .failed, failure: .rejected, outcome: .failed(.configUnavailable), session: pending.session
                 ))
@@ -521,19 +536,22 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         if request.action == .createClient,
            creation?.id != request.contextId || creation.map({ $0.expires <= effects.now() }) != false {
-            self.pending = nil
+            clearPending(id: id)
             return controlReply(for: confirmation, operation: requests.finish(id: id, state: .failed, failure: .preparationExpired))
         }
         if suppressesManagedReconnect(request) { managedUpdates?.suppressReconnect() }
-        self.pending = nil
-        runningOperation = id
+        clearPending(id: id)
+        if request.action == .createClient { runningCreation = id }
+        else { runningOperation = id; runningAction = request.action }
         updateInventoryAdmission()
         requests.finish(id: id, state: .running)
-        submitting = id
+        // Effects may reject synchronously before returning their admission result
+        var submitting = true
+        var heldOutcome: CloudGatewayMacCommandOutcome?
         let completion: @MainActor (CloudGatewayMacCommandOutcome) -> Void = { [weak self] outcome in
-            guard let self, runningOperation == id else { return }
+            guard let self, isRunning(id: id) else { return }
             // A command that refuses work reports why before returning false
-            if submitting == id { heldOutcome = outcome }
+            if submitting { heldOutcome = outcome }
             else { record(outcome, of: request, session: session, rejected: false) }
         }
         let accepted: Bool
@@ -545,13 +563,12 @@ public final class CloudGatewayMacControllerOrchestrator {
             if request.action == .signOut || request.action == .cancelSignIn { creation = nil }
             accepted = effects.perform(request, completion)
         }
-        submitting = nil
+        submitting = false
         if let held = heldOutcome {
-            heldOutcome = nil
             record(held, of: request, session: session, rejected: !accepted)
-        } else if !accepted, runningOperation == id {
+        } else if !accepted, isRunning(id: id) {
             requests.finish(id: id, state: .failed, failure: .rejected)
-            runningOperation = nil
+            clearRunning(id: id)
         }
         return controlReply(for: confirmation, operation: requests.operation(id: id))
     }
@@ -583,18 +600,33 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         _ = requests.finish(id: request.id, state: recorded.state, failure: failure, warning: warning,
                             outcome: recorded, session: session)
-        runningOperation = nil
+        clearRunning(id: request.id)
         updateInventoryAdmission()
     }
 
+    private func isRunning(id: UUID) -> Bool {
+        runningCreation == id || runningOperation == id
+    }
+
+    private func clearRunning(id: UUID) {
+        if runningCreation == id { runningCreation = nil }
+        if runningOperation == id { runningOperation = nil; runningAction = nil }
+    }
+
+    private func clearPending(id: UUID) {
+        if pendingCreation?.request.id == id { pendingCreation = nil }
+        if pending?.request.id == id { pending = nil }
+    }
+
     private func expirePending() {
-        guard let pending, pending.deadline <= effects.now() else { return }
-        _ = requests.finish(id: pending.request.id, state: .unknown, outcome: .expired, session: pending.session)
-        self.pending = nil
+        for reservation in [pendingCreation, pending].compactMap({ $0 }) where reservation.deadline <= effects.now() {
+            _ = requests.finish(id: reservation.request.id, state: .unknown, outcome: .expired, session: reservation.session)
+            clearPending(id: reservation.request.id)
+        }
     }
 
     private func prepareClient() async -> CloudGatewayMacControllerReply {
-        guard preparationTask == nil, pending == nil, runningOperation == nil else { return .init(error: .busy) }
+        guard preparationTask == nil, pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil else { return .init(error: .busy) }
         let id = UUID()
         preparationId = id
         let task = Task {
@@ -655,7 +687,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func reply(operation: CloudGatewayMacControllerOperation? = nil,
                        refresh: CloudGatewayMacRefreshResult? = nil) -> CloudGatewayMacControllerReply {
         let operation = operation ?? requests.latest ?? managedUpdates?.operation
-        return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && readinessTask == nil && pending == nil && runningOperation == nil
+        return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && readinessTask == nil && pending == nil && runningOperation == nil && pendingCreation == nil && runningCreation == nil
                                               && !effects.hasPendingWork() && update.canAcceptMutations && managedUpdates?.isActionable != true
                                               && managedUpdates?.isBlocked != true && !effects.activationIsPending()
                                               && !startupReconciliationPending && pendingLegacyActivationEvent == nil),
@@ -674,7 +706,7 @@ public final class CloudGatewayMacControllerOrchestrator {
               !preparingManagedUpdate, managedUpdates?.isActionable != true, managedUpdates?.isBlocked != true,
               !effects.activationIsPending(),
               !extensionUpdates.hasPendingAttempt, !effects.hasPendingWork(), readinessTask == nil,
-              pending == nil, runningOperation == nil else { return .init(error: .busy) }
+              pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil else { return .init(error: .busy) }
         var attempt: CloudGatewayMacExtensionUpdateOrchestrator.Attempt?
         do {
             let target = try effects.extensionIdentity()
@@ -751,7 +783,9 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     private func refreshReadiness(force: Bool = true) {
         guard !startupReconciliationPending, pendingLegacyActivationEvent == nil,
-              readinessTask == nil, managedUpdates?.isRunning != true else { return }
+              readinessTask == nil, managedUpdates?.isRunning != true,
+              pending == nil, runningOperation == nil, pendingCreation == nil, runningCreation == nil,
+              preparationTask == nil else { return }
         let now = effects.monotonicNow()
         let interval: Duration = extensionUpdates.hasPendingAttempt ? .seconds(5) : .seconds(60)
         if !force, let lastReadiness, now - lastReadiness < interval { return }
@@ -798,7 +832,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func updateInventoryAdmission() {
         effects.setAutomaticInventoryRefreshAllowed(
             update.canAcceptMutations && !startupReconciliationPending && pendingLegacyActivationEvent == nil
-                && pending == nil && runningOperation == nil
+                && pending == nil && runningOperation == nil && pendingCreation == nil && runningCreation == nil
                 && preparationTask == nil && !preparingManagedUpdate && !extensionUpdates.hasPendingAttempt && managedUpdates?.isActionable != true,
             update.isDraining
         )
