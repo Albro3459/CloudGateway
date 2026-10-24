@@ -56,7 +56,7 @@ import Testing
 @Test @MainActor func capacityPreparationReturnsHealthyRegionsAndUnknownStallsWithinOneDeadline() async throws {
     let probe = CapacityPreparationProbe()
     let regions = try await CloudGatewayMacCapacityPreparation.prepare(
-        timeout: .milliseconds(50), maxConcurrentReads: 2,
+        timeout: .seconds(1), maxConcurrentReads: 2,
         loadRegions: { probe.regions }, loadToken: { "test-token" },
         fetchCapacity: { regionId, _ in try await probe.capacity(regionId) }
     )
@@ -70,16 +70,19 @@ import Testing
 
 @Test @MainActor func capacityPreparationDeadlineIncludesStalledTokenRetrieval() async throws {
     let probe = CapacityPreparationProbe()
+    var tokenStarted = false
     var tokenCancelled = false
     let regions = try await CloudGatewayMacCapacityPreparation.prepare(
-        timeout: .milliseconds(20), loadRegions: { probe.regions },
+        timeout: .seconds(1), loadRegions: { probe.regions },
         loadToken: {
+            tokenStarted = true
             defer { tokenCancelled = Task.isCancelled }
             try await Task.sleep(for: .seconds(60))
             return "test-token"
         },
         fetchCapacity: { regionId, _ in try await probe.capacity(regionId) }
     )
+    #expect(tokenStarted)
     #expect(regions.allSatisfy { $0.capacity == .unknown })
     #expect(probe.maximumConcurrentReads == 0)
     try await capacityWaitUntil { tokenCancelled }
@@ -154,5 +157,77 @@ private final class InventoryRequestProbe {
     func start(_ complete: @escaping @Sendable (Result<Int, Error>) -> Void) -> (() -> Void) {
         self.complete = complete
         return { self.removals += 1 }
+    }
+}
+
+@Test(arguments: [false, true]) @MainActor
+func inventoryDenialWinsOverASiblingTransportFailure(deniedRegions: Bool) async throws {
+    let probe = InventoryLoadProbe()
+    let request = Task {
+        try await CloudGatewayMacInventoryRequest.inventory(loadRegions: probe.loadRegions, loadClients: probe.loadClients)
+    }
+    try await capacityWaitUntil { probe.regions != nil && probe.clients != nil }
+    let denial = NSError(domain: "FIRFirestoreErrorDomain", code: 7)
+    if deniedRegions {
+        probe.regions?(.failure(denial))
+        try await capacityWaitUntil { probe.regionsFinished }
+        probe.clients?(.failure(CloudGatewayMacInventoryError.offline))
+    } else {
+        probe.clients?(.failure(denial))
+        try await capacityWaitUntil { probe.clientsFinished }
+        probe.regions?(.failure(CloudGatewayMacInventoryError.offline))
+    }
+    await #expect(throws: CloudGatewayMacInventoryError.accessDenied) { try await request.value }
+}
+
+@Test @MainActor func inventoryReadCombinesSuccessfulResults() async throws {
+    let region = CloudGatewayRegion(regionId: "region-1", displayName: "Region", enabled: true)
+    let (regions, clients) = try await CloudGatewayMacInventoryRequest.inventory(
+        loadRegions: { [region] }, loadClients: { [] }
+    )
+    #expect(regions == [region])
+    #expect(clients.isEmpty)
+}
+
+@Test @MainActor func inventoryTransportFailureRemainsEligibleForOfflineHandling() async throws {
+    await #expect(throws: CloudGatewayMacInventoryError.offline) {
+        try await CloudGatewayMacInventoryRequest.inventory(
+            loadRegions: { throw CloudGatewayMacInventoryError.offline }, loadClients: { [] }
+        )
+    }
+}
+
+@Test @MainActor func inventoryCancellationReleasesBothReads() async throws {
+    let probe = InventoryLoadProbe()
+    let request = Task {
+        try await CloudGatewayMacInventoryRequest.inventory(loadRegions: probe.loadRegions, loadClients: probe.loadClients)
+    }
+    try await capacityWaitUntil { probe.regions != nil && probe.clients != nil }
+    request.cancel()
+    await #expect(throws: CancellationError.self) { try await request.value }
+    #expect(probe.regionsFinished && probe.clientsFinished)
+}
+
+@MainActor
+private final class InventoryLoadProbe {
+    var regions: (@Sendable (Result<[CloudGatewayRegion], Error>) -> Void)?
+    var clients: (@Sendable (Result<[CloudGatewayClient], Error>) -> Void)?
+    var regionsFinished = false
+    var clientsFinished = false
+
+    func loadRegions() async throws -> [CloudGatewayRegion] {
+        defer { regionsFinished = true }
+        return try await CloudGatewayMacInventoryRequest.read { complete in
+            regions = complete
+            return {}
+        }
+    }
+
+    func loadClients() async throws -> [CloudGatewayClient] {
+        defer { clientsFinished = true }
+        return try await CloudGatewayMacInventoryRequest.read { complete in
+            clients = complete
+            return {}
+        }
     }
 }

@@ -25,27 +25,15 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
     private let now: @Sendable () -> Duration
     private let sleep: @Sendable (Duration) async throws -> Void
     private var attemptId: UUID?
+    private var origin = CloudGatewayMacLoginOrigin.menu
+    private var lastStatus: CloudGatewayMacLoginStatus?
+    private var deadline = Duration.zero
+    private var challenge: CloudGatewayMacLoginStatus.Challenge?
+    private var exchangeStarted = false
+    private var watchdog: Task<Void, Never>?
+    private let timer: @Sendable (Duration) async throws -> Void
     private var task: Task<Void, Never>?
 
-    public init(
-        service: any CloudGatewayDeviceAuthServicing,
-        auth: any CloudGatewayCustomTokenAuthServicing,
-        dashboardOrigin: URL,
-        openBrowser: ((URL) -> Void)? = nil,
-        checkAccess: @escaping (AuthenticatedUser) async throws -> Bool
-    ) {
-        self.service = service
-        self.auth = auth
-        self.dashboardOrigin = dashboardOrigin
-        openURL = openBrowser
-        self.checkAccess = checkAccess
-        let clock = ContinuousClock()
-        let origin = clock.now
-        now = { origin.duration(to: clock.now) }
-        sleep = { try await Task.sleep(for: $0) }
-    }
-
-    // periphery:ignore - Injected monotonic time supports host-free polling tests
     init(
         service: any CloudGatewayDeviceAuthServicing,
         auth: any CloudGatewayCustomTokenAuthServicing,
@@ -53,7 +41,8 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         openBrowser: @escaping (URL) -> Void,
         checkAccess: @escaping (AuthenticatedUser) async throws -> Bool,
         now: @escaping @Sendable () -> Duration,
-        sleep: @escaping @Sendable (Duration) async throws -> Void
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        timer: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.service = service
         self.auth = auth
@@ -62,31 +51,80 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         self.checkAccess = checkAccess
         self.now = now
         self.sleep = sleep
+        self.timer = timer
+    }
+
+    public var loginStatus: CloudGatewayMacLoginStatus? {
+        guard let attemptId else { return lastStatus }
+        let phase: CloudGatewayMacLoginStatus.Phase = switch state {
+        case .requestingCode: .requestingCode
+        case .waitingForApproval: .waitingForApproval
+        default: .exchangingToken
+        }
+        let currentChallenge = challenge.map {
+            CloudGatewayMacLoginStatus.Challenge(userCode: $0.userCode, verificationURL: $0.verificationURL,
+                                                remainingSeconds: max(0, Int((deadline - now()).components.seconds)))
+        }
+        return .init(attemptId: attemptId, origin: origin, phase: phase, challenge: currentChallenge)
     }
 
     @discardableResult
-    public func begin() -> Bool {
+    public func begin() -> Bool { begin(attemptId: UUID(), origin: .menu) }
+
+    @discardableResult
+    public func begin(attemptId id: UUID, origin: CloudGatewayMacLoginOrigin) -> Bool {
         guard attemptId == nil, auth.currentUser == nil, !auth.isCustomTokenSignInSettling else { return false }
-        let id = UUID()
         attemptId = id
+        self.origin = origin
+        challenge = nil
+        exchangeStarted = false
+        deadline = now() + .seconds(30)
+        armDeadline(id)
         state = .requestingCode
         task = Task { [weak self] in await self?.run(attempt: id) }
         return true
     }
 
     public func cancel() {
-        guard attemptId != nil else { return }
-        let wasExchanging = state == .exchangingToken
+        guard let attemptId else { return }
+        cancel(attemptId: attemptId)
+    }
+
+    public func cancel(attemptId id: UUID) {
+        guard attemptId == id else { return }
+        finish(id, result: .cancelled, state: .signedOut)
+    }
+
+    private func armDeadline(_ id: UUID) {
+        watchdog?.cancel()
+        let end = deadline
+        watchdog = Task { [weak self, timer] in
+            guard let self else { return }
+            do { try await timer(max(end - now(), .zero)) } catch { return }
+            guard !Task.isCancelled, attemptId == id, deadline == end else { return }
+            finish(id, result: .expired, state: .failed(.expired))
+        }
+    }
+
+    private func finish(_ id: UUID, result: CloudGatewayMacLoginStatus.Result,
+                        state nextState: CloudGatewayMacBrowserAuthState) {
+        guard attemptId == id else { return }
+        lastStatus = .init(attemptId: id, origin: origin, phase: .finished, result: result)
+        let needsSignOut = exchangeStarted
         invalidateAttempt()
         do {
-            if wasExchanging { try auth.signOut() }
+            if needsSignOut { try auth.signOut() }
             else { try auth.cancelCustomTokenSignIn() }
-            state = .signedOut
-        } catch { state = .failed(.unavailable) }
+            state = nextState
+        } catch {
+            lastStatus = .init(attemptId: id, origin: origin, phase: .finished, result: .unavailable)
+            state = .failed(.unavailable)
+        }
     }
 
     @discardableResult
     public func signOut() -> Bool {
+        lastStatus = nil
         invalidateAttempt()
         state = .signedOut
         do {
@@ -102,10 +140,12 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
         attemptId = nil
         task?.cancel()
         task = nil
+        watchdog?.cancel()
+        watchdog = nil
+        challenge = nil
     }
 
     private func run(attempt id: UUID) async {
-        var exchangeStarted = false
         do {
             try ensureCurrent(id)
             let secret = try CloudGatewayDeviceSecret()
@@ -121,17 +161,19 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
                     guard retryAfter > 0, retryAfter <= 86_400 else {
                         throw CloudGatewayDeviceAuthError.invalidResponse
                     }
-                    try await sleep(.seconds(retryAfter))
+                    try await sleep(min(.seconds(retryAfter), max(deadline - now(), .zero)))
                     try ensureCurrent(id)
                 }
             }
             try ensureCurrent(id)
             try validate(code)
-            let deadline = requestStarted + .seconds(code.expiresIn)
+            deadline = requestStarted + .seconds(code.expiresIn)
+            armDeadline(id)
             guard now() < deadline else { throw CloudGatewayDeviceAuthError.expired }
+            challenge = .init(userCode: code.userCode, verificationURL: code.verificationURL, remainingSeconds: code.expiresIn)
             state = .waitingForApproval(userCode: code.userCode, verificationURL: code.verificationURL)
             try ensureCurrent(id)
-            openURL?(code.verificationURL)
+            if origin == .menu { openURL?(code.verificationURL) }
             var interval = code.interval
             while true {
                 let remaining = deadline - now()
@@ -165,30 +207,35 @@ public final class CloudGatewayMacBrowserAuthCoordinator {
                     exchangeStarted = true
                     let user = try await auth.signIn(customToken: token)
                     try ensureCurrent(id)
-                    let isAllowed = try await checkAccess(user)
+                    let isAllowed: Bool
+                    do { isAllowed = try await checkAccess(user) }
+                    catch CloudGatewayMacInventoryError.offline { throw CloudGatewayDeviceAuthError.offline }
                     try ensureCurrent(id)
                     guard isAllowed else { throw CloudGatewayDeviceAuthError.denied }
-                    attemptId = nil
-                    task = nil
+                    lastStatus = .init(attemptId: id, origin: origin, phase: .finished, result: .authorized)
+                    invalidateAttempt()
                     state = .signedIn(user)
                     return
                 }
             }
         } catch {
             guard attemptId == id else { return }
-            attemptId = nil
-            task = nil
-            if exchangeStarted {
-                do { try auth.signOut() }
-                catch { state = .failed(.unavailable); return }
+            let failure = (error as? CloudGatewayDeviceAuthError) ?? .unavailable
+            let result: CloudGatewayMacLoginStatus.Result = switch failure {
+            case .expired: .expired
+            case .denied: .denied
+            case .invalidResponse, .invalidRequest, .consumed: .invalidResponse
+            case .offline: .offline
+            default: .unavailable
             }
-            if error is CancellationError { state = .signedOut }
-            else { state = .failed((error as? CloudGatewayDeviceAuthError) ?? .unavailable) }
+            finish(id, result: error is CancellationError ? .cancelled : result,
+                   state: error is CancellationError ? .signedOut : .failed(failure))
         }
     }
 
     private func ensureCurrent(_ id: UUID) throws {
         guard attemptId == id, !Task.isCancelled else { throw CancellationError() }
+        guard now() < deadline else { throw CloudGatewayDeviceAuthError.expired }
     }
 
     private func validate(_ code: CloudGatewayDeviceCode) throws {

@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "CloudGatewayMacCore", targets: ["CloudGatewayMacCore"]),
         .library(name: "CloudGatewayMacIPC", targets: ["CloudGatewayMacIPC"]),
         .library(name: "CloudGatewayMacControllerIPC", targets: ["CloudGatewayMacControllerIPC"]),
+        .library(name: "CloudGatewayMacCLI", targets: ["CloudGatewayMacCLI"]),
     ],
     dependencies: [.package(path: "../../CloudGatewayKit")],
     targets: [
@@ -25,9 +26,21 @@ let package = Package(
             "CloudGatewayMacIPC",
             .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
         ]),
+        .target(name: "CloudGatewayMacCLI", dependencies: [
+            "CloudGatewayMacCore",
+            "CloudGatewayMacControllerIPC",
+            .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
+        ]),
         .testTarget(name: "CloudGatewayMacIPCTests", dependencies: ["CloudGatewayMacIPC"]),
-        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC"]),
+        .testTarget(name: "CloudGatewayMacCoreTests", dependencies: ["CloudGatewayMacCore", "CloudGatewayMacControllerIPC", "CloudGatewayMacCLI"]),
         .testTarget(name: "CloudGatewayMacControllerIPCTests", dependencies: ["CloudGatewayMacControllerIPC"]),
+        .testTarget(name: "CloudGatewayMacCLITests", dependencies: [
+            "CloudGatewayMacCLI",
+            "CloudGatewayMacCore",
+            "CloudGatewayMacControllerIPC",
+            .product(name: "CloudGatewayKit", package: "CloudGatewayKit"),
+            .product(name: "CloudGatewayAppCore", package: "CloudGatewayKit"),
+        ]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -41,3 +41,19 @@ public enum CloudGatewayMacSetupState: Equatable, Sendable {
         return ownedTunnelStatuses.allSatisfy { $0 == .invalid || $0 == .disconnected }
     }
 }
+
+
+extension CloudGatewayMacSetupState {
+    var commandFailure: CloudGatewayMacCommandFailure {
+        switch self {
+        case .required: .initialSetupRequired
+        case .updateRequired: .extensionMismatch
+        case .invalidBundle: .invalidBundle
+        case .awaitingApproval: .approvalRequired
+        case .awaitingRestart: .restartRequired
+        case .activating, .checkingConnection: .checkingReadiness
+        case .failed: .activationFailed
+        case .unavailable, .ready: .setupRequired
+        }
+    }
+}

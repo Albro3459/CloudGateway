@@ -34,6 +34,33 @@ public enum CloudGatewayMacInventoryRequest {
         }
     }
 
+    public static func inventory(
+        loadRegions: @escaping @MainActor @Sendable () async throws -> [CloudGatewayRegion],
+        loadClients: @escaping @MainActor @Sendable () async throws -> [CloudGatewayClient]
+    ) async throws -> ([CloudGatewayRegion], [CloudGatewayClient]) {
+        async let regions = result(loadRegions)
+        async let clients = result(loadClients)
+        let (regionResult, clientResult) = await (regions, clients)
+        try Task.checkCancellation()
+        // A sibling transport failure must not hide a received authorization denial
+        if case .failure(let error) = regionResult,
+           CloudGatewayMacInventoryError.classify(error) as? CloudGatewayMacInventoryError == .accessDenied {
+            throw CloudGatewayMacInventoryError.accessDenied
+        }
+        if case .failure(let error) = clientResult,
+           CloudGatewayMacInventoryError.classify(error) as? CloudGatewayMacInventoryError == .accessDenied {
+            throw CloudGatewayMacInventoryError.accessDenied
+        }
+        return (try regionResult.get(), try clientResult.get())
+    }
+
+    private static func result<Value: Sendable>(
+        _ operation: @MainActor @Sendable () async throws -> Value
+    ) async -> Result<Value, Error> {
+        do { return .success(try await operation()) }
+        catch { return .failure(error) }
+    }
+
     public static func perform<Value: Sendable>(
         timeout: Duration = .seconds(10),
         operation: @escaping @MainActor @Sendable () async throws -> Value

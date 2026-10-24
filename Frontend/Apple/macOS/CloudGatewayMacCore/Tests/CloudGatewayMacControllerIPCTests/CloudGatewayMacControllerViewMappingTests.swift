@@ -68,14 +68,14 @@ import Testing
 
 @Test func controllerFrontendGroupsByRegionIdentityAndSortsRawMetadata() throws {
     let clients: [CloudGatewayMacClientMetadata] = [
-        .init(identifier: "account-A._/east/z", regionId: "east", regionName: "Region", regionOrder: 2,
-              clientName: "Zebra", ownerLabel: "Alice", isEligible: true, status: nil),
-        .init(identifier: "account-A._/east/a", regionId: "east", regionName: "Region", regionOrder: 2,
-              clientName: "Alpha", ownerLabel: "Alice", isEligible: true, status: nil),
-        .init(identifier: "account-A._/west/b", regionId: "west", regionName: "Region", regionOrder: 1,
-              clientName: "Beta", ownerLabel: nil, isEligible: true, status: nil),
-        .init(identifier: "account-A._/east/b", regionId: "east", regionName: "Region", regionOrder: 2,
-              clientName: "Beta", ownerLabel: "Bob", isEligible: true, status: nil)
+        controllerClient("account-A._/east/z", regionId: "east", regionName: "Region", regionOrder: 2,
+                         clientName: "Zebra", ownerLabel: "Alice"),
+        controllerClient("account-A._/east/a", regionId: "east", regionName: "Region", regionOrder: 2,
+                         clientName: "Alpha", ownerLabel: "Alice"),
+        controllerClient("account-A._/west/b", regionId: "west", regionName: "Region", regionOrder: 1,
+                         clientName: "Beta", ownerLabel: nil),
+        controllerClient("account-A._/east/b", regionId: "east", regionName: "Region", regionOrder: 2,
+                         clientName: "Beta", ownerLabel: "Bob")
     ]
     let state = try controllerRoundTrip(.init(snapshot: controllerSnapshot(clients: clients), setupState: .ready, canUpdateExtension: false))
     let view = CloudGatewayMacControllerView(state: state)
@@ -110,9 +110,9 @@ import Testing
 
 @Test func controllerStateHidesForeignAccountMetadataAndKeepsLocalStopStatus() throws {
     let foreign = "other/region/client"
-    let client = CloudGatewayMacClientMetadata(
-        identifier: foreign, regionId: "region", regionName: "Foreign region", regionOrder: 1000,
-        clientName: "Foreign client", ownerLabel: "Foreign owner", isEligible: true, status: .connected
+    let client = controllerClient(
+        foreign, regionId: "region", regionName: "Foreign region",
+        clientName: "Foreign client", ownerLabel: "Foreign owner", status: .connected
     )
     for accountId in ["account-A._", nil] {
         let snapshot = controllerSnapshot(
@@ -250,12 +250,13 @@ private func controllerSnapshot(
     return CloudGatewayMacControllerSnapshot(
         domain: .init(
             accountId: accountId, hasRetainedSession: hasRetainedSession ?? (accountId != nil), accessAuthorized: accessAuthorized,
+            access: accessAuthorized ? .online : .unverified, credentials: .unknown,
             inventoryFreshness: inventoryFreshness, installedIdentifiers: installedIdentifiers ?? [identifier],
             observedProfiles: observedProfiles ?? [.init(identifier: identifier, status: .connected)],
-            observationIsFresh: observationIsFresh, commandInFlight: commandInFlight,
-            clients: clients ?? [.init(
-                identifier: identifier, regionId: "r_E-1", regionName: regionName, regionOrder: 1000,
-                clientName: clientName, ownerLabel: ownerLabel, isEligible: isEligible, status: .connected
+            observationIsFresh: observationIsFresh, profilesObservedAt: nil, commandInFlight: commandInFlight,
+            clients: clients ?? [controllerClient(
+                identifier, regionId: "r_E-1", regionName: regionName, clientName: clientName, ownerLabel: ownerLabel,
+                isEligible: isEligible, isInstalled: installedIdentifiers?.contains(identifier) ?? true, status: .connected
             )]
         ),
         lastSelectedIdentifier: selectedIdentifier,
@@ -272,4 +273,14 @@ private func controllerRoundTrip(_ state: CloudGatewayMacControllerState) throws
     let reply = try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: "1.2.0", appBuild: "42")
     #expect(reply.error == nil)
     return try #require(reply.state)
+}
+
+private func controllerClient(
+    _ identifier: String, regionId: String, regionName: String, regionOrder: Int = 1000, clientName: String,
+    ownerLabel: String?, isEligible: Bool = true, isInstalled: Bool = false, status: CloudGatewayTunnelStatus? = nil
+) -> CloudGatewayMacClientMetadata {
+    .init(identifier: identifier, regionId: regionId, regionName: regionName, regionOrder: regionOrder,
+          clientName: clientName, ownerLabel: ownerLabel, internalIp: nil, cloudState: .active,
+          eligibility: isEligible ? .eligible : .configMissing, isInstalled: isInstalled, source: .cloud,
+          readAt: Date(timeIntervalSince1970: 0), updatedAt: nil, status: status)
 }

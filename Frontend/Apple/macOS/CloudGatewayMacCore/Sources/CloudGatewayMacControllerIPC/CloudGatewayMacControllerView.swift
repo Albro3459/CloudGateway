@@ -1,3 +1,4 @@
+import CloudGatewayMacCore
 import Foundation
 
 public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
@@ -51,6 +52,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
     public let accountId: String?
     public let lastSelectedIdentifier: String?
     public let browserState: BrowserState
+    public let login: CloudGatewayMacLoginStatus?
     public let setupState: SetupState
     public let isRestoringSession: Bool
     public let isAuthSettling: Bool
@@ -66,7 +68,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         canToggleVPN: Bool = false, canTurnOff: Bool = false, hasActiveTunnel: Bool = false,
         reconnectIdentifier: String? = nil, canRefresh: Bool = false, canSignOut: Bool = false,
         accountId: String? = nil, lastSelectedIdentifier: String? = nil,
-        browserState: BrowserState = .signedOut, setupState: SetupState = .required,
+        browserState: BrowserState = .signedOut, login: CloudGatewayMacLoginStatus? = nil, setupState: SetupState = .required,
         isRestoringSession: Bool = false, isAuthSettling: Bool = false,
         hasRetainedSession: Bool = false, inventoryInFlight: Bool = false,
         canCreateClient: Bool = false, errorMessage: String? = nil,
@@ -83,6 +85,7 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         self.accountId = accountId
         self.lastSelectedIdentifier = lastSelectedIdentifier
         self.browserState = browserState
+        self.login = login
         self.setupState = setupState
         self.isRestoringSession = isRestoringSession
         self.isAuthSettling = isAuthSettling

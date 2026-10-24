@@ -150,7 +150,8 @@ check_apple_signing_prerequisites() {
 # Frontend/Apple/.periphery.yml for why three): the app xcodeproj scan covers
 # all production code including unused public shared API, and the two SPM
 # scans (which build the test targets) cover dead test code. --strict makes
-# any finding fail the target.
+# any finding fail the target. SPM scans force the native build system, since
+# newer SwiftPM defaults to swiftbuild, which writes no index store for Periphery.
 scan_apple_dead_code() {
   if ! command -v periphery >/dev/null 2>&1; then
     echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
@@ -168,13 +169,13 @@ scan_apple_dead_code() {
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
-      --report-include "**/Tests/**" ||
+      --report-include "**/Tests/**" -- --build-system native ||
     failed=1
   run_check "Apple dead code: Firebase adapter tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
-      --report-include "**/Tests/**" ||
+      --report-include "**/Tests/**" -- --build-system native ||
     failed=1
   return "$failed"
 }
@@ -279,7 +280,7 @@ scan_macos_dead_code() {
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/macOS/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/macOS/CloudGatewayMacCore" \
-      --report-include "**/Tests/**" ||
+      --report-include "**/Tests/**" -- --build-system native ||
     failed=1
   return "$failed"
 }
@@ -323,12 +324,12 @@ test_macos() {
     if [[ "$APPLE_SIGNED" -eq 1 ]]; then
       run_check "macOS bundle packaging and signing verification" \
         python3 scripts/verify_macos_build.py \
-          "$derived_data/Build/Products/$configuration/CloudGateway.app" --signed ||
+          "$derived_data/Build/Products/$configuration/CloudGateway.app" --signed --cli-smoke ||
         failed=1
     else
       run_check "macOS bundle packaging verification" \
         python3 scripts/verify_macos_build.py \
-          "$derived_data/Build/Products/$configuration/CloudGateway.app" ||
+          "$derived_data/Build/Products/$configuration/CloudGateway.app" --cli-smoke ||
         failed=1
     fi
   else

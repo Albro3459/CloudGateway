@@ -333,3 +333,143 @@ private func waitUntil(_ condition: () -> Bool) async {
         #expect(count == 1)
     }
 }
+
+final class AuthDeadlineClock: Sendable {
+    private struct State {
+        var now = Duration.zero
+        var timers: [UUID: (Duration, CheckedContinuation<Void, any Error>)] = [:]
+    }
+    private let state = Mutex(State())
+
+    var now: Duration { state.withLock { $0.now } }
+
+    func advance(to instant: Duration) {
+        let ready = state.withLock { state in
+            state.now = max(state.now, instant)
+            let ready = state.timers.filter { $0.value.0 <= state.now }
+            for id in ready.keys { state.timers.removeValue(forKey: id) }
+            return ready.values.map { $0.1 }
+        }
+        ready.forEach { $0.resume() }
+    }
+
+    func sleep(_ duration: Duration) async {
+        advance(to: now + duration)
+        await Task.yield()
+    }
+
+    func timer(_ duration: Duration) async throws {
+        let id = UUID()
+        let end = now + duration
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let ready: Result<Void, any Error>? = state.withLock { state in
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    if state.now >= end { return .success(()) }
+                    state.timers[id] = (end, continuation)
+                    return nil
+                }
+                if let ready { continuation.resume(with: ready) }
+            }
+        } onCancel: {
+            self.state.withLock { $0.timers.removeValue(forKey: id) }?.1.resume(throwing: CancellationError())
+        }
+    }
+}
+
+private enum HeldAuthCall: CaseIterable, Sendable {
+    case request, poll, exchange, access
+}
+
+@Test(arguments: HeldAuthCall.allCases) @MainActor
+private func controllerExpiryFencesEverySuspendedLoginCall(_ held: HeldAuthCall) async {
+    let clock = AuthDeadlineClock()
+    let service = DeviceService(blockCode: held == .request, blockPoll: held == .poll)
+    let auth = BrowserAuth()
+    auth.shouldSuspendExchange = held == .exchange
+    var access: CheckedContinuation<Bool, Never>?
+    let flow = CloudGatewayMacBrowserAuthCoordinator(
+        service: service, auth: auth, dashboardOrigin: dashboardOrigin, openBrowser: { _ in },
+        checkAccess: { _ in
+            if held == .access { return await withCheckedContinuation { access = $0 } }
+            return true
+        }, now: { clock.now }, sleep: { await clock.sleep($0) }, timer: { try await clock.timer($0) }
+    )
+    let id = UUID()
+    #expect(flow.begin(attemptId: id, origin: .cli))
+    for _ in 0..<5000 {
+        let reached = switch held {
+        case .request: await service.codeContinuation != nil
+        case .poll: await service.pollContinuation != nil
+        case .exchange: auth.continuation != nil
+        case .access: access != nil
+        }
+        if reached { break }
+        await Task.yield()
+    }
+    clock.advance(to: .seconds(500))
+    await waitUntil { flow.loginStatus?.result == .expired }
+    #expect(flow.state == .failed(.expired))
+    #expect(auth.currentUser == nil)
+    #expect(flow.loginStatus?.challenge == nil)
+    if held == .exchange { #expect(!flow.begin(attemptId: UUID(), origin: .cli)) }
+    switch held {
+    case .request: await service.releaseCode()
+    case .poll: await service.releasePoll()
+    case .exchange: auth.continuation?.resume(); auth.continuation = nil
+    case .access: access?.resume(returning: true); access = nil
+    }
+    for _ in 0..<100 { await Task.yield() }
+    #expect(auth.currentUser == nil)
+    #expect(flow.loginStatus?.attemptId == id)
+    #expect(flow.loginStatus?.result == .expired)
+}
+
+@Test @MainActor func cliOriginNeverAutomaticallyOpensAndStaleCancelCannotClearNewAttempt() async {
+    let service = DeviceService(blockCode: true)
+    var opened = [URL]()
+    let auth = BrowserAuth()
+    let flow = coordinator(service: service, auth: auth, clock: PollClock(), open: { opened.append($0) })
+    let old = UUID()
+    #expect(flow.begin(attemptId: old, origin: .menu))
+    flow.cancel(attemptId: old)
+    let current = UUID()
+    #expect(flow.begin(attemptId: current, origin: .cli))
+    flow.cancel(attemptId: old)
+    #expect(flow.loginStatus?.attemptId == current)
+    #expect(flow.loginStatus?.result == nil)
+    for _ in 0..<1000 {
+        if await service.codeContinuation != nil { break }
+        await Task.yield()
+    }
+    await service.releaseCode()
+    await waitUntil { flow.loginStatus?.result == .authorized }
+    flow.cancel(attemptId: current)
+    #expect(auth.currentUser?.uid == "user-a")
+    #expect(flow.loginStatus?.result == .authorized)
+    #expect(opened.isEmpty)
+}
+
+@Test @MainActor func repeatedChallengeThrottleHasOneBoundedAcquisitionBudget() async {
+    let service = DeviceService(codeErrors: Array(repeating: .throttled(retryAfter: 25), count: 10))
+    let auth = BrowserAuth()
+    let clock = PollClock()
+    let flow = coordinator(service: service, auth: auth, clock: clock)
+    #expect(flow.begin())
+    await waitUntil { flow.loginStatus?.result == .expired }
+    #expect(clock.now == .seconds(30))
+    #expect(await service.requestCount == 2)
+    #expect(auth.signInCount == 0)
+}
+
+@Test @MainActor func offlineProductAccessCheckKeepsTypedOfflineLoginFailure() async {
+    let auth = BrowserAuth()
+    let flow = coordinator(service: DeviceService(), auth: auth, clock: PollClock(), access: { _ in
+        throw CloudGatewayMacInventoryError.offline
+    })
+    #expect(flow.begin(attemptId: UUID(), origin: .cli))
+    await waitUntil { flow.loginStatus?.result == .offline }
+    #expect(flow.state == .failed(.offline))
+    #expect(auth.currentUser == nil)
+    #expect(auth.signOutCount == 1)
+}

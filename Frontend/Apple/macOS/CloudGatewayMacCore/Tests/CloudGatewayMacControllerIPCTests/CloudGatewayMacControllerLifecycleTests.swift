@@ -98,11 +98,12 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
     )
     for identity in [nil, rebuilt, currentBuild] {
         let request = CloudGatewayMacControllerRequest(
-            action: action, identifier: action == .connect ? "account/region/client" : nil,
+            action: action, identifier: action == .connect || action == .disconnectClient ? "account/region/client" : nil,
             regionId: action == .createClient ? "region" : nil,
             clientName: action == .createClient ? "Work Mac" : nil,
             contextId: [.createClient, .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart,
-                        .extensionUpdateFinished, .extensionUpdateFailed].contains(action) ? UUID() : nil,
+                        .extensionUpdateFinished, .extensionUpdateFailed, .loginStatus, .cancelLogin].contains(action) ? UUID() : nil,
+            loginOrigin: action == .beginLogin ? .cli : nil,
             buildIdentity: identity
         )
         let data = try CloudGatewayMacControllerProtocol.encodeRequest(
@@ -239,8 +240,16 @@ func controllerNormalCommandsRequireExactConfiguredBuildIdentity(action: CloudGa
         .init(lifecycle: lifecycle), appVersion: currentBuild.version, appBuild: currentBuild.build,
         instanceId: UUID(), action: .lifecycle
     )
-    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
         try CloudGatewayMacControllerProtocol.decodeReply(data, appVersion: currentBuild.version, appBuild: currentBuild.build)
+    }
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object["schemaVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    object["protocolVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+        try CloudGatewayMacControllerProtocol.decodeReply(
+            JSONSerialization.data(withJSONObject: object), appVersion: currentBuild.version, appBuild: currentBuild.build
+        )
     }
 }
 

@@ -122,29 +122,28 @@ private final class ExtensionUpdateEffects {
 }
 
 @MainActor
-@Test func extensionUpdateActivationDeadlineBecomesUnknownAndRecoversByReadiness() throws {
+@Test func extensionUpdateLiveActivationStaysFencedAfterItsDeadlineUntilReconstruction() throws {
     let effects = ExtensionUpdateEffects()
     let updates = try effects.make()
     let attempt = try updates.begin(target: updateTarget)
     try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
-    let oldProbe = try #require(try updates.prepareReadiness(target: updateTarget))
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     effects.now.addTimeInterval(120)
-    #expect(try updates.reconcileReadiness(
-        oldProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
-    ) == .ignored)
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     #expect(updates.state == .outcomeUnknown(attempt))
     #expect(updates.setupState == .checkingConnection)
     #expect(throws: CloudGatewayMacControllerFailure.outcomeUnknown) {
         try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
     }
-    let probe = try #require(try updates.prepareReadiness(target: updateTarget))
-    #expect(try updates.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: nil) == .notReady)
-    #expect(updates.hasPendingAttempt)
-    #expect(try updates.reconcileReadiness(
+    let restored = try effects.make()
+    let probe = try #require(try restored.prepareReadiness(target: updateTarget))
+    #expect(try restored.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: nil) == .notReady)
+    #expect(restored.hasPendingAttempt)
+    #expect(try restored.reconcileReadiness(
         probe, installedTarget: updateTarget, authenticatedTarget: replacementTarget
     ) == .notReady)
-    #expect(try updates.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ready)
-    #expect(!updates.hasPendingAttempt)
+    #expect(try restored.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ready)
+    #expect(!restored.hasPendingAttempt)
     #expect(effects.saved.receipts.first?.outcome == .ready)
 }
 
@@ -175,9 +174,10 @@ private final class ExtensionUpdateEffects {
 @Test func extensionUpdateGenuineRebootRequirementSurvivesSameBootAndLateCallbacks() throws {
     let effects = ExtensionUpdateEffects()
     let updates = try effects.make()
+    let probe = try #require(try updates.prepareReadiness(target: updateTarget))
     let attempt = try updates.begin(target: updateTarget)
     try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
-    let probe = try #require(try updates.prepareReadiness(target: updateTarget))
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     try updates.handle(.rebootRequired, attemptId: attempt.id, installedTarget: updateTarget)
     #expect(try updates.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ignored)
     let restored = try effects.make()
@@ -337,15 +337,16 @@ private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailur
     let original = try effects.make()
     let attempt = try original.begin(target: updateTarget)
     try original.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
-    let probe = try #require(try original.prepareReadiness(target: updateTarget))
-    #expect(try original.reconcileReadiness(
+    let recovering = try effects.make()
+    let probe = try #require(try recovering.prepareReadiness(target: updateTarget))
+    #expect(try recovering.reconcileReadiness(
         probe, installedTarget: updateTarget, authenticatedTarget: updateTarget
     ) == .ready)
     let restored = try effects.make()
     let newAttempt = try restored.begin(target: replacementTarget)
     try restored.handle(.started, attemptId: newAttempt.id, installedTarget: replacementTarget)
     let current = restored.stored
-    let currentProbe = try #require(try restored.prepareReadiness(target: replacementTarget))
+    #expect(try restored.prepareReadiness(target: replacementTarget) == nil)
     let writes = effects.writes
     effects.failPersistence = true
     for _ in 0..<2 {
@@ -357,6 +358,8 @@ private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailur
     #expect(effects.writes == writes)
     effects.failPersistence = false
     #expect(try restored.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ignored)
+    try restored.handle(.finished, attemptId: newAttempt.id, installedTarget: replacementTarget)
+    let currentProbe = try #require(try restored.prepareReadiness(target: replacementTarget))
     #expect(try restored.reconcileReadiness(
         currentProbe, installedTarget: replacementTarget, authenticatedTarget: replacementTarget
     ) == .ready)
@@ -385,7 +388,7 @@ private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailur
     effects.failPersistence = false
     try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
     let submitted = updates.stored
-    let probe = try #require(try updates.prepareReadiness(target: updateTarget))
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     effects.failPersistence = true
     for event in [ExtensionUpdates.Event.approval, .rebootRequired, .finished, .failed] {
         #expect(throws: ExtensionUpdateEffects.Failure.persistence) {
@@ -394,12 +397,17 @@ private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailur
         #expect(updates.stored == submitted)
         #expect(effects.saved == submitted)
     }
-    #expect(throws: ExtensionUpdateEffects.Failure.persistence) {
-        try updates.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget)
-    }
-    #expect(updates.stored == submitted)
     effects.failPersistence = false
-    #expect(try updates.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ready)
+    let restored = try effects.make()
+    let probe = try #require(try restored.prepareReadiness(target: updateTarget))
+    let pending = restored.stored
+    effects.failPersistence = true
+    #expect(throws: ExtensionUpdateEffects.Failure.persistence) {
+        try restored.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget)
+    }
+    #expect(restored.stored == pending)
+    effects.failPersistence = false
+    #expect(try restored.reconcileReadiness(probe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ready)
     #expect(effects.saved.receipts.first?.id == attempt.id)
 }
 
@@ -431,21 +439,21 @@ private func extensionUpdateObsoleteTargetRetirementRollsBackOnPersistenceFailur
     let attempt = try updates.begin(target: updateTarget)
     #expect(try updates.reconcileReadiness(idleProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget) == .ignored)
     try updates.handle(.started, attemptId: attempt.id, installedTarget: updateTarget)
-    let submittedProbe = try #require(try updates.prepareReadiness(target: updateTarget))
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     try updates.handle(.approval, attemptId: attempt.id, installedTarget: updateTarget)
     #expect(updates.setupState == .awaitingApproval)
     #expect(try updates.reconcileReadiness(
-        submittedProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
+        idleProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
     ) == .ignored)
-    let approvalProbe = try #require(try updates.prepareReadiness(target: updateTarget))
+    #expect(try updates.prepareReadiness(target: updateTarget) == nil)
     #expect(try updates.reconcileReadiness(
-        approvalProbe, installedTarget: replacementTarget, authenticatedTarget: updateTarget
+        idleProbe, installedTarget: replacementTarget, authenticatedTarget: updateTarget
     ) == .ignored)
     try updates.handle(.finished, attemptId: attempt.id, installedTarget: updateTarget)
     #expect(!updates.hasPendingAttempt)
     #expect(updates.setupState == .checkingConnection)
     #expect(try updates.reconcileReadiness(
-        approvalProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
+        idleProbe, installedTarget: updateTarget, authenticatedTarget: updateTarget
     ) == .ignored)
     let completedProbe = try #require(try updates.prepareReadiness(target: updateTarget))
     #expect(try updates.reconcileReadiness(

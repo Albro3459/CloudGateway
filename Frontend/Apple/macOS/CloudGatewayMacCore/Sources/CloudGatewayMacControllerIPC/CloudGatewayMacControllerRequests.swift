@@ -1,3 +1,4 @@
+import CloudGatewayMacCore
 import CryptoKit
 import Foundation
 
@@ -15,6 +16,9 @@ public final class CloudGatewayMacControllerRequests {
     private var storage: Storage
     private var stop: (id: UUID, digest: String)?
     private var result: CloudGatewayMacControllerOperation?
+    private var outcome: CloudGatewayMacCommandOutcome?
+    private var owner: CloudGatewayMacSessionToken?
+    private var isAccountBound = false
     private var resultExpires = Date.distantPast
     private let now: () -> Date
     private let persist: (Data) throws -> Void
@@ -36,7 +40,7 @@ public final class CloudGatewayMacControllerRequests {
 
     public func lookup(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation? {
         let digest = Self.digest(request)
-        if request.action == .turnOff {
+        if request.action == .turnOff || request.action == .disconnectClient {
             guard let stop, stop.id == request.id, let result = latest else { return nil }
             guard stop.digest == digest else { throw CloudGatewayMacControllerFailure.invalidRequest }
             return result.state == .failed || result.state == .unknown ? nil : result
@@ -52,10 +56,16 @@ public final class CloudGatewayMacControllerRequests {
         return latest
     }
 
+    // Account-bound outcomes are hidden after logout or account change
+    public func outcome(id: UUID, session: CloudGatewayMacSessionToken?) -> CloudGatewayMacCommandOutcome? {
+        guard latest?.id == id else { return nil }
+        return !isAccountBound || owner == session ? outcome : nil
+    }
+
     public func accept(_ request: CloudGatewayMacControllerRequest) throws -> CloudGatewayMacControllerOperation {
         let operation = CloudGatewayMacControllerOperation(id: request.id, state: .accepted)
         let expires = now().addingTimeInterval(600)
-        if request.action == .turnOff {
+        if request.action == .turnOff || request.action == .disconnectClient {
             stop = (request.id, Self.digest(request))
         } else {
             var next = storage
@@ -67,17 +77,24 @@ public final class CloudGatewayMacControllerRequests {
             stop = nil
         }
         result = operation
+        outcome = nil
+        owner = nil
+        isAccountBound = request.action.hasAccountBoundOutcome
         resultExpires = expires
         return operation
     }
 
     @discardableResult
     public func finish(id: UUID, state: CloudGatewayMacControllerOperation.State,
-                       failure: CloudGatewayMacControllerFailure? = nil) -> CloudGatewayMacControllerOperation {
+                       failure: CloudGatewayMacControllerFailure? = nil, warning: CloudGatewayMacCommandWarning? = nil,
+                       outcome: CloudGatewayMacCommandOutcome? = nil,
+                       session: CloudGatewayMacSessionToken? = nil) -> CloudGatewayMacControllerOperation {
         guard result?.id == id else { return .init(id: id, state: .unknown) }
-        let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure)
+        let operation = CloudGatewayMacControllerOperation(id: id, state: state, failure: failure, warning: warning)
         // Admission already prevents replay, results stay in memory only
         result = operation
+        self.outcome = outcome
+        owner = session
         if state != .accepted && state != .running { resultExpires = now().addingTimeInterval(600) }
         return operation
     }

@@ -1,8 +1,19 @@
 # macOS CLI and shared controller
 
-Status: **controller orchestration rewrite implemented, reviewed, and signed-build validated, runtime proof pending**.
+Status: **controller orchestration rewrite implemented and signed-build validated,
+one delayed review finding open, runtime proof pending**.
 This is the plan of record for the initial macOS CLI. It extends the existing
 menu app, Firebase session, and NetworkExtension VPN implementation.
+
+The next steps are in the
+[CLI implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-implementation.md).
+As agreed on 2026-10-22, proceed with unsigned implementation and validation
+through `./scripts/test.sh macos`. This supersedes the earlier ordering that
+blocked CLI implementation on signed runtime proof. Signed installation and
+the live reboot/SSH matrix remain release acceptance gates.
+The user confirmed no live checks have run since PR #17 and directed us to
+assume the controller works for implementation. Defer those checks until later,
+without marking them passed or requesting the same evidence again.
 
 Keep [macos-cli-deferred.md](macos-cli-deferred.md) for now as historical research.
 Its two-mode design, claim that no controller is needed, proposed REST auth,
@@ -20,6 +31,10 @@ The latest unsigned macOS checks passed with 263 macOS package tests, both stric
 dead-code scans, and app/extension build and packaging verification. Round 1's
 seven findings are fixed. Both fresh Secure Codex Sol High reviewers in round 2
 found no actionable defects in the final source at `8589488f`.
+The original Main reviewer later resumed and found that Add Client blocks local
+Disconnect during cloud work, including handoff. This is confirmed in the newer
+checkout and remains open in the controller review. The source review gate is
+reopened until both command gates allow local stop and coverage verifies it.
 The user reported a passing `./scripts/test.sh macos --signed` run from their
 terminal on 2026-10-22, including packaging, entitlements, profiles, and Hardened
 Runtime verification. Agent-session signing attempts failed separately.
@@ -52,13 +67,16 @@ older commits.
 
 ## Scope
 
-Implement the controller and migrate the existing menu app before adding the
-CLI. The menu app is the first client. All its current behavior, including Add
-Client, must work through the controller before the CLI becomes a second client.
+The controller and menu migration are implemented. Add the CLI as the second
+client, preserving the menu's behavior, including Add Client. Runtime acceptance
+of both frontends remains separate from unsigned implementation checks.
 
-Keep `CloudGatewayKit`, shared `CloudGatewayAppCore`, the Firebase adapter, and
-iOS unchanged during this refactor. Compose their existing APIs in the macOS
-layer. Raise a concrete shared-core limitation before expanding that scope.
+Keep `CloudGatewayKit`, shared `CloudGatewayAppCore`, and iOS behavior unchanged.
+Compose existing APIs in the macOS layer. The user authorized a narrow Firebase
+adapter diagnostic change if needed to distinguish inaccessible startup
+credentials from signed out. Preserve existing auth/storage behavior and report
+unknown when supported APIs cannot establish that distinction. Raise other
+concrete shared-core limitations before expanding scope.
 
 Initial commands:
 
@@ -67,12 +85,15 @@ cloudgateway auth login
 cloudgateway auth status
 cloudgateway auth logout
 cloudgateway list
+cloudgateway ls -l
 cloudgateway status
-cloudgateway up [config-id]
-cloudgateway down
+cloudgateway up [<client-uuid> | <region> <index>]
+cloudgateway down [<client-uuid> | <region> <index>]
 cloudgateway refresh
 cloudgateway doctor
 cloudgateway help [command...]
+cloudgateway version
+cloudgateway update [--allow-disconnect]
 ```
 
 Keep account administration and cloud client creation/removal out of the CLI.
@@ -257,7 +278,7 @@ extra positional arguments, and malformed IDs return usage errors.
 | `--json` | Emit the versioned JSON records described below, without terminal decoration or keyboard shortcuts |
 | `--non-interactive` | Disable keyboard shortcuts/prompts even with a TTY. Device approval polling still works |
 | `--timeout <seconds>` | Positive finite caller deadline. Default 30 seconds, except login uses the server's code expiry. Does not cancel accepted VPN work |
-| `--version` | Root command: show app version/build and exit without starting the controller |
+| `-v`, `--version` | Root command: show app version/build and exit without starting the controller. Also available as `version` |
 
 No implicit prompts when stdin or output is redirected. Honor `NO_COLOR`, avoid
 ANSI cursor controls outside a suitable terminal, and keep displayed IDs
@@ -283,23 +304,40 @@ cloudgateway auth login --help
 | `auth login` | `--no-qr` | Start the existing device approval flow, display its challenge, and wait for authorized sign-in |
 | `auth status` | Common options | Report identity/session state, access verification state, and credential availability separately |
 | `auth logout` | Common options | Sign out the shared controller session, fence pending account work, retain VPN/configs/cache |
-| `list` | `--region <region-id>`, `--refresh` | Show authorized configs grouped by region. `--refresh` explicitly fetches before listing |
+| `list`, `ls` | `--region <region>`, `--refresh`, `-l`/`--long` | Show numbered configs grouped by region. Long output includes iOS-style details. `--refresh` explicitly fetches before listing |
 | `status` | `--operation <operation-id>` | Show observed local VPN state, pending request, and latest command result, or look up the retained operation |
-| `up [config-id]` | Common options | Select/install an authorized existing config and request a start |
-| `down` | Common options | Stop app-owned active/transitional profiles, including while signed out |
+| `up [<client-uuid> \| <region> <index>]` | Common options | Select/install an authorized existing config and request a start |
+| `down [<client-uuid> \| <region> <index>]` | Common options | Stop the selected target only, or all app-owned active/transitional profiles when no selector is supplied. Bare `down` works while signed out |
 | `refresh` | Common options | Recheck authorization and fetch current cloud inventory/metadata |
 | `doctor` | Common options | Inspect local setup, permissions where observable, auth, and network/service reachability |
+| `update` | `--allow-disconnect` | Update the extension from the installed app. Explicitly authorize stopping an active VPN and restoring the same client after readiness |
 | `help [command...]` | Common help/output options | Show usage, options, examples, and the meaning of request acceptance |
+| `version` | Common options | Show the same local app version/build as `--version` or `-v` |
 
 All commands accept the common options where applicable. `help --json` and
 `--version --json` use the same versioned result envelope without IPC.
 No `--yes`, password/token argument, config export, name-prefix selector,
-numbered selector, or `--wait` in v1.
+or `--wait` in v1.
+
+Controller-owned CLI extension updates and their durable stop/update/reconnect
+contract are defined in
+[the update plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-update.md).
+Initial setup stays in the GUI. `doctor` remains read-only. Confirmed updates
+continue after SSH loss, retain operation status across controller restart, and
+leave an initially disconnected VPN off. Apple approval/reboot are pending
+outcomes with CLI exit 4, not cancellation of the durable operation.
 
 ### IDs, inventory, and offline access
 
-- `config-id` is the existing canonical `FirebaseUID/regionId/clientId`
-  identifier. Emit it exactly in `list` and JSON. Names are display labels
+- Human list rows show only the client UUID. `up` and targeted `down` accept
+  that UUID or a region plus its row index, starting at 1 in each region
+- Match full region IDs, case-insensitive display names, and city aliases such
+  as `sanjose`. Reject unknown/ambiguous regions, including list filters, with
+  exit 2. Candidates come from the account's current inventory
+- Indices use the same deterministic ordering in short/long/JSON output and
+  selectors. They can change with inventory. Use UUIDs in scripts
+- Existing JSON `configId` fields retain canonical `FirebaseUID/regionId/clientId`
+  identifiers. Inventory adds `clientId`, `index`, and nullable `connectionUrl`
 - Validate the ID against the current account and authorized inventory.
   An opaque/composite ID is never proof of authorization
 - Bare `up` uses this account's last selection. If missing, removed, or unusable,
@@ -307,16 +345,21 @@ numbered selector, or `--wait` in v1.
 - Online `up` follows existing auth/access checks and config comparison rules.
   Install an uninstalled cloud config or replace a changed installed config
   before connecting. Persist selection through the account cache
+- `up` uses the controller's authorized inventory/cache. Fetch fresh inventory
+  explicitly with `refresh` or `list --refresh`, without a mandatory inventory
+  fetch before every online start
 - An unchanged active/connecting config is an idempotent `up`. If fresh
   inventory reveals changed contents, the next explicit `up` may replace and
   reconnect it using confirmed-stop sequencing
 - Online `list` includes authorized cloud configs, including those not installed
-  on this Mac. Show region/name, ID, assigned internal IP, cloud state, local
-  installation state, and observed local tunnel state. Label unusable rows
-- Plain `list` uses controller inventory and existing restoration behavior.
-  Include freshness/source metadata. Do not promise a disk cache of all cloud
+  on this Mac. Show region, index, name/email, UUID, and observed state. Long
+  output adds tunnel IP and connection URL, matching iOS details without a
+  repeated region. Label unusable rows without installation labels
+- Plain `list` uses shared controller inventory, waits for startup restoration,
+  and requests a stale refresh through the controller activity policy. Include
+  freshness/source metadata. Do not promise a disk cache of all cloud
   configs, since the current persistent cache covers installed metadata only
-- Offline `list` contains only this account's previously authorized installed
+- Offline `list` contains only this account's previously authorized saved
   metadata and labels its reduced scope. Offline `up` additionally requires a
   retained valid session, permitted cached role, and an available committed
   secret. Recreate a missing profile from authorized installed metadata
@@ -327,9 +370,13 @@ numbered selector, or `--wait` in v1.
   fresh result. Retained data may be shown as stale with the failure recorded
 - Refresh does not reinstall, stop, or restart a tunnel. Changed/removed cloud
   rows can affect eligibility for future `up` without disconnecting the current VPN
-- Signed-out `list`/`up` require login. Signed-out `status`/`down` can inspect or
-  stop owned local VPN state without exposing another account's inventory,
+- Signed-out `list`/`up`/targeted `down` require login. Signed-out `status` and bare
+  `down` can inspect or stop owned local VPN state without exposing another account's inventory,
   cached client labels, internal IPs, or retained operation details
+- `status --operation` retains the current tunnel's account-filtered config ID,
+  observation time, and freshness on matching builds. The operation target is
+  separate from the tunnel currently observed. Compatible different builds keep
+  the coarse fallback
 - `auth status` distinguishes signed out, retained identity, restoring/checking,
   online authorized, offline authorized, access denied, and credentials
   unavailable. Retained identity alone does not imply current product access
@@ -354,6 +401,13 @@ numbered selector, or `--wait` in v1.
   Restore terminal input settings on every exit path
 - Explicitly cancelling the login attempt cancels polling/exchange with the
   existing recovery safeguards. It does not log out an unrelated newer session
+- Login success, cancellation, and expiry must preserve an accepted `down`.
+  Matching-attempt cleanup stays available while the stop runs
+- The controller enforces bounded code acquisition and the challenge expiry
+  throughout polling, token exchange, and access verification, even after the
+  frontend disappears. Suspended calls and late callbacks cannot extend the
+  attempt or establish an expired session. Preserve the existing SDK settlement
+  fence before admitting another exchange
 - Already signed-in login is an idempotent status result. Reject a second
   concurrent login attempt with a busy result rather than creating two exchanges
 - Keep device secrets and Firebase/custom tokens out of output, logs, request
@@ -407,6 +461,8 @@ Report each check as `pass`, `warning`, `fail`, or `unknown`, with evidence and
 a suggested fix. Inspect without activating an extension, saving preferences,
 starting/stopping a VPN, signing in/out, or changing Settings. Starting the
 on-demand controller and bounded network probes are allowed.
+Diagnostic-only controller startup must stay passive until a normal client
+command initializes auth restoration. Cold auth evidence can be unknown.
 
 - Installed app location, bundle/resources, app/extension versions, OS/architecture
 - CLI symlink target, executable availability, and this invocation's PATH
@@ -515,7 +571,7 @@ command surface and its diagnostics remain separate work.
 
 | Choice or concern | Benefit / risk | What to watch |
 | --- | --- | --- |
-| Single user controller | Shared auth/policy and independent command lifetime, with extra launch/IPC lifecycle work | Prove bootstrap context and singleton behavior before implementing the full CLI |
+| Single user controller | Shared auth/policy and independent command lifetime, with extra launch/IPC lifecycle work | Validate bootstrap context and singleton behavior in the deferred runtime session before release |
 | Existing bundled executable | Reuses signing/profile/resource identity, but has several startup modes | Dispatch before AppKit/Firebase side effects and verify the notarized bundle |
 | Firebase SDK reuse | Preserves current auth and recovery behavior | Data Protection Keychain availability depends on execution context |
 | Root system extension stays narrow | Preserves storage and privilege separation | Do not move Firebase or cloud policy into the extension or relax UID/signature checks |
@@ -734,7 +790,12 @@ The final Sol review found no remaining actionable findings. Signed reinstall
 and live replacement confirmation remain pending; the installed app and running
 components were not changed for this fix.
 
-### 1. Signed runtime proof, before the full command surface
+### 1. Deferred signed runtime acceptance
+
+The
+[CLI implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-cli-implementation.md)
+allows unsigned implementation first. Keep the unchecked runtime evidence
+below for release acceptance, without claiming it has already passed.
 
 - [x] Add the minimum headless dispatch and launch harness inside the existing
   signed app bundle, preserving production identity/entitlements
@@ -757,7 +818,7 @@ components were not changed for this fix.
 - [ ] Race simultaneous GUI and SSH startup and prove only one auth/core owner
 - [ ] Exercise locked/unlocked credentials, offline restoration, logout, and
   re-login. Repeat with the Developer ID/notarized distribution build
-- [ ] Stop at this gate if launch context, Keychain, extension availability, or
+- [ ] Block release if launch context, Keychain, extension availability, or
   preference operations cannot satisfy the requirement. Document evidence
 
 ### 2. Extract the shared owner and frontend protocol
@@ -773,8 +834,9 @@ components were not changed for this fix.
 - [x] Route all existing menu mutations, including Add Client, through the owner
 - [ ] Preserve menu setup/update, browser auth, status, logout, quit, launch at
   login, offline behavior, and selection UX
-- [ ] Finish the menu-through-background-controller runtime milestone before
-  starting CLI commands. Quitting the menu must then detach only its client
+- [ ] Finish the menu-through-background-controller runtime acceptance.
+  Quitting the menu must detach only its client. This remains a release gate
+  while unsigned CLI implementation proceeds
 
 ### 3. CLI and diagnostics
 
@@ -800,7 +862,8 @@ components were not changed for this fix.
   ownership, idempotency, switching, and IPC validation
 - [x] Run `./scripts/test.sh macos`, then `./scripts/test.sh ios` if shared Apple
   code changes. Use `./scripts/test.sh apple` when both platforms need validation
-- [x] Complete fresh Sol High source reviews of the controller orchestration rewrite
+- [ ] Resolve the delayed Sol High finding: Add Client must allow local Disconnect
+  during cloud work and handoff, with coverage through the production domain path
 - [x] Pass `./scripts/test.sh macos --signed` for current signing/profile checks.
   The user supplied a passing terminal run on 2026-10-22. Agent-session attempts
   failed with `errSecInternalComponent`. Earlier signed results below are historical
@@ -820,9 +883,10 @@ access path. Writing this plan does not run those operations or publish a releas
 
 ## Existing code to reuse
 
-- [Entry point](../Frontend/Apple/macOS/CloudGateway/main.swift): currently starts AppKit immediately
-- [Menu controller](../Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift): current auth, inventory, offline, selection, and command ownership
-- [Device auth coordinator](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacBrowserAuthCoordinator.swift): request/poll/exchange/access flow, currently auto-opens the approval URL
+- [Entry point](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/main.swift): verifies running identity, then dispatches controller or menu mode. CLI dispatch and static output are still needed
+- [Menu controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacAppController.swift): presentation, explicit desktop actions, and controller-client integration
+- [Shared macOS controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift): auth, inventory, offline policy, selection, and command ownership
+- [Device auth coordinator](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacBrowserAuthCoordinator.swift): request/poll/exchange/access flow. Browser opening is frontend-owned and needs GUI/CLI attempt scoping
 - [Firebase exchange recovery](../Frontend/Apple/CloudGatewayFirebaseAdapter/Sources/CloudGatewayFirebaseAuthAdapter/CloudGatewayFirebaseCustomTokenSession.swift): shared unsettled-exchange marker and cancellation fencing
 - [Inventory service](../Frontend/Apple/macOS/CloudGateway/CloudGatewayMacInventoryService.swift) and [account cache](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift): authorized cloud reads and installed metadata
 - [Config coordinator](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacConfigCoordinator.swift): transaction recovery, process-local serialization, confirmed stops, and start grants

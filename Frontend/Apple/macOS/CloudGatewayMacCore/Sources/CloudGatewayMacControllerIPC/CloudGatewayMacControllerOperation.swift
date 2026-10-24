@@ -1,3 +1,4 @@
+import CloudGatewayMacCore
 import Foundation
 
 public struct CloudGatewayMacControllerOperation: Codable, Equatable, Sendable {
@@ -8,11 +9,14 @@ public struct CloudGatewayMacControllerOperation: Codable, Equatable, Sendable {
     public let id: UUID
     public let state: State
     public let failure: CloudGatewayMacControllerFailure?
+    public let warning: CloudGatewayMacCommandWarning?
 
-    public init(id: UUID, state: State, failure: CloudGatewayMacControllerFailure? = nil) {
+    public init(id: UUID, state: State, failure: CloudGatewayMacControllerFailure? = nil,
+                warning: CloudGatewayMacCommandWarning? = nil) {
         self.id = id
         self.state = state
         self.failure = failure
+        self.warning = warning
     }
 
     func validate() throws {
@@ -44,5 +48,24 @@ public struct CloudGatewayMacControllerStatus: Codable, Equatable, Sendable {
         guard (!hasActiveTunnel || needsStop),
               phase != .connected || hasActiveTunnel,
               phase == .disconnected || needsStop else { throw CloudGatewayMacControllerFailure.invalidRequest }
+    }
+}
+
+// Operation keeps its original cases so older clients can still read lookups
+extension CloudGatewayMacCommandOutcome {
+    var state: CloudGatewayMacControllerOperation.State {
+        switch self {
+        case .startRequested, .alreadyActive, .completed: .completed
+        // An unconfirmed stop may still finish, so compatible clients see it as uncertain
+        case .failed(.stopTimedOut), .unknown, .expired: .unknown
+        case .failed: .failed
+        }
+    }
+
+    var identifier: String? {
+        switch self {
+        case .startRequested(let identifier, _), .alreadyActive(let identifier, _): identifier
+        default: nil
+        }
     }
 }

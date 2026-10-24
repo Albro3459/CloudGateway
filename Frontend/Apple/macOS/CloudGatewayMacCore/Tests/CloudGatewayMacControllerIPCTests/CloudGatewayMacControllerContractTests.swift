@@ -29,7 +29,22 @@ private let appBuild = "42"
         try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild)
     }
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    object["schemaVersion"] = 2
+    object["appVersion"] = appVersion
+    for version in [CloudGatewayMacControllerProtocol.compatibleProtocolVersion, CloudGatewayMacControllerProtocol.protocolVersion + 1] {
+        object["schemaVersion"] = version
+        object["protocolVersion"] = version
+        #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+            try CloudGatewayMacControllerProtocol.decodeRequest(
+                JSONSerialization.data(withJSONObject: object), appVersion: appVersion, appBuild: appBuild
+            )
+        }
+    }
+    object["schemaVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    object["protocolVersion"] = CloudGatewayMacControllerProtocol.protocolVersion
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(
+        JSONSerialization.data(withJSONObject: object), appVersion: appVersion, appBuild: appBuild
+    ).action == .snapshot)
+    object["schemaVersion"] = 3
     let unsupported = try JSONSerialization.data(withJSONObject: object)
     #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
         try CloudGatewayMacControllerProtocol.decodeRequest(unsupported, appVersion: appVersion, appBuild: appBuild)
@@ -48,6 +63,30 @@ private let appBuild = "42"
     for identifier in ["account/region", "account/region/client/extra", "account/../client", "account/region/cli\nent"] {
         #expect(!CloudGatewayMacControllerProtocol.validIdentifier(identifier))
     }
+}
+
+@Test func scopedStopRequiresAnExactTargetAndCurrentBuildWithoutChangingBareStop() throws {
+    let request = CloudGatewayMacControllerRequest(action: .disconnectClient, identifier: "account/region/client")
+    let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild).identifier == request.identifier)
+    #expect(!request.action.isCompatibleControl)
+    #expect(request.action.requiresConfirmation)
+    #expect(request.action.hasAccountBoundOutcome)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: "43")
+    }
+    for invalid in [
+        CloudGatewayMacControllerRequest(action: .disconnectClient),
+        .init(action: .disconnectClient, identifier: "account/region"),
+        .init(action: .disconnectClient, identifier: "account/region/client", contextId: UUID()),
+        .init(action: .turnOff, identifier: "account/region/client")
+    ] {
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.encodeRequest(invalid, appVersion: appVersion, appBuild: appBuild)
+        }
+    }
+    let stop = try CloudGatewayMacControllerProtocol.encodeRequest(.init(action: .turnOff), appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(stop, appVersion: appVersion, appBuild: "43").action == .turnOff)
 }
 
 @Test func clientCreationRequiresBoundedNameAndOpaqueAccountFencedContext() throws {
@@ -286,13 +325,16 @@ func controllerContractState(
     let snapshot = CloudGatewayMacControllerSnapshot(
         domain: .init(
             accountId: accountId, hasRetainedSession: accountId != nil, accessAuthorized: accountId != nil,
+            access: accountId == nil ? .unverified : .online, credentials: accountId == nil ? .unknown : .available,
             inventoryFreshness: accountId == nil ? .unavailable : .current,
             installedIdentifiers: accountId == nil ? [] : [identifier],
             observedProfiles: accountId == nil ? [] : [.init(identifier: identifier, status: .connected)],
-            observationIsFresh: true, commandInFlight: false,
+            observationIsFresh: true, profilesObservedAt: Date(timeIntervalSince1970: 1_000), commandInFlight: false,
             clients: accountId == nil ? [] : [.init(
                 identifier: identifier, regionId: "region", regionName: "US Central", regionOrder: 1000,
-                clientName: "Work Mac", ownerLabel: nil, isEligible: true, status: .connected
+                clientName: "Work Mac", ownerLabel: nil, internalIp: "10.0.0.2", cloudState: .active,
+                eligibility: .eligible, isInstalled: true, source: .cloud, readAt: Date(timeIntervalSince1970: 900),
+                updatedAt: Date(timeIntervalSince1970: 800), status: .connected
             )]
         ),
         lastSelectedIdentifier: accountId == nil ? nil : identifier,
@@ -326,5 +368,24 @@ private func controllerExpectRejectedState(_ state: CloudGatewayMacControllerSta
         try CloudGatewayMacControllerProtocol.decodeReply(
             JSONEncoder().encode(raw), appVersion: appVersion, appBuild: appBuild
         )
+    }
+}
+
+@Test(arguments: [CloudGatewayMacControllerRequest.Action.userActivity, .recordActivity])
+func controllerActivityRequiresTheCurrentBuildAndNoArguments(action: CloudGatewayMacControllerRequest.Action) throws {
+    let request = CloudGatewayMacControllerRequest(action: action)
+    let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+    #expect(try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild).action == action)
+    #expect(!request.action.isCompatibleControl)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: "other")
+    }
+    for invalid in [
+        CloudGatewayMacControllerRequest(action: action, identifier: "account/region/client"),
+        CloudGatewayMacControllerRequest(action: action, contextId: UUID()),
+    ] {
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.encodeRequest(invalid, appVersion: appVersion, appBuild: appBuild)
+        }
     }
 }

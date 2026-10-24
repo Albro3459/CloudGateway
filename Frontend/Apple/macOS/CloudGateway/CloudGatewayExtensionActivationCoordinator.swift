@@ -6,166 +6,154 @@ import Foundation
 import NetworkExtension
 import SystemExtensions
 
+@MainActor
 final class CloudGatewayExtensionActivationCoordinator: NSObject, OSSystemExtensionRequestDelegate {
-    private static let extensionIdentifier = "com.gocloudlaunch.gateway.tunnel.macos"
-    var onStatusChange: (() -> Void)?
-    var onAttemptStatusChange: ((UUID, CloudGatewayMacSetupState) -> Void)?
-    var isCurrentBuild: (() -> Bool)?
-    private(set) var state = CloudGatewayMacSetupState.required {
-        didSet {
-            if state != oldValue { onStatusChange?() }
-            if !applyingReadiness, let attemptId,
-               lastReportedAttempt != attemptId || lastReportedState != state {
-                lastReportedAttempt = attemptId
-                lastReportedState = state
-                onAttemptStatusChange?(attemptId, state)
-            }
-        }
-    }
+    nonisolated private static let extensionIdentifier = "com.gocloudlaunch.gateway.tunnel.macos"
+    private let installedURL: URL
+    private let teamIdentifier: String
+    private let appIdentity: CloudGatewayMacBuildIdentity
     private let delegateQueue = DispatchQueue(label: "com.gocloudlaunch.gateway.extension-activation")
     private var request: OSSystemExtensionRequest?
     private var attemptId: UUID?
-    private var hasLocalActivationFailure = false
-    private var applyingReadiness = false
-    private var lastReportedAttempt: UUID?
-    private var lastReportedState: CloudGatewayMacSetupState?
+    private var target: CloudGatewayMacBuildIdentity?
+    private var onEvent: (@MainActor (CloudGatewayMacExtensionActivationEvent) -> Void)?
 
-    private var bundledVersion: CloudGatewayMacExtensionVersion? {
-        let url = Bundle.main.bundleURL.appendingPathComponent(
-            "Contents/Library/SystemExtensions/\(Self.extensionIdentifier).systemextension"
-        )
-        let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
-        guard let identity = try? CloudGatewayMacSignedBundle.installed(
-            at: url, teamIdentifier: teamIdentifier, bundleIdentifier: Self.extensionIdentifier
-        ) else { return nil }
-        return CloudGatewayMacExtensionVersion(infoDictionary: [
-            "CFBundleVersion": identity.build, "CFBundleShortVersionString": identity.version
-        ], codeHash: identity.codeHash)
+    init(installedURL: URL, teamIdentifier: String, appIdentity: CloudGatewayMacBuildIdentity) {
+        self.installedURL = installedURL
+        self.teamIdentifier = teamIdentifier
+        self.appIdentity = appIdentity
     }
 
-    func updateReadiness(_ readiness: CloudGatewayMacControllerView.SetupState) {
-        guard request == nil else { return }
-        guard !hasLocalActivationFailure || readiness == .ready else { return }
-        hasLocalActivationFailure = false
-        let next: CloudGatewayMacSetupState
-        switch readiness {
-        case .required: next = .required
-        case .updateRequired: next = .updateRequired
-        case .invalidBundle: next = .invalidBundle
-        case .activating: next = .activating
-        case .awaitingApproval: next = .awaitingApproval
-        case .awaitingRestart: next = .awaitingRestart
-        case .checkingConnection: next = .checkingConnection
-        case .ready: next = .ready
-        case .failed(let code): next = .failed(code: code)
-        case .unavailable: next = .unavailable
-        }
-        guard state != next else { return }
-        applyingReadiness = true
-        defer { applyingReadiness = false }
-        state = next
-    }
+    var isPending: Bool { attemptId != nil }
 
-    func resetActivationFailure() {
-        guard hasLocalActivationFailure else { return }
-        hasLocalActivationFailure = false
-        state = .checkingConnection
-    }
-
-    func activate(attemptId: UUID, target: CloudGatewayMacBuildIdentity) {
-        guard request == nil, self.attemptId == nil else { return }
+    func activate(attemptId: UUID, target: CloudGatewayMacBuildIdentity,
+                  onEvent: @escaping @MainActor (CloudGatewayMacExtensionActivationEvent) -> Void) -> Bool {
+        guard !isPending, verifiedTarget(target) else { return false }
         self.attemptId = attemptId
-        hasLocalActivationFailure = false
-        guard isCurrentBuild?() == true else {
-            fail(code: -1)
-            return
+        self.target = target
+        self.onEvent = onEvent
+        Task { [self] in
+            do {
+                let idle: Bool = try await CloudGatewayMacInventoryRequest.read { complete in
+                    NETunnelProviderManager.loadAllFromPreferences { managers, error in
+                        if let error { complete(.failure(error)) }
+                        else { complete(.success(managers.map(Self.areIdle) == true)) }
+                    }
+                    return {}
+                }
+                guard self.attemptId == attemptId else { return }
+                guard idle, verifiedTarget(target) else {
+                    finish(.failed(-1))
+                    return
+                }
+                let request = OSSystemExtensionRequest.activationRequest(
+                    forExtensionWithIdentifier: Self.extensionIdentifier, queue: delegateQueue
+                )
+                request.delegate = self
+                self.request = request
+                OSSystemExtensionManager.shared.submitRequest(request)
+            } catch {
+                guard self.attemptId == attemptId else { return }
+                finish(.failed((error as NSError).code))
+            }
         }
-        guard let bundledVersion, bundledVersion.codeHash == target.codeHash,
-              bundledVersion.bundleVersion == target.build, bundledVersion.bundleShortVersion == target.version else {
-            state = .invalidBundle
-            self.attemptId = nil
-            return
-        }
-        guard Bundle.main.bundleURL.path.hasPrefix("/Applications/") else {
-            state = .unavailable
-            self.attemptId = nil
-            return
-        }
-        let request = OSSystemExtensionRequest.activationRequest(
-            forExtensionWithIdentifier: Self.extensionIdentifier,
-            queue: delegateQueue
-        )
-        request.delegate = self
-        self.request = request
-        state = .activating
-        OSSystemExtensionManager.shared.submitRequest(request)
+        return true
     }
 
-    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        DispatchQueue.main.async { [self] in
+    private func verifiedTarget(_ target: CloudGatewayMacBuildIdentity) -> Bool {
+        let canonical = URL(fileURLWithPath: "/Applications/CloudGateway.app")
+        guard installedURL.standardizedFileURL == canonical,
+              installedURL.resolvingSymlinksInPath() == canonical,
+              let running = try? CloudGatewayMacSignedBundle.running(
+                teamIdentifier: teamIdentifier, bundleIdentifier: CloudGatewayMacControllerProtocol.appBundleIdentifier
+              ), running == appIdentity,
+              let installed = try? CloudGatewayMacSignedBundle.installed(
+                at: installedURL, teamIdentifier: teamIdentifier,
+                bundleIdentifier: CloudGatewayMacControllerProtocol.appBundleIdentifier
+              ), installed == appIdentity,
+              let bundled = try? CloudGatewayMacSignedBundle.installed(
+                at: installedURL.appendingPathComponent(
+                    "Contents/Library/SystemExtensions/\(Self.extensionIdentifier).systemextension"
+                ), teamIdentifier: teamIdentifier, bundleIdentifier: Self.extensionIdentifier
+              ) else { return false }
+        return bundled == target
+    }
+
+    private func ownsVerifiedRequest(_ request: OSSystemExtensionRequest) -> Bool {
+        guard self.request === request, let target else { return false }
+        return verifiedTarget(target)
+    }
+
+    nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
+        Task { @MainActor [self] in
             guard self.request === request else { return }
-            state = .awaitingApproval
+            onEvent?(ownsVerifiedRequest(request) ? .approvalRequired : .failed(-1))
         }
     }
 
-    func request(
+    nonisolated func request(
         _ request: OSSystemExtensionRequest,
         actionForReplacingExtension existing: OSSystemExtensionProperties,
         withExtension replacement: OSSystemExtensionProperties
     ) -> OSSystemExtensionRequest.ReplacementAction {
-        guard DispatchQueue.main.sync(execute: { self.request === request && isCurrentBuild?() == true }) else {
-            return .cancel
+        let matches = DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                ownsVerifiedRequest(request) && replacement.bundleIdentifier == Self.extensionIdentifier
+                    && replacement.bundleVersion == target?.build
+                    && replacement.bundleShortVersion == target?.version
+            }
         }
+        guard matches else { return .cancel }
         // Keep the main queue free for NetworkExtension's preferences completion
         let check = ExtensionReplacementCheck()
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            let statuses = error == nil ? managers?.filter {
-                ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.extensionIdentifier
-            }.map { manager -> CloudGatewayTunnelStatus in
-                switch manager.connection.status {
-                case .invalid: .invalid
-                case .disconnected: .disconnected
-                default: .connected
-                }
-            } : nil
-            check.finish(isIdle: CloudGatewayMacSetupState.canReplaceExtension(
-                isCurrentBuild: true, ownedTunnelStatuses: statuses
-            ))
+            check.finish(isIdle: error == nil && managers.map(Self.areIdle) == true)
         }
         guard check.wait() else { return .cancel }
         return DispatchQueue.main.sync {
-            self.request === request && isCurrentBuild?() == true ? .replace : .cancel
+            MainActor.assumeIsolated { ownsVerifiedRequest(request) ? .replace : .cancel }
         }
     }
 
-    func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
-        DispatchQueue.main.async { [self] in
+    nonisolated func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
+        Task { @MainActor [self] in
             guard self.request === request else { return }
-            self.request = nil
+            guard ownsVerifiedRequest(request) else { finish(.failed(-1)); return }
             switch result {
-            case .completed:
-                state = .checkingConnection
-                attemptId = nil
-            case .willCompleteAfterReboot:
-                state = .awaitingRestart
-            @unknown default:
-                fail(code: -1)
+            case .completed: finish(.completed)
+            case .willCompleteAfterReboot: finish(.restartRequired)
+            @unknown default: finish(.failed(-1))
             }
         }
     }
 
-    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        DispatchQueue.main.async { [self] in
+    nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
+        Task { @MainActor [self] in
             guard self.request === request else { return }
-            self.request = nil
-            fail(code: (error as NSError).code)
+            finish(.failed((error as NSError).code))
         }
     }
 
-    private func fail(code: Int) {
-        hasLocalActivationFailure = true
-        state = .failed(code: code)
+    private func finish(_ event: CloudGatewayMacExtensionActivationEvent) {
+        let callback = onEvent
+        request = nil
         attemptId = nil
+        target = nil
+        onEvent = nil
+        callback?(event)
+    }
+
+    nonisolated private static func areIdle(_ managers: [NETunnelProviderManager]) -> Bool {
+        let statuses = managers.filter {
+            ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == extensionIdentifier
+        }.map { manager -> CloudGatewayTunnelStatus in
+            switch manager.connection.status {
+            case .invalid: .invalid
+            case .disconnected: .disconnected
+            default: .connected
+            }
+        }
+        return CloudGatewayMacSetupState.canReplaceExtension(isCurrentBuild: true, ownedTunnelStatuses: statuses)
     }
 }
 

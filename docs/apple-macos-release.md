@@ -99,6 +99,17 @@ distribution profiles, and validates both bundles before any software upload.
 Checks cover the signing team and Developer ID Application certificate,
 Hardened Runtime, secure timestamps, release entitlements, embedded profiles,
 each bundle's expected version and build, architecture, and packaged dependencies.
+Current release products also require the bundled CLI executable and controller
+Firebase resource, then pass 58 bounded help/version/invalid-usage checks through
+direct `--cli` and a temporary `cloudgateway` symlink. Each invocation uses a
+temporary home, redirected stdin, and a five-second deadline. JSON checks verify
+schema version 1, line completeness, usage errors, and the bundle's version/build
+through both entry points. No real CLI installation, service registration,
+auth restoration, or VPN operation is part of these static checks. The verified
+previous-distribution baseline accepts the original fixed Mach service name as
+well as the build-specific name, while retaining Developer ID signature and
+identity checks. Older releases that predate the CLI remain valid baselines.
+New release products require the build-specific Mach service name.
 
 It submits an app ZIP to Apple, saves the submission ID and log, and staples the
 accepted ticket to the app. It then builds a signed DMG containing the app and
@@ -167,6 +178,31 @@ and Setup VPN opens the normal extension/VPN approval flow with SIP enabled.
 Check real VPN connectivity and extension replacement using a later build.
 Automated signing and Gatekeeper checks do not establish those runtime results.
 
+Use **Install Command Line Tool…** while signed out and verify the user-local
+link targets the executable inside `/Applications/CloudGateway.app`. Repeat
+installation, conflict/broken-link handling, and the separate zsh PATH offer.
+Test `~/.local/bin/cloudgateway --version` and `help` from Terminal and
+noninteractive SSH without relying on `.zprofile`. Verify setup recognizes the
+app's existing PATH and common entries in `~/.zshrc` or `~/.zprofile` without
+changing files. Unrecognized custom configuration, linked startup files, and
+unsupported shells must receive manual guidance before any edit. App replacement
+at the same path keeps the link valid; app
+movement/removal leaves it broken without replacing another user's file.
+
+Complete one-time desktop extension/VPN approval, then run the planned signed
+CLI matrix with an isolated account/config and another access path. Cover login
+approval/expiry/cancellation, JSON output/exits, offline access, refresh without
+reconnect, successful start submission versus observed connection, confirmed
+stop, signed-out disconnect, and logout retaining VPN/profiles/secrets/cache.
+Check `status --operation <uuid>` after caller/SSH loss and an unknown result
+after replacement/restart. Never replay uncertain work automatically. Verify
+doctor changes no session, inventory, preferences, or VPN state and reports
+unsupported credential/approval evidence as unknown. Include reboot before
+desktop login, final SSH disconnect, locked credentials, concurrent menu/SSH
+startup, and active-VPN replacement. These remain manual release gates.
+See the [CLI guide](../Frontend/Apple/macOS/README.md#command-line-tool) for
+commands, common options, NDJSON schema/exits, and recovery semantics.
+
 ## GitHub publication
 
 Add `--publish` to a new build or a resumed `--notarize` command to publish after
@@ -201,10 +237,12 @@ After creating a draft, the command briefly retries release-list reads while
 GitHub makes it visible. If visibility is still delayed, rerun the same command
 to resume the existing draft.
 
-The app also carries the headless controller entry point. It uses the same
+The app also carries headless controller and CLI entry points. They use the same
 executable, resources, signing identity, and provisioning profile. There is no
-separate controller binary to sign or copy out of the bundle. The CLI surface
-and its symlink installer are still pending.
+separate controller or CLI binary to sign or copy out of the bundle. Keep the
+signed app unchanged after installation; the installer creates only a user-local
+symlink. The CLI's static help/version/usage paths work without the controller.
+Operational commands retain the ordinary authenticated version/signature checks.
 
 Install at `/Applications/CloudGateway.app`, the controller's fixed launch path.
 For the first controller migration, quit the old menu before launching the new

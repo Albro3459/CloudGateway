@@ -53,6 +53,7 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     public struct StoredState: Codable, Equatable, Sendable {
         public var state: State
         public var receipts: [TerminalReceipt]
+        public var managedAttemptId: UUID? = nil
 
         public init(state: State = .idle, receipts: [TerminalReceipt] = []) {
             self.state = state
@@ -123,6 +124,9 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private let persist: (StoredState) throws -> Void
     private let instance = UUID()
     private var epoch: UInt64 = 0
+    // A live activation stays fenced even when the target extension already answers pings
+    private var liveAttemptId: UUID?
+    private var restoredAttemptId: UUID?
     private var restorationNeedsPersistence = false
     private static let receiptLifetime: TimeInterval = 600
     private static let receiptLimit = 16
@@ -137,6 +141,7 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
         self.now = now
         self.bootSession = bootSession
         self.persist = persist
+        restoredAttemptId = stored.state.attempt?.id
         if let attempt = stored.state.attempt {
             try attempt.target.validate()
             guard !attempt.bootSession.isEmpty else { throw CloudGatewayMacControllerFailure.invalidRequest }
@@ -165,6 +170,25 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
         }
     }
 
+    var hasRestoredAttempt: Bool {
+        guard let attempt = state.attempt else { return false }
+        return attempt.id == restoredAttemptId
+    }
+
+    // The controller calls this only after acquiring exclusive process ownership
+    func reconcileRestoredAttempt(target: CloudGatewayMacBuildIdentity, owningAttemptId: UUID?) throws {
+        guard hasRestoredAttempt, !hasLiveActivation, let attempt = state.attempt else { return }
+        try target.validate()
+        if attempt.target == target {
+            if owningAttemptId == attempt.id { return }
+            if case .rebootRequired = state { return }
+        }
+        let outcome: TerminalReceipt.Outcome
+        if case .prepared = state { outcome = .expired }
+        else { outcome = .superseded }
+        try commit(terminal(outcome, attempt: attempt, in: stored))
+    }
+
     @discardableResult
     public func begin(target: CloudGatewayMacBuildIdentity, id: UUID = UUID()) throws -> Attempt {
         try advance(target: target)
@@ -179,6 +203,49 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
         next.state = .prepared(attempt, deadline: now().addingTimeInterval(30))
         try commit(next)
         return attempt
+    }
+
+    func prepareManaged(attemptId: UUID, target: CloudGatewayMacBuildIdentity) throws {
+        if restorationNeedsPersistence { try commit(stored) }
+        guard !hasLiveActivation else { throw CloudGatewayMacControllerFailure.busy }
+        if let attempt = state.attempt {
+            guard attempt.id == attemptId, attempt.target == target else { throw CloudGatewayMacControllerFailure.busy }
+            if case .prepared(_, let deadline) = state, deadline > now() {
+                if stored.managedAttemptId != attemptId {
+                    var next = stored
+                    next.managedAttemptId = attemptId
+                    try commit(next)
+                }
+                return
+            }
+            if case .rebootRequired = state { throw CloudGatewayMacControllerFailure.busy }
+            let boot = bootSession()
+            guard !boot.isEmpty else { throw CloudGatewayMacControllerFailure.unavailable }
+            var next = stored
+            next.managedAttemptId = attemptId
+            next.state = .prepared(Attempt(id: attempt.id, target: attempt.target, bootSession: boot),
+                                   deadline: now().addingTimeInterval(30))
+            try commit(next)
+        } else {
+            // The durable confirmed workflow is the owner even if its prepared attempt expired during a restart
+            var next = normalized(stored)
+            next.managedAttemptId = attemptId
+            next.receipts.removeAll { $0.id == attemptId }
+            if case .terminal(let receipt) = next.state, receipt.id == attemptId { next.state = .idle }
+            guard next.state.attempt == nil else { throw CloudGatewayMacControllerFailure.busy }
+            let boot = bootSession()
+            guard !boot.isEmpty else { throw CloudGatewayMacControllerFailure.unavailable }
+            try target.validate()
+            next.state = .prepared(Attempt(id: attemptId, target: target, bootSession: boot), deadline: now().addingTimeInterval(30))
+            try commit(next)
+        }
+    }
+
+    func acknowledgeManagedOutcome(attemptId: UUID) throws {
+        guard stored.managedAttemptId == attemptId else { return }
+        var next = stored
+        next.managedAttemptId = nil
+        try commit(normalized(next))
     }
 
     public func handle(
@@ -222,10 +289,12 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
             next = terminal(.failed, attempt: attempt, in: next)
         }
         if next != stored { try commit(next) }
+        if event == .started || event == .approval { liveAttemptId = attempt.id }
     }
 
     public func prepareReadiness(target: CloudGatewayMacBuildIdentity) throws -> ReadinessToken? {
         try advance(target: target)
+        guard !hasLiveActivation else { return nil }
         if let attempt = state.attempt, attempt.target != target { return nil }
         switch state {
         case .prepared, .rebootRequired: return nil
@@ -243,7 +312,7 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
         guard token.instance == instance, token.epoch == epoch, token.attemptId == state.attempt?.id,
               token.target == installedTarget else { return .ignored }
         try advance(target: installedTarget)
-        guard token.epoch == epoch else { return .ignored }
+        guard token.epoch == epoch, !hasLiveActivation else { return .ignored }
         guard authenticatedTarget == token.target else { return .notReady }
         if let attempt = state.attempt {
             guard attempt.target == token.target else { return .ignored }
@@ -258,6 +327,11 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private var isPrepared: Bool {
         if case .prepared = state { return true }
         return false
+    }
+
+    private var hasLiveActivation: Bool {
+        guard let attempt = state.attempt, attempt.id == liveAttemptId else { return false }
+        return !isLaterBoot(than: attempt.bootSession)
     }
 
     private func advance(target: CloudGatewayMacBuildIdentity) throws {
@@ -302,12 +376,14 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
 
     private func normalized(_ state: StoredState) -> StoredState {
         var next = state
-        next.receipts = Array(next.receipts.filter { $0.expires > now() }.sorted {
+        let owned = next.receipts.first { $0.id == next.managedAttemptId }
+        next.receipts = Array(next.receipts.filter { $0.expires > now() && $0.id != next.managedAttemptId }.sorted {
             if $0.expires == $1.expires { return $0.id.uuidString < $1.id.uuidString }
             return $0.expires < $1.expires
-        }.suffix(Self.receiptLimit))
+        }.suffix(Self.receiptLimit - (owned == nil ? 0 : 1)))
+        if let owned { next.receipts.append(owned) }
         if case .terminal(let receipt) = next.state {
-            if receipt.expires <= now() { next.state = .idle }
+            if receipt.expires <= now(), receipt.id != next.managedAttemptId { next.state = .idle }
             else if !next.receipts.contains(where: { $0.id == receipt.id }) {
                 next.receipts = Array((next.receipts + [receipt]).suffix(Self.receiptLimit))
             }
@@ -318,6 +394,8 @@ public final class CloudGatewayMacExtensionUpdateOrchestrator {
     private func commit(_ next: StoredState) throws {
         try persist(next)
         stored = next
+        if next.state.attempt?.id != liveAttemptId { liveAttemptId = nil }
+        if next.state.attempt?.id != restoredAttemptId { restoredAttemptId = nil }
         restorationNeedsPersistence = false
         epoch &+= 1
     }
