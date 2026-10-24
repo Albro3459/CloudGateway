@@ -1804,6 +1804,7 @@ private struct MacControllerFixture {
     let config: CloudGatewayMacInstalledConfig
     let controller: CloudGatewayMacController
     let commitProbe: MacControllerCommitProbe
+    let evictionProbe: MacControllerCommitProbe
     let clock = MacControllerClock()
     let loginClock = AuthDeadlineClock()
 
@@ -1819,6 +1820,8 @@ private struct MacControllerFixture {
         cache = CloudGatewayMacAccountCache(directory: directory)
         let commitProbe = MacControllerCommitProbe()
         self.commitProbe = commitProbe
+        let evictionProbe = MacControllerCommitProbe()
+        self.evictionProbe = evictionProbe
         config = CloudGatewayMacInstalledConfig(
             accountId: "user-a", identifier: "user-a/region/client",
             snapshot: CloudGatewayConfigSnapshot(
@@ -1834,6 +1837,7 @@ private struct MacControllerFixture {
             configs: CloudGatewayMacConfigCoordinator(secrets: secrets, profiles: profiles, snapshots: cache),
             dashboardOrigin: URL(string: "https://dashboard.example.com")!,
             inventoryAuthorizationDidCommit: { await commitProbe.gate?.arriveAndWait() },
+            cacheEvictionDidCommit: { await evictionProbe.gate?.arriveAndWait() },
             now: { [clock] in clock.now },
             loginTimer: loginTimer ?? { [loginClock] in try await loginClock.timer($0) },
             loginNow: { [loginClock] in loginClock.now },
@@ -2999,6 +3003,8 @@ private actor MacControllerGate {
 @MainActor func macControllerRemovalEvictionSurvivesRestartOffline(confirmed: Bool) async throws {
     let fixture = try MacControllerFixture()
     try await fixture.seedCache()
+    let profile = try fixture.profile(status: .disconnected)
+    await fixture.profiles.setProfiles([profile])
     try await fixture.start()
     if !confirmed { fixture.inventory.removalSession.error = URLError(.networkConnectionLost) }
     var outcome: CloudGatewayMacCommandOutcome?
@@ -3022,6 +3028,14 @@ private actor MacControllerGate {
     #expect(restarted.snapshot().domain.installedIdentifiers.isEmpty)
     #expect(restarted.snapshot().lastSelectedIdentifier == nil)
     #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(try await cache.load(accountId: "user-a").configs.isEmpty)
+    #expect(try await cache.load(accountId: "user-a").selectedIdentifier == nil)
+    #expect(try await fixture.profiles.installedProfiles() == (confirmed ? [] : [profile]))
+    #expect(await fixture.profiles.removedIdentifiers == (confirmed ? [fixture.config.identifier] : []))
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
 }
 
 @Test(arguments: [false, true])
@@ -3045,6 +3059,12 @@ private actor MacControllerGate {
     #expect(await fixture.profiles.removedIdentifiers.isEmpty)
     #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+    let retained = try #require(try await fixture.profiles.installedProfiles().first)
+    #expect(retained.identifier == fixture.config.identifier)
+    #expect(retained.status == (atMutation ? .connected : .disconnected))
+    #expect(try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a").selectedIdentifier == nil)
 }
 
 @Test(arguments: ["restoring", "settling", "signed-out", "shutdown"])
@@ -3557,8 +3577,8 @@ private final class MacControllerRemovalIPC {
     }
 }
 
-@Test(arguments: [false, true])
-@MainActor func macControllerRemovalIPCAccountSwitchRedactsEvenVerifiedSuccess(duringExecution: Bool) async throws {
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerRemovalIPCSessionChangeRedactsEvenVerifiedSuccess(duringExecution: Bool, logout: Bool) async throws {
     let fixture = try MacControllerFixture()
     try await fixture.start()
     try await controllerWaitUntil { !fixture.controller.hasPendingWork }
@@ -3577,7 +3597,8 @@ private final class MacControllerRemovalIPC {
         try await controllerWaitUntil { ipc.requests.operation(id: id).state == .completed }
         #expect(try await client.request(.operation, contextId: id).outcome == .completed(warning: nil))
     }
-    fixture.auth.emit(AuthenticatedUser(uid: "user-b", email: nil))
+    if logout { #expect(fixture.controller.signOut()) }
+    else { fixture.auth.emit(AuthenticatedUser(uid: "user-b", email: nil)) }
     try await controllerWaitUntil { fixture.controller.session != originalSession }
     if duringExecution { response.resume() }
     try await controllerWaitUntil { ipc.requests.operation(id: id).state == .completed }
@@ -3587,6 +3608,10 @@ private final class MacControllerRemovalIPC {
     #expect(ipc.requests.outcome(id: id, session: originalSession) == .completed(warning: duringExecution ? .localCleanupIncomplete : nil))
     #expect(try await client.send(.removeClient, id: id, identifier: fixture.config.identifier).outcome == nil)
     #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
 }
 
 @Test @MainActor func macControllerRemovalIPCRefusesWhileAnotherFrontendStartsATunnel() async throws {
@@ -3670,4 +3695,143 @@ private final class MacControllerRemovalIPC {
     #expect(try await client.send(.removeClient, id: id, identifier: fixture.config.identifier).operation?.state == .accepted)
     #expect(ipc.performed == [.removeClient])
     #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [nil, "user-a", "user-b"] as [String?])
+@MainActor func macControllerRemovalFencesSessionAfterDurableEviction(nextAccount: String?) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    let nextConfig = CloudGatewayMacInstalledConfig(
+        accountId: "user-b", identifier: "user-b/region/client", snapshot: fixture.config.snapshot
+    )
+    let nextOption = fixture.option(ownerUid: "user-b")
+    try await fixture.cache.authorize(accountId: "user-b", role: .user, options: [nextOption])
+    try await fixture.cache.save(nextConfig)
+    try await fixture.cache.select(identifier: nextConfig.identifier, accountId: "user-b")
+    let profiles = [try fixture.profile(status: .disconnected),
+                    CloudGatewayMacInstalledProfile(identifier: nextConfig.identifier, reference: try nextConfig.reference, status: .connected)]
+    await fixture.profiles.setProfiles(profiles)
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let eviction = MacControllerGate()
+    fixture.evictionProbe.gate = eviction
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await eviction.entered }
+    let reloaded = CloudGatewayMacAccountCache(directory: fixture.directory)
+    #expect(try await reloaded.load(accountId: "user-a").configs.isEmpty)
+    #expect(try await reloaded.load(accountId: "user-a").selectedIdentifier == nil)
+    // Persistence has finished, but the command has not crossed its session fence
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers == [fixture.config.identifier])
+    #expect(outcome == nil)
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(fixture.controller.signOut())
+    if let nextAccount {
+        fixture.inventory.options = [nextAccount == "user-b" ? nextOption : fixture.option()]
+        fixture.auth.emit(.init(uid: nextAccount, email: nil))
+    }
+    await eviction.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.signInRequired))
+    #expect(fixture.domainSnapshot.domain.accountId == nextAccount)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == (nextAccount == "user-b" ? nextConfig.identifier : nil))
+    #expect(try await reloaded.load(accountId: "user-a").configs.isEmpty)
+    let nextCache = try await reloaded.load(accountId: "user-b")
+    #expect(nextCache.configs.map(\.identifier) == [nextConfig.identifier])
+    #expect(nextCache.configs.first?.snapshot.secretReference == nextConfig.snapshot.secretReference)
+    #expect(nextCache.configs.first?.snapshot.configHash == nextConfig.snapshot.configHash)
+    #expect(try await reloaded.load(accountId: "user-b").selectedIdentifier == nextConfig.identifier)
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(try await fixture.profiles.installedProfiles() == profiles)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test @MainActor func macControllerRemovalLostResponseAfterBackendExecutionRequiresRefreshAndNeverResends() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    let profile = try fixture.profile(status: .disconnected)
+    await fixture.profiles.setProfiles([profile])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let client = try await ipc.client()
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    let removedOption = fixture.option(status: .removed)
+    fixture.inventory.removalSession.onRequest = { [weak inventory = fixture.inventory] _ in
+        inventory?.options = [removedOption]
+    }
+    fixture.inventory.removalSession.error = URLError(.networkConnectionLost)
+    let id = UUID()
+    _ = try await client.send(.removeClient, id: id, identifier: fixture.config.identifier)
+    _ = try await client.confirm(id)
+    try await controllerWaitUntil { response.entered }
+    #expect(fixture.inventory.options.first?.client.status == .removed)
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline
+    fixture.controller.refresh()
+    response.resume()
+    try await controllerWaitUntil { ipc.requests.operation(id: id).state == .unknown && !fixture.controller.hasPendingWork }
+    #expect(try await client.request(.operation, contextId: id).outcome == .unknown)
+    #expect(try await client.send(.removeClient, id: id, identifier: fixture.config.identifier).operation?.state == .unknown)
+    #expect(try await client.confirm(id).operation?.state == .unknown)
+    #expect(try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a").configs.isEmpty)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nil)
+    fixture.inventory.fetchError = nil
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nil)
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await fixture.cache.save(fixture.config) }
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(ipc.performed == [.removeClient])
+    #expect(try await fixture.profiles.installedProfiles() == [profile])
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+}
+
+@Test @MainActor func macControllerRemovalFinalPublicationCannotReauthorizeAStaleRemovedRecord() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let publication = MacControllerGate()
+    fixture.commitProbe.gate = publication
+    let fetches = fixture.inventory.fetchCount
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await publication.entered }
+    #expect(outcome == nil)
+    #expect(fixture.controller.hasPendingWork)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    #expect(fixture.inventory.options.first?.client.status == .active)
+    #expect(try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a").configs.isEmpty)
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await fixture.cache.save(fixture.config) }
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nil)
+    #expect(try await fixture.profiles.installedProfiles().isEmpty)
+    fixture.controller.refresh()
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    await publication.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: nil))
+    #expect(fixture.inventory.fetchCount == fetches + 3)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nil)
+    #expect(await fixture.profiles.removedIdentifiers == [fixture.config.identifier])
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
 }

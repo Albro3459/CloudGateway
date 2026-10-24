@@ -16,6 +16,7 @@ public final class CloudGatewayMacController {
     private let profiles: any CloudGatewayMacProfileAdapter
     private let configs: CloudGatewayMacConfigCoordinator
     private let inventoryAuthorizationDidCommit: @MainActor () async -> Void
+    private let cacheEvictionDidCommit: @MainActor () async -> Void
     private let now: () -> Date
     private let controllerId = UUID()
     private var setupState: CloudGatewayMacSetupState = .required
@@ -74,6 +75,7 @@ public final class CloudGatewayMacController {
         configs: CloudGatewayMacConfigCoordinator,
         dashboardOrigin: URL,
         inventoryAuthorizationDidCommit: @escaping @MainActor () async -> Void = {},
+        cacheEvictionDidCommit: @escaping @MainActor () async -> Void = {},
         now: @escaping () -> Date = Date.init,
         loginTimer: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         loginNow: (@Sendable () -> Duration)? = nil,
@@ -87,6 +89,7 @@ public final class CloudGatewayMacController {
         self.cache = cache
         self.configs = configs
         self.inventoryAuthorizationDidCommit = inventoryAuthorizationDidCommit
+        self.cacheEvictionDidCommit = cacheEvictionDidCommit
         self.now = now
         self.loginTimer = loginTimer
         let loginClock = ContinuousClock()
@@ -647,6 +650,7 @@ public final class CloudGatewayMacController {
             throw CloudGatewayMacConfigError.busy
         }
         let saved = try await cache.evict(identifier: identifier, accountId: session.accountId)
+        await cacheEvictionDidCommit()
         try requireCurrent(epoch, token: session)
         installed = saved.configs
         lastSelectedIdentifier = saved.selectedIdentifier

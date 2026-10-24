@@ -73,6 +73,77 @@ frameworks. It has no AppCore, Firebase, Google Sign-In, AppKit, SwiftUI, UIKit,
 or User Notifications dependency. No blackout monitor, traffic probes, health
 IPC, automatic blackout recovery, or notifications run on macOS.
 
+## Controller Client Removal Contract
+
+Client removal is implemented in the controller, production adapters, and IPC.
+Frontend removal remains deferred: the CLI has no remove command, and the menu
+has no Remove action, selector, or confirmation dialog for this operation.
+
+`CloudGatewayMacController.removeClient(identifier:onCompletion:) -> Bool` uses
+the existing accepted-task contract. A synchronous rejection returns `false`
+and completes with a typed failure. Accepted work returns `true`, belongs to
+the controller, and completes independently of the calling frontend's lifetime.
+
+An authenticated current-build IPC caller submits `.removeClient` with a request
+UUID and exactly one canonical `accountId/regionId/clientId` identifier. Schema
+and protocol versions are 2, control version is 1. `regionId`, `clientName`,
+`contextId`, `loginOrigin`, and `allowDisconnect` must be absent on that request.
+The controller never infers the target from selection. The account component is
+the signed-in account's local namespace, including when an admin removes another
+owner's client. The controller derives the API owner from one exact fresh cloud
+record, checks the current role, and sends the existing regional DELETE once.
+Cached inventory cannot authorize removal. Disabled regions, absent profiles,
+and missing usable configs do not prevent removal of an authorized known client.
+
+The ordinary mutation handoff reserves an operation without destructive effects.
+Only `.confirmOperation` with the operation UUID as `contextId` starts work.
+Unconfirmed reservations expire after 30 seconds. A changed action or identifier
+with the same request UUID is rejected. Confirmation, operation polling, and
+frontend detach use the existing controller contract. New mutations are refused
+during startup reconciliation, activation, managed update, draining, or other
+mutation work. Removal requires the matching signed build; compatible status and
+signed-out global stop retain their existing behavior.
+Poll `.operation` with the operation UUID as `contextId` to read its state and
+typed outcome. These are independent of the currently observed tunnel status.
+
+Before HTTP dispatch, the controller durably evicts the target's cached config,
+authorized hash, and selection if selected. It removes that target from the
+current presentation and rechecks session and profile state after token loading.
+An active target, including connecting, reasserting, or disconnecting, fails with
+`clientActive`. The caller must disconnect it explicitly and wait. Verified
+success requires the captured owner, region, client, and `removed` response.
+Cleanup removes only the exact inactive owned profile, reloads preferences to
+verify absence, and refreshes inventory. Removal never chooses a replacement,
+installs a config, starts a tunnel, or submits a stop. Other clients and their
+selection stay intact. Committed system Keychain secrets remain retained under
+the existing policy; cloud removal revokes the peer and local eligibility.
+
+Verified cloud success completes even if local cleanup or refresh fails.
+`localCleanupIncomplete` takes precedence over `inventoryNotRefreshed`. Active
+or unobservable profiles stay untouched; recovery requires an explicit Disconnect
+or System Settings stop before local cleanup, then Refresh. Success and warnings
+belong to the original session and are redacted after logout or account change.
+The original session excludes a confirmed removed target even if a later cloud
+read returns an older copy. Local profile existence alone never restores eligibility.
+
+A timeout, cancellation, malformed/mismatched reply, or lost response after
+dispatch produces `unknown`, since the backend may already have removed the
+client. A definite HTTP 401/403 remains `accessDenied` and invalidates account
+access. Never retry DELETE automatically. Retain the eviction and use operation
+lookup and Refresh to recover. Only fresh authoritative inventory can make a
+still-active cloud client eligible after an uncertain attempt.
+
+Persisted request receipts prevent replay for 600 seconds from acceptance.
+The active/latest result stays in memory for 600 seconds from completion;
+running results do not expire while running. A newer command or process exit
+can end result recovery sooner. These clocks are independent. Restart loses
+the result but unexpired receipts yield `unknown` without redispatch. Expired
+receipts are discarded at startup, so an old UUID can be admitted again after
+that window. This is bounded replay protection, with no automatic resend even
+after expiry. Restart while offline cannot restore the evicted config or
+selection. A crash or failed cleanup can leave an orphan profile and retained
+secrets; startup does not delete profiles or stop tunnels on removal's behalf.
+
 ## Storage And Lifecycle
 
 The root system extension owns full configs in the System Keychain. The user

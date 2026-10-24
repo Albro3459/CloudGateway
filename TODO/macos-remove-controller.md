@@ -1,21 +1,21 @@
 # Remove clients through the macOS controller
 
-Status: implementation in progress. Updated 2026-10-23
+Status: complete, reviewed and validated unsigned. Updated 2026-10-24
 
 ## Scope
 
-Implement one controller-owned operation that deletes a cloud VPN client and
-removes its local usable configuration. The menu app and CLI will both call
-this operation. This branch's first implementation covers the controller,
-production adapters, IPC, and regression coverage. Frontend commands, selectors,
-menus, dialogs, and help are later work.
+The controller owns one operation that deletes a cloud VPN client and removes
+its local usable configuration. This branch implements the controller,
+production adapters, IPC, and regression coverage. Future menu app and CLI removal
+flows will share that operation. Frontend commands, selectors, menus, dialogs,
+and help remain deferred.
 
 This document defines behavior. The ordered work and verification are in
 [the implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-remove-controller-implementation.md).
 The reviewed planning checkpoint is committed. The user has authorized
 implementation, task reviews, unsigned validation, and local commits.
 
-## Existing behavior to reuse
+## Implemented boundaries
 
 - The [controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift)
   owns auth, session fencing, inventory, selection, and accepted command tasks
@@ -29,8 +29,8 @@ implementation, task reviews, unsigned validation, and local commits.
 - The [iOS deletion flow](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayAppCore/CloudGatewayViewModel.swift:693)
   binds deletion to an explicit client and blocks deletion of an active target
 - The [account cache](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift)
-  authorizes offline configs and persists selection. The macOS profile adapter
-  and config coordinator currently have no profile removal operation
+  authorizes offline configs, persists selection, and durably evicts one target.
+  The macOS profile adapter and config coordinator remove exact inactive profiles
 
 No backend, Firebase schema/rules, iOS behavior, new dependency, or root helper is
 needed. Retain the existing system-secret retention policy. Committed secrets
@@ -64,7 +64,7 @@ Ordinary remove requests require the current signed build and matching controlle
 protocol. Include removal in confirmation, account-bound outcome, activity, and
 update-draining admission rules. It is not a compatible cross-build stop action.
 Preserve lifecycle/status/stop/lookup compatibility and the existing result TTL.
-Use existing generic outcomes with two specific additions: `clientActive` failure
+The generic outcomes include two removal additions: `clientActive` failure
 and `localCleanupIncomplete` warning. Keep `inventoryNotRefreshed` for a successful
 delete whose final cloud refresh fails. Define cleanup warning precedence below.
 
@@ -188,6 +188,10 @@ All three findings accepted and resolved. Round 2, a fresh Secure Codex
 `gpt-6-astra` review with high reasoning, passed with no remaining actionable
 findings. The reviewer checked the revised contracts against production source,
 including the transport seam, receipt clocks, and active-profile cleanup policy.
-The parent agrees the plans are ready for implementation. Manual document review
-and local reference checks passed. No removal implementation, tests, builds, or
-live operations were performed during this planning task.
+At the planning checkpoint, the parent agreed the plans were ready for
+implementation. Manual document review and local reference checks passed. No
+removal implementation, tests, builds, or live operations were performed during
+that planning task. The subsequent task reviews and validation are recorded in
+the implementation plan. Final aggregate branch review passed in round 1 on
+Secure Codex 6.1 Sol High with no actionable findings. All tasks are checked off,
+validated unsigned, and committed locally.

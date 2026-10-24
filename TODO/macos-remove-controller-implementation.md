@@ -1,14 +1,15 @@
 # Implement controller-owned client removal
 
-Status: implementation in progress. Updated 2026-10-23
+Status: complete, reviewed and validated unsigned. Updated 2026-10-24
 
 Follow [the behavior plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-remove-controller.md).
 Implement only the controller operation and its adapters/IPC. Frontend removal
 commands and UI remain separate work. Implementation is authorized. Complete
 each task, review it in at most three rounds, validate it, check it off, and
 commit it before starting the next task. Use Codex 6.1 Sol with high reasoning
-for implementation and reviews, starting subagents on Main and switching all
-subagent work to Secure if Main reaches its usage limit. Validation is unsigned.
+for implementation and reviews. Main was exhausted after task 1, so all remaining
+implementation and review work used Secure. All seven tasks passed review and
+unsigned validation. Every task is checked off and committed locally.
 
 ## 1. Add the typed removal contract
 
@@ -183,26 +184,26 @@ after expiry showing the old ID can be admitted. Do not promise permanent dedupl
 
 ## 7. Verify the implementation and document the controller contract
 
-- [ ] Extend the existing core/cache/coordinator and IPC contract/request/outcome
+- [x] Extend the existing core/cache/coordinator and IPC contract/request/outcome
   suites under [macOS tests](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests)
   with focused removal tests. Update service fakes for the protocol method
-- [ ] Include deterministic suspension points at fresh role/inventory reads,
+- [x] Include deterministic suspension points at fresh role/inventory reads,
   durable eviction, dispatch, response, profile removal, and final refresh.
   Assert actual request counts, cache reloads, selection, installed profiles,
   start/stop/install call counts, and cross-account output redaction
-- [ ] Specifically exercise eviction followed by restart with offline reads,
+- [x] Specifically exercise eviction followed by restart with offline reads,
   success followed by refresh failure, response loss after backend execution,
   success racing logout/account switch, stale inventory publication, and late
   active-profile observation. Use existing doubles, no live cloud/VPN changes
-- [ ] Update [the macOS README](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/README.md)
+- [x] Update [the macOS README](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/README.md)
   with the controller contract and explicit frontend deferral. Do not advertise
   a working CLI remove command or app Remove action before those exist
-- [ ] Run `./scripts/test.sh macos` for tests, strict Periphery, unsigned arm64
+- [x] Run `./scripts/test.sh macos` for tests, strict Periphery, unsigned arm64
   app/extension build, packaging, and existing CLI smoke checks. Production IPC
   dispatch provides a real reference to the operation, avoid broad dead-code
   suppression. Shared Apple production code should remain unchanged. If a
   necessary shared change is approved later, validate iOS first and macOS too
-- [ ] Complete code review with Codex 6.1 Sol High using the account policy above,
+- [x] Complete code review with Codex 6.1 Sol High using the account policy above,
   resolve actionable findings, and rerun validation when changes warrant it
   before committing the completed implementation
 
@@ -218,15 +219,15 @@ Implemented and reviewed with Main Codex 6.1 Sol High. Review round 1 passed
 with no actionable findings. `./scripts/test.sh macos` passed: 627 macOS tests,
 strict Periphery scans, unsigned arm64 app/extension build, packaging, and 58
 CLI smoke checks. Temporary unavailable inventory/IPC stubs and a narrow
-protocol Periphery annotation are removed by the later integration tasks.
+protocol Periphery annotation were removed by the later integration tasks.
 
 ### Task 2: durable target cache eviction
 
 Implemented on Secure after Main reached its usage limit. Secure Codex 6.1 Sol
 High review round 1 passed with no actionable findings. Full unsigned macOS
 validation passed: 637 core/IPC tests, both strict Periphery scans, app/extension
-build, packaging, and CLI smoke checks. Task 5 connects the controller eviction
-seam to DELETE and adds dispatch-order assertions.
+build, packaging, and CLI smoke checks. Task 5 connected the controller eviction
+seam to DELETE and added dispatch-order assertions.
 
 ### Task 3: exact inactive-profile removal
 
@@ -234,7 +235,7 @@ Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
 Full unsigned macOS validation passed: 662 macOS tests, both strict Periphery
 scans, app/extension build, packaging, and 58 CLI smoke checks. Production uses
 the same removal helper covered by preference-failure and activation-race tests.
-Task 5 connects the coordinator APIs and removes their temporary annotations.
+Task 5 connected the coordinator APIs and removed their temporary annotations.
 
 ### Task 4: regional DELETE transport
 
@@ -242,7 +243,7 @@ Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
 Full unsigned macOS validation passed: 677 core/IPC tests, both strict Periphery
 scans, app/extension build, packaging, and 58 CLI smoke checks. Actual request
 fixtures exercise the shared API decoder and production-used helper. No shared
-Apple production code changed. Task 5 supplies the controller authorization gate.
+Apple production code changed. Task 5 supplied the controller authorization gate.
 
 ### Task 5: domain removal operation
 
@@ -252,7 +253,7 @@ scans, app/extension build, packaging, and 58 CLI smoke checks. Real controller
 tests cover durable eviction before HTTP, fresh owner/admin authorization,
 active-profile rejection, response loss, account changes, offline restart, and
 sticky success. Confirmed removals stay excluded from the original session.
-Task 6 connects production service and IPC and removes the last method annotation.
+Task 6 connected production service and IPC and removed the last method annotation.
 
 ### Task 6: shared IPC removal handoff
 
@@ -263,3 +264,61 @@ orchestrator, controller, and HTTP-helper coverage verifies confirmation,
 caller detach, session changes, bounded receipt replay protection, independent
 result retention, and changed-payload rejection. All temporary removal stubs and
 Periphery annotations are gone. Frontend removal commands and UI remain deferred.
+
+### Task 7: regression audit and controller documentation
+
+Implemented after the task 6 commit `f13e3359`. Secure Codex 6.1 Sol High
+aggregate review round 1 passed against `b0ebb97d` with no actionable findings.
+The review resumed after the Secure usage window reset and independently checked
+authorization, session fencing, durable eviction, transport uncertainty, exact
+profile cleanup, IPC compatibility/replay/redaction, regression coverage, and docs.
+The parent agrees the implementation is complete and ready for the final commit.
+
+The audit retained the existing focused cache, coordinator, profile-removal,
+HTTP-helper, contract, and controller/IPC coverage rather than duplicating it:
+
+- Fresh role and options: suspended access demotion and session changes during
+  access/options reads, missing/ambiguous/ownerless targets, owner/admin rules,
+  and fresh validation after IPC reservation
+- Dispatch: real `CloudGatewayMacClientRemovalRequest` and shared API decoder,
+  suspended token and final profile reads, exact HTTP identity/body/counts,
+  malformed success, HTTP denial, and uncertain transport errors
+- Profiles: production-used `CloudGatewayMacProfileRemoval` preference helper,
+  exact identity/reference/ownership rechecks, every active state, absent targets,
+  failed removal/verification, and coordinator serialization with install/start
+- IPC: actual frontend/orchestrator/domain/request-helper handoff, reserve and
+  confirm, detach/cancellation/lost confirmation reply, two-client exclusion,
+  account-bound output, changed payload, and lifecycle admission
+- Replay clocks: restart at 599 seconds yields unknown with no redispatch,
+  restart at 601 seconds can admit the old ID, and a running request beyond
+  receipt expiry retains its result until 600 seconds after completion
+
+Added deterministic coverage at the durable eviction completion boundary using
+the real disk cache, with logout, same-account reauthentication, and account
+switch. A narrow injected completion hook follows the existing inventory commit
+hook pattern and pauses before presentation/session fencing. It verifies zero
+HTTP requests, persisted eviction, retained profiles, and the next account's
+selection/cache. Added a backend-execution fixture that marks the cloud target
+removed before losing the response, then checks unknown IPC recovery, offline
+refresh, later authoritative refresh, and exactly one DELETE. Added a suspended
+final inventory publication test proving an older active copy cannot restore
+the removed target's authorization or selection. Extended existing tests for
+offline restart, late active profiles, and success redaction after logout.
+
+Assertions include newly opened cache instances, actual installed profiles,
+selection, HTTP request counts, and zero automatic start/stop/install calls.
+No removal task scaffolds or temporary Periphery annotations remain. The macOS
+README now describes the controller/IPC contract, retained secrets, uncertainty,
+separate receipt/result clocks, recovery, and explicit frontend deferral.
+
+The app-only Firebase/NetworkExtension adapters delegate to the tested host-free
+helpers and are compiled unsigned. Live Firebase authorization, signed XPC and
+Keychain access, and actual NetworkExtension preference/status races still need
+signed runtime validation. No live cloud or VPN mutations were performed.
+
+Final `./scripts/test.sh macos` passed unsigned: 720 macOS core/IPC tests,
+280 shared XCTest tests, 263 shared Swift Testing tests, 31 Firebase auth adapter
+tests, both strict Periphery scans, unsigned arm64 app/extension build,
+packaging, and 58 CLI smoke checks. Log:
+[/tmp/cloudgateway-task7-macos-final-20261023.log](/tmp/cloudgateway-task7-macos-final-20261023.log).
+`git diff --check` passed. Shared Apple production sources remain unchanged.

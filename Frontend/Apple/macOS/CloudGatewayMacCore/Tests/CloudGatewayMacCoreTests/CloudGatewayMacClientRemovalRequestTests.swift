@@ -244,9 +244,11 @@ final class MacClientRemovalSession: CloudGatewayControlPlaneSession {
     var body = #"{"userId":"user-a","regionId":"region","clientId":"client","status":"removed"}"#
     var error: (any Error)?
     var responseGate: ClientRemovalGate?
+    var onRequest: ((URLRequest) -> Void)?
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         requests.append(request)
+        onRequest?(request)
         await responseGate?.wait()
         if let error { throw error }
         let url = try #require(request.url)
