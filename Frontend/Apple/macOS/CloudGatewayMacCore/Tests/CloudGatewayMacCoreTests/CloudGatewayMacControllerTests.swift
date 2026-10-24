@@ -8,6 +8,21 @@ import Testing
 @testable import CloudGatewayMacControllerIPC
 @testable import CloudGatewayMacCLI
 
+@Test @MainActor func macControllerInventoryRemovalUsesTheRealRequestHelper() async throws {
+    let fixture = try MacControllerFixture()
+    let user = try #require(fixture.auth.currentUser)
+    var events: [String] = []
+    let response = try await fixture.inventory.deleteClient(
+        clientId: "client", ownerUid: "user-a", regionId: "region", for: user,
+        authorize: { events.append("authorize") }, onDispatch: { events.append("dispatch") }
+    )
+    #expect(response.userId == "user-a")
+    #expect(response.status == .removed)
+    #expect(events == ["authorize", "dispatch"])
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(fixture.inventory.removalSession.requests.first?.httpMethod == "DELETE")
+}
+
 @Test @MainActor func macControllerRestoresAccountAndHidesInventoryAfterSignOutWithoutStoppingVPN() async throws {
     let fixture = try MacControllerFixture()
     await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
@@ -1796,7 +1811,7 @@ private struct MacControllerFixture {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayControllerTests-\(UUID())")
         auth = MacControllerAuth()
         deviceAuth = MacControllerDeviceAuth()
-        inventory = MacControllerInventory()
+        inventory = MacControllerInventory(auth: auth)
         profiles = MacControllerProfiles()
         let reference = try CloudGatewayMacSecretReference(value: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         secrets = MacControllerSecrets(reference: reference)
@@ -1944,6 +1959,8 @@ private actor MacControllerDeviceAuth: CloudGatewayDeviceAuthServicing {
 
 @MainActor
 private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
+    private let auth: MacControllerAuth
+    let removalSession = MacClientRemovalSession()
     var options: [CloudGatewayClientOption] = []
     var accessError: (any Error)?
     var regionsError: (any Error)?
@@ -1958,6 +1975,8 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     private(set) var regionsCount = 0
     private(set) var createdNames: [String] = []
     private(set) var createdAccountIds: [String] = []
+
+    init(auth: MacControllerAuth) { self.auth = auth }
 
     func checkAccess(for _: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
         accessCount += 1
@@ -1990,12 +2009,19 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     }
 
     func deleteClient(
-        clientId _: String, ownerUid _: String, regionId _: String, for _: AuthenticatedUser,
-        authorize _: @escaping @MainActor () async throws -> Void,
-        onDispatch _: @escaping @MainActor () -> Void
+        clientId: String, ownerUid: String, regionId: String, for user: AuthenticatedUser,
+        authorize: @escaping @MainActor () async throws -> Void,
+        onDispatch: @escaping @MainActor () -> Void
     ) async throws -> CloudGatewayDeleteClientResponse {
-        // TODO: Use the removal request helper when task 4 adds it
-        throw CloudGatewayMacInventoryError.unavailable
+        try await CloudGatewayMacClientRemovalRequest.perform(
+            clientId: clientId, ownerUid: ownerUid, regionId: regionId,
+            originHost: "gocloudlaunch.com", session: removalSession,
+            loadToken: { "fixture-token" },
+            validateSession: { [self] in
+                guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+            },
+            authorize: authorize, onDispatch: onDispatch
+        )
     }
 }
 

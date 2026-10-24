@@ -150,12 +150,22 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
     }
 
     func deleteClient(
-        clientId _: String, ownerUid _: String, regionId _: String, for _: AuthenticatedUser,
-        authorize _: @escaping @MainActor () async throws -> Void,
-        onDispatch _: @escaping @MainActor () -> Void
+        clientId: String, ownerUid: String, regionId: String, for user: AuthenticatedUser,
+        authorize: @escaping @MainActor () async throws -> Void,
+        onDispatch: @escaping @MainActor () -> Void
     ) async throws -> CloudGatewayDeleteClientResponse {
-        // TODO: Wire the fenced removal request helper in task 4
-        throw Failure.unavailable
+        try await CloudGatewayMacClientRemovalRequest.perform(
+            clientId: clientId, ownerUid: ownerUid, regionId: regionId,
+            originHost: "gocloudlaunch.com", session: session,
+            loadToken: { [self] in
+                do { return try await auth.idToken(forceRefresh: false) }
+                catch { throw Failure.classify(error) }
+            },
+            validateSession: { [self] in
+                guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
+            },
+            authorize: authorize, onDispatch: onDispatch
+        )
     }
 
     private func documents<Value: Sendable>(

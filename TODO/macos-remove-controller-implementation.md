@@ -82,30 +82,30 @@ The production inventory adapter delegates deletion to it, and host-free core
 tests exercise that same helper. The app-only inventory adapter is not importable
 by those tests, so a fake inventory service alone cannot verify the HTTP boundary.
 
-- [ ] Give the helper the captured target tuple, injected token loader, the
+- [x] Give the helper the captured target tuple, injected token loader, the
   existing bounded no-redirect session, a final controller authorization closure,
   and dispatch evidence callback. Reuse the existing origin and session settings
   from [the inventory adapter](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGateway/CloudGatewayMacInventoryService.swift)
-- [ ] Check session/cancellation before loading the token. After token acquisition,
+- [x] Check session/cancellation before loading the token. After token acquisition,
   invoke the existing control-plane `deleteClient(clientId:userId:regionId:idToken:)`
   once with the authoritative owner, using a request-scoped wrapper implementing
   the existing AppCore `CloudGatewayControlPlaneSession` protocol
-- [ ] At the wrapper's `data(for:)` boundary, run the final authorization closure:
+- [x] At the wrapper's `data(for:)` boundary, run the final authorization closure:
   validate the original session, reload/check the exact target profile through
   the coordinator, then recheck session/cancellation after that awaited check.
   If it fails, do not call the underlying session and report pre-dispatch failure
-- [ ] After that gate succeeds, record dispatch evidence immediately before
+- [x] After that gate succeeds, record dispatch evidence immediately before
   forwarding once to the underlying session. This is a conservative network
   handoff marker, not proof that bytes reached the server. A failure before the
   wrapper is entered, including token/URL construction failure, is pre-dispatch.
   An underlying timeout/cancellation is uncertain. Scope the wrapper to this
   DELETE so unrelated inventory requests cannot trip the callback
-- [ ] Validate returned userId, regionId, clientId, and removed status. Record
+- [x] Validate returned userId, regionId, clientId, and removed status. Record
   validated remote success in the original operation before any post-response
   cancellation/session gate. Keep actor-bound response handling in the helper,
   or return a small macOS Sendable receipt if a boundary needs it. Do not change
   the shared response type merely for this feature
-- [ ] Preserve known 401/403 denial classification. Treat other post-dispatch
+- [x] Preserve known 401/403 denial classification. Treat other post-dispatch
   errors conservatively because the shared API error contract lacks status/code
   detail. Do not change shared HTTP error behavior or parse message text
 
@@ -235,3 +235,11 @@ Full unsigned macOS validation passed: 662 macOS tests, both strict Periphery
 scans, app/extension build, packaging, and 58 CLI smoke checks. Production uses
 the same removal helper covered by preference-failure and activation-race tests.
 Task 5 connects the coordinator APIs and removes their temporary annotations.
+
+### Task 4: regional DELETE transport
+
+Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
+Full unsigned macOS validation passed: 677 core/IPC tests, both strict Periphery
+scans, app/extension build, packaging, and 58 CLI smoke checks. Actual request
+fixtures exercise the shared API decoder and production-used helper. No shared
+Apple production code changed. Task 5 supplies the controller authorization gate.
