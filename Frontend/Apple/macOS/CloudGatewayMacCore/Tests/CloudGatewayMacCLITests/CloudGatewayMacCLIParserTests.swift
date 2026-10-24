@@ -148,3 +148,37 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
         #expect(usageFailure(arguments)?.command == "add", "\(arguments)")
     }
 }
+
+@Test func cliRemoveParserRequiresExplicitSelectorAndConsentWithCommonOptions() throws {
+    let uuid = "78ab8633-ae25-4287-885f-57bbbf6e7f63"
+    #expect(try command(["remove", uuid.uppercased(), "--yes"]) == .remove(.client(UUID(uuidString: uuid)!)))
+    for region in ["us-sanjose-1", "sanjose", "San Jose"] {
+        let invocation = try parse(["--json", "--yes", "remove", region, "02", "--timeout=2.5", "--non-interactive"])
+        guard case .run(let command) = invocation.action else { Issue.record("Expected remove"); return }
+        #expect(command == .remove(.region(region, index: 2)))
+        #expect(command.name == "remove")
+        #expect(invocation.isJSON)
+        #expect(invocation.isNonInteractive)
+        #expect(invocation.timeout == .seconds(2.5))
+    }
+    for arguments in [["remove", "--help"], ["help", "remove"], ["remove", uuid, "-h"],
+                      ["remove", "--yes", "--help"]] {
+        #expect(try topic(arguments) == "remove")
+    }
+    for arguments in [
+        ["remove"], ["remove", "--yes"], ["remove", uuid], ["remove", "chicago", "1"],
+        ["remove", "chicago", "--yes"], ["remove", uuid, "extra", "--yes"],
+        ["remove", "uid1/us-east-1/" + uuid, "--yes"], ["remove", "chicago", "0", "--yes"],
+        ["remove", "chicago", "1.0", "--yes"], ["remove", "chicago", "+1", "--yes"],
+        ["remove", "chicago", "١", "--yes"], ["remove", "chicago", String(repeating: "9", count: 40), "--yes"],
+        ["remove", uuid, "--yes=false"], ["remove", uuid, "--yes=true"], ["remove", uuid, "--yes="],
+        ["remove", uuid, "--yes", "--allow-disconnect"], ["remove", uuid, "--yes", "--refresh"],
+    ] {
+        #expect(usageFailure(arguments)?.command == "remove", "\(arguments)")
+    }
+    for arguments in [["up", uuid], ["down", uuid], ["add", "chicago", "Mac"], ["auth", "logout"],
+                      ["auth", "login"], ["list"], ["status"], ["update"], ["refresh"], ["doctor"],
+                      ["version"], [], ["help", "remove"]] {
+        #expect(usageFailure(arguments + ["--yes"]) != nil, "\(arguments)")
+    }
+}

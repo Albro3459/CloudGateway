@@ -89,7 +89,7 @@ extension CloudGatewayMacCLISession {
         if action == .turnOff { _ = try await call { [client] in try await client.handshake() } }
         else { try await requireCurrentBuild() }
         var identifier: String?
-        if action == .connect || action == .disconnectClient {
+        if action == .connect || action == .disconnectClient || action == .removeClient {
             let (reply, settled) = try await poll(.snapshot, until: deadline) {
                 let state = try Self.state(of: $0)
                 let target = state.selectedIdentifier
@@ -118,12 +118,31 @@ extension CloudGatewayMacCLISession {
                         creation: CloudGatewayMacCLIClientCreation? = nil, contextId: UUID? = nil,
                         accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
         let id = UUID()
-        let reservation = try await call { [client] in
-            try await client.send(action, id: id, identifier: identifier, regionId: creation?.regionId,
-                                  clientName: creation?.name, contextId: contextId)
+        func observationFailure(_ error: any Error) -> CloudGatewayMacCLIError {
+            var failure = CloudGatewayMacCLIError(error)
+            if failure.operationId != nil && !(action == .removeClient && failure.code == .operationUnknown) { return failure }
+            let recovery = action == .removeClient
+                ? ". If the result is still unknown, refresh online inventory with cloudgateway refresh, then run cloudgateway ls and inspect the original client UUID before another manual removal attempt"
+                : ""
+            failure = .init(failure.code, message: failure.message,
+                            suggestion: "Check this operation before retrying: cloudgateway status --operation \(id.uuidString.lowercased())" + recovery,
+                            data: failure.data)
+            failure.operationId = id
+            return failure
+        }
+        let reservation: CloudGatewayMacControllerReply
+        do {
+            reservation = try await call { [client] in
+                try await client.send(action, id: id, identifier: identifier, regionId: creation?.regionId,
+                                      clientName: creation?.name, contextId: contextId)
+            }
+        } catch {
+            if action == .removeClient { throw observationFailure(error) }
+            throw error
         }
         guard reservation.operation?.id == id, reservation.operation?.state == .accepted else {
-            throw CloudGatewayMacCLIError(.invalidResponse)
+            let failure = CloudGatewayMacCLIError(.invalidResponse)
+            throw action == .removeClient ? observationFailure(failure) : failure
         }
         // FileHandle writes are unbuffered. A failed write leaves the reservation unconfirmed
         try accepted(id)
@@ -141,7 +160,7 @@ extension CloudGatewayMacCLISession {
             let tunnel: CloudGatewayMacCLIStatus.Tunnel = if client.isCurrentBuild, let state = reply.state { .init(state) }
                 else { .init(try Self.status(of: reply)) }
             var choices: CloudGatewayMacCLIInventory?
-            if operation.failure?.code == .selectionUnavailable {
+            if action != .removeClient, operation.failure?.code == .selectionUnavailable {
                 // Use a new account-filtered snapshot, never the reservation's old account view
                 if let current = try? await call({ [client] in try await client.send(.snapshot) }),
                    let state = current.state, let accountId = state.accountId {
@@ -152,6 +171,7 @@ extension CloudGatewayMacCLISession {
             case .connect: .up
             case .turnOff, .disconnectClient: .down
             case .createClient: .add
+            case .removeClient: .remove
             default: .logout
             }
             let data = CloudGatewayMacCLIData.mutation(.init(command: command, operation: operation, tunnel: tunnel, choices: choices,
@@ -164,13 +184,7 @@ extension CloudGatewayMacCLISession {
             guard operation.state == .completed else { throw CloudGatewayMacCLIError(.invalidResponse) }
             return data
         } catch {
-            var failure = CloudGatewayMacCLIError(error)
-            if failure.operationId != nil { throw failure }
-            failure = .init(failure.code, message: failure.message,
-                            suggestion: "Check this operation before retrying: cloudgateway status --operation \(id.uuidString.lowercased())",
-                            data: failure.data)
-            failure.operationId = id
-            throw failure
+            throw observationFailure(error)
         }
     }
 }

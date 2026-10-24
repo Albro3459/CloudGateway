@@ -1,6 +1,6 @@
 # Remove clients from the macOS CLI
 
-Status: reviewed, ready to implement. Updated 2026-10-24
+Status: task 1 complete, integration and final validation pending. Updated 2026-10-24
 
 ## Goal
 
@@ -87,17 +87,17 @@ VPN mutations are part of validation.
 
 ### Task 1: command, handoff, and output
 
-- [ ] Add the command, mandatory selector and `--yes` validation, local help,
+- [x] Add the command, mandatory selector and `--yes` validation, local help,
   and dispatch to the existing session mutation path
-- [ ] Resolve from settled account inventory without filtering unavailable
+- [x] Resolve from settled account inventory without filtering unavailable
   rows, send exactly one removal reservation, and reuse confirmation/polling
-- [ ] Add `remove` mutation records and successful text, retaining typed failures,
+- [x] Add `remove` mutation records and successful text, retaining typed failures,
   warnings, operation lookup, and accepted-ID-before-confirm behavior
-- [ ] Add parser and CLI harness coverage for valid selectors/options, local
+- [x] Add parser and CLI harness coverage for valid selectors/options, local
   usage rejection, no implicit selection, ambiguous/missing targets, disabled
   or configless rows, account/build/session gates, warnings and failures,
   output failure, timeout/cancellation/lost confirmation, and no retry
-- [ ] Run `./scripts/test.sh macos`, review the implementation, record the
+- [x] Run `./scripts/test.sh macos`, review the implementation, record the
   result here, and commit the completed task
 
 ### Task 2: integration, documentation, and final validation
@@ -125,3 +125,10 @@ for typed unknown results, and coarse output for redacted success. Added separat
 caller-loss and account-change integration requirements. Fresh Sol xhigh review
 round 2 passed with no remaining actionable blockers. Manual plan review and
 `git diff --check` passed
+
+Task 1: implemented the command, explicit consent, handoff, and output with 18
+new parser/CLI regression tests. Fresh Sol xhigh review round 1 passed with no
+actionable findings. Parent review also passed. `./scripts/test.sh macos`
+passed unsigned: 738 macOS tests, shared/auth suites, both strict dead-code
+scans, arm64 app/extension build, packaging, and 58 CLI smoke checks.
+`git diff --check` passed. [Validation log](/tmp/cloudgateway-task1-macos-final.log)

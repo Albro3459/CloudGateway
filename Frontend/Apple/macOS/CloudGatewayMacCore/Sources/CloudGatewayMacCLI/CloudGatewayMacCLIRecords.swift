@@ -416,7 +416,7 @@ struct CloudGatewayMacCLIClientCreation: Encodable {
 }
 
 struct CloudGatewayMacCLIMutation: Encodable {
-    enum Command: String, Encodable { case up, down, logout, update, add }
+    enum Command: String, Encodable { case up, down, logout, update, add, remove }
 
     let command: Command
     let operation: CloudGatewayMacCLIOperation

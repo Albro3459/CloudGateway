@@ -44,6 +44,7 @@ struct CloudGatewayMacCLIRenderer {
             case .completed where mutation.command == .add:
                 mutation.creation.map { "Client created: \($0.name) (\($0.regionId))" } ?? "Client created"
             case .completed where mutation.command == .update: "VPN extension update completed"
+            case .completed where mutation.command == .remove: "Client removed"
             case _ where mutation.command == .update: "VPN extension update \(mutation.operation.state.rawValue)"
             default: "Command \(mutation.operation.state.rawValue)"
             }

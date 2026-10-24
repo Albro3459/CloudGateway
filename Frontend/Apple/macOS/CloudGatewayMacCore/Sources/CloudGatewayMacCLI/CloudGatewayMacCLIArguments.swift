@@ -1,7 +1,7 @@
 import Foundation
 
 enum CloudGatewayMacCLIOption: CaseIterable {
-    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation, long, allowDisconnect
+    case help, json, nonInteractive, timeout, version, noQR, region, refresh, operation, long, allowDisconnect, yes
 
     static let common: [Self] = [.help, .json, .nonInteractive, .timeout]
 
@@ -18,6 +18,7 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .operation: ["--operation"]
         case .long: ["-l", "--long"]
         case .allowDisconnect: ["--allow-disconnect"]
+        case .yes: ["--yes"]
         }
     }
 
@@ -43,13 +44,14 @@ enum CloudGatewayMacCLIOption: CaseIterable {
         case .operation: "Look up a retained operation by ID"
         case .long: "Show VPN details for each config"
         case .allowDisconnect: "Allow stopping the active VPN to replace its extension and restore the same config"
+        case .yes: "Required: acknowledge permanent cloud client deletion"
         }
     }
 }
 
 struct CloudGatewayMacCLITopic {
     enum Kind {
-        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, add, update, refresh, doctor, help, version
+        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, add, remove, update, refresh, doctor, help, version
     }
 
     let kind: Kind
@@ -66,7 +68,7 @@ struct CloudGatewayMacCLITopic {
         let words = ["cloudgateway"] + path + (arguments.map { [$0] } ?? [])
         if kind == .root || kind == .auth { return (words + ["<command>", "[options]"]).joined(separator: " ") }
         let options = options.map { option in
-            "[\(option.flags.last ?? "")\(option.valueName.map { " <\($0)>" } ?? "")]"
+            option == .yes ? "--yes" : "[\(option.flags.last ?? "")\(option.valueName.map { " <\($0)>" } ?? "")]"
         }
         return (words + options + ["[options]"]).joined(separator: " ")
     }
@@ -139,6 +141,20 @@ struct CloudGatewayMacCLITopic {
                   "After acceptance, check the operation before retrying an uncertain result to avoid duplicates"
               ],
               examples: ["cloudgateway add sanjose \"Mac mini\"", "cloudgateway add us-sanjose-1 \"Work Mac\" --json"]),
+        .init(kind: .remove, path: ["remove"], arguments: "<client-uuid> | <region> <index>", options: [.yes],
+              summary: "Permanently remove a cloud client and its inactive local VPN profile",
+              notes: [
+                  "An explicit selector and --yes are required. No last selection or terminal prompt is used",
+                  "Regions accept a full ID, display name, or city alias. Rerun `ls` before using a region index. Use UUIDs in scripts",
+                  "Disabled, configless, and never-installed clients can be removed. Online authorization is required",
+                  "An active client must be disconnected first. Removal does not disconnect a VPN or delete retained Keychain secrets",
+                  "The accepted ID prints before execution is confirmed. Output failure leaves the reservation unconfirmed",
+                  "After confirmation, timeout, Ctrl-C, or SSH loss detaches observation while controller work can continue",
+                  "Check uncertain results with status --operation. If still unknown, refresh online inventory and inspect the original client UUID before another manual removal attempt"
+              ],
+              examples: ["cloudgateway remove <client-uuid> --yes", "cloudgateway remove chicago 1 --yes",
+                         "cloudgateway remove <client-uuid> --yes --json --non-interactive",
+                         "cloudgateway status --operation <operation-id>"]),
         .init(kind: .update, path: ["update"], arguments: nil, options: [.allowDisconnect],
               summary: "Activate the VPN extension bundled in the installed CloudGateway app",
               notes: [
@@ -176,6 +192,7 @@ enum CloudGatewayMacCLICommand: Equatable {
     case up(selector: CloudGatewayMacCLISelector?)
     case downTarget(CloudGatewayMacCLISelector)
     case add(region: String, name: String)
+    case remove(CloudGatewayMacCLISelector)
     case update(allowDisconnect: Bool)
     case down, refresh, doctor
 
@@ -188,6 +205,7 @@ enum CloudGatewayMacCLICommand: Equatable {
         case .status: "status"
         case .up: "up"
         case .add: "add"
+        case .remove: "remove"
         case .down, .downTarget: "down"
         case .update: "update"
         case .refresh: "refresh"
@@ -305,6 +323,14 @@ enum CloudGatewayMacCLIParser {
             command = .status(operationId: operationId)
         case .up: command = .up(selector: try selector(operands, topic: topic))
         case .down: command = try selector(operands, topic: topic).map(CloudGatewayMacCLICommand.downTarget) ?? .down
+        case .remove:
+            guard let selector = try selector(operands, topic: topic) else {
+                throw failure("Removal requires a client UUID or <region> <positive index> from `cloudgateway ls`", words: named)
+            }
+            guard flags.contains(.yes) else {
+                throw failure("Removal requires --yes to acknowledge permanent cloud client deletion", words: named)
+            }
+            command = .remove(selector)
         case .add:
             let request = try creation(operands, topic: topic)
             command = .add(region: request.region, name: request.name)
@@ -321,7 +347,7 @@ enum CloudGatewayMacCLIParser {
         switch topic.kind {
         case .root: throw failure("Unknown command \(quoted(operand))", words: [])
         case .auth: throw failure("Unknown auth command \(quoted(operand))", words: topic.path)
-        case .up, .down:
+        case .up, .down, .remove:
             _ = try selector(operands, topic: topic)
         case .add:
             _ = try creation(operands, topic: topic)
