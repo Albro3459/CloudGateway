@@ -369,6 +369,23 @@ Creation does not install or connect the new profile. A successful API response
 followed by a failed inventory refresh tells the user to refresh before trying
 again, preventing accidental duplicate clients.
 
+Review client appears directly below Add Client. Its modal groups configs by
+region and submits the selected canonical client identifier through the existing
+owner-controller removal command. The user must disconnect that config and wait
+for it to stop first. All active and transitional statuses block Delete. Fresh
+profile observations determine inactivity, even when a cached client row has no
+usable config or matching secret reference. Other active configs stay connected.
+Region capacity, connect eligibility, and last-used selection do not determine
+whether a client can be reviewed for deletion.
+
+The dialog updates as controller snapshots change and closes when its account
+or controller is no longer current. Deletion uses one operation ID through
+confirmation and terminal outcome lookup. Lost confirmation never triggers a
+second delete. Typed failure messages distinguish an active config, lost access,
+and unavailable network. A completed cloud deletion can report incomplete local
+cleanup or a failed inventory refresh. Refresh the client list before retrying
+an uncertain result. No config bytes, private keys, or tokens enter the dialog.
+
 Removed client history is excluded from the live inventory cap. Temporary
 Firebase token-verification service failures return a retryable error, preserving
 the native session and cached metadata without authorizing fresh online inventory.

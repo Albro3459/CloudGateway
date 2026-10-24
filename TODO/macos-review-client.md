@@ -42,13 +42,13 @@ responsible for fresh authorization and profile checks.
 
 - [x] 1. Finish plan review with SOL xhigh, resolve findings, record the result,
   and commit this plan before implementation
-- [ ] 2. Add a small testable review selection model at the macOS frontend
+- [x] 2. Add a small testable review selection model at the macOS frontend
   boundary. Use account/region/client identifiers as identity, never labels or
   picker indexes. Preserve the existing region/client sort order and owner
   labels. Distinguish duplicate names and regions with the same display name.
   Reset the config selection when its region changes. Handle no clients and no
   selection without enabling Delete
-- [ ] 3. Derive review availability from current authenticated controller state,
+- [x] 3. Derive review availability from current authenticated controller state,
   independently of Add Client capacity and connect eligibility. Require current
   snapshot/build, settled authorized session, and no conflicting operation.
   Extend the menu projection with minimal review data, including stable region
@@ -58,13 +58,13 @@ responsible for fresh authorization and profile checks.
   mismatched secret reference can have nil status while its profile is active.
   Unknown or unavailable observations must not enable Delete. Include absent
   and inactive local profiles without requiring a downloaded config
-- [ ] 4. Add the async cancellable modal and menu action, register any new app
+- [x] 4. Add the async cancellable modal and menu action, register any new app
   source in the Xcode project, and update both initial rendering and open-menu
   enablement. Keep Delete disabled until a valid inactive config is selected.
   Update the open dialog when snapshots change. Invalidate it on account change,
   sign-out, controller replacement, shutdown, or incompatible/stale controller
   state. Avoid returning a captured selection after it becomes invalid
-- [ ] 5. Submit `.removeClient` with the full selected identifier. Recheck the
+- [x] 5. Submit `.removeClient` with the full selected identifier. Recheck the
   current account and selection immediately before submission. Keep UI work
   serialized while a deletion runs. Use the same operation ID to await its
   terminal outcome, including a lost confirmation. `userRequest` can return
@@ -75,7 +75,7 @@ responsible for fresh authorization and profile checks.
   Treat unknown outcomes as uncertain and ask the user to Refresh. Surface
   access, inactive-client, network, and partial-cleanup results with safe text.
   Report a completed deletion with a warning separately from a failed deletion
-- [ ] 6. Add focused host-free tests for selection identity, region changes,
+- [x] 6. Add focused host-free tests for selection identity, region changes,
   empty lists, inactive versus all active statuses, unrelated active profiles,
   stale or unavailable observations, session changes, cancellation, and mutation
   outcomes. Extend the real frontend/IPC test harness where needed to prove the
@@ -83,10 +83,10 @@ responsible for fresh authorization and profile checks.
   outcomes are not resent. Cover nil cached-row status hiding an active observed
   profile, immediate and delayed failures, and completed cleanup warnings.
   Retain existing controller/CLI removal regressions
-- [ ] 7. Update macOS user/development docs with Review client and the
+- [x] 7. Update macOS user/development docs with Review client and the
   disconnect-first rule. Record automated and manual checks with their actual
   results. Leave checks open when the environment cannot exercise them
-- [ ] 8. Run the repository validation entry point, resolve SOL code review,
+- [x] 8. Run the repository validation entry point, resolve SOL code review,
   check off completed work, and commit the tested implementation locally
 
 ## Validation and review
@@ -123,5 +123,25 @@ findings resolved in checkpoints 3, 5, and 6: project explicit review data from
 fresh observed profiles, and recover typed terminal outcomes after confirmation
 errors. Reviewer marked the plan ready after these additions. No unresolved
 plan findings.
-Implementation review: pending.
-Validation: pending.
+Implementation review: SOL `gpt-6.1-sol`, xhigh, `codex_secure`. Round 1
+found one P2: snapshot polling rebuilt open picker menus. Fixed by preserving
+unchanged items and deferring structural updates until picker tracking ends.
+Delete eligibility and the explanation still update immediately. Added two
+AppKit regressions for menu-item identity and deferred updates. Round 2 verified
+the fix and returned no remaining actionable findings.
+Validation: baseline host-free macOS tests passed (720 tests), as did shared
+Apple tests. The first baseline run selected Xcode's Python 3.9 and lacked the
+ignored Firebase resource in the new worktree, so Python packaging checks and
+the app build failed before implementation. Final validation will put Homebrew
+Python first on PATH and use an ignored synthetic `GoogleService-Info.plist`
+containing only a fixture marker, matching the packaging verifier fixtures. No
+live Firebase configuration or uncommitted source files are copied. Final
+validation: 741 macOS host-free tests passed, including 21 new regressions.
+Final `PATH=/opt/homebrew/bin:$PATH ./scripts/test.sh macos` passed in full:
+shared Apple tests, 741 macOS host-free tests, both strict macOS Periphery scans,
+unsigned arm64 app/system extension build, bundle packaging, and 58 packaged CLI
+help/version/usage smoke checks. `git diff --check` passed. Both Codex providers
+were used without reaching an account limit.
+
+The manual acceptance checklist remains a signed, live-account release check.
+No app was installed and no real cloud config was deleted during this task.

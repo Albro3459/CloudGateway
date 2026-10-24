@@ -345,7 +345,7 @@ public final class CloudGatewayMacControllerOrchestrator {
         if request.action == .update {
             if managedUpdates?.owns(request.id) == true, let managedUpdates {
                 let status = await managedUpdates.reserve(request, fallbackTarget: update.running)
-                return .init(state: effects.snapshot(setupState, false), operation: status.operation,
+                return .init(state: frontendSnapshot(canUpdateExtension: false), operation: status.operation,
                              accepted: status.phase != .failed && status.phase != .superseded,
                              operationId: status.id, update: status)
             }
@@ -355,7 +355,7 @@ public final class CloudGatewayMacControllerOrchestrator {
             preparingManagedUpdate = true
             defer { preparingManagedUpdate = false; updateInventoryAdmission() }
             let status = await managedUpdates.reserve(request, fallbackTarget: update.running)
-            return .init(state: effects.snapshot(setupState, false), operation: status.operation,
+            return .init(state: frontendSnapshot(canUpdateExtension: false), operation: status.operation,
                          accepted: status.phase != .failed && status.phase != .superseded,
                          operationId: status.id, update: status)
         }
@@ -660,7 +660,7 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func controlReply(for request: CloudGatewayMacControllerRequest,
                               operation: CloudGatewayMacControllerOperation? = nil) -> CloudGatewayMacControllerReply {
         var operation = operation ?? requests.latest ?? managedUpdates?.operation
-        let snapshot = effects.snapshot(setupState, false)
+        let snapshot = frontendSnapshot(canUpdateExtension: false)
         // Other builds may not decode newer outcome cases, so they get the compatible operation only
         let sameBuild = request.buildIdentity == update.running
             && request.appVersion == update.running.version && request.appBuild == update.running.build
@@ -687,13 +687,19 @@ public final class CloudGatewayMacControllerOrchestrator {
     private func reply(operation: CloudGatewayMacControllerOperation? = nil,
                        refresh: CloudGatewayMacRefreshResult? = nil) -> CloudGatewayMacControllerReply {
         let operation = operation ?? requests.latest ?? managedUpdates?.operation
-        return .init(state: effects.snapshot(setupState, extensionIsIdle && !extensionUpdates.hasPendingAttempt && readinessTask == nil && pending == nil && runningOperation == nil && pendingCreation == nil && runningCreation == nil
+        return .init(state: frontendSnapshot(canUpdateExtension: extensionIsIdle && !extensionUpdates.hasPendingAttempt && readinessTask == nil && pending == nil && runningOperation == nil && pendingCreation == nil && runningCreation == nil
                                               && !effects.hasPendingWork() && update.canAcceptMutations && managedUpdates?.isActionable != true
                                               && managedUpdates?.isBlocked != true && !effects.activationIsPending()
                                               && !startupReconciliationPending && pendingLegacyActivationEvent == nil),
               operation: operation, outcome: operation.flatMap { requests.outcome(id: $0.id, session: effects.session()) },
               refresh: refresh, accepted: operation.map { $0.state != .failed && $0.state != .unknown }, operationId: operation?.id,
               update: managedUpdates?.status(accountId: effects.session()?.accountId))
+    }
+
+    private func frontendSnapshot(canUpdateExtension: Bool) -> CloudGatewayMacControllerState {
+        var snapshot = effects.snapshot(setupState, canUpdateExtension)
+        snapshot.reviewAllowed = canAdmitRemoval && pending == nil && runningOperation == nil
+        return snapshot
     }
 
     private func setSetupState(_ state: CloudGatewayMacSetupState) {

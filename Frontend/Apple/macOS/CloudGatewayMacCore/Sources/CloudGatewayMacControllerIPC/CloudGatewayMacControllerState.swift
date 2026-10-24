@@ -54,6 +54,7 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
     public let setup: CloudGatewayMacControllerView.SetupState
     public let canUpdateExtension: Bool
     public let creationAllowed: Bool
+    public internal(set) var reviewAllowed = true
     public let errorMessage: String?
 
     public init(snapshot: CloudGatewayMacControllerSnapshot, setupState: CloudGatewayMacSetupState,

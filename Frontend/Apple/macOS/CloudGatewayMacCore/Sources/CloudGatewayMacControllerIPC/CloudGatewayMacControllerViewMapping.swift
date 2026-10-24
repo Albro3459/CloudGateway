@@ -10,6 +10,12 @@ extension CloudGatewayMacControllerView {
         let isTransitioning = state.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
         let canConnect = state.accountId != nil && state.accessAuthorized && !state.commandInFlight
             && !state.isRestoringSession && !state.isAuthSettling && state.setup == .ready
+        let canReview = state.reviewAllowed && state.accountId != nil && state.auth == .signedIn && state.accessAuthorized
+            && !state.commandInFlight && !state.isRestoringSession && !state.isAuthSettling
+            && (state.inventory == .current || state.inventory == .cached)
+        let activeIdentifiers = Set(state.observedProfiles.filter {
+            $0.status != .invalid && $0.status != .disconnected
+        }.compactMap(\.identifier))
         let selected = state.clients.first {
             $0.identifier == state.selectedIdentifier && $0.isEligible && canConnect
         }
@@ -31,9 +37,11 @@ extension CloudGatewayMacControllerView {
             }.map { client in
                 let title = client.ownerLabel.map { "\(client.clientName) (\($0))" } ?? client.clientName
                 return Client(identifier: client.identifier, title: ControllerDisplayText.normalize(title, bytes: 2048),
-                              status: client.status, isEnabled: canConnect && client.isEligible)
+                              status: client.status, isEnabled: canConnect && client.isEligible,
+                              removalPermission: !state.observationAvailable ? .unavailable
+                                  : activeIdentifiers.contains(client.identifier) ? .active : .inactive)
             }
-            return Region(title: clients[0].regionName, rows: rows)
+            return Region(regionId: clients[0].regionId, title: clients[0].regionName, rows: rows)
         }
         var title: String
         if state.observedProfiles.contains(where: { $0.status == .connecting }) { title = "VPN connecting…" }
@@ -59,7 +67,7 @@ extension CloudGatewayMacControllerView {
             browserState: state.auth, login: state.login, setupState: state.setup,
             isRestoringSession: state.isRestoringSession, isAuthSettling: state.isAuthSettling,
             hasRetainedSession: state.hasRetainedSession, inventoryInFlight: state.inventory == .refreshing,
-            canCreateClient: state.creationAllowed, errorMessage: state.errorMessage,
+            canCreateClient: state.creationAllowed, canReviewClient: canReview, errorMessage: state.errorMessage,
             hasUnlistedActiveProfile: state.observedProfiles.contains { profile in
                 profile.status != .invalid && profile.status != .disconnected
                     && !state.clients.contains { $0.identifier == profile.identifier }
@@ -117,6 +125,11 @@ enum ControllerVisibleError {
         "Unable to load available regions. Refresh and try again",
         "Could not confirm whether the client was created. Refresh the client list before trying again",
         "Client was created, but the client list could not refresh. Choose Refresh before trying again",
+        "Client was removed. Disconnect it explicitly or stop it in System Settings before local cleanup, then Refresh",
+        "Client was removed, but the client list could not refresh. Choose Refresh",
+        "Could not confirm whether the client was removed. Refresh the client list before trying again",
+        "Disconnect this client and wait for it to stop before removing it",
+        "Client could not be removed. Refresh before trying again",
         "VPN has not confirmed stop. Try again after checking System Settings",
         "CloudGateway returned an invalid sign-in response. Start sign-in again.",
         "Sign-in was denied in the browser.",

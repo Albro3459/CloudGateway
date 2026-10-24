@@ -57,7 +57,7 @@ public final class CloudGatewayMacFrontendClient {
         if isSnapshotFresh, let snapshot { return snapshot }
         if hasIdleSnapshot, safeStatus == nil, let snapshot {
             return .init(groups: snapshot.groups.map { group in
-                .init(title: group.title, rows: group.rows.map {
+                .init(regionId: group.regionId, title: group.title, rows: group.rows.map {
                     .init(identifier: $0.identifier, title: $0.title, status: nil, isEnabled: false)
                 })
             }, statusTitle: "\(snapshot.statusTitle) (last observed)",
@@ -172,6 +172,14 @@ public final class CloudGatewayMacFrontendClient {
         startPolling()
         try await prepareForInteraction()
         try Task.checkCancellation()
+        if action == .removeClient {
+            guard let identifier, isSnapshotFresh, isCurrentBuild,
+                  presentation.canReviewClient,
+                  CloudGatewayMacControllerState.belongs(identifier, to: presentation.accountId),
+                  presentation.groups.flatMap(\.rows).contains(where: {
+                      $0.identifier == identifier && $0.removalPermission == .inactive
+                  }) else { throw CloudGatewayMacControllerFailure.rejected }
+        }
         if action == .menuWillOpen, !isCurrentBuild { return try await request(.status) }
         if action == .prepareExtensionUpdate, isCurrentBuild {
             _ = try await request(.recordActivity)
@@ -252,6 +260,8 @@ public final class CloudGatewayMacFrontendClient {
                                    clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect)
         guard action.requiresConfirmation, reply.operation?.state == .accepted else { return reply }
         let confirmed = try await confirm(id)
+        // Removal needs its typed terminal outcome, including immediate failures and cleanup warnings
+        if action == .removeClient { return confirmed }
         if let operation = confirmed.operation, operation.state == .failed {
             throw operation.failure ?? CloudGatewayMacControllerFailure.rejected
         }

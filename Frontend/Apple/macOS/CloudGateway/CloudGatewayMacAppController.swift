@@ -16,6 +16,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private var loginAttemptId: UUID?
     private var frontendErrorMessage: String?
     private var dialogTask: Task<Void, Never>?
+    private var reviewDialog: CloudGatewayMacClientReviewDialog?
     private var actionTask: Task<Void, Never>?
     private var menuTask: Task<Void, Never>?
     private weak var statusMenuItem: NSMenuItem?
@@ -53,6 +54,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             }
         }
         if state.accountId == nil { dialogTask?.cancel() }
+        reviewDialog?.update(snapshot: state, isSnapshotFresh: client.isSnapshotFresh,
+                             isCurrentBuild: client.isCurrentBuild && !isRelaunching)
         if client.isSnapshotFresh, state.setupState == .updateRequired, state.canUpdateExtension,
            !attemptedAutomaticExtensionUpdate, actionTask == nil {
             updateExtension(isUserInitiated: false)
@@ -84,6 +87,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     func shutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        reviewDialog?.update(snapshot: snapshot, isSnapshotFresh: false, isCurrentBuild: false)
         dialogTask?.cancel()
         dialogTask = nil
         actionTask?.cancel()
@@ -106,6 +110,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         ), verified == identity else { return }
         isRelaunching = true
         dialogTask?.cancel()
+        reviewDialog?.update(snapshot: snapshot, isSnapshotFresh: false, isCurrentBuild: false)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: installed, configuration: configuration) { [weak self] application, _ in
@@ -210,6 +215,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 menu.addItem(item)
             }
             add("Add Client…", #selector(addClient), enabled: state.canCreateClient && dialogTask == nil && actionTask == nil)
+            add("Review client…", #selector(reviewClient),
+                enabled: client.isSnapshotFresh && state.canReviewClient && dialogTask == nil && actionTask == nil)
             add(state.inventoryInFlight ? "Refreshing clients…" : "Refresh", #selector(refresh),
                 enabled: state.canRefresh && !state.inventoryInFlight && actionTask == nil)
             add("Sign Out", #selector(signOut), enabled: state.canSignOut && actionTask == nil)
@@ -255,6 +262,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                     && !state.inventoryInFlight && actionTask == nil
             case #selector(addClient):
                 item.isEnabled = current && state.canCreateClient && dialogTask == nil && actionTask == nil
+            case #selector(reviewClient):
+                item.isEnabled = current && state.canReviewClient && dialogTask == nil && actionTask == nil
             case #selector(setUp):
                 item.isEnabled = current && state.canUpdateExtension && setupState.canActivate && actionTask == nil
             default: break
@@ -279,7 +288,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         item.target = action == nil ? nil : self
         item.isEnabled = action != nil && enabled
         let controllerActions = [#selector(toggleVPN), #selector(signIn), #selector(cancelSignIn),
-                                 #selector(signOut), #selector(refresh), #selector(addClient), #selector(setUp)]
+                                 #selector(signOut), #selector(refresh), #selector(addClient), #selector(reviewClient), #selector(setUp)]
         if let action, controllerActions.contains(action) {
             item.isEnabled = item.isEnabled && (client.isCurrentBuild || (action == #selector(toggleVPN) && snapshot.canTurnOff))
                 && (action == #selector(signIn) || action == #selector(cancelSignIn) || actionTask == nil)
@@ -323,6 +332,37 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 if reply.accepted != true {
                     frontendErrorMessage = "Account or client list changed. Open Add Client again"
                 }
+            } catch is CancellationError {
+            } catch {
+                frontendErrorMessage = client.message(for: error)
+            }
+        }
+        render()
+    }
+
+    @objc private func reviewClient() {
+        let state = snapshot
+        guard dialogTask == nil, actionTask == nil, !isShuttingDown, client.isCurrentBuild,
+              client.isSnapshotFresh, state.canReviewClient, let accountId = state.accountId else { return }
+        frontendErrorMessage = nil
+        actionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { reviewDialog = nil; actionTask = nil; render() }
+            do {
+                guard !isShuttingDown, !isRelaunching, client.isCurrentBuild, client.isSnapshotFresh,
+                      snapshot.accountId == accountId, snapshot.canReviewClient else { return }
+                let dialog = CloudGatewayMacClientReviewDialog(snapshot: snapshot)
+                reviewDialog = dialog
+                guard let identifier = try await dialog.prompt() else { return }
+                reviewDialog = nil
+                try Task.checkCancellation()
+                guard !isShuttingDown, !isRelaunching, client.isCurrentBuild, client.isSnapshotFresh,
+                      snapshot.accountId == accountId, snapshot.canReviewClient,
+                      snapshot.groups.flatMap(\.rows).contains(where: {
+                          $0.identifier == identifier && $0.removalPermission == .inactive
+                      }) else { return }
+                let outcome = try await client.removeReviewedClient(identifier: identifier, accountId: accountId)
+                frontendErrorMessage = client.message(forRemoval: outcome)
             } catch is CancellationError {
             } catch {
                 frontendErrorMessage = client.message(for: error)
