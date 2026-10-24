@@ -23,6 +23,7 @@ public final class CloudGatewayMacController {
     private var authRegistration: CloudGatewayAuthStateListenerRegistration?
     private var user: AuthenticatedUser?
     private var options: [CloudGatewayClientOption] = []
+    private var removedIdentifiers: Set<String> = []
     private var installed: [CloudGatewayMacInstalledConfig] = []
     private var profileObservation = CloudGatewayMacProfileObservation()
     private var isOffline = false
@@ -468,6 +469,9 @@ public final class CloudGatewayMacController {
         accountId: String, epoch: UInt64, token: CloudGatewayMacSessionToken?
     ) async throws {
         try requireCurrent(epoch, token: token)
+        let fetched = fetched.filter {
+            !removedIdentifiers.contains("\(accountId)/\($0.client.regionId)/\($0.client.clientId)")
+        }
         do {
             try await cache.authorize(accountId: accountId, role: role, options: fetched)
             await inventoryAuthorizationDidCommit()
@@ -542,6 +546,7 @@ public final class CloudGatewayMacController {
         cancelPendingWork()
         user = nil
         options = []
+        removedIdentifiers = []
         installed = []
         isOffline = false
         hasAuthorizedInventory = false
@@ -633,7 +638,6 @@ public final class CloudGatewayMacController {
         sessionFence.currentToken
     }
 
-    // periphery:ignore - Task 5 calls this inside the accepted removal command
     func evictCachedClient(identifier: String, session: CloudGatewayMacSessionToken) async throws {
         let epoch = sessionEpoch
         try requireCurrent(epoch, token: session)
@@ -871,6 +875,7 @@ public final class CloudGatewayMacController {
     private static func failure(for error: Error) -> CloudGatewayMacCommandFailure {
         switch error {
         case CloudGatewayMacConfigError.busy: .busy
+        case CloudGatewayMacConfigError.clientActive: .clientActive
         case CloudGatewayMacConfigError.stopTimedOut: .stopTimedOut
         case CloudGatewayMacCacheError.accessDenied: .accessDenied
         case CloudGatewayMacConfigError.unavailable, CloudGatewayMacConfigError.invalidConfig, is CloudGatewayMacCacheError:
@@ -879,6 +884,138 @@ public final class CloudGatewayMacController {
         case is CancellationError, CloudGatewayMacConfigError.cancelled: .signInRequired
         default: .vpnFailed
         }
+    }
+
+    // periphery:ignore - The production service calls this in task 6
+    @discardableResult
+    public func removeClient(
+        identifier: String,
+        onCompletion: (@MainActor (CloudGatewayMacCommandOutcome) -> Void)? = nil
+    ) -> Bool {
+        let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
+            else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
+            else if !canStartInventoryMutation { .busy }
+            else if !CloudGatewayMacProfileMetadata.validIdentifier(identifier)
+                || identifier.split(separator: "/").first != user.map({ Substring($0.uid) }) { .configUnavailable }
+            else { nil }
+        guard rejection == nil, let account = user, let token = sessionFence.currentToken else {
+            onCompletion?(.failed(rejection ?? .signInRequired))
+            return false
+        }
+        let epoch = sessionEpoch
+        commandTask = Task { [weak self] in
+            guard let self else { onCompletion?(.unknown); return }
+            var outcome = CloudGatewayMacCommandOutcome.failed(.internalError)
+            var dispatched = false
+            var removed = false
+            var cleanedUp = false
+            let authorize: @MainActor @Sendable () throws -> Void = { [weak self] in
+                guard let self else { throw CancellationError() }
+                try self.requireCurrent(epoch, token: token)
+                guard self.user?.uid == account.uid, !self.auth.isCustomTokenSignInSettling else {
+                    throw CancellationError()
+                }
+            }
+            defer {
+                if sessionEpoch == epoch {
+                    commandTask = nil
+                    resumeDeferredInventoryRefresh()
+                    refreshProfiles()
+                    notifyChange()
+                }
+                onCompletion?(outcome)
+            }
+            do {
+                try authorize()
+                let role = try await inventory.checkAccess(for: account)
+                try authorize()
+                try await observeRole(role, accountId: account.uid)
+                try authorize()
+                let fetched = try await inventory.fetchOptions(for: account, role: role)
+                try authorize()
+                let matches = fetched.filter { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
+                guard !removedIdentifiers.contains(identifier), matches.count == 1,
+                      let target = matches.first?.client, target.status != .removed,
+                      let owner = target.ownerUid, !owner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw CloudGatewayMacConfigError.unavailable
+                }
+                guard role == .admin || owner == account.uid else { throw CloudGatewayMacInventoryError.accessDenied }
+                try await configs.validateInactiveClient(identifier: identifier, authorize: authorize)
+                try authorize()
+                try await evictCachedClient(identifier: identifier, session: token)
+                try authorize()
+                _ = try await inventory.deleteClient(
+                    clientId: target.clientId, ownerUid: owner, regionId: target.regionId, for: account,
+                    authorize: { [configs] in
+                        try authorize()
+                        try await configs.validateInactiveClient(identifier: identifier, authorize: authorize)
+                        try authorize()
+                    },
+                    onDispatch: { dispatched = true }
+                )
+                // Record success before any cancellable local work or session check
+                removed = true
+                outcome = .completed(warning: .localCleanupIncomplete)
+                if sessionEpoch == epoch, sessionFence.isCurrent(token) { removedIdentifiers.insert(identifier) }
+                try authorize()
+                do {
+                    try await configs.removeClientProfile(identifier: identifier, authorize: authorize)
+                    try authorize()
+                    cleanedUp = true
+                } catch {
+                    try authorize()
+                }
+                let refreshedRole = try await inventory.checkAccess(for: account)
+                try authorize()
+                try await observeRole(refreshedRole, accountId: account.uid)
+                try authorize()
+                let remaining = try await inventory.fetchOptions(for: account, role: refreshedRole)
+                try authorize()
+                try await publishInventory(remaining, role: refreshedRole, accountId: account.uid, epoch: epoch, token: token)
+                try authorize()
+                inventorySchedule.complete(at: inventoryNow(), succeeded: true, jitter: inventoryJitter())
+                outcome = .completed(warning: cleanedUp ? nil : .localCleanupIncomplete)
+                errorMessage = cleanedUp ? nil
+                    : "Client was removed. Disconnect it explicitly or stop it in System Settings before local cleanup, then Refresh"
+            } catch {
+                let denied: Bool
+                switch error {
+                case CloudGatewayAppError.apiAccessDenied(_): denied = true
+                case CloudGatewayMacInventoryError.accessDenied: denied = !dispatched || removed
+                default: denied = false
+                }
+                let isCurrent = (try? authorize()) != nil
+                if removed {
+                    outcome = .completed(warning: cleanedUp && isCurrent ? .inventoryNotRefreshed : .localCleanupIncomplete)
+                } else if denied { outcome = .failed(.accessDenied) }
+                else if dispatched { outcome = .unknown }
+                else if error is CloudGatewayMacInventoryError || error is URLError { outcome = .failed(.networkUnavailable) }
+                else if case CloudGatewayAppError.accessDenied(_) = error { outcome = .failed(.accessDenied) }
+                else { outcome = .failed(Self.failure(for: error)) }
+                guard isCurrent else { return }
+                if denied {
+                    if removed { outcome = .completed(warning: .localCleanupIncomplete) }
+                    clearInventoryPresentation(for: account.uid)
+                    try? await cache.deny(accountId: account.uid)
+                    guard (try? authorize()) != nil else { return }
+                    signOut()
+                    accessResult = .denied
+                    errorMessage = "Account access was denied. Sign in again after access is restored"
+                } else if removed {
+                    errorMessage = cleanedUp
+                        ? "Client was removed, but the client list could not refresh. Choose Refresh"
+                        : "Client was removed. Disconnect it explicitly or stop it in System Settings before local cleanup, then Refresh"
+                } else if dispatched {
+                    errorMessage = "Could not confirm whether the client was removed. Refresh the client list before trying again"
+                } else if error as? CloudGatewayMacConfigError == .clientActive {
+                    errorMessage = "Disconnect this client and wait for it to stop before removing it"
+                } else {
+                    errorMessage = "Client could not be removed. Refresh before trying again"
+                }
+            }
+        }
+        notifyChange()
+        return true
     }
 
     public func clientCreationContext() -> CloudGatewayMacClientCreationContext? {

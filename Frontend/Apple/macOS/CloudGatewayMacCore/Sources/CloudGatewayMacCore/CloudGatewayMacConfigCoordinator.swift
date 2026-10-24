@@ -287,7 +287,6 @@ public actor CloudGatewayMacConfigCoordinator {
         }
     }
 
-    // periphery:ignore - Task 5 uses this gate before the client DELETE handoff
     public func validateInactiveClient(
         identifier: String,
         authorize: @escaping @MainActor @Sendable () throws -> Void
@@ -297,7 +296,6 @@ public actor CloudGatewayMacConfigCoordinator {
         }
     }
 
-    // periphery:ignore - Task 5 removes the profile after confirmed cloud removal
     public func removeClientProfile(
         identifier: String,
         authorize: @escaping @MainActor @Sendable () throws -> Void

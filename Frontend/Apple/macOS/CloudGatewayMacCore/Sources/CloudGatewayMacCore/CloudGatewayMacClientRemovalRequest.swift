@@ -21,14 +21,9 @@ public enum CloudGatewayMacClientRemovalRequest {
             session: session, validateSession: validateSession, authorize: authorize, onDispatch: onDispatch
         )
         let client = CloudGatewayControlPlaneClient(originHost: originHost, session: transport)
-        let response: CloudGatewayDeleteClientResponse
-        do {
-            response = try await client.deleteClient(
-                clientId: clientId, userId: ownerUid, regionId: regionId, idToken: token
-            )
-        } catch CloudGatewayAppError.apiAccessDenied(_) {
-            throw CloudGatewayMacInventoryError.accessDenied
-        }
+        let response = try await client.deleteClient(
+            clientId: clientId, userId: ownerUid, regionId: regionId, idToken: token
+        )
         guard response.userId == ownerUid, response.regionId == regionId,
               response.clientId == clientId, response.status == .removed else {
             throw CloudGatewayMacInventoryError.unavailable

@@ -108,7 +108,10 @@ func clientRemovalRetainsDefiniteAPIAccessDenials(status: Int) async throws {
     let fixture = ClientRemovalFixture()
     fixture.session.statusCode = status
     fixture.session.body = #"{"error":{"message":"fixture denial"}}"#
-    await #expect(throws: CloudGatewayMacInventoryError.accessDenied) { _ = try await fixture.perform() }
+    do {
+        _ = try await fixture.perform()
+        Issue.record("Expected a definite API denial")
+    } catch CloudGatewayAppError.apiAccessDenied(_) {}
     #expect(fixture.events.last == "dispatch")
     #expect(fixture.session.requests.count == 1)
 }
@@ -123,7 +126,10 @@ func clientRemovalRetainsDefiniteAPIAccessDenials(status: Int) async throws {
     fixture.currentAccountId = "another-account"
     request.cancel()
     gate.resume()
-    await #expect(throws: CloudGatewayMacInventoryError.accessDenied) { try await request.value }
+    do {
+        try await request.value
+        Issue.record("Expected a definite API denial")
+    } catch CloudGatewayAppError.apiAccessDenied(_) {}
     #expect(fixture.session.requests.count == 1)
 }
 

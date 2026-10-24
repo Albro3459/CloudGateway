@@ -122,29 +122,29 @@ path. Review the app adapter's thin delegation manually and compile it unsigned.
 
 In [the controller](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacController.swift):
 
-- [ ] Add `removeClient(identifier:onCompletion:) -> Bool` following the existing
+- [x] Add `removeClient(identifier:onCompletion:) -> Bool` following the existing
   accepted-task/completion pattern. Synchronous rejection returns a typed reason
-- [ ] Capture session token/epoch and the explicit identifier. Refuse restoration,
+- [x] Capture session token/epoch and the explicit identifier. Refuse restoration,
   auth settling, inventory publication, another command, shutdown, or pending
   cancellation. Keep `hasPendingWork` and refresh deferral accurate
-- [ ] Refresh role/options with bounded reads inside the command. Resolve exactly
+- [x] Refresh role/options with bounded reads inside the command. Resolve exactly
   one matching cloud record, require owner metadata, and enforce current role
   plus owner rules. Do not require a usable config, enabled region, spare
   capacity, or installed profile to delete a known client
-- [ ] Check inactive target, persist cache eviction, update presentation, then
+- [x] Check inactive target, persist cache eviction, update presentation, then
   recheck session/inactive status at dispatch. Capture known remote success
   independently of subsequent session cancellation
-- [ ] After remote success, perform fenced local cleanup and refresh. Publish
+- [x] After remote success, perform fenced local cleanup and refresh. Publish
   only to the original current session. Exclude the confirmed removed target
   even if a subsequent inventory read contains an older copy
-- [ ] If post-response observation finds an active or unobservable profile, leave
+- [x] If post-response observation finds an active or unobservable profile, leave
   it untouched and return successful removal with `localCleanupIncomplete`.
   Assert zero stop/remove calls in that case. Recovery asks for explicit stop
   before cleanup. Do not infer that logout or account change stopped a tunnel
-- [ ] Apply the behavior plan's failure table and warning precedence. Never
+- [x] Apply the behavior plan's failure table and warning precedence. Never
   restore the pre-delete cached snapshot on error. Only fresh authoritative
   inventory can make a still-active target eligible again
-- [ ] Preserve original-account success in completion while letting IPC redact
+- [x] Preserve original-account success in completion while letting IPC redact
   it after session change. Do not clean up profiles or selection using the new
   account's state. Keep success/unknown sticky across deferred cleanup failures
 
@@ -243,3 +243,13 @@ Full unsigned macOS validation passed: 677 core/IPC tests, both strict Periphery
 scans, app/extension build, packaging, and 58 CLI smoke checks. Actual request
 fixtures exercise the shared API decoder and production-used helper. No shared
 Apple production code changed. Task 5 supplies the controller authorization gate.
+
+### Task 5: domain removal operation
+
+Secure Codex 6.1 Sol High review round 1 passed with no actionable findings.
+Full unsigned macOS validation passed: 704 core/IPC tests, both strict Periphery
+scans, app/extension build, packaging, and 58 CLI smoke checks. Real controller
+tests cover durable eviction before HTTP, fresh owner/admin authorization,
+active-profile rejection, response loss, account changes, offline restart, and
+sticky success. Confirmed removals stay excluded from the original session.
+Task 6 connects production service and IPC and removes the last method annotation.

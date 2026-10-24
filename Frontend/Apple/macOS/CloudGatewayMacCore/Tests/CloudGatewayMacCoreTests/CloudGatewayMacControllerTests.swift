@@ -1130,6 +1130,10 @@ import Testing
     #expect(!fixture.controller.canStartInventoryMutation)
     #expect(fixture.controller.clientCreationContext() == nil)
     #expect(!fixture.controller.createClient(regionId: "region", clientName: "Other", context: context))
+    var removal: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.removeClient(identifier: fixture.config.identifier) { removal = $0 })
+    #expect(removal == .failed(.busy))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
     await #expect(throws: CloudGatewayMacConfigError.busy) {
         try await fixture.controller.evictCachedClient(identifier: fixture.config.identifier, session: session)
     }
@@ -1185,18 +1189,13 @@ import Testing
     await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
     try await fixture.start()
     defer { fixture.controller.shutdown() }
-    let session = try #require(fixture.controller.session)
-    let context = try #require(fixture.controller.clientCreationContext())
     let command = MacControllerGate()
-    fixture.inventory.createGate = command
-    fixture.inventory.createError = CloudGatewayMacInventoryError.offline
+    fixture.inventory.removalTokenGate = command
     var completion: CloudGatewayMacCommandOutcome?
-    // Keep an accepted command open until task 5 supplies the removal operation
-    #expect(fixture.controller.createClient(regionId: "region", clientName: "New Mac", context: context) { completion = $0 })
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { completion = $0 })
     try await controllerWaitUntil { await command.entered }
     let fetches = fixture.inventory.fetchCount
     fixture.controller.refresh()
-    try await fixture.controller.evictCachedClient(identifier: fixture.config.identifier, session: session)
     let expectedIdentifiers = hasRemainingClient ? [remaining.identifier] : []
     #expect(fixture.domainSnapshot.domain.installedIdentifiers == expectedIdentifiers)
     #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == expectedIdentifiers)
@@ -1212,7 +1211,9 @@ import Testing
     fixture.inventory.options = hasRemainingClient ? [remainingOption] : []
     await command.release()
     try await controllerWaitUntil { completion != nil && !fixture.controller.hasPendingWork }
-    #expect(fixture.inventory.fetchCount == fetches + 1)
+    #expect(completion == .completed(warning: nil))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
     #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == expectedIdentifiers)
     let reopened = CloudGatewayMacAccountCache(directory: fixture.directory)
     #expect(try await reopened.load(accountId: "user-a").configs.map(\.identifier) == expectedIdentifiers)
@@ -1849,15 +1850,16 @@ private struct MacControllerFixture {
 
     func option(
         clientId: String = "client", name: String = "Mac", wireGuardConfig: String = controllerWireGuardConfig,
-        hostname: String? = nil, ipv4: String? = nil, ownerEmail: String? = nil, assignedIp: String? = nil
+        hostname: String? = nil, ipv4: String? = nil, ownerEmail: String? = nil, assignedIp: String? = nil,
+        ownerUid: String? = "user-a", status: CloudGatewayClientStatus = .active, enabled: Bool = true
     ) -> CloudGatewayClientOption {
         CloudGatewayClientOption(
             client: CloudGatewayClient(
-                clientId: clientId, clientName: name, regionId: "region", status: .active,
+                clientId: clientId, clientName: name, regionId: "region", status: status,
                 wireGuardConfig: wireGuardConfig, assignedTunnelIpv4: assignedIp,
                 serverEndpointIpv4: ipv4, serverEndpointHostname: hostname,
-                ownerUid: "user-a", ownerEmail: ownerEmail
-            ), region: CloudGatewayRegion(regionId: "region", displayName: "Region", enabled: true)
+                ownerUid: ownerUid, ownerEmail: ownerEmail
+            ), region: CloudGatewayRegion(regionId: "region", displayName: "Region", enabled: enabled)
         )
     }
 
@@ -1970,6 +1972,10 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
     var createGate: MacControllerGate?
     var fetchGate: MacControllerGate?
     var accessGate: MacControllerGate?
+    var role: CloudGatewayMacAccountRole = .user
+    var filtersOwners = true
+    var removalTokenGate: MacControllerGate?
+    var removalTokenError: (any Error)?
     private(set) var accessCount = 0
     private(set) var fetchCount = 0
     private(set) var regionsCount = 0
@@ -1982,14 +1988,14 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
         accessCount += 1
         await accessGate?.arriveAndWait()
         if let accessError { throw accessError }
-        return .user
+        return role
     }
 
-    func fetchOptions(for user: AuthenticatedUser, role _: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption] {
+    func fetchOptions(for user: AuthenticatedUser, role: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption] {
         fetchCount += 1
         await fetchGate?.arriveAndWait()
         if let fetchError { throw fetchError }
-        return options.filter { $0.client.ownerUid == user.uid }
+        return options.filter { !filtersOwners || role == .admin || $0.client.ownerUid == user.uid }
     }
 
     func fetchCreateRegions(for _: AuthenticatedUser) async throws -> [CloudGatewayRegion] {
@@ -2016,7 +2022,11 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
         try await CloudGatewayMacClientRemovalRequest.perform(
             clientId: clientId, ownerUid: ownerUid, regionId: regionId,
             originHost: "gocloudlaunch.com", session: removalSession,
-            loadToken: { "fixture-token" },
+            loadToken: { [self] in
+                await removalTokenGate?.arriveAndWait()
+                if let removalTokenError { throw removalTokenError }
+                return "fixture-token"
+            },
             validateSession: { [self] in
                 guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
             },
@@ -2034,12 +2044,15 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     private var startGate: MacControllerGate?
     private var stopGate: MacControllerGate?
     private var scopedStopLookupGate: MacControllerGate?
+    private var removeError: CloudGatewayMacConfigError?
+    private var removeGate: MacControllerGate?
     private(set) var scopedStopWasCancelled: Bool?
     private(set) var readCount = 0
     private(set) var completedReads = 0
     private(set) var startedIdentifiers: [String] = []
     private(set) var savedIdentifiers: [String] = []
     private(set) var stoppedIdentifiers: [String] = []
+    private(set) var removedIdentifiers: [String] = []
 
     func setProfiles(_ profiles: [CloudGatewayMacInstalledProfile]) { values = profiles }
     func pauseNextRead(_ gate: MacControllerGate) { nextReadGate = gate }
@@ -2049,6 +2062,8 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     func pauseStart(_ gate: MacControllerGate) { startGate = gate }
     func pauseStop(_ gate: MacControllerGate) { stopGate = gate }
     func pauseScopedStopLookup(_ gate: MacControllerGate) { scopedStopLookupGate = gate }
+    func setRemoveError(_ error: CloudGatewayMacConfigError) { removeError = error }
+    func pauseRemove(_ gate: MacControllerGate) { removeGate = gate }
 
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         readCount += 1
@@ -2105,9 +2120,12 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     }
 
     func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
+        await removeGate?.arriveAndWait()
         try Task.checkCancellation()
         try await authorize()
         _ = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: values)
+        if let removeError { throw removeError }
+        removedIdentifiers.append(identifier)
         values.removeAll { $0.identifier == identifier }
     }
 }
@@ -2586,4 +2604,683 @@ private actor MacControllerGate {
     #expect(drained)
     #expect(await fixture.profiles.startedIdentifiers == (managed ? [] : [fixture.config.identifier]))
     #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true], [CloudGatewayTunnelStatus.disconnected, .invalid])
+@MainActor func macControllerRemovalEvictsBeforeHTTPAndPreservesOtherSelectionAndActiveVPN(
+    selectedTarget: Bool, targetStatus: CloudGatewayTunnelStatus
+) async throws {
+    let fixture = try MacControllerFixture()
+    let other = CloudGatewayMacInstalledConfig(
+        accountId: "user-a", identifier: "user-a/region/other",
+        snapshot: CloudGatewayConfigSnapshot(
+            clientId: "other", regionId: "region", clientName: "Other", regionDisplayName: "Region",
+            status: .active, configHash: fixture.config.snapshot.configHash,
+            secretReference: fixture.config.snapshot.secretReference, readAt: Date(), updatedAt: nil
+        )
+    )
+    fixture.inventory.options = [fixture.option(), fixture.option(clientId: "other")]
+    try await fixture.cache.authorize(accountId: "user-a", role: .user, options: fixture.inventory.options)
+    try await fixture.cache.save(fixture.config)
+    try await fixture.cache.save(other)
+    try await fixture.cache.select(identifier: selectedTarget ? fixture.config.identifier : other.identifier, accountId: "user-a")
+    await fixture.profiles.setProfiles([
+        try fixture.profile(status: targetStatus),
+        .init(identifier: other.identifier, reference: try other.reference, status: .connected),
+    ])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let token = MacControllerGate()
+    fixture.inventory.removalTokenGate = token
+    var outcome: CloudGatewayMacCommandOutcome?
+    let caller = Task { @MainActor in
+        fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 }
+    }
+    #expect(await caller.value)
+    caller.cancel()
+    try await controllerWaitUntil { await token.entered }
+    let reopened = CloudGatewayMacAccountCache(directory: fixture.directory)
+    #expect(try await reopened.load(accountId: "user-a").configs.map(\.identifier) == [other.identifier])
+    #expect(try await reopened.load(accountId: "user-a").selectedIdentifier == (selectedTarget ? nil : other.identifier))
+    #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == [other.identifier])
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers == [other.identifier])
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == (selectedTarget ? nil : other.identifier))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(fixture.controller.hasPendingWork)
+    let fetches = fixture.inventory.fetchCount
+    fixture.controller.refresh()
+    #expect(fixture.inventory.fetchCount == fetches)
+    var rejected: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.removeClient(identifier: other.identifier) { rejected = $0 })
+    #expect(rejected == .failed(.busy))
+    await token.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: nil))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == [other.identifier])
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == (selectedTarget ? nil : other.identifier))
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) { try await fixture.cache.save(fixture.config) }
+    #expect(await fixture.profiles.removedIdentifiers == [fixture.config.identifier])
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+    #expect(try await fixture.profiles.installedProfiles().map(\.identifier) == [other.identifier])
+    var connected: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier) { connected = $0 })
+    #expect(connected == .failed(.configUnavailable))
+}
+
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerRemovalAllowsDisabledConfiglessUninstalledAndAdminTargets(admin: Bool, configless: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    fixture.inventory.role = admin ? .admin : .user
+    fixture.inventory.options = [fixture.option(
+        wireGuardConfig: configless ? "" : controllerWireGuardConfig,
+        ownerUid: admin ? "target-owner" : "user-a", enabled: false
+    )]
+    fixture.inventory.removalSession.body = admin
+        ? #"{"userId":"target-owner","regionId":"region","clientId":"client","status":"removed"}"#
+        : #"{"userId":"user-a","regionId":"region","clientId":"client","status":"removed"}"#
+    try await fixture.start(ready: false)
+    defer { fixture.controller.shutdown() }
+    let accesses = fixture.inventory.accessCount
+    let fetches = fixture.inventory.fetchCount
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .completed(warning: nil))
+    #expect(fixture.inventory.accessCount == accesses + 2)
+    #expect(fixture.inventory.fetchCount == fetches + 2)
+    let request = try #require(fixture.inventory.removalSession.requests.first)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(request.httpMethod == "DELETE")
+    #expect(request.url?.absoluteString == "https://region.gocloudlaunch.com/api/clients/client")
+    let body = try JSONDecoder().decode([String: String].self, from: #require(request.httpBody))
+    #expect(body == ["userId": admin ? "target-owner" : "user-a", "regionId": "region"])
+    #expect(fixture.inventory.regionsCount == 0)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+}
+
+@Test(arguments: ["user-b/region/client", "user-a/region", "user-a/region/client/other", "user-a/../client", ""])
+@MainActor func macControllerRemovalRejectsMalformedOrForeignNamespaceSynchronously(identifier: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let accesses = fixture.inventory.accessCount
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.removeClient(identifier: identifier) { outcome = $0 })
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(fixture.inventory.accessCount == accesses)
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+}
+
+@Test(arguments: ["missing", "removed", "duplicate", "ownerless", "blank-owner", "foreign"])
+@MainActor func macControllerRemovalRequiresOneFreshNonremovedOwnedRecord(kind: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let before = try await fixture.cache.load(accountId: "user-a")
+    fixture.inventory.filtersOwners = false
+    fixture.inventory.options = switch kind {
+    case "missing": []
+    case "removed": [fixture.option(status: .removed)]
+    case "duplicate": [fixture.option(), fixture.option()]
+    case "ownerless": [fixture.option(ownerUid: nil)]
+    case "blank-owner": [fixture.option(ownerUid: "  ")]
+    default: [fixture.option(ownerUid: "foreign-owner")]
+    }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(kind == "foreign" ? .accessDenied : .configUnavailable))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    if kind != "foreign" { #expect(try await fixture.cache.load(accountId: "user-a") == before) }
+    else { #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed)) }
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [CloudGatewayTunnelStatus.connecting, .connected, .reasserting, .disconnecting])
+@MainActor func macControllerRemovalRejectsAnActiveTargetWithoutEviction(status: CloudGatewayTunnelStatus) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: status)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.clientActive))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.map(\.identifier) == [fixture.config.identifier])
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalRejectsUnreadableOrDuplicateProfilesBeforeHTTP(duplicate: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    if duplicate { await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected), try fixture.profile(status: .invalid)]) }
+    else { await fixture.profiles.failReads() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test(arguments: ["active", "unobservable", "logout", "account", "settling"])
+@MainActor func macControllerRemovalRechecksAfterTokenLoadingBeforeHandoff(change: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let gate = MacControllerGate()
+    fixture.inventory.removalTokenGate = gate
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await gate.entered }
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers.isEmpty)
+    switch change {
+    case "active": await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    case "unobservable": await fixture.profiles.failReads()
+    case "logout": #expect(fixture.controller.signOut())
+    case "account": fixture.auth.emit(.init(uid: "user-b", email: nil))
+    default: fixture.auth.isCustomTokenSignInSettling = true
+    }
+    await gate.release()
+    try await controllerWaitUntil { outcome != nil }
+    let failure: CloudGatewayMacCommandFailure = change == "active" ? .clientActive
+        : change == "unobservable" ? .configUnavailable : .signInRequired
+    #expect(outcome == .failed(failure))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a").configs.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalFencesSessionAfterFinalProfileReload(logout: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let token = MacControllerGate()
+    fixture.inventory.removalTokenGate = token
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await token.entered }
+    let profile = MacControllerGate()
+    await fixture.profiles.pauseNextRead(profile)
+    await token.release()
+    try await controllerWaitUntil { await profile.entered }
+    if logout { #expect(fixture.controller.signOut()) }
+    else { fixture.auth.emit(.init(uid: "user-b", email: nil)) }
+    await profile.release()
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.signInRequired))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test(arguments: ["active", "unobservable", "remove-fails", "logout", "account", "refresh-fails", "cleanup-and-refresh"])
+@MainActor func macControllerRemovalPreservesRemoteSuccessThroughCleanupAndRefreshFailures(change: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    switch change {
+    case "active": await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    case "unobservable": await fixture.profiles.failReads()
+    case "remove-fails": await fixture.profiles.setRemoveError(.profileInstallationFailed)
+    case "logout": #expect(fixture.controller.signOut())
+    case "account": fixture.auth.emit(.init(uid: "user-b", email: nil))
+    case "refresh-fails": fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline
+    default:
+        await fixture.profiles.failReads()
+        fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline
+    }
+    response.resume()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: change == "refresh-fails" ? .inventoryNotRefreshed : .localCleanupIncomplete))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers == (change == "refresh-fails" ? [fixture.config.identifier] : []))
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a").configs.isEmpty)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    if change == "account" { #expect(fixture.domainSnapshot.domain.accountId == "user-b") }
+}
+
+@Test(arguments: [401, 403, 400, 404, 409, 500, 200])
+@MainActor func macControllerRemovalClassifiesHTTPDenialsAndUncertainResponses(status: Int) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    fixture.inventory.removalSession.statusCode = status
+    fixture.inventory.removalSession.body = #"{"error":{"message":"403 already removed"}}"#
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == (status == 401 || status == 403 ? .failed(.accessDenied) : .unknown))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.isEmpty)
+    #expect(fixture.domainSnapshot.domain.access == (status == 401 || status == 403 ? .denied : .online))
+}
+
+@Test(arguments: [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorCancelled])
+@MainActor func macControllerRemovalResponseLossIsUnknownAndSurvivesDeferredRefreshFailure(code: Int) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    fixture.inventory.removalSession.error = URLError(URLError.Code(rawValue: code))
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline
+    fixture.controller.refresh()
+    response.resume()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .unknown)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.isEmpty)
+}
+
+@Test(arguments: ["access", "options", "token"])
+@MainActor func macControllerRemovalPreDispatchReadFailureDoesNotDeleteOrUseOfflineCache(boundary: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    if boundary == "access" { fixture.inventory.accessError = CloudGatewayMacInventoryError.offline }
+    if boundary == "options" { fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline }
+    if boundary == "token" { fixture.inventory.removalTokenError = CloudGatewayMacInventoryError.offline }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.networkUnavailable))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.isEmpty == (boundary == "token"))
+}
+
+@Test(arguments: ["access", "options", "token"])
+@MainActor func macControllerRemovalPredispatchDenialInvalidatesAccount(boundary: String) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    if boundary == "access" { fixture.inventory.accessError = CloudGatewayMacInventoryError.accessDenied }
+    if boundary == "options" { fixture.inventory.fetchError = CloudGatewayMacInventoryError.accessDenied }
+    if boundary == "token" { fixture.inventory.removalTokenError = CloudGatewayMacInventoryError.accessDenied }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.accessDenied))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed))
+    #expect(fixture.domainSnapshot.domain.access == .denied)
+}
+
+@Test @MainActor func macControllerRemovalRefreshesRoleAndHonorsDemotionBeforeResolvingOwner() async throws {
+    let fixture = try MacControllerFixture()
+    fixture.inventory.role = .admin
+    fixture.inventory.options = [fixture.option(ownerUid: "foreign-owner")]
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    fixture.inventory.filtersOwners = false
+    let access = MacControllerGate()
+    fixture.inventory.accessGate = access
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await access.entered }
+    fixture.inventory.role = .user
+    await access.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.accessDenied))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed))
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test @MainActor func macControllerRemovalEvictionWriteFailurePreventsHTTP() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    let profile = MacControllerGate()
+    await fixture.profiles.pauseNextRead(profile)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await profile.entered }
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: fixture.directory, includingPropertiesForKeys: nil).first)
+    try FileManager.default.moveItem(at: accountDirectory, to: fixture.directory.appendingPathComponent("backup"))
+    try Data().write(to: accountDirectory)
+    await profile.release()
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers == [fixture.config.identifier])
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalEvictionSurvivesRestartOffline(confirmed: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    if !confirmed { fixture.inventory.removalSession.error = URLError(.networkConnectionLost) }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == (confirmed ? .completed(warning: nil) : .unknown))
+    fixture.controller.shutdown()
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
+    let cache = CloudGatewayMacAccountCache(directory: fixture.directory)
+    let restarted = CloudGatewayMacController(
+        auth: fixture.auth, deviceAuth: fixture.deviceAuth, inventory: fixture.inventory, profiles: fixture.profiles,
+        cache: cache, configs: CloudGatewayMacConfigCoordinator(secrets: fixture.secrets, profiles: fixture.profiles, snapshots: cache),
+        dashboardOrigin: URL(string: "https://dashboard.example.com")!
+    )
+    restarted.start()
+    defer { restarted.shutdown() }
+    try await controllerWaitUntil { !restarted.hasPendingWork }
+    #expect(restarted.snapshot().domain.accountId == "user-a")
+    #expect(restarted.snapshot().domain.access == .offline)
+    #expect(restarted.snapshot().domain.clients.isEmpty)
+    #expect(restarted.snapshot().domain.installedIdentifiers.isEmpty)
+    #expect(restarted.snapshot().lastSelectedIdentifier == nil)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalLeavesLateActiveOrNewSessionProfileUntouched(atMutation: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let cleanup = MacControllerGate()
+    await fixture.profiles.pauseRemove(cleanup)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await cleanup.entered }
+    if atMutation { await fixture.profiles.setProfiles([try fixture.profile(status: .connected)]) }
+    else { fixture.auth.emit(.init(uid: "user-b", email: nil)) }
+    await cleanup.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: .localCleanupIncomplete))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test(arguments: ["restoring", "settling", "signed-out", "shutdown"])
+@MainActor func macControllerRemovalRequiresASettledStartedSession(state: String) async throws {
+    let fixture = try MacControllerFixture()
+    if state == "restoring" {
+        let access = MacControllerGate()
+        fixture.inventory.accessGate = access
+        fixture.controller.start()
+        try await controllerWaitUntil { await access.entered }
+        var outcome: CloudGatewayMacCommandOutcome?
+        #expect(!fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+        #expect(outcome == .failed(.signInRequired))
+        await access.release()
+    } else {
+        try await fixture.start()
+        if state == "settling" { fixture.auth.isCustomTokenSignInSettling = true }
+        if state == "signed-out" {
+            #expect(fixture.controller.signOut())
+            try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+        }
+        if state == "shutdown" { fixture.controller.shutdown() }
+        var outcome: CloudGatewayMacCommandOutcome?
+        #expect(!fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+        #expect(outcome == .failed(state == "signed-out" ? .signInRequired : .busy))
+    }
+    fixture.controller.shutdown()
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+}
+
+@Test(arguments: ["access", "options"], [false, true])
+@MainActor func macControllerRemovalFencesOriginalSessionDuringFreshInventory(boundary: String, sameAccount: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let gate = MacControllerGate()
+    if boundary == "access" { fixture.inventory.accessGate = gate }
+    else { fixture.inventory.fetchGate = gate }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { await gate.entered }
+    #expect(fixture.controller.signOut())
+    fixture.auth.emit(.init(uid: sameAccount ? "user-a" : "user-b", email: nil))
+    fixture.inventory.accessGate = nil
+    fixture.inventory.fetchGate = nil
+    await gate.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.signInRequired))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.count == 1)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalPreservesSuccessWhenFinalAuthorizationFails(cleanupFails: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.accessDenied
+    if cleanupFails { await fixture.profiles.failReads() }
+    response.resume()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: .localCleanupIncomplete))
+    #expect(fixture.domainSnapshot.domain.access == .denied)
+    #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalGenericDenialAfterHandoffStaysUnknown(genericInventoryError: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    fixture.inventory.removalSession.error = genericInventoryError
+        ? CloudGatewayMacInventoryError.accessDenied : CloudGatewayAppError.accessDenied("fixture error")
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .unknown)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(fixture.domainSnapshot.domain.accountId == "user-a")
+    #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+}
+
+@Test @MainActor func macControllerRemovalPostResponseSettlementCannotRestoreStaleTarget() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    fixture.auth.isCustomTokenSignInSettling = true
+    response.resume()
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .completed(warning: .localCleanupIncomplete))
+    fixture.auth.isCustomTokenSignInSettling = false
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.isEmpty)
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test @MainActor func macControllerRemovalUncertainTargetOnlyReturnsThroughFreshInventory() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    fixture.inventory.removalSession.error = URLError(.timedOut)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .unknown)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == [fixture.config.identifier])
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nil)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerRemovalSuccessDuringFinalRefreshCannotMutateNewSession(sameAccount: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    response.resume()
+    try await controllerWaitUntil { await fetch.entered }
+    #expect(await fixture.profiles.removedIdentifiers == [fixture.config.identifier])
+    #expect(fixture.controller.signOut())
+    fixture.auth.emit(.init(uid: sameAccount ? "user-a" : "user-b", email: nil))
+    fixture.inventory.fetchGate = nil
+    await fetch.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: .localCleanupIncomplete))
+    #expect(fixture.domainSnapshot.domain.accountId == (sameAccount ? "user-a" : "user-b"))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test @MainActor func macControllerRemovalConfirmedTargetCannotBeDeletedAgainFromStaleCloudCopy() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .completed(warning: nil))
+    outcome = nil
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test @MainActor func macControllerRemovalCompletionCannotCleanUpTheNextAccountsSelectionOrProfile() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    let nextConfig = CloudGatewayMacInstalledConfig(
+        accountId: "user-b", identifier: "user-b/region/client",
+        snapshot: fixture.config.snapshot
+    )
+    let nextOption = fixture.option(ownerUid: "user-b")
+    try await fixture.cache.authorize(accountId: "user-b", role: .user, options: [nextOption])
+    try await fixture.cache.save(nextConfig)
+    try await fixture.cache.select(identifier: nextConfig.identifier, accountId: "user-b")
+    await fixture.profiles.setProfiles([
+        try fixture.profile(status: .disconnected),
+        .init(identifier: nextConfig.identifier, reference: try nextConfig.reference, status: .connected),
+    ])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.removeClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { response.entered }
+    fixture.inventory.options = [nextOption]
+    fixture.auth.emit(.init(uid: "user-b", email: nil))
+    var rejected: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.removeClient(identifier: nextConfig.identifier) { rejected = $0 })
+    #expect(rejected == .failed(.busy))
+    response.resume()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: .localCleanupIncomplete))
+    #expect(fixture.domainSnapshot.domain.accountId == "user-b")
+    #expect(fixture.domainSnapshot.lastSelectedIdentifier == nextConfig.identifier)
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers == [nextConfig.identifier])
+    #expect(try await fixture.cache.load(accountId: "user-b").selectedIdentifier == nextConfig.identifier)
+    #expect(try await fixture.cache.load(accountId: "user-b").configs.map(\.identifier) == [nextConfig.identifier])
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(try await fixture.profiles.installedProfiles().count == 2)
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test @MainActor func macControllerRemovalRejectsManagedStopWhileItDrainsAReconnect() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let authorization = MacControllerGate()
+    await fixture.secrets.pauseAuthorization(authorization)
+    var connected: CloudGatewayMacCommandOutcome?
+    var stopped: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier, displacingOtherProfiles: false) { connected = $0 })
+    try await controllerWaitUntil { await authorization.entered }
+    #expect(fixture.controller.disconnectClient(identifier: fixture.config.identifier) { stopped = $0 })
+    var removal: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.removeClient(identifier: fixture.config.identifier) { removal = $0 })
+    #expect(removal == .failed(.busy))
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    await authorization.release()
+    try await controllerWaitUntil { connected != nil && stopped != nil }
+    #expect(stopped == .completed(warning: nil))
+    #expect(await fixture.profiles.removedIdentifiers.isEmpty)
 }

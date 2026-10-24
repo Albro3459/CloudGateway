@@ -15,7 +15,6 @@ public protocol CloudGatewayMacInventoryServicing: AnyObject {
     func fetchOptions(for user: AuthenticatedUser, role: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption]
     func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion]
     func createClient(regionId: String, clientName: String, for user: AuthenticatedUser) async throws -> String
-    // periphery:ignore - Transport and controller callers follow in removal tasks 4 and 5
     func deleteClient(
         clientId: String, ownerUid: String, regionId: String, for user: AuthenticatedUser,
         authorize: @escaping @MainActor () async throws -> Void,
