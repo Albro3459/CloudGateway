@@ -33,6 +33,8 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
     #expect(try topic(["help", "auth"]) == "auth")
     #expect(try topic(["auth", "-h"]) == "auth")
     #expect(try topic(["up", "--help"]) == "up")
+    #expect(try topic(["add", "--help"]) == "add")
+    #expect(try topic(["help", "add", "--json"]) == "add")
     #expect(try topic(["--json", "help", "status"]) == "status")
 }
 
@@ -129,4 +131,20 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
     #expect(CloudGatewayMacLaunchMode(arguments: [link, "--cli", "--cli"]) == .cli(["--cli"]))
     #expect(CloudGatewayMacLaunchMode(arguments: [link, "--controller"]) == .conflict)
     #expect(CloudGatewayMacLaunchMode(arguments: ["/tmp/CloudGateway", "status"]) == .menu)
+}
+
+@Test func cliAddParserRequiresRegionAndNameAndNormalizesNames() throws {
+    #expect(try command(["add", "sanjose", "Mac mini"]) == .add(region: "sanjose", name: "Mac mini"))
+    #expect(try command(["--json", "add", "us-sanjose-1", "  Work Mac  ", "--timeout", "60"])
+        == .add(region: "us-sanjose-1", name: "Work Mac"))
+    #expect(try command(["add", "California", String(repeating: "é", count: 80)])
+        == .add(region: "California", name: String(repeating: "é", count: 80)))
+    for arguments in [
+        ["add"], ["add", "sanjose"], ["add", "sanjose", ""], ["add", "sanjose", "   "],
+        ["add", "sanjose", "Mac", "extra"], ["add", "us/sanjose", "Mac"],
+        ["add", "sanjose", String(repeating: "a", count: 81)], ["add", "sanjose", "Mac\u{1B}[31m"],
+        ["add", "sanjose", "Mac\nmini"], ["add", "sanjose", "Mac", "--allow-disconnect"],
+    ] {
+        #expect(usageFailure(arguments)?.command == "add", "\(arguments)")
+    }
 }

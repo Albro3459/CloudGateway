@@ -126,6 +126,7 @@ public struct CloudGatewayMacCLI {
             switch command {
             case .authStatus: return .success(try await session.authStatus())
             case .status(let id?): return .success(try await session.operation(id))
+            case .add(let region, let name): return .success(try await session.add(region: region, name: name, accepted: accepted))
             case .up(let selector): return .success(try await session.mutate(.connect, selector: selector, accepted: accepted))
             case .downTarget(let selector): return .success(try await session.mutate(.disconnectClient, selector: selector, accepted: accepted))
             case .update(let allowDisconnect): return .success(try await session.update(allowDisconnect: allowDisconnect, accepted: accepted))

@@ -202,6 +202,8 @@ cloudgateway list --refresh --json
 cloudgateway ls -l                 # VPN id, tunnel IP, connection URL, owner email
 cloudgateway up '<client-uuid>'
 cloudgateway up sanjose 1          # Also accepts us-sanjose-1 or California
+cloudgateway add sanjose "Mac mini"
+cloudgateway add us-sanjose-1 "Work Mac" --json
 cloudgateway up                    # This account's last selection
 cloudgateway status --operation '<operation-id>' --json
 cloudgateway refresh
@@ -212,6 +214,22 @@ cloudgateway doctor --json
 cloudgateway update                # Update the extension from the installed app
 cloudgateway update --allow-disconnect --json
 ```
+
+`add <region> <name>` creates a client for the signed-in account. Both arguments
+are required. Names are trimmed, must contain 1–80 characters without control
+characters, and need quotes when they contain spaces. Regions accept the full ID,
+display name, or city alias, for example `us-sanjose-1`, `California`, or `sanjose`.
+The controller loads enabled creation regions, including regions where this
+account has no clients. Unknown or ambiguous regions fail with available IDs.
+A region with full or unverified capacity cannot be used.
+
+Creation uses the same acceptance/confirmation and operation lookup as VPN
+mutations. JSON results include `data.command = "add"` and
+`data.creation = {"regionId": "us-sanjose-1", "name": "Mac mini"}`. A successful
+creation leaves the VPN unchanged. Run `cloudgateway ls` to get the new client's
+UUID. If the inventory refresh fails after creation, success includes the
+`inventory_not_refreshed` warning. After a timeout or lost confirmation, look up
+the operation before retrying, since another add could create a duplicate client.
 
 `ls` aliases `list`. Rows show a region-local index starting at 1, client name
 and owner email, client UUID, and any connection/selection/unavailable state.

@@ -49,7 +49,7 @@ enum CloudGatewayMacCLIOption: CaseIterable {
 
 struct CloudGatewayMacCLITopic {
     enum Kind {
-        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, update, refresh, doctor, help, version
+        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, add, update, refresh, doctor, help, version
     }
 
     let kind: Kind
@@ -129,6 +129,16 @@ struct CloudGatewayMacCLITopic {
               summary: "Stop the CloudGateway VPN, even while signed out",
               notes: ["Saved configs stay on this Mac", "A selector stops only that config and requires sign-in"],
               examples: ["cloudgateway down", "cloudgateway down chicago 1"]),
+        .init(kind: .add, path: ["add"], arguments: "<region> <name>", options: [],
+              summary: "Create a named client without connecting the VPN",
+              notes: [
+                  "The client name is required, with at most 80 characters. Quote names containing spaces",
+                  "Regions accept a full ID, display name, or city alias such as sanjose",
+                  "Uses enabled regions with available capacity, including regions where you have no clients",
+                  "Creation leaves the VPN unchanged. Run `cloudgateway ls` to find the new client UUID",
+                  "After acceptance, check the operation before retrying an uncertain result to avoid duplicates"
+              ],
+              examples: ["cloudgateway add sanjose \"Mac mini\"", "cloudgateway add us-sanjose-1 \"Work Mac\" --json"]),
         .init(kind: .update, path: ["update"], arguments: nil, options: [.allowDisconnect],
               summary: "Activate the VPN extension bundled in the installed CloudGateway app",
               notes: [
@@ -165,6 +175,7 @@ enum CloudGatewayMacCLICommand: Equatable {
     case status(operationId: UUID?)
     case up(selector: CloudGatewayMacCLISelector?)
     case downTarget(CloudGatewayMacCLISelector)
+    case add(region: String, name: String)
     case update(allowDisconnect: Bool)
     case down, refresh, doctor
 
@@ -176,6 +187,7 @@ enum CloudGatewayMacCLICommand: Equatable {
         case .list: "list"
         case .status: "status"
         case .up: "up"
+        case .add: "add"
         case .down, .downTarget: "down"
         case .update: "update"
         case .refresh: "refresh"
@@ -293,6 +305,9 @@ enum CloudGatewayMacCLIParser {
             command = .status(operationId: operationId)
         case .up: command = .up(selector: try selector(operands, topic: topic))
         case .down: command = try selector(operands, topic: topic).map(CloudGatewayMacCLICommand.downTarget) ?? .down
+        case .add:
+            let request = try creation(operands, topic: topic)
+            command = .add(region: request.region, name: request.name)
         case .version: return invocation(.version)
         case .update: command = .update(allowDisconnect: flags.contains(.allowDisconnect))
         case .refresh: command = .refresh
@@ -308,6 +323,8 @@ enum CloudGatewayMacCLIParser {
         case .auth: throw failure("Unknown auth command \(quoted(operand))", words: topic.path)
         case .up, .down:
             _ = try selector(operands, topic: topic)
+        case .add:
+            _ = try creation(operands, topic: topic)
         default: throw failure("Unexpected argument \(quoted(operand))", words: topic.path)
         }
     }
@@ -325,6 +342,18 @@ enum CloudGatewayMacCLIParser {
             return .region(first, index: index)
         }
         throw failure("Use a client UUID or <region> <positive index> from `cloudgateway ls`", words: topic.path)
+    }
+
+    private static func creation(_ operands: ArraySlice<String>, topic: CloudGatewayMacCLITopic) throws -> (region: String, name: String) {
+        guard operands.count == 2, let region = operands.first, validRegion(region), let rawName = operands.last else {
+            throw failure("Use add <region> <name>. A region and client name are required", words: topic.path)
+        }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.unicodeScalars.count <= 80, name.utf8.count <= 320,
+              name == CloudGatewayMacCLIText.sanitize(name) else {
+            throw failure("Client name must contain 1 to 80 characters without control characters", words: topic.path)
+        }
+        return (region, name)
     }
 
     private static func parseTimeout(_ value: String, words: [String]) throws -> Duration {

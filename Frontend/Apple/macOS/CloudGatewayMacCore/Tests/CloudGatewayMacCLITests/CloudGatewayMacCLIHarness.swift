@@ -26,7 +26,7 @@ func cliState(account: String? = "uid1", retained: Bool = true, restoring: Bool 
               clients: [CloudGatewayMacClientMetadata] = [], profiles: [CloudGatewayMacObservedProfile] = [],
               isObserved: Bool = true, observedAt: Date? = cliObservedAt, selected: String? = nil,
               browser: CloudGatewayMacBrowserAuthState? = nil,
-              setup: CloudGatewayMacSetupState = .ready) -> CloudGatewayMacControllerState {
+              setup: CloudGatewayMacSetupState = .ready, canCreate: Bool = false) -> CloudGatewayMacControllerState {
     let snapshot = CloudGatewayMacControllerSnapshot(
         domain: .init(accountId: account, hasRetainedSession: retained, accessAuthorized: account != nil,
                       access: access, credentials: retained ? .available : .unknown, inventoryFreshness: inventory,
@@ -35,7 +35,7 @@ func cliState(account: String? = "uid1", retained: Bool = true, restoring: Bool 
                       clients: clients),
         lastSelectedIdentifier: selected,
         browserState: browser ?? account.map { .signedIn(AuthenticatedUser(uid: $0, email: nil)) } ?? .signedOut,
-        isRestoringSession: restoring, isAuthSettling: false, canCreateClient: false, errorMessage: nil
+        isRestoringSession: restoring, isAuthSettling: false, canCreateClient: canCreate, errorMessage: nil
     )
     return .init(snapshot: snapshot, setupState: setup, canUpdateExtension: false)
 }

@@ -100,7 +100,7 @@ Checks cover the signing team and Developer ID Application certificate,
 Hardened Runtime, secure timestamps, release entitlements, embedded profiles,
 each bundle's expected version and build, architecture, and packaged dependencies.
 Current release products also require the bundled CLI executable and controller
-Firebase resource, then pass 20 bounded help/version/invalid-usage checks through
+Firebase resource, then pass 58 bounded help/version/invalid-usage checks through
 direct `--cli` and a temporary `cloudgateway` symlink. Each invocation uses a
 temporary home, redirected stdin, and a five-second deadline. JSON checks verify
 schema version 1, line completeness, usage errors, and the bundle's version/build

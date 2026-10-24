@@ -63,7 +63,7 @@ import Testing
         + "`down` succeeds only after a confirmed stop. Check `status` for the observed tunnel state"))
     let commands = try #require(root["commands"] as? [[String: Any]])
     #expect(commands.compactMap { $0["name"] as? String } == [
-        "auth login", "auth status", "auth logout", "list", "status", "up", "down", "update", "refresh", "doctor", "version", "help"
+        "auth login", "auth status", "auth logout", "list", "status", "up", "down", "add", "update", "refresh", "doctor", "version", "help"
     ])
     #expect(harness.connects == 0)
 }

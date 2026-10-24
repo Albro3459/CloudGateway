@@ -25,21 +25,25 @@ enum CloudGatewayMacCLIInventoryOrder {
     }
 
     static func region(_ value: String, in regions: [[CloudGatewayMacControllerState.Client]]) throws -> String {
-        let rows = regions.compactMap(\.first)
-        if let exact = rows.first(where: { $0.regionId == value }) { return exact.regionId }
+        try region(value, in: regions.compactMap(\.first).map { (id: $0.regionId, name: $0.regionName) },
+                   scope: "this account's current inventory")
+    }
+
+    static func region(_ value: String, in rows: [(id: String, name: String)], scope: String) throws -> String {
+        if let exact = rows.first(where: { $0.id == value }) { return exact.id }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let matches = rows.filter { row in
-            let components = row.regionId.split(separator: "-")
+            let components = row.id.split(separator: "-")
             let city = components.count >= 3 ? components.dropFirst().dropLast().joined(separator: "-") : ""
-            return row.regionName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+            return row.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
                 || (!city.isEmpty && city.lowercased() == normalized)
         }
-        if matches.count == 1 { return matches[0].regionId }
+        if matches.count == 1 { return matches[0].id }
         let candidates = (matches.isEmpty ? rows : matches).map {
-            "\(CloudGatewayMacCLIText.sanitize($0.regionId)) (\(CloudGatewayMacCLIText.sanitize($0.regionName)))"
+            "\(CloudGatewayMacCLIText.sanitize($0.id)) (\(CloudGatewayMacCLIText.sanitize($0.name)))"
         }.joined(separator: ", ")
         let message = matches.isEmpty
-            ? "Region '\(CloudGatewayMacCLIText.sanitize(value))' is unavailable in this account's current inventory"
+            ? "Region '\(CloudGatewayMacCLIText.sanitize(value))' is unavailable in \(scope)"
             : "Region '\(CloudGatewayMacCLIText.sanitize(value))' is ambiguous. Use a full region ID"
         throw CloudGatewayMacCLIError(.usage, message: message,
                                       suggestion: "Available regions: \(candidates.isEmpty ? "none" : candidates)")

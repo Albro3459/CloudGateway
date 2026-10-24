@@ -41,6 +41,8 @@ struct CloudGatewayMacCLIRenderer {
             case .alreadyActive: "VPN already active"
             case .completed where mutation.command == .down: "VPN stopped"
             case .completed where mutation.command == .logout: "Signed out (VPN retained)"
+            case .completed where mutation.command == .add:
+                mutation.creation.map { "Client created: \($0.name) (\($0.regionId))" } ?? "Client created"
             case .completed where mutation.command == .update: "VPN extension update completed"
             case _ where mutation.command == .update: "VPN extension update \(mutation.operation.state.rawValue)"
             default: "Command \(mutation.operation.state.rawValue)"

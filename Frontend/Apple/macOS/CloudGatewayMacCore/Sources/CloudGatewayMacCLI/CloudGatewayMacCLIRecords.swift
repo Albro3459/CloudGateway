@@ -408,14 +408,20 @@ struct CloudGatewayMacCLIInventory: Encodable {
     }
 }
 
+struct CloudGatewayMacCLIClientCreation: Encodable {
+    let regionId: String
+    let name: String
+}
+
 struct CloudGatewayMacCLIMutation: Encodable {
-    enum Command: String, Encodable { case up, down, logout, update }
+    enum Command: String, Encodable { case up, down, logout, update, add }
 
     let command: Command
     let operation: CloudGatewayMacCLIOperation
     let tunnel: CloudGatewayMacCLIStatus.Tunnel
     @CloudGatewayMacCLINullable var choices: CloudGatewayMacCLIInventory?
     var update: CloudGatewayMacCLIUpdate? = nil
+    var creation: CloudGatewayMacCLIClientCreation? = nil
 }
 
 struct CloudGatewayMacCLIRefresh: Encodable {

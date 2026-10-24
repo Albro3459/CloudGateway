@@ -46,6 +46,44 @@ extension CloudGatewayMacCLISession {
         }
     }
 
+    func add(region: String, name: String, accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
+        try await requireCurrentBuild()
+        let (reply, settled) = try await poll(.snapshot, until: deadline) {
+            let state = try Self.state(of: $0)
+            return state.isPendingRestoration || state.isAwaitingVerification || state.inventory == .refreshing
+        }
+        guard settled else { throw CloudGatewayMacCLIError(.timeout) }
+        let state = try Self.state(of: reply)
+        guard state.accountId != nil else {
+            if state.access == .denied { throw CloudGatewayMacCLIError(.accessDenied) }
+            if state.hasRetainedSession, state.access == .unreachable { throw CloudGatewayMacCLIError(.networkUnavailable) }
+            throw CloudGatewayMacCLIError(.signInRequired)
+        }
+        guard state.creationAllowed else { throw CloudGatewayMacCLIError(.busy) }
+        let prepared: CloudGatewayMacControllerReply
+        do { prepared = try await call { [client] in try await client.send(.prepareClient) } }
+        catch CloudGatewayMacControllerFailure.unavailable {
+            let current = try? await call { [client] in try await client.send(.snapshot) }
+            try Task.checkCancellation()
+            if let state = current?.state, state.accountId == nil {
+                if state.access == .denied { throw CloudGatewayMacCLIError(.accessDenied) }
+                if !state.hasRetainedSession || state.access != .unreachable { throw CloudGatewayMacCLIError(.signInRequired) }
+            }
+            throw CloudGatewayMacCLIError(.networkUnavailable, message: "Unable to load regions for client creation. Try again")
+        }
+        guard let context = prepared.creation else { throw CloudGatewayMacCLIError(.invalidResponse) }
+        let regions = context.regions.filter(\.enabled)
+        let regionId = try CloudGatewayMacCLIInventoryOrder.region(region, in: regions.map { (id: $0.regionId, name: $0.displayName) },
+                                                                  scope: "the enabled creation regions")
+        guard let selected = regions.first(where: { $0.regionId == regionId }), selected.capacity?.isKnown == true else {
+            throw CloudGatewayMacCLIError(.networkUnavailable, message: "Unable to check capacity for \(regionId). Try again")
+        }
+        guard selected.capacity?.isAtCapacity == false else {
+            throw CloudGatewayMacCLIError(.configUnavailable, message: "Region \(regionId) has no available client capacity")
+        }
+        return try await submit(.createClient, creation: .init(regionId: regionId, name: name), contextId: context.id, accepted: accepted)
+    }
+
     func mutate(_ action: CloudGatewayMacControllerRequest.Action, selector: CloudGatewayMacCLISelector? = nil,
                 accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
         if action == .turnOff { _ = try await call { [client] in try await client.handshake() } }
@@ -73,9 +111,17 @@ extension CloudGatewayMacCLISession {
                 identifier = try CloudGatewayMacCLIInventoryOrder.resolve(selector, state: state, accountId: accountId)
             }
         }
+        return try await submit(action, identifier: identifier, accepted: accepted)
+    }
+
+    private func submit(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil,
+                        creation: CloudGatewayMacCLIClientCreation? = nil, contextId: UUID? = nil,
+                        accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
         let id = UUID()
-        let targetIdentifier = identifier
-        let reservation = try await call { [client] in try await client.send(action, id: id, identifier: targetIdentifier) }
+        let reservation = try await call { [client] in
+            try await client.send(action, id: id, identifier: identifier, regionId: creation?.regionId,
+                                  clientName: creation?.name, contextId: contextId)
+        }
         guard reservation.operation?.id == id, reservation.operation?.state == .accepted else {
             throw CloudGatewayMacCLIError(.invalidResponse)
         }
@@ -102,9 +148,14 @@ extension CloudGatewayMacCLISession {
                     choices = .init(state, accountId: accountId, regionId: nil, eligibleOnly: true)
                 }
             }
-            let command: CloudGatewayMacCLIMutation.Command = action == .connect ? .up : (action == .turnOff || action == .disconnectClient) ? .down : .logout
+            let command: CloudGatewayMacCLIMutation.Command = switch action {
+            case .connect: .up
+            case .turnOff, .disconnectClient: .down
+            case .createClient: .add
+            default: .logout
+            }
             let data = CloudGatewayMacCLIData.mutation(.init(command: command, operation: operation, tunnel: tunnel, choices: choices,
-                                                            update: reply.update.map(CloudGatewayMacCLIUpdate.init)))
+                                                            update: reply.update.map(CloudGatewayMacCLIUpdate.init), creation: creation))
             if var failure = operation.failure {
                 failure.data = data
                 failure.operationId = id

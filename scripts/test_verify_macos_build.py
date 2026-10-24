@@ -50,7 +50,10 @@ class MacOSCLIVerificationTests(unittest.TestCase):
         self.assertFalse(any(flag in flags for flag in ["up", "down", "refresh", "logout"]))
         if "update" in flags:
             self.assertTrue(any(flag in flags for flag in ["help", "--help", "--unexpected", "0"]))
-        invalid = any(flag in flags for flag in ["--unknown-option", "--unexpected", "0"])
+        invalid_add = flags[:2] == ["add", "sanjose"] or flags[:3] == ["add", "us-sanjose-1", ""]
+        if "add" in flags:
+            self.assertTrue(any(flag in flags for flag in ["help", "--help"]) or invalid_add)
+        invalid = invalid_add or any(flag in flags for flag in ["--unknown-option", "--unexpected", "0"])
         if flags[:2] == ["auth", "login"]:
             command = "auth login"
         elif flags[:1] == ["status"]:
@@ -59,6 +62,8 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             command = "list"
         elif flags[:1] == ["update"] and invalid:
             command = "update"
+        elif flags[:1] == ["add"] and invalid:
+            command = "add"
         elif any(flag in flags for flag in ["version", "--version", "-v"]) and not any(
             flag in flags for flag in ["help", "--help"]
         ):
@@ -80,14 +85,15 @@ class MacOSCLIVerificationTests(unittest.TestCase):
     def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
         with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
             verifier.verify_cli(self.app)
-        self.assertEqual(run.call_count, 50)
+        self.assertEqual(run.call_count, 58)
         symlink = next(entry.args[0][0] for entry in run.call_args_list
                        if Path(entry.args[0][0]).name == "cloudgateway")
         for prefix in ([str(self.binary.absolute()), "--cli"], [symlink]):
             for flags in (["version"], ["-v"], ["--version"], ["version", "--json"], ["-v", "--json"],
                           ["--version", "--json"], ["ls", "-l", "--help", "--json"],
                           ["update", "--allow-disconnect", "--help", "--json"],
-                          ["update", "--unexpected", "--json"]):
+                          ["update", "--unexpected", "--json"], ["add", "--help"], ["help", "add", "--json"],
+                          ["add", "sanjose"], ["add", "us-sanjose-1", "", "--json"]):
                 self.assertTrue(any(entry.args[0] == prefix + flags for entry in run.call_args_list))
         self.assertEqual(len(self.homes), 1)
         self.assertTrue(all(not home.exists() for home in self.homes))
