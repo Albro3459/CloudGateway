@@ -9,6 +9,32 @@ private let activeConfig = "uid1/us-chicago-1/d1482e58-5202-4771-82ae-bb34a313c5
 private let operationConfig = "uid1/us-sanjose-1/78ab8633-ae25-4287-885f-57bbbf6e7f63"
 
 @MainActor
+@Test func cliRemovalOutcomesUseExistingOperationLookup() async throws {
+    for outcome in [CloudGatewayMacCommandOutcome.completed(warning: .localCleanupIncomplete), .failed(.clientActive), .unknown] {
+        let harness = CLIHarness(cliState())
+        let id = UUID()
+        harness.operation = .init(id: id, state: outcome.state)
+        harness.outcome = outcome
+        let exit = await harness.run("status", "--operation", id.uuidString, "--json")
+        let data = try #require(harness.json?["data"] as? [String: Any])
+        let operation = try #require(data["operation"] as? [String: Any])
+        switch outcome {
+        case .completed:
+            #expect(exit == 0)
+            #expect(operation["state"] as? String == "completed")
+            #expect(operation["warning"] as? String == "local_cleanup_incomplete")
+        case .failed:
+            #expect(exit == 4)
+            #expect((operation["error"] as? [String: Any])?["code"] as? String == "client_active")
+        default:
+            #expect(exit == 10)
+            #expect(operation["state"] as? String == "unknown")
+        }
+        #expect(!harness.actions.contains(.removeClient))
+    }
+}
+
+@MainActor
 @Test func cliOperationLookupUsesTheSameDetailedObservationAsOrdinaryStatus() async throws {
     for (observed, timestamp) in [(true, Optional(cliObservedAt)), (false, Optional(cliObservedAt)), (false, nil)] {
         let state = cliState(profiles: timestamp == nil ? [] : [.init(identifier: activeConfig, status: .connected)],

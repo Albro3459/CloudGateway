@@ -1,29 +1,32 @@
 # Implement controller-owned client removal
 
-Status: ready for implementation, Secure Astra High review passed. Updated 2026-10-23
+Status: implementation in progress. Updated 2026-10-23
 
 Follow [the behavior plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-remove-controller.md).
 Implement only the controller operation and its adapters/IPC. Frontend removal
-commands and UI remain separate work. This document is an implementation plan,
-not authorization to implement during the current planning task.
+commands and UI remain separate work. Implementation is authorized. Complete
+each task, review it in at most three rounds, validate it, check it off, and
+commit it before starting the next task. Use Codex 6.1 Sol with high reasoning
+for implementation and reviews, starting subagents on Main and switching all
+subagent work to Secure if Main reaches its usage limit. Validation is unsigned.
 
 ## 1. Add the typed removal contract
 
-- [ ] Extend [core contracts](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacControllerContracts.swift)
+- [x] Extend [core contracts](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacControllerContracts.swift)
   with inventory deletion using the resolved owner/region/client tuple and
   signed-in user. Reuse `CloudGatewayDeleteClientResponse` from AppCore
-- [ ] Add `clientActive` failure and `localCleanupIncomplete` warning. Keep
+- [x] Add `clientActive` failure and `localCleanupIncomplete` warning. Keep
   `completed`, `failed`, and `unknown` operation meanings. Update exhaustive
   mappings in the CLI, menu projection, and managed-update failure conversion
   as needed for compilation, without adding a removal frontend flow
-- [ ] Extend [IPC contracts](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerContracts.swift)
+- [x] Extend [IPC contracts](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacControllerIPC/CloudGatewayMacControllerContracts.swift)
   with ordinary `.removeClient`: one valid canonical identifier, all creation,
   login, update, and context fields absent. Include it in `requiresConfirmation`
   and `hasAccountBoundOutcome`. Existing digest already includes action/identifier
-- [ ] Keep protocol 2 for this current-build-only action and preserve control
+- [x] Keep protocol 2 for this current-build-only action and preserve control
   version 1. Do not send the new typed cases to mismatched builds through
   compatible lookup/confirmation. Add round-trip and compatibility fixtures
-- [ ] Reuse the current snapshot and latest operation. No per-row removal
+- [x] Reuse the current snapshot and latest operation. No per-row removal
   capability or owner UID needs to cross IPC for this controller-only step
 
 Acceptance: malformed/cross-build requests fail, round-trip operation outcomes
@@ -199,9 +202,20 @@ after expiry showing the old ID can be admitted. Do not promise permanent dedupl
   dispatch provides a real reference to the operation, avoid broad dead-code
   suppression. Shared Apple production code should remain unchanged. If a
   necessary shared change is approved later, validate iOS first and macOS too
-- [ ] Request Secure account code review, resolve actionable findings, and rerun
-  validation when changes warrant it before requesting an implementation commit
+- [ ] Complete code review with Codex 6.1 Sol High using the account policy above,
+  resolve actionable findings, and rerun validation when changes warrant it
+  before committing the completed implementation
 
-The current planning checkpoint requires manual doc review and Secure Astra High
-plan review only. Do not implement, run tests/builds, create a PR, or push during
-this checkpoint. Once the plans pass review, commit only these plans and stop.
+The planning checkpoint is committed as `b0ebb97d`. The user authorized
+implementation, unsigned validation, task reviews, and local commits afterward.
+Do not create a PR or push.
+
+## Implementation record
+
+### Task 1: typed removal contract
+
+Implemented and reviewed with Main Codex 6.1 Sol High. Review round 1 passed
+with no actionable findings. `./scripts/test.sh macos` passed: 627 macOS tests,
+strict Periphery scans, unsigned arm64 app/extension build, packaging, and 58
+CLI smoke checks. Temporary unavailable inventory/IPC stubs and a narrow
+protocol Periphery annotation are removed by the later integration tasks.

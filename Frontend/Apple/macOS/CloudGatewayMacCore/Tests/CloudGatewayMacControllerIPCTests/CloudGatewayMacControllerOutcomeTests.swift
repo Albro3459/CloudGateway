@@ -13,10 +13,10 @@ private let identifier = "account/region/client"
 private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcome])] = [
     (0, [.startRequested(identifier: identifier, warning: nil),
          .alreadyActive(identifier: identifier, warning: .selectionNotSaved),
-         .completed(warning: nil), .completed(warning: .inventoryNotRefreshed)]),
+         .completed(warning: nil), .completed(warning: .inventoryNotRefreshed), .completed(warning: .localCleanupIncomplete)]),
     (1, [.failed(.internalError)]),
     (3, [.failed(.signInRequired), .failed(.accessDenied)]),
-    (4, [.failed(.setupRequired), .failed(.credentialsUnavailable), .failed(.incompatibleVersion)]),
+    (4, [.failed(.setupRequired), .failed(.credentialsUnavailable), .failed(.incompatibleVersion), .failed(.clientActive)]),
     (5, [.failed(.configUnavailable)]),
     (6, [.failed(.networkUnavailable)]),
     (7, [.failed(.busy)]),
@@ -33,6 +33,7 @@ private let outcomesByExit: [(exit: Int, outcomes: [CloudGatewayMacCommandOutcom
             #expect(operation.state == (exit == 0 ? .completed : exit == 8 || exit == 10 ? .unknown : .failed))
             for (reply, action) in [
                 (CloudGatewayMacControllerReply(operation: operation, outcome: outcome), CloudGatewayMacControllerRequest.Action.operation),
+                (.init(operation: operation, outcome: outcome), .removeClient),
                 (.init(state: controllerContractState(), operation: operation, outcome: outcome), .snapshot)
             ] {
                 let decoded = try outcomeRoundTrip(reply, action: action)

@@ -313,6 +313,8 @@ public final class CloudGatewayMacControllerOrchestrator {
             guard let login = effects.login(request) else { return .init(error: .invalidRequest) }
             return .init(login: login)
         case .status: return controlReply(for: request)
+        // TODO: Admit removal after the domain operation is wired in task 6
+        case .removeClient: return .init(error: .unavailable)
         case .operation:
             guard let id = request.contextId else { return .init(error: .invalidRequest) }
             if managedUpdates?.owns(id) == true { return managedReply(for: request) }
@@ -591,11 +593,14 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     private func controlReply(for request: CloudGatewayMacControllerRequest,
                               operation: CloudGatewayMacControllerOperation? = nil) -> CloudGatewayMacControllerReply {
-        let operation = operation ?? requests.latest ?? managedUpdates?.operation
+        var operation = operation ?? requests.latest ?? managedUpdates?.operation
         let snapshot = effects.snapshot(setupState, false)
         // Other builds may not decode newer outcome cases, so they get the compatible operation only
         let sameBuild = request.buildIdentity == update.running
             && request.appVersion == update.running.version && request.appBuild == update.running.build
+        if !sameBuild, let current = operation, current.warning == .localCleanupIncomplete {
+            operation = .init(id: current.id, state: current.state, failure: current.failure)
+        }
         let outcome = sameBuild ? operation.flatMap {
             requests.outcome(id: $0.id, session: effects.session())
         } : nil

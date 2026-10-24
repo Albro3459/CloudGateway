@@ -74,6 +74,7 @@ import Testing
         (.setupRequired, "setup_required", 4), (.credentialsUnavailable, "credentials_unavailable", 4),
         (.incompatibleVersion, "incompatible_version", 4), (.configUnavailable, "config_unavailable", 5),
         (.selectionUnavailable, "selection_unavailable", 5), (.networkUnavailable, "network_unavailable", 6),
+        (.clientActive, "client_active", 4),
         (.busy, "busy", 7), (.stopTimedOut, "stop_timed_out", 8), (.vpnFailed, "vpn_failed", 9),
         (.internalError, "internal_error", 1),
     ]

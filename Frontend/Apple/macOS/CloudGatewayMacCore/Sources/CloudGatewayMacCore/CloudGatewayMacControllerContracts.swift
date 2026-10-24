@@ -15,6 +15,12 @@ public protocol CloudGatewayMacInventoryServicing: AnyObject {
     func fetchOptions(for user: AuthenticatedUser, role: CloudGatewayMacAccountRole) async throws -> [CloudGatewayClientOption]
     func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion]
     func createClient(regionId: String, clientName: String, for user: AuthenticatedUser) async throws -> String
+    // periphery:ignore - Transport and controller callers follow in removal tasks 4 and 5
+    func deleteClient(
+        clientId: String, ownerUid: String, regionId: String, for user: AuthenticatedUser,
+        authorize: @escaping @MainActor () async throws -> Void,
+        onDispatch: @escaping @MainActor () -> Void
+    ) async throws -> CloudGatewayDeleteClientResponse
 }
 
 public struct CloudGatewayMacClientCreationContext: Equatable, Sendable {
@@ -26,12 +32,12 @@ public enum CloudGatewayMacCommandFailure: String, Codable, Sendable {
     case signInRequired, accessDenied
     case setupRequired, credentialsUnavailable, incompatibleVersion
     case extensionMismatch, initialSetupRequired, approvalRequired, restartRequired, invalidBundle, checkingReadiness, activationFailed
-    case configUnavailable, selectionUnavailable, networkUnavailable, busy
+    case configUnavailable, selectionUnavailable, clientActive, networkUnavailable, busy
     case stopTimedOut, vpnFailed, internalError
 }
 
 public enum CloudGatewayMacCommandWarning: String, Codable, Sendable {
-    case selectionNotSaved, inventoryNotRefreshed, reconnectSuppressionNotPersisted
+    case selectionNotSaved, inventoryNotRefreshed, localCleanupIncomplete, reconnectSuppressionNotPersisted
 }
 
 // A start result means macOS accepted the request, not that the tunnel connected

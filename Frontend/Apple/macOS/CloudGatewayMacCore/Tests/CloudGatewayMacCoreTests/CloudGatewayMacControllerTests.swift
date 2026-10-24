@@ -1843,6 +1843,15 @@ private final class MacControllerInventory: CloudGatewayMacInventoryServicing {
         if let createError { throw createError }
         return clientName
     }
+
+    func deleteClient(
+        clientId _: String, ownerUid _: String, regionId _: String, for _: AuthenticatedUser,
+        authorize _: @escaping @MainActor () async throws -> Void,
+        onDispatch _: @escaping @MainActor () -> Void
+    ) async throws -> CloudGatewayDeleteClientResponse {
+        // TODO: Use the removal request helper when task 4 adds it
+        throw CloudGatewayMacInventoryError.unavailable
+    }
 }
 
 private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {

@@ -11,7 +11,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public enum Action: String, Codable, CaseIterable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
         case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, userActivity, recordActivity, refresh, awaitRefresh
-        case signIn, cancelSignIn, signOut, connect, turnOff, disconnectClient, prepareClient, createClient
+        case signIn, cancelSignIn, signOut, connect, turnOff, disconnectClient, prepareClient, createClient, removeClient
         case beginLogin, loginStatus, cancelLogin, diagnostics, update
     }
 
@@ -198,7 +198,7 @@ public enum CloudGatewayMacControllerProtocol {
                   request.regionId == nil, request.clientName == nil, request.contextId == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
             }
-        case .disconnectClient:
+        case .disconnectClient, .removeClient:
             guard let identifier = request.identifier, validIdentifier(identifier),
                   request.regionId == nil, request.clientName == nil, request.contextId == nil else {
                 throw CloudGatewayMacControllerFailure.invalidRequest
@@ -294,6 +294,7 @@ public enum CloudGatewayMacControllerProtocol {
         }
         try validateVersion(reply.appVersion, build: reply.appBuild)
         guard reply.instanceId != nil,
+              reply.operation?.warning != .localCleanupIncomplete || (reply.appVersion == appVersion && reply.appBuild == appBuild),
               (reply.outcome == nil && reply.state == nil) || (reply.appVersion == appVersion && reply.appBuild == appBuild) else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }
@@ -448,12 +449,12 @@ extension CloudGatewayMacControllerRequest.Action {
     }
 
     var hasAccountBoundOutcome: Bool {
-        self == .connect || self == .createClient || self == .disconnectClient
+        self == .connect || self == .createClient || self == .disconnectClient || self == .removeClient
     }
 
     var requiresConfirmation: Bool {
         switch self {
-        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .disconnectClient, .createClient, .update: true
+        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .disconnectClient, .createClient, .removeClient, .update: true
         default: false
         }
     }

@@ -1,6 +1,6 @@
 # Remove clients through the macOS controller
 
-Status: ready for implementation, Secure Astra High review passed. Updated 2026-10-23
+Status: implementation in progress. Updated 2026-10-23
 
 ## Scope
 
@@ -12,7 +12,8 @@ menus, dialogs, and help are later work.
 
 This document defines behavior. The ordered work and verification are in
 [the implementation plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-remove-controller-implementation.md).
-This planning task changes docs only, then commits the reviewed plans and stops.
+The reviewed planning checkpoint is committed. The user has authorized
+implementation, task reviews, unsigned validation, and local commits.
 
 ## Existing behavior to reuse
 
@@ -164,7 +165,7 @@ controller config. The controller does not promise to stop it as part of removal
   and never retried automatically. Account changes cannot delete a new session's
   local state or expose the original account's outcome
 - Real controller/coordinator/IPC coverage and unsigned macOS validation pass
-  before the future implementation is committed. This docs task runs no tests
+  before the implementation is complete
 
 ## Plan review
 

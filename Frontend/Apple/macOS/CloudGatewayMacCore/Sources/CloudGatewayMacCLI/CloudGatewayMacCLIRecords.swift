@@ -221,6 +221,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
 
     enum Warning: String, Encodable {
         case selectionNotSaved = "selection_not_saved", inventoryNotRefreshed = "inventory_not_refreshed"
+        case localCleanupIncomplete = "local_cleanup_incomplete"
         case reconnectSuppressionNotPersisted = "reconnect_suppression_not_persisted"
     }
 
@@ -281,6 +282,7 @@ struct CloudGatewayMacCLIOperation: Encodable {
         switch warning {
         case .selectionNotSaved: .selectionNotSaved
         case .inventoryNotRefreshed: .inventoryNotRefreshed
+        case .localCleanupIncomplete: .localCleanupIncomplete
         case .reconnectSuppressionNotPersisted: .reconnectSuppressionNotPersisted
         }
     }

@@ -12,6 +12,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case installationRequired = "installation_required", controllerUnavailable = "controller_unavailable"
         case controllerRejected = "controller_rejected"
         case configUnavailable = "config_unavailable", selectionUnavailable = "selection_unavailable"
+        case clientActive = "client_active"
         case networkUnavailable = "network_unavailable"
         case refreshSkipped = "refresh_skipped", refreshSuperseded = "refresh_superseded", interrupted
         case busy
@@ -35,7 +36,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .setupRequired, .credentialsUnavailable, .incompatibleVersion, .untrustedBuild,
                  .installationRequired, .controllerUnavailable, .controllerRejected,
                  .extensionMismatch, .extensionReplacementBlocked, .initialSetupRequired, .approvalRequired, .restartRequired,
-                 .invalidBundle, .checkingReadiness, .disconnectRequired: 4
+                 .invalidBundle, .checkingReadiness, .disconnectRequired, .clientActive: 4
             case .configUnavailable, .selectionUnavailable: 5
             case .networkUnavailable, .refreshSkipped, .storageUnavailable, .observationUnavailable: 6
             case .busy, .refreshSuperseded: 7
@@ -65,6 +66,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
             case .controllerRejected: ("The CloudGateway controller rejected this request", "Run the command as the macOS user who set up CloudGateway")
             case .configUnavailable: ("That config is missing or unusable", "Run: cloudgateway list")
             case .selectionUnavailable: ("No usable config is selected", "Run cloudgateway ls, then cloudgateway up <client-uuid>")
+            case .clientActive: ("That client still has an active VPN profile", "Disconnect that client and wait for it to stop before removing it")
             case .networkUnavailable: ("Unable to reach CloudGateway", "Check the network connection, then try again")
             case .refreshSkipped: ("Inventory refresh did not run", "Run: cloudgateway refresh")
             case .refreshSuperseded: ("Another operation superseded this inventory refresh", "Run: cloudgateway refresh")
@@ -129,6 +131,7 @@ struct CloudGatewayMacCLIError: Error, Sendable {
         case .incompatibleVersion: self.init(Code.incompatibleVersion)
         case .configUnavailable: self.init(Code.configUnavailable)
         case .selectionUnavailable: self.init(Code.selectionUnavailable)
+        case .clientActive: self.init(Code.clientActive)
         case .networkUnavailable: self.init(Code.networkUnavailable)
         case .busy: self.init(Code.busy)
         case .stopTimedOut: self.init(Code.stopTimedOut)

@@ -149,6 +149,15 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         return response.clientName
     }
 
+    func deleteClient(
+        clientId _: String, ownerUid _: String, regionId _: String, for _: AuthenticatedUser,
+        authorize _: @escaping @MainActor () async throws -> Void,
+        onDispatch _: @escaping @MainActor () -> Void
+    ) async throws -> CloudGatewayDeleteClientResponse {
+        // TODO: Wire the fenced removal request helper in task 4
+        throw Failure.unavailable
+    }
+
     private func documents<Value: Sendable>(
         _ query: Query,
         map: @escaping @Sendable (QueryDocumentSnapshot) -> Value?
