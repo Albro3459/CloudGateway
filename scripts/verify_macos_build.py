@@ -260,6 +260,21 @@ def verify_cli(app: Path) -> None:
         (["help", "add", "--json"], 0, "help", True),
         (["add", "sanjose"], 2, "add", False),
         (["add", "us-sanjose-1", "", "--json"], 2, "add", True),
+        (["remove", "--help"], 0, "help", False),
+        (["help", "remove", "--json"], 0, "help", True),
+        (["remove", "sanjose", "1", "--yes", "--help", "--json"], 0, "help", True),
+        (["remove"], 2, "remove", False),
+        (["remove", "--yes", "--json"], 2, "remove", True),
+        (["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"], 2, "remove", False),
+        (["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1"], 2, "remove", False),
+        (["remove", "sanjose", "1", "--json", "--non-interactive"], 2, "remove", True),
+        (["remove", "not-a-uuid", "--yes"], 2, "remove", False),
+        (["remove", "sanjose", "0", "--yes", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1", "extra", "--yes"], 2, "remove", False),
+        (["remove", "sanjose", "1", "--yes=false", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1", "--yes", "--unexpected", "--json"], 2, "remove", True),
+        (["status", "--yes", "--json"], 2, "status", True),
         (["update", "--help"], 0, "help", False),
         (["help", "update", "--json"], 0, "help", True),
         (["update", "--allow-disconnect", "--help", "--json"], 0, "help", True),
@@ -311,11 +326,18 @@ def verify_cli(app: Path) -> None:
                     else:
                         require(isinstance(record.get("data"), dict) and "usage" in record["data"],
                                 "Packaged CLI help is missing")
+                        if "remove" in arguments:
+                            require(record["data"].get("topic") == "remove"
+                                    and "--yes" in record["data"]["usage"],
+                                    "Packaged CLI removal help is missing consent usage")
                 elif expected_exit == 0:
                     require(bool(result.stdout) and result.stderr == b"", "Packaged CLI static output missing")
                     if expected_command == "version":
                         expected = f"CloudGateway {info.get('CFBundleShortVersionString')} ({info.get('CFBundleVersion')})\n"
                         require(result.stdout == expected.encode(), "CLI version text does not match its bundle")
+                    elif "remove" in arguments:
+                        require(b"cloudgateway remove" in result.stdout and b"--yes" in result.stdout,
+                                "Packaged CLI removal help is missing consent usage")
                 else:
                     require(result.stdout == b"" and bool(result.stderr), "CLI usage diagnostics must use stderr")
         require(not list(home.iterdir()), "Static CLI commands wrote user state")

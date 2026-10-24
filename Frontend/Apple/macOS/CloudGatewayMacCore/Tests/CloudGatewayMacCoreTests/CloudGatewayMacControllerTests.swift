@@ -3319,7 +3319,12 @@ private final class MacControllerRemovalIPC {
     private let instanceId = UUID()
     private(set) var data: Data?
     private(set) var performed: [CloudGatewayMacControllerRequest.Action] = []
-    private(set) var actions: [CloudGatewayMacControllerRequest.Action] = []
+    private(set) var received: [CloudGatewayMacControllerRequest] = []
+    var actions: [CloudGatewayMacControllerRequest.Action] { received.map(\.action) }
+    private(set) var cliOutput = ""
+    private(set) var cliDiagnostics = ""
+    var onCLIOutput: ((String) throws -> Void)?
+    var confirmationGate: ClientRemovalGate?
     var confirmationReply: ClientRemovalGate?
     var losesConfirmationReply = false
     private(set) var requests: CloudGatewayMacControllerRequests!
@@ -3383,14 +3388,45 @@ private final class MacControllerRemovalIPC {
         return client
     }
 
+    func runCLI(_ arguments: [String]) async -> Int32 {
+        let cli = CloudGatewayMacCLI(
+            version: identity.version, build: identity.build,
+            terminal: .init(isOutputTerminal: false, variables: [:]), clock: .continuous,
+            output: {
+                try self.onCLIOutput?($0)
+                self.cliOutput += $0
+            }, diagnostics: { self.cliDiagnostics += $0 },
+            connect: { try await self.client() }
+        )
+        return await cli.run(arguments)
+    }
+
+    func cliRecords() throws -> [[String: Any]] {
+        try cliOutput.split(separator: "\n").map {
+            try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+    }
+
+    func acceptedCLIId(isJSON: Bool) throws -> UUID {
+        let value: String
+        if isJSON { value = try #require(cliRecords().first?["operationId"] as? String) }
+        else {
+            let line = try #require(cliOutput.split(separator: "\n").first)
+            #expect(line.hasPrefix("Accepted operation "))
+            value = String(line.dropFirst("Accepted operation ".count))
+        }
+        return try #require(UUID(uuidString: value))
+    }
+
     private func send(_ request: CloudGatewayMacControllerRequest) async throws -> CloudGatewayMacControllerReply {
-        actions.append(request.action)
+        received.append(request)
         let encoded = try CloudGatewayMacControllerProtocol.encodeRequest(
             request, appVersion: identity.version, appBuild: identity.build, buildIdentity: identity
         )
         let decoded = try CloudGatewayMacControllerProtocol.decodeRequest(
             encoded, appVersion: identity.version, appBuild: identity.build, buildIdentity: identity
         )
+        if request.action == .confirmOperation { await confirmationGate?.wait() }
         let reply = await orchestrator.handle(decoded)
         if request.action == .confirmOperation {
             await confirmationReply?.wait()
@@ -3445,6 +3481,232 @@ private final class MacControllerRemovalIPC {
     #expect(session.requests.count == 1)
     #expect(session.requests.first?.httpMethod == "POST")
     #expect(session.requests.first?.url?.absoluteString == "https://region.gocloudlaunch.com/api/clients")
+}
+
+@Test(arguments: ["region", "Region"], [false, true])
+@MainActor func macControllerCLIRemovalAcceptsBeforeExecutionAndSendsTheCanonicalTarget(region: String, isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    var acceptedBeforeExecution = false
+    ipc.onCLIOutput = { _ in
+        guard ipc.cliOutput.isEmpty else { return }
+        let reservation = try #require(ipc.received.last)
+        #expect(reservation.action == .removeClient)
+        #expect(reservation.identifier == "user-a/region/client")
+        #expect(ipc.requests.operation(id: reservation.id).state == .accepted)
+        #expect(ipc.performed.isEmpty)
+        #expect(fixture.inventory.removalSession.requests.isEmpty)
+        #expect(!fixture.controller.hasPendingWork)
+        acceptedBeforeExecution = true
+    }
+    fixture.inventory.removalSession.onRequest = { _ in
+        #expect(acceptedBeforeExecution)
+        #expect(ipc.cliOutput.split(separator: "\n").count == 1)
+    }
+    #expect(await ipc.runCLI(["remove", region, "01", "--yes", "--non-interactive"] + (isJSON ? ["--json"] : [])) == 0)
+    #expect(acceptedBeforeExecution)
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    #expect(ipc.requests.outcome(id: id, session: fixture.controller.session) == .completed(warning: nil))
+    #expect(ipc.received.filter { $0.action == .removeClient }.map(\.identifier) == ["user-a/region/client"])
+    #expect(ipc.received.filter { $0.action == .confirmOperation }.map(\.contextId) == [id])
+    #expect(ipc.performed == [.removeClient])
+    #expect(fixture.inventory.removalSession.requests.map(\.httpMethod) == ["DELETE"])
+    #expect(fixture.inventory.removalSession.requests.first?.url?.absoluteString == "https://region.gocloudlaunch.com/api/clients/client")
+    if isJSON {
+        let records = try ipc.cliRecords()
+        #expect(records.count == 2)
+        #expect(records.first?["type"] as? String == "accepted")
+        #expect(records.last?["type"] as? String == "result")
+        #expect(records.last?["operationId"] as? String == id.uuidString.lowercased())
+    } else { #expect(ipc.cliOutput.contains("Client removed\n")) }
+    #expect(ipc.cliDiagnostics.isEmpty)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerCLIRemovalRefusesAnActiveTargetWithoutStoppingIt(isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    #expect(await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) == 4)
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    #expect(ipc.requests.outcome(id: id, session: fixture.controller.session) == .failed(.clientActive))
+    #expect((ipc.cliOutput + ipc.cliDiagnostics).contains("Disconnect that client and wait for it to stop before removing it"))
+    if isJSON {
+        let record = try #require(ipc.cliRecords().last)
+        #expect((record["error"] as? [String: Any])?["code"] as? String == "client_active")
+    }
+    #expect(!ipc.cliOutput.contains("Client removed"))
+    #expect(ipc.performed == [.removeClient])
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+}
+
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerCLIRemovalWarningsRemainSuccessful(cleanupFails: Bool, isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    let caller = Task { await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) }
+    try await controllerWaitUntil { response.entered }
+    if cleanupFails { await fixture.profiles.setRemoveError(.profileInstallationFailed) }
+    else { fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline }
+    response.resume()
+    #expect(await caller.value == 0)
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    #expect(ipc.requests.outcome(id: id, session: fixture.controller.session)
+        == .completed(warning: cleanupFails ? .localCleanupIncomplete : .inventoryNotRefreshed))
+    if isJSON {
+        let record = try #require(ipc.cliRecords().last)
+        let data = try #require(record["data"] as? [String: Any])
+        let operation = try #require(data["operation"] as? [String: Any])
+        #expect(record["error"] is NSNull)
+        #expect(operation["result"] as? String == "completed")
+        #expect(operation["warning"] as? String == (cleanupFails ? "local_cleanup_incomplete" : "inventory_not_refreshed"))
+    } else {
+        #expect(ipc.cliOutput.contains("Client removed\n"))
+        #expect(ipc.cliOutput.contains(cleanupFails ? "local cleanup incomplete" : "inventory not refreshed"))
+    }
+    #expect(ipc.cliDiagnostics.isEmpty)
+    #expect(ipc.performed == [.removeClient])
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerCLIRemovalCallerLossLeavesConfirmedWorkRunning(cancel: Bool, isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    if cancel { ipc.confirmationReply = ClientRemovalGate() }
+    else { ipc.losesConfirmationReply = true }
+    let caller = Task { await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) }
+    try await controllerWaitUntil { response.entered }
+    if cancel {
+        try await controllerWaitUntil { ipc.confirmationReply?.entered == true }
+        caller.cancel()
+    }
+    #expect(await caller.value == (cancel ? 130 : 10))
+    ipc.confirmationReply?.resume()
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    #expect((ipc.cliOutput + ipc.cliDiagnostics).contains("cloudgateway status --operation \(id.uuidString.lowercased())"))
+    #expect((ipc.cliOutput + ipc.cliDiagnostics).contains("original client UUID"))
+    let observer = try await ipc.client()
+    #expect(try await observer.send(.operation, contextId: id).operation?.state == .running)
+    #expect(fixture.controller.hasPendingWork)
+    response.resume()
+    try await controllerWaitUntil { ipc.requests.operation(id: id).state == .completed }
+    #expect(try await observer.send(.operation, contextId: id).outcome == .completed(warning: nil))
+    #expect(!ipc.cliOutput.contains("Client removed"))
+    #expect(ipc.actions.filter { $0 == .removeClient }.count == 1)
+    #expect(ipc.actions.filter { $0 == .confirmOperation }.count == 1)
+    #expect(ipc.performed == [.removeClient])
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerCLIRemovalRejectsSessionChangesBeforeConfirmation(sameAccount: Bool, isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let confirmation = ClientRemovalGate()
+    ipc.confirmationGate = confirmation
+    let originalSession = fixture.controller.session
+    let caller = Task { await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) }
+    try await controllerWaitUntil { confirmation.entered }
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    if sameAccount { fixture.auth.emit(nil) }
+    fixture.auth.emit(.init(uid: sameAccount ? "user-a" : "user-b", email: nil))
+    try await controllerWaitUntil { fixture.controller.session != originalSession }
+    confirmation.resume()
+    #expect(await caller.value == 4)
+    #expect(ipc.requests.outcome(id: id, session: originalSession) == .failed(.signInRequired))
+    #expect(ipc.received.filter { $0.action == .removeClient }.map(\.identifier) == [fixture.config.identifier])
+    #expect(ipc.performed.isEmpty)
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(!ipc.cliOutput.contains("Client removed"))
+    #expect(!(ipc.cliOutput + ipc.cliDiagnostics).contains(fixture.config.identifier))
+    if isJSON {
+        let record = try #require(ipc.cliRecords().last)
+        #expect((record["error"] as? [String: Any])?["code"] as? String == "controller_rejected")
+    }
+}
+
+@Test(arguments: [false, true], [false, true])
+@MainActor func macControllerCLIRemovalRedactsSuccessAndWarningsAfterSessionChanges(logout: Bool, isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    let response = ClientRemovalGate()
+    fixture.inventory.removalSession.responseGate = response
+    ipc.confirmationReply = ClientRemovalGate()
+    let originalSession = fixture.controller.session
+    let caller = Task { await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) }
+    try await controllerWaitUntil { response.entered && ipc.confirmationReply?.entered == true }
+    let id = try ipc.acceptedCLIId(isJSON: isJSON)
+    if logout { #expect(fixture.controller.signOut()) }
+    else { fixture.auth.emit(.init(uid: "user-b", email: nil)) }
+    try await controllerWaitUntil { fixture.controller.session != originalSession }
+    response.resume()
+    try await controllerWaitUntil { ipc.requests.operation(id: id).state == .completed }
+    #expect(ipc.requests.outcome(id: id, session: originalSession) == .completed(warning: .localCleanupIncomplete))
+    ipc.confirmationReply?.resume()
+    #expect(await caller.value == 0)
+    if isJSON {
+        let record = try #require(ipc.cliRecords().last)
+        let data = try #require(record["data"] as? [String: Any])
+        let operation = try #require(data["operation"] as? [String: Any])
+        #expect(record["type"] as? String == "result")
+        #expect(record["operationId"] as? String == id.uuidString.lowercased())
+        #expect(operation["state"] as? String == "completed")
+        for key in ["result", "configId", "warning", "error"] { #expect(operation[key] is NSNull) }
+        #expect(data["choices"] is NSNull)
+    } else { #expect(ipc.cliOutput.contains("Command completed\n")) }
+    for hidden in [fixture.config.identifier, "user-a", "Mac", "Client removed", "local_cleanup_incomplete", "local cleanup incomplete"] {
+        #expect(!ipc.cliOutput.contains(hidden))
+    }
+    #expect(ipc.cliDiagnostics.isEmpty)
+    #expect(ipc.received.filter { $0.action == .removeClient }.map(\.identifier) == [fixture.config.identifier])
+    #expect(ipc.performed == [.removeClient])
+    #expect(fixture.inventory.removalSession.requests.count == 1)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerCLIRemovalOutputFailureLeavesRealReservationUnconfirmed(isJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.start()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    defer { fixture.controller.shutdown() }
+    let ipc = try MacControllerRemovalIPC(fixture)
+    ipc.onCLIOutput = { _ in throw CocoaError(.fileWriteUnknown) }
+    #expect(await ipc.runCLI(["remove", "region", "1", "--yes"] + (isJSON ? ["--json"] : [])) == 1)
+    let reservations = ipc.received.filter { $0.action == .removeClient }
+    #expect(reservations.count == 1)
+    let id = try #require(reservations.first?.id)
+    #expect(ipc.requests.operation(id: id).state == .accepted)
+    #expect(!ipc.actions.contains(.confirmOperation))
+    #expect(ipc.performed.isEmpty)
+    #expect(fixture.inventory.removalSession.requests.isEmpty)
+    #expect(ipc.cliOutput.isEmpty)
 }
 
 @Test @MainActor func macControllerRemovalIPCTwoFrontendsReserveOneSideEffectFreeOperation() async throws {

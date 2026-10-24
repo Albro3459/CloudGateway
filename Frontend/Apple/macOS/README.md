@@ -75,9 +75,9 @@ IPC, automatic blackout recovery, or notifications run on macOS.
 
 ## Controller Client Removal Contract
 
-Client removal is implemented in the controller, production adapters, and IPC.
-Frontend removal remains deferred: the CLI has no remove command, and the menu
-has no Remove action, selector, or confirmation dialog for this operation.
+Client removal is available through `cloudgateway remove`, using the controller,
+production adapters, and IPC. The app Remove action stays deferred. The menu has
+no removal selector or confirmation dialog.
 
 `CloudGatewayMacController.removeClient(identifier:onCompletion:) -> Bool` uses
 the existing accepted-task contract. A synchronous rejection returns `false`
@@ -281,6 +281,9 @@ cloudgateway refresh
 cloudgateway auth logout
 cloudgateway down
 cloudgateway down chicago 2        # Stop only this config
+cloudgateway remove '<client-uuid>' --yes
+cloudgateway remove sanjose 1 --yes
+cloudgateway remove '<client-uuid>' --yes --json --non-interactive
 cloudgateway doctor --json
 cloudgateway update                # Update the extension from the installed app
 cloudgateway update --allow-disconnect --json
@@ -317,7 +320,7 @@ and owner email, client UUID, and any connection/selection/unavailable state.
 Connection URL prefers the server hostname, then IPv4. Saved configs without
 owner metadata show `Unknown` offline. Installation labels stay hidden.
 
-`up` and targeted `down` accept either a client UUID or a region plus index.
+`up`, targeted `down`, and `remove` accept either a client UUID or a region plus index.
 Regions accept full IDs, display names (quote names containing spaces), or city
 aliases such as `sanjose`. Ambiguous aliases require a full region ID. Unknown
 regions return usage errors, including in `list --region`. Indices follow the
@@ -325,6 +328,46 @@ current inventory and can change after refresh or offline fallback. Rerun `ls`
 after inventory changes and use UUIDs in scripts. An unavailable config keeps
 its index. A targeted `down` never stops a different active config and requires
 authorized inventory, including existing offline authorization.
+
+`remove` permanently deletes the cloud client and revokes its WireGuard peer.
+Every invocation requires an explicit selector and `--yes`, including JSON and
+noninteractive use. `--yes` acknowledges permanent deletion, with no terminal
+prompt. Missing consent or a selector fails locally before controller connection.
+Removal never infers the last selection. `--yes` is only valid for `remove`, and
+value forms such as `--yes=false` are rejected. Help needs neither consent nor
+controller access.
+
+Removal resolves the selector once from settled account inventory and sends that
+exact target to the controller. Cached rows can identify it, but deletion always
+requires fresh online authorization. Disabled regions, missing configs, and clients
+never installed on this Mac remain valid removal targets. An active target,
+including connecting, reasserting, or disconnecting, fails with `client_active`
+(exit 4). Disconnect that client explicitly and wait for it to stop before removing
+it. Consent never authorizes a disconnect, and unrelated VPNs stay running.
+
+A visible completed result prints `Client removed`. Verified cloud deletion with
+`local_cleanup_incomplete` or `inventory_not_refreshed` still succeeds (exit 0)
+and reports the warning. Stop an active leftover profile explicitly before local
+cleanup, then refresh inventory. The operation does not delete retained System
+Keychain secrets. After logout or an account change, account-bound outcomes and
+warnings are hidden. A redacted success prints `Command completed`, with null
+result, target, and warning fields in JSON.
+
+The CLI flushes the accepted operation ID before confirming removal. An output
+failure leaves the reservation unconfirmed. Once confirmed, caller timeout,
+Ctrl-C, lost replies, or SSH detach stop observation while controller work can
+continue. Keep the ID and run `cloudgateway status --operation '<operation-id>'`.
+An unknown result (exit 10) never triggers an automatic resend. If lookup remains
+unknown, run `cloudgateway refresh` online, then `cloudgateway ls` and inspect the
+original client UUID before another manual removal attempt. Indices can change
+during recovery, so use the original UUID instead of repeating a region/index.
+
+Unconfirmed reservations expire after 30 seconds. Persisted receipts prevent
+replay for 600 seconds from acceptance. The latest in-memory result lasts 600
+seconds from completion unless a newer result or process exit replaces it sooner.
+These clocks are independent. Restart can return unknown without redispatch while
+the receipt is retained. Expiry never proves whether deletion occurred, and a
+fresh CLI invocation creates a new request rather than extending replay protection.
 
 `up` uses the controller's authorized inventory/cache policy, installs or replaces
 an eligible stored config when needed, and reports
@@ -420,8 +463,11 @@ already active, not a claim that traffic connectivity was verified.
 JSON stdout is NDJSON schema version 1. Each line is a complete object with
 `schemaVersion`, `type`, `command`, `operationId`, `data`, and `error`. Reads emit
 one result. Login first emits `login_required`; VPN mutations first emit
-`accepted`, then a final result/error when available. Errors have stable `code`,
-sanitized `message`, and nullable `suggestion`. Unavailable fields are explicit
+`accepted`, then a final result/error when available. Client creation and removal
+use the same records. Removal results have `data.command = "remove"`, with the
+typed operation outcome and warning separate from the observed tunnel state.
+Errors have stable `code`, sanitized `message`, and nullable `suggestion`.
+Unavailable fields are explicit
 nulls; observation timestamps are UTC. Requested action, command outcome, and
 observed tunnel state are separate. Additive fields retain version 1 field
 types. Human diagnostics use stderr; JSON has no progress text or ANSI escapes.

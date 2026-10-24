@@ -53,7 +53,14 @@ class MacOSCLIVerificationTests(unittest.TestCase):
         invalid_add = flags[:2] == ["add", "sanjose"] or flags[:3] == ["add", "us-sanjose-1", ""]
         if "add" in flags:
             self.assertTrue(any(flag in flags for flag in ["help", "--help"]) or invalid_add)
-        invalid = invalid_add or any(flag in flags for flag in ["--unknown-option", "--unexpected", "0"])
+        is_help = any(flag in flags for flag in ["help", "--help"])
+        invalid_remove = "remove" in flags and not is_help
+        if "remove" in flags:
+            self.assertTrue(is_help or "--yes" not in flags or flags[:2] == ["remove", "--yes"]
+                            or any(flag in flags for flag in ["not-a-uuid", "0", "extra", "--unexpected"]))
+        invalid = invalid_add or invalid_remove or flags == ["status", "--yes", "--json"] or any(
+            flag in flags for flag in ["--unknown-option", "--unexpected", "0"]
+        )
         if flags[:2] == ["auth", "login"]:
             command = "auth login"
         elif flags[:1] == ["status"]:
@@ -64,6 +71,8 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             command = "update"
         elif flags[:1] == ["add"] and invalid:
             command = "add"
+        elif invalid_remove:
+            command = "remove"
         elif any(flag in flags for flag in ["version", "--version", "-v"]) and not any(
             flag in flags for flag in ["help", "--help"]
         ):
@@ -72,6 +81,8 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             command = "help"
         if "--json" in flags:
             data = {"version": "1.2.0", "build": "7"} if command == "version" else {"usage": "cloudgateway help"}
+            if "remove" in flags and is_help:
+                data = {"topic": "remove", "usage": "cloudgateway remove <client-uuid> --yes [options]"}
             record = {"schemaVersion": 1, "type": "error" if invalid else "result", "command": command,
                       "operationId": None, "data": None if invalid else data,
                       "error": {"code": "usage"} if invalid else None}
@@ -80,12 +91,14 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             output, diagnostics = (b"", b"Usage error\n") if invalid else (b"CloudGateway help/version\n", b"")
             if command == "version" and not invalid:
                 output = b"CloudGateway 1.2.0 (7)\n"
+            elif "remove" in flags and is_help:
+                output = b"cloudgateway remove <client-uuid> --yes [options]\n"
         return subprocess.CompletedProcess(arguments, 2 if invalid else 0, stdout=output, stderr=diagnostics)
 
     def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
         with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
             verifier.verify_cli(self.app)
-        self.assertEqual(run.call_count, 58)
+        self.assertEqual(run.call_count, 88)
         symlink = next(entry.args[0][0] for entry in run.call_args_list
                        if Path(entry.args[0][0]).name == "cloudgateway")
         for prefix in ([str(self.binary.absolute()), "--cli"], [symlink]):
@@ -93,7 +106,13 @@ class MacOSCLIVerificationTests(unittest.TestCase):
                           ["--version", "--json"], ["ls", "-l", "--help", "--json"],
                           ["update", "--allow-disconnect", "--help", "--json"],
                           ["update", "--unexpected", "--json"], ["add", "--help"], ["help", "add", "--json"],
-                          ["add", "sanjose"], ["add", "us-sanjose-1", "", "--json"]):
+                          ["add", "sanjose"], ["add", "us-sanjose-1", "", "--json"],
+                          ["remove", "--help"], ["help", "remove", "--json"],
+                          ["remove", "sanjose", "1", "--yes", "--help", "--json"],
+                          ["remove"], ["remove", "--yes", "--json"],
+                          ["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                          ["remove", "sanjose", "1", "--json", "--non-interactive"],
+                          ["remove", "sanjose", "1", "--yes=false", "--json"]):
                 self.assertTrue(any(entry.args[0] == prefix + flags for entry in run.call_args_list))
         self.assertEqual(len(self.homes), 1)
         self.assertTrue(all(not home.exists() for home in self.homes))

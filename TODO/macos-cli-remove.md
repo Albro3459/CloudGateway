@@ -1,6 +1,6 @@
 # Remove clients from the macOS CLI
 
-Status: task 1 complete, integration and final validation pending. Updated 2026-10-24
+Status: complete, reviewed and validated unsigned. Updated 2026-10-24
 
 ## Goal
 
@@ -102,18 +102,18 @@ VPN mutations are part of validation.
 
 ### Task 2: integration, documentation, and final validation
 
-- [ ] Add CLI-to-real-frontend/orchestrator removal coverage using existing
+- [x] Add CLI-to-real-frontend/orchestrator removal coverage using existing
   test infrastructure. Verify the exact identifier, acceptance before execution,
   single dispatch, active-client refusal, successful warnings, caller loss,
   and account changes. Verify cancellation leaves confirmed work running, while
   session changes preserve rejection/redaction. Reuse controller/helper tests
   for backend/profile semantics
-- [ ] Extend packaged direct/symlink CLI smoke checks for removal help and local
+- [x] Extend packaged direct/symlink CLI smoke checks for removal help and local
   invalid invocations, including missing selector and missing `--yes`
-- [ ] Update the macOS README with command examples, permanent deletion consent,
+- [x] Update the macOS README with command examples, permanent deletion consent,
   selectors, active-profile behavior, warning success, uncertainty/recovery,
   retained secrets, and app-only deferral. Correct existing CLI-deferral text
-- [ ] Run final `./scripts/test.sh macos` unsigned, `git diff --check`, and an
+- [x] Run final `./scripts/test.sh macos` unsigned, `git diff --check`, and an
   aggregate review of the complete CLI change. Record results and review rounds,
   check off the plan, commit, and stop with a clean working tree
 
@@ -132,3 +132,18 @@ actionable findings. Parent review also passed. `./scripts/test.sh macos`
 passed unsigned: 738 macOS tests, shared/auth suites, both strict dead-code
 scans, arm64 app/extension build, packaging, and 58 CLI smoke checks.
 `git diff --check` passed. [Validation log](/tmp/cloudgateway-task1-macos-final.log)
+
+Task 2: added seven integration tests with 24 cases through the real CLI,
+frontend, orchestrator, controller, and HTTP helper using fixture adapters.
+Extended packaged direct/symlink smoke checks from 58 to 88 and updated the
+macOS README. Fresh Sol xhigh review round 1 passed both task 2 and the complete
+CLI change against `ceeeb5c8`, with no actionable findings. Parent review passed
+
+Final `./scripts/test.sh macos` passed unsigned: 745 macOS tests, 280 shared
+XCTest tests, 263 shared Swift Testing tests, 31 auth adapter tests, 22 verifier
+tests, 44 release workflow tests, both strict Periphery scans, arm64 app/extension
+build, packaging, and 88 CLI smoke checks. `git diff --check ceeeb5c8` passed.
+[Final validation log](/tmp/cloudgateway-task2-macos-final.log)
+
+The CLI is complete. The app Remove action and signed runtime validation remain
+deferred. No live cloud/VPN mutations or pushes were performed
