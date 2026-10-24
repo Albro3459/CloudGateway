@@ -86,9 +86,9 @@ IPC, automatic blackout recovery, or notifications run on macOS.
 
 ## Controller Client Removal Contract
 
-Client removal is available through `cloudgateway remove`, using the controller,
-production adapters, and IPC. The app Remove action stays deferred. The menu has
-no removal selector or confirmation dialog.
+Client removal is available through `cloudgateway remove` and the app's
+**Remove Client…** action under Add Client. Both frontends use the controller,
+production adapters, and IPC, and require the target config to be inactive.
 
 `CloudGatewayMacController.removeClient(identifier:onCompletion:) -> Bool` uses
 the existing accepted-task contract. A synchronous rejection returns `false`
@@ -145,9 +145,10 @@ lookup and Refresh to recover. Only fresh authoritative inventory can make a
 still-active cloud client eligible after an uncertain attempt.
 
 Persisted request receipts prevent replay for 600 seconds from acceptance.
-The active/latest result stays in memory for 600 seconds from completion;
-running results do not expire while running. A newer command or process exit
-can end result recovery sooner. These clocks are independent. Restart loses
+Creation and ordinary commands have separate in-memory result slots. Each terminal
+result stays available for 600 seconds from completion; running results do not
+expire while running. A new acceptance replaces its own slot, and process exit
+loses both slots. These clocks are independent. Restart loses
 the result but unexpired receipts yield `unknown` without redispatch. Expired
 receipts are discarded at startup, so an old UUID can be admitted again after
 that window. This is bounded replay protection, with no automatic resend even
@@ -374,8 +375,9 @@ original client UUID before another manual removal attempt. Indices can change
 during recovery, so use the original UUID instead of repeating a region/index.
 
 Unconfirmed reservations expire after 30 seconds. Persisted receipts prevent
-replay for 600 seconds from acceptance. The latest in-memory result lasts 600
-seconds from completion unless a newer result or process exit replaces it sooner.
+replay for 600 seconds from acceptance. The removal result lasts 600 seconds from
+completion unless a new ordinary command is accepted or the process exits.
+Creation uses a separate result slot and does not replace the removal result.
 These clocks are independent. Restart can return unknown without redispatch while
 the receipt is retained. Expiry never proves whether deletion occurred, and a
 fresh CLI invocation creates a new request rather than extending replay protection.

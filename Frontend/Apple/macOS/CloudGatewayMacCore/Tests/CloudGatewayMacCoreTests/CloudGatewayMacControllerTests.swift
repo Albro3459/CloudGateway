@@ -4187,6 +4187,7 @@ private final class MacControllerRemovalIPC {
     #expect(fixture.snapshot.canTurnOff)
     #expect(!fixture.snapshot.canRefresh)
     #expect(!fixture.snapshot.canCreateClient)
+    #expect(!fixture.snapshot.canRemoveClient)
     #expect(fixture.snapshot.groups.allSatisfy { $0.rows.allSatisfy { !$0.isEnabled } })
     let stopId = UUID()
     _ = try await stopping.request(action, id: stopId, identifier: action == .disconnectClient ? fixture.config.identifier : nil)

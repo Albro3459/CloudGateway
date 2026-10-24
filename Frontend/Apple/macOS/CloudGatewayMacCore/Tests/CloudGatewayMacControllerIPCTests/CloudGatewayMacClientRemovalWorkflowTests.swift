@@ -233,6 +233,32 @@ private final class RemovalFrontendHarness {
 }
 
 @MainActor
+@Test func removalFrontendBlocksRemovalWhileCreationIsReservedOrRunning() async throws {
+    let harness = try await RemovalFrontendHarness()
+    defer { harness.client.shutdown() }
+    harness.effects.active = true
+    harness.effects.holdCreation = true
+    let prepared = try #require(try await harness.client.request(.prepareClient).creation)
+    let id = UUID()
+    #expect(try await harness.client.send(.createClient, id: id, regionId: "region", clientName: "Mac",
+                                         contextId: prepared.id).operation?.state == .accepted)
+    for confirmed in [false, true] {
+        if confirmed { #expect(try await harness.client.confirm(id).operation?.state == .running) }
+        for action in [CloudGatewayMacControllerRequest.Action.snapshot, .operation] {
+            _ = try await harness.client.request(action, contextId: action == .operation ? id : nil)
+            #expect(!harness.client.presentation.canRemoveClient)
+            #expect(harness.client.presentation.canTurnOff)
+            await #expect(throws: CloudGatewayMacControllerFailure.rejected) { try await harness.remove() }
+        }
+    }
+    #expect(harness.requests.filter { $0.action == .removeClient }.isEmpty)
+    #expect(harness.effects.submissions == 1)
+    harness.effects.creationCompletion?(.completed(warning: nil))
+    _ = try await harness.client.request(.snapshot)
+    #expect(harness.client.presentation.canRemoveClient)
+}
+
+@MainActor
 @Test func removalAvailabilityFollowsOwnerAdmissionAcrossPendingRunningAndExtensionWork() async throws {
     let harness = try await RemovalFrontendHarness()
     defer { harness.client.shutdown() }
