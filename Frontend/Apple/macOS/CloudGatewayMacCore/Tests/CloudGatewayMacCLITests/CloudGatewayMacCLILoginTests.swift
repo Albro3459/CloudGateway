@@ -13,13 +13,11 @@ private final class LoginInput: CloudGatewayMacCLILoginInput {
     var reads = 0
     var closes = 0
     var acceptsInput = false
-    var restoredAfterEOF = false
     var keys = [UInt8]()
 
     func start(shortcuts: Bool) -> Bool { starts.append(shortcuts); return shortcuts && acceptsInput }
     func readKeys() -> [UInt8] {
         reads += 1
-        if keys.isEmpty { restoredAfterEOF = true }
         defer { keys = [] }
         return keys
     }
@@ -111,7 +109,7 @@ private func loginWithoutInteractiveStdinStillPollsToAuthorization(_ flags: [Str
     } else { #expect(fixture.output.contains("Code: 000012")) }
 }
 
-@Test @MainActor func loginEOFAndFailedShortcutsLeaveReadableChallengeAndPolling() async throws {
+@Test @MainActor func loginFailedShortcutsLeaveReadableChallengeAndPolling() async throws {
     let fixture = LoginFixture()
     fixture.input.acceptsInput = true
     fixture.input.keys = [99, 111]
@@ -119,7 +117,6 @@ private func loginWithoutInteractiveStdinStillPollsToAuthorization(_ flags: [Str
     _ = try await fixture.run(terminal: true).get()
     #expect(fixture.copied == 1 && fixture.opened == 1)
     #expect(fixture.input.reads >= 2)
-    #expect(fixture.input.restoredAfterEOF)
     #expect(fixture.polls == 2)
     #expect(fixture.output.contains(fixture.url.absoluteString))
     #expect(fixture.output.contains("remote Mac"))

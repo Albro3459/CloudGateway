@@ -96,7 +96,7 @@ func macBuildIdentityRequiresCodeDirectoryAndCMS(key: String) {
     }
 }
 
-@Test func macSignedBundleRejectsUnsignedInstalledBundle() throws {
+@Test func macSignedBundleRejectsSyntheticShellScriptAppBundle() throws {
     let root = try macBuildFixtureDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let bundle = root.appendingPathComponent("Fixture.app", isDirectory: true)

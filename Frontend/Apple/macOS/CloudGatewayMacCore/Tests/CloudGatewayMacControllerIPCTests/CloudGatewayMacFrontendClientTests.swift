@@ -127,7 +127,8 @@ private final class FrontendTransport {
 }
 
 @MainActor
-@Test func frontendClientOldSnapshotCannotReplaceNewerObservation() async throws {
+@Test(arguments: [false, true])
+func frontendClientOldSnapshotCannotReplaceOrEraseNewerObservation(failure: Bool) async throws {
     let transport = FrontendTransport()
     let client = transport.make()
     try await client.poll()
@@ -138,32 +139,17 @@ private final class FrontendTransport {
     transport.suspended = []
     transport.active = true
     _ = try await client.request(.snapshot)
-    try transport.resolve(id, with: transport.envelope(.init(state: controllerBoundaryState(active: false))))
-    _ = try await old.value
-    #expect(client.isSnapshotFresh)
-    #expect(client.presentation.statusTitle == "VPN connected")
-    #expect(client.presentation.hasActiveTunnel)
-    #expect(client.errorMessage == nil)
-    client.shutdown()
-}
-
-@MainActor
-@Test func frontendClientOldTransportFailureCannotEraseNewerFreshState() async throws {
-    let transport = FrontendTransport()
-    let client = transport.make()
-    try await client.poll()
-    transport.suspended = [.snapshot]
-    let id = UUID()
-    let old = Task { try await client.request(.snapshot, id: id) }
-    try #require(await controllerBoundaryEventually { transport.pending[id] != nil })
-    transport.suspended = []
-    transport.active = true
-    _ = try await client.request(.snapshot)
-    try transport.fail(id)
-    await #expect(throws: CloudGatewayMacControllerFailure.unavailable) { try await old.value }
+    if failure {
+        try transport.fail(id)
+        await #expect(throws: CloudGatewayMacControllerFailure.unavailable) { try await old.value }
+    } else {
+        try transport.resolve(id, with: transport.envelope(.init(state: controllerBoundaryState(active: false))))
+        _ = try await old.value
+    }
     #expect(client.connectionState == .connected)
     #expect(client.isSnapshotFresh)
     #expect(client.presentation.statusTitle == "VPN connected")
+    #expect(client.presentation.hasActiveTunnel)
     #expect(client.errorMessage == nil)
     client.shutdown()
 }

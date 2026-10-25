@@ -435,33 +435,21 @@ func macConfigRemovalRejectsDuplicateOrMalformedProfiles(duplicate: Bool) async 
     #expect(await fixture.events.values == ["profiles", "profiles"])
 }
 
-@Test(arguments: [MacConfigTestProfiles.RemovalFailure.beforeRemove, .reload, .stillPresent])
-private func macConfigRemovalDoesNotHideRemovalOrReloadFailure(failure: MacConfigTestProfiles.RemovalFailure) async throws {
+@Test(arguments: [CloudGatewayMacConfigError.clientActive, .unavailable])
+func macConfigRemovalPropagatesAdapterErrorsAndReleasesOwnership(error: CloudGatewayMacConfigError) async throws {
     let fixture = MacConfigFixture()
     let config = try await fixture.install()
     await fixture.events.clear()
-    await fixture.profiles.setRemovalFailure(failure)
-    await #expect(throws: MacConfigTestFailure.self) {
+    await fixture.profiles.setRemovalError(error)
+    await #expect(throws: error) {
         try await fixture.coordinator.removeClientProfile(identifier: config.identifier, authorize: {})
     }
-    #expect(await fixture.events.values == (failure == .beforeRemove ? ["profiles"] : ["profiles", "remove:\(config.identifier)", "reload"]))
-    #expect(await fixture.profiles.values.isEmpty == (failure == .reload))
-}
-
-@Test(arguments: [CloudGatewayTunnelStatus.connected, .connecting, .reasserting, .disconnecting])
-func macConfigExternalActivationAtRemovalBoundaryPreventsRemoval(status: CloudGatewayTunnelStatus) async throws {
-    let fixture = MacConfigFixture()
-    let config = try await fixture.install()
-    await fixture.events.clear()
-    let gate = MacConfigTestGate()
-    await fixture.profiles.pauseRemovalPreparation(gate)
-    let task = Task { try await fixture.coordinator.removeClientProfile(identifier: config.identifier, authorize: {}) }
-    await gate.waitUntilEntered()
-    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: status)])
-    await gate.release()
-    await #expect(throws: CloudGatewayMacConfigError.clientActive) { try await task.value }
     #expect(await fixture.events.values == ["profiles"])
-    #expect(await fixture.profiles.values.first?.status == status)
+    #expect(await fixture.profiles.values.first?.identifier == config.identifier)
+    await fixture.profiles.setRemovalError(nil)
+    try await fixture.coordinator.removeClientProfile(identifier: config.identifier, authorize: {})
+    #expect(await fixture.events.values == ["profiles", "profiles", "remove:\(config.identifier)", "reload"])
+    #expect(await fixture.profiles.values.isEmpty)
 }
 
 @Test(arguments: [true, false])
@@ -705,7 +693,6 @@ private actor MacConfigTestSecrets: CloudGatewayMacSecretClient {
 
 private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
     enum SaveFailure { case beforeSave, afterSave, unknownPreferences }
-    enum RemovalFailure: Sendable { case beforeRemove, reload, stillPresent }
     let events: MacConfigTestEvents
     var values: [CloudGatewayMacInstalledProfile] = []
     private var saveFailure: SaveFailure?
@@ -718,7 +705,7 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
     private var readGate: MacConfigTestGate?
     private var removalPreparationGate: MacConfigTestGate?
     private var removalGate: MacConfigTestGate?
-    private var removalFailure: RemovalFailure?
+    private var removalError: CloudGatewayMacConfigError?
 
     init(events: MacConfigTestEvents) { self.events = events }
     func setSaveFailure(_ failure: SaveFailure) { saveFailure = failure }
@@ -732,7 +719,7 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
     func pauseRead(_ gate: MacConfigTestGate) { readGate = gate }
     func pauseRemovalPreparation(_ gate: MacConfigTestGate) { removalPreparationGate = gate }
     func pauseRemoval(_ gate: MacConfigTestGate) { removalGate = gate }
-    func setRemovalFailure(_ failure: RemovalFailure) { removalFailure = failure }
+    func setRemovalError(_ error: CloudGatewayMacConfigError?) { removalError = error }
 
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         try Task.checkCancellation()
@@ -787,23 +774,18 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
     func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
         try Task.checkCancellation()
         try await authorize()
-        guard let expected = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: values) else { return }
+        guard values.contains(where: { $0.identifier == identifier }) else { return }
         await removalPreparationGate?.arriveAndWait()
         try Task.checkCancellation()
         try await authorize()
         try Task.checkCancellation()
-        guard let current = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: values),
-              current.reference == expected.reference else { throw CloudGatewayMacConfigError.invalidConfig }
-        if removalFailure == .beforeRemove { throw MacConfigTestFailure() }
+        if let removalError { throw removalError }
         await events.append("remove:\(identifier)")
         values.removeAll { $0.identifier == identifier }
         await removalGate?.arriveAndWait()
         try Task.checkCancellation()
         try await authorize()
         await events.append("reload")
-        if removalFailure == .reload { throw MacConfigTestFailure() }
-        if removalFailure == .stillPresent { values.append(expected) }
-        guard !values.contains(where: { $0.identifier == identifier }) else { throw MacConfigTestFailure() }
     }
 }
 

@@ -1,6 +1,6 @@
 # Keep useful macOS test coverage and trim weak checks
 
-Status: audit and independent review complete, cleanup not implemented
+Status: cleanup complete, unsigned validation and fresh implementation review passed
 Reviewed base: `507cbfa9` on `mac-remove-client`
 
 The audit supports targeted cleanup: three deletion candidates, three small
@@ -10,7 +10,7 @@ concrete behavior. No large test-count reduction is justified by these findings.
 
 ## Scope and count
 
-The macOS package has **789 test declarations** across 53 files containing tests
+At the reviewed base, the macOS package had **789 test declarations** across 53 files containing tests
 (plus one support-only Swift file). The split is 330 core, 276 controller IPC,
 149 CLI, and 34 tunnel IPC tests. Of those declarations, 165 use Swift Testing
 arguments. Parameter rows and loops exercise additional cases, so this is a
@@ -45,7 +45,7 @@ alone do not mean less maintenance or faster validation.
 
 ### 1. Remove the setup enum inequality test
 
-- [ ] Delete `pendingAndFailedSetupNeverPresentReadiness` from the
+- [x] Delete `pendingAndFailedSetupNeverPresentReadiness` from the
   [setup tests](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacSetupStateTests.swift:6)
 
 It constructs enum values and checks `state != .ready`. The
@@ -61,7 +61,7 @@ parent kept the deletion recommendation.
 
 ### 2. Consolidate the setup activation policy checks
 
-- [ ] Combine `pendingRequestsCannotSubmitAnotherActivation`,
+- [x] Combine `pendingRequestsCannotSubmitAnotherActivation`,
   `requiredRestartBlocksActivation`, `ordinarySetupStatesAllowActivationRetries`,
   and `invalidEmbeddedBundleCannotActivate` in the
   [same file](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacSetupStateTests.swift:16)
@@ -80,7 +80,7 @@ all policy cases. The parent kept consolidation.
 
 ### 3. Delete the test-local inventory adapter smoke test
 
-- [ ] Delete `macControllerInventoryRemovalUsesTheRealRequestHelper` in the
+- [x] Delete `macControllerInventoryRemovalUsesTheRealRequestHelper` in the
   [controller tests](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:11)
 
 It calls the test-local `MacControllerInventory.deleteClient` directly. That
@@ -98,7 +98,7 @@ test checks app-adapter wiring. The parent kept deletion.
 
 ### 4. Consolidate confirmed creation followed by refresh failure
 
-- [ ] Fold
+- [x] Fold
   [`macControllerReportsConfirmedCreationWhenInventoryRefreshFails`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:471)
   into the confirmed cases of
   [`macControllerCreationCompletionDistinguishesConfirmedAndUnknownResults`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:1376)
@@ -118,7 +118,7 @@ parent added that requirement and kept consolidation.
 
 ### 5. Simplify coordinator tests that reproduce adapter behavior in a fake
 
-- [ ] Replace the detailed fake-adapter removal matrices with focused coordinator
+- [x] Replace the detailed fake-adapter removal matrices with focused coordinator
   error propagation checks
 
 [`macConfigExternalActivationAtRemovalBoundaryPreventsRemoval`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacConfigCoordinatorTests.swift:452)
@@ -149,7 +149,7 @@ limited fake simplification to otherwise unused behavior.
 
 ### 6. Isolate the installer's masked startup-file rejection
 
-- [ ] Rewrite the final assertion in
+- [x] Rewrite the final assertion in
   [`cliInstallerPathEditLeavesCustomShellConfigurationAlone`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacCLIInstallerTests.swift:137)
   using a fresh fixture or benign profile
 
@@ -166,7 +166,7 @@ kept the isolated-fixture repair.
 
 ### 7. Make the cache secret-reference test exercise its claimed boundary
 
-- [ ] Keep the namespace assertions in
+- [x] Keep the namespace assertions in
   [`cacheRejectsUnboundOrNonMacSecretReferences`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacAccountCacheTests.swift:163)
   and add correctly bound fixtures with a foreign service and malformed reference
 
@@ -196,8 +196,8 @@ and withdrew deletion. Keep this test with the other functional dialog tests.
 
 ### 9. Delete the CLI case that bypasses the controller's validated IP contract
 
-- [ ] Delete
-  [`cliLongRendererStripsCIDRWhileKeepingMachineMetadata`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCLITests/CloudGatewayMacCLISelectorTests.swift:383)
+- [x] Delete
+  [`cliLongRendererStripsCIDRWhileKeepingMachineMetadata`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCLITests/CloudGatewayMacCLISelectorTests.swift)
 
 It injects `10.0.0.2/32` using raw `JSONDecoder`, bypassing protocol validation,
 and expects the renderer to strip the prefix while machine metadata retains it.
@@ -220,7 +220,7 @@ excluded production fallback removal.
 
 ### 10. Remove the fake-only terminal EOF assertion
 
-- [ ] Remove `LoginInput.restoredAfterEOF` and its assertion, and rename
+- [x] Remove `LoginInput.restoredAfterEOF` and its assertion, and rename
   [`loginEOFAndFailedShortcutsLeaveReadableChallengeAndPolling`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCLITests/CloudGatewayMacCLILoginTests.swift:114)
   around the shortcut/polling behavior it actually tests
 
@@ -236,7 +236,7 @@ removal and the narrower test name.
 
 ### 11. Correct the unsigned-bundle fixture's claim
 
-- [ ] Rewrite or rename
+- [x] Rewrite or rename
   [`macSignedBundleRejectsUnsignedInstalledBundle`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacIPCTests/CloudGatewayMacBuildIdentityTests.swift:99)
   so its fixture and name match the rejection being tested
 
@@ -248,8 +248,8 @@ The test only observes the shared `invalidRequest` result.
 Inference from inspection: another rejection reason could keep the test passing
 if validity checking regressed. This audit did not execute it or establish which
 guard fails. Describe the current case literally as rejection of a synthetic
-shell-script app bundle, without claiming a particular guard caused it. A valid Mach-O with the
-intended missing/untrusted signing state could make unsigned-rejection coverage
+shell-script app bundle, without claiming a particular guard caused it. A valid
+Mach-O with the intended missing/untrusted signing state could make rejection coverage
 more faithful if that coverage is pursued. It would still not alone prove the
 validity-check call is required, because missing metadata also rejects. A new
 binary fixture is optional. Record the unsigned-executable coverage gap. Keep
@@ -261,7 +261,7 @@ synthetic shell-script bundle and made a new binary fixture optional.
 
 ### 12. Merge idle-result retention setup only if it stays simpler
 
-Optional: combine
+Kept separate. The reviewed option was to combine
   [`controllerOrchestratorIdleExitWaitsForTheRetainedResultWindow`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacControllerIPCTests/CloudGatewayMacControllerOwnershipTests.swift:248)
   and
   [`controllerOrchestratorRetainsLateCommandResultsForRecoveryWithoutRenewingActivity`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacControllerIPCTests/CloudGatewayMacControllerOrchestratorTests.swift:607)
@@ -285,7 +285,7 @@ existing tests is a valid outcome.
 
 ### 13. Consolidate same-generation stale snapshot success/failure setup
 
-- [ ] Parameterize the old reply outcome in
+- [x] Parameterize the old reply outcome in
   [`frontendClientOldSnapshotCannotReplaceNewerObservation`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacControllerIPCTests/CloudGatewayMacFrontendClientTests.swift:130)
   and
   [`frontendClientOldTransportFailureCannotEraseNewerFreshState`](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacControllerIPCTests/CloudGatewayMacFrontendClientTests.swift:151)
@@ -340,15 +340,15 @@ The packaged CLI checks exercise a built executable through direct and symlink
 entry points. Parser unit tests do not establish bundle resources, launch routing,
 or bundle-derived version output. Keep smoke coverage of those boundaries.
 
-## Follow-up validation
+## Validation requirements
 
 Implement only the agreed items, keeping each survivor assertion listed above.
 Run the unsigned
 [macOS entry point](/Users/alexbrodsky/GitHub/CloudGateway/scripts/test.sh:288)
 after test changes, including Periphery so fixture simplification does not leave
 dead support code. Compare retained cases and assertions, not just declaration
-counts. Measure duration before claiming faster validation. No new signed or
-live-service validation is needed for this documentation task.
+counts. Measure duration before claiming faster validation. This cleanup uses
+unsigned validation, with no new signed or live-service checks.
 
 ## Review and validation
 
@@ -358,12 +358,63 @@ survivor assertions, source counts, and file links. The parent answered every
 finding above. Round 1 rejected item 8 and narrowed items 4, 11, and 12. All
 objections were accepted into this revision. A second fresh Secure reviewer
 verified every final disposition and approved the document with no remaining
-material corrections. Implementation remains deferred to a separate task.
+material corrections. The user subsequently authorized implementation, unsigned
+validation, a fresh implementation review, and a local commit.
 
-Only Secure Codex (`codex_secure`, `gpt-6.1-sol`, high reasoning) is used for this
-audit and its delegated reviews. This task changes documentation only. No tests,
-builds, signed operations, live service calls, or production code changes have
-run as part of this audit. Counts come from source inspection. The parent
-manually reviewed the document, checked all local file links and whitespace,
-and confirmed that only this report is included in the local commit. No runtime
-speedup or passing test result is claimed. Nothing was pushed.
+Only Secure Codex (`codex_secure`, `gpt-6.1-sol`, high reasoning) was used for the
+audit and its delegated reviews. The original audit changed documentation only
+and was committed as `ecb744ec`. It ran no tests, builds, signed operations, or
+live service calls. Its counts came from source inspection.
+
+## Implementation record
+
+Implemented against `ecb744ec`, with **780 test declarations** remaining (9 fewer):
+323 core, 275 controller IPC, 148 CLI, and 34 tunnel IPC. Counts describe test
+declarations, including parameterized tests.
+
+Items 1–7, 9–11, and 13 are implemented. The ten-state activation table replaces
+four property tests. Creation cases retain both refresh failures, asynchronous
+completion, readiness reopening, submitted name/count, and the literal warning.
+The coordinator fake now injects adapter errors directly. The retained test
+checks both error propagation and a successful subsequent removal to prove
+ownership was released. Detailed mutation and verification cases stay against
+the real profile-removal helper. Cache fixtures now reach foreign-service and
+malformed-reference guards and assert their concrete errors. The startup-file
+case clears the earlier custom PATH before adding `.zshenv`, then verifies the
+benign profile stayed unchanged.
+
+The CLI's unsupported CIDR case and fake EOF flag are removed. The synthetic
+shell-script fixture has a literal name, with no new binary-fixture project.
+The stale-snapshot test retains success and failure as parameter cases with
+shared freshness, presentation, error, active-tunnel, and transport assertions.
+
+Item 8 stays. Item 12 stays as two tests because merging different initial timing
+and follow-up checks would need extra branches. Refresh coalescing and eviction
+workflows remain separate. Production code, signing fixtures, and security
+policy are unchanged. Historical test names and source locations above describe
+the audit snapshot. The implementation links below point to retained coverage.
+
+- [Activation policy](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacSetupStateTests.swift:6)
+- [Creation completion and readiness](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:1353)
+- [Adapter error propagation and ownership](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacConfigCoordinatorTests.swift:439)
+- [Secret-reference validation](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacAccountCacheTests.swift:164)
+- [Stale snapshot success and failure](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacControllerIPCTests/CloudGatewayMacFrontendClientTests.swift:131)
+
+The full unsigned macOS entry point passed:
+`/Users/alexbrodsky/GitHub/CloudGateway/scripts/test.sh macos`. It passed shared
+Kit/AppCore and Firebase adapter tests, WireGuard startup regressions, packaging
+verifier and release-workflow tests, all 780 macOS host-free tests, both strict
+Periphery scans, the unsigned arm64 app/extension build, packaging verification,
+and 88 packaged CLI checks. The runner exited successfully with all checks passed.
+
+A fresh Secure Codex implementation reviewer checked the diff against `ecb744ec`
+and approved all 13 dispositions with no actionable findings. The reviewer
+confirmed preserved cases, isolated fixture repairs, coordinator ownership and
+authorization coverage, and the kept workflows. The parent manually reviewed
+the combined diff, checked local links and whitespace, and confirmed only the
+nine test files and this report are included in the cleanup commit.
+
+Only Secure Codex was used for implementation and review. No signed operations
+or live-service checks ran. No speedup is claimed. Actual terminal EOF/termios
+restoration and faithful unsigned Mach-O rejection remain outside the repaired
+coverage claims. Nothing was pushed.

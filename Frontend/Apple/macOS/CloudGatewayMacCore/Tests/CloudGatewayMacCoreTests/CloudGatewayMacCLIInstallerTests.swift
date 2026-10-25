@@ -149,10 +149,12 @@ import Testing
         try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:])
     }
     #expect(try String(contentsOf: profile, encoding: .utf8) == "export PATH=\"/custom:$PATH\"\n")
+    try Data().write(to: profile)
     try Data().write(to: fixture.home.appendingPathComponent(".zshenv"))
     #expect(throws: CloudGatewayMacCLIInstallError.manualShellConfiguration) {
         try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:])
     }
+    #expect(try Data(contentsOf: profile).isEmpty)
 }
 
 @Test func cliInstallerPathEditRejectsLinkedSharedAndNonregularStartupFiles() throws {

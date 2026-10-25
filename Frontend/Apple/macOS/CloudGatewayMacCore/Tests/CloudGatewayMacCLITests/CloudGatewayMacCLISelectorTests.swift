@@ -379,17 +379,3 @@ private func inventoryConfigs(_ harness: CLIHarness) throws -> [[String: Any]] {
         #expect(!harness.actions.contains(.turnOff))
     }
 }
-
-@Test func cliLongRendererStripsCIDRWhileKeepingMachineMetadata() throws {
-    let original = cliState(clients: [cliClient(firstConfig, regionName: "California", name: "Mac")])
-    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
-    var clients = try #require(object["clients"] as? [[String: Any]])
-    clients[0]["internalIp"] = "10.0.0.2/32"
-    object["clients"] = clients
-    let state = try JSONDecoder().decode(CloudGatewayMacControllerState.self, from: JSONSerialization.data(withJSONObject: object))
-    let inventory = CloudGatewayMacCLIInventory(state, accountId: "uid1", regionId: nil, isLong: true)
-    let rendered = CloudGatewayMacCLIRenderer(isStyled: false).render(.inventory(inventory))
-    #expect(rendered.contains("Tunnel IP:       10.0.0.2\n"))
-    #expect(!rendered.contains("/32"))
-    #expect(inventory.regions[0].configs[0].internalIp == "10.0.0.2/32")
-}

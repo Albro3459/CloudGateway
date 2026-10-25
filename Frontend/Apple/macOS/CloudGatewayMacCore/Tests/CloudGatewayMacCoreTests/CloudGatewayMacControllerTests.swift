@@ -8,21 +8,6 @@ import Testing
 @testable import CloudGatewayMacControllerIPC
 @testable import CloudGatewayMacCLI
 
-@Test @MainActor func macControllerInventoryRemovalUsesTheRealRequestHelper() async throws {
-    let fixture = try MacControllerFixture()
-    let user = try #require(fixture.auth.currentUser)
-    var events: [String] = []
-    let response = try await fixture.inventory.deleteClient(
-        clientId: "client", ownerUid: "user-a", regionId: "region", for: user,
-        authorize: { events.append("authorize") }, onDispatch: { events.append("dispatch") }
-    )
-    #expect(response.userId == "user-a")
-    #expect(response.status == .removed)
-    #expect(events == ["authorize", "dispatch"])
-    #expect(fixture.inventory.removalSession.requests.count == 1)
-    #expect(fixture.inventory.removalSession.requests.first?.httpMethod == "DELETE")
-}
-
 @Test @MainActor func macControllerRestoresAccountAndHidesInventoryAfterSignOutWithoutStoppingVPN() async throws {
     let fixture = try MacControllerFixture()
     await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
@@ -466,18 +451,6 @@ import Testing
     #expect(fixture.snapshot.groups.flatMap(\.rows).map(\.identifier) == ["user-a/region/created"])
     #expect(fixture.snapshot.errorMessage == nil)
     #expect(try await fixture.cache.load(accountId: "user-a").accessAllowed)
-}
-
-@Test @MainActor func macControllerReportsConfirmedCreationWhenInventoryRefreshFails() async throws {
-    let fixture = try MacControllerFixture()
-    try await fixture.start()
-    defer { fixture.controller.shutdown() }
-    let context = try #require(fixture.controller.clientCreationContext())
-    fixture.inventory.fetchError = CloudGatewayMacInventoryError.unavailable
-    #expect(fixture.controller.createClient(regionId: "region", clientName: "Work Mac", context: context))
-    try await controllerWaitUntil { fixture.snapshot.canCreateClient }
-    #expect(fixture.inventory.createdNames == ["Work Mac"])
-    #expect(fixture.snapshot.errorMessage == "Client was created, but the client list could not refresh. Choose Refresh before trying again")
 }
 
 @Test(arguments: [false, true])
@@ -1372,19 +1345,30 @@ import Testing
     #expect(!fixture.domainSnapshot.domain.accessAuthorized)
 }
 
-@Test(arguments: [false, true])
-@MainActor func macControllerCreationCompletionDistinguishesConfirmedAndUnknownResults(confirmed: Bool) async throws {
+@Test(arguments: [
+    (CloudGatewayMacInventoryError.unavailable, CloudGatewayMacCommandOutcome.completed(warning: .inventoryNotRefreshed)),
+    (.offline, .completed(warning: .inventoryNotRefreshed)),
+    (nil, .unknown)
+] as [(CloudGatewayMacInventoryError?, CloudGatewayMacCommandOutcome)])
+@MainActor func macControllerCreationCompletionDistinguishesConfirmedAndUnknownResults(
+    refreshError: CloudGatewayMacInventoryError?, expected: CloudGatewayMacCommandOutcome
+) async throws {
     let fixture = try MacControllerFixture()
     try await fixture.start()
     defer { fixture.controller.shutdown() }
     let context = try #require(fixture.controller.clientCreationContext())
-    if confirmed { fixture.inventory.fetchError = CloudGatewayMacInventoryError.offline }
+    if let refreshError { fixture.inventory.fetchError = refreshError }
     else { fixture.inventory.createError = CloudGatewayMacInventoryError.offline }
     var completion: CloudGatewayMacCommandOutcome?
-    #expect(fixture.controller.createClient(regionId: "region", clientName: "Mac", context: context) { completion = $0 })
+    #expect(fixture.controller.createClient(regionId: "region", clientName: "Work Mac", context: context) { completion = $0 })
     #expect(completion == nil)
     try await controllerWaitUntil { completion != nil }
-    #expect(completion == (confirmed ? .completed(warning: .inventoryNotRefreshed) : .unknown))
+    #expect(completion == expected)
+    if refreshError != nil {
+        try await controllerWaitUntil { fixture.snapshot.canCreateClient }
+        #expect(fixture.inventory.createdNames == ["Work Mac"])
+        #expect(fixture.snapshot.errorMessage == "Client was created, but the client list could not refresh. Choose Refresh before trying again")
+    }
 }
 
 @Test @MainActor func macControllerRejectsConnectWithTypedReasonsBeforeSubmittingWork() async throws {

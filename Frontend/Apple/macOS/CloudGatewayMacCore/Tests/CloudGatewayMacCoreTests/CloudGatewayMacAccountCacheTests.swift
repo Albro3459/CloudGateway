@@ -1,4 +1,5 @@
 import CloudGatewayKit
+import CloudGatewayMacIPC
 import Foundation
 import Testing
 @testable import CloudGatewayMacCore
@@ -167,6 +168,16 @@ import Testing
     let forged = CloudGatewayMacInstalledConfig(accountId: "user-b", identifier: config.identifier, snapshot: config.snapshot)
     await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) { try await cache.save(forged) }
     await #expect(throws: CloudGatewayMacCacheError.invalidMetadata) { try await cache.load(accountId: "") }
+    let (foreignService, _) = try accountCacheFixture(
+        accountId: "user-a", secretReference: .init(service: "com.example.other", account: config.snapshot.secretReference.account)
+    )
+    await #expect(throws: CloudGatewayMacConfigError.invalidConfig) { try await cache.save(foreignService) }
+    let (malformedReference, _) = try accountCacheFixture(
+        accountId: "user-a", secretReference: .init(service: CloudGatewayMacInstalledConfig.secretService, account: "invalid")
+    )
+    await #expect(throws: CloudGatewayMacSecretError.invalidRequest) { try await cache.save(malformedReference) }
+    try await cache.save(config)
+    #expect(try await cache.load(accountId: "user-a").configs == [config])
 }
 
 @Test func adminDowngradeBlocksTransportFallbackAndPersistsAcrossRestart() async throws {
@@ -407,7 +418,8 @@ private func accountCacheFixture(
     address: String = "10.0.0.2/32",
     clientName: String = "Mac",
     regionName: String = "US",
-    ownerUid: String? = nil
+    ownerUid: String? = nil,
+    secretReference: CloudGatewayConfigSecretReference? = nil
 ) throws -> (CloudGatewayMacInstalledConfig, CloudGatewayClientOption) {
     let rawConfig = """
     [Interface]
@@ -424,7 +436,7 @@ private func accountCacheFixture(
         clientId: client.clientId, regionId: client.regionId, clientName: client.clientName,
         regionDisplayName: regionName, status: .active,
         configHash: CloudGatewayConfigHash.make(for: try CloudGatewayWireGuardConfig(rawConfig)),
-        secretReference: CloudGatewayConfigSecretReference(service: CloudGatewayMacInstalledConfig.secretService, account: UUID().uuidString.lowercased()),
+        secretReference: secretReference ?? CloudGatewayConfigSecretReference(service: CloudGatewayMacInstalledConfig.secretService, account: UUID().uuidString.lowercased()),
         readAt: Date(timeIntervalSince1970: 1), updatedAt: nil
     )
     return (CloudGatewayMacInstalledConfig(accountId: accountId, identifier: "\(accountId)/us-a/\(clientId)", snapshot: snapshot), option)
