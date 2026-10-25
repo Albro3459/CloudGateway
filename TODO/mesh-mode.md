@@ -94,13 +94,16 @@ This conclusion comes from source inspection, not a live server audit. Existing 
 
 ## Client implementation
 
-1. Add a small shared routing-mode enum and pure parsed-config transformation in CloudGatewayKit, with Full preserving today's behavior. Keep Apple UI/lifecycle changes in macOS. Reject malformed/unsupported mode values at mutation/start boundaries. Treat legacy profiles with no mode as Full. Keep profile identity and tunnel observation readable when mode metadata is invalid, report mode as unknown, and allow the normal stop path. Invalid mode metadata must not hide a running tunnel or prevent disconnecting it.
-2. Persist the account preference as non-secret metadata. Carry mode into the Mac's installed profile metadata and decode it alongside the secret reference. Keep the canonical config and its hash unchanged so inventory authorization, secret recovery, and cloud refresh keep working.
-3. Apply the transformation inside the Mac packet tunnel after its one-use grant resolves the canonical secret and before starting WireGuard. Reuse the existing start authorization. Do not write derived configs or secrets to disk or logs.
-4. Add a controller-owned mode operation using the current acceptance/confirmation/result workflow. Include mode in request validation and deduplication. Reject overlapping mutations and extension-update work. An accepted operation continues if the menu closes or the CLI detaches.
-5. Initially switch by confirmed stop, metadata save/reload, fresh start grant, then start of the same client. Acquire the short-lived grant after the stop. Existing `connect` returns early for an already-active profile, so the mode operation must explicitly handle the restart. Handle failure without silently substituting another mode or client.
-6. Preserve mode through profile replacement, refresh, offline starts, secret recovery, region switching, and managed extension-update reconnect. Recover active-session mode after controller restart from trustworthy session/profile evidence. If that evidence is unavailable, show unknown rather than the latest preference.
-7. Extend menu snapshots, controller status/IPC, CLI parser/help/text/JSON, and operation lookup. Preserve all existing combined status output and add mode plus the existing auth summary. Add `mode status` and keep `auth status` as focused reads. Keep backward-compatible coarse status and stop behavior. Because saving profile metadata does not change a running adapter, establish active mode only after the corresponding session applies it and is observed connected. Add a small provider acknowledgement if profile/session evidence cannot establish that reliably.
+Implementation started 2026-10-25. Checkboxes track completed code and validation checkpoints.
+
+- [x] Add a small shared routing-mode enum and pure parsed-config transformation in CloudGatewayKit, with Full preserving today's behavior. Keep Apple UI/lifecycle changes in macOS. Shared tests and the complete iOS gate pass.
+- [ ] Reject malformed/unsupported mode values at mutation/start boundaries. Treat legacy profiles with no mode as Full. Keep profile identity and tunnel observation readable when mode metadata is invalid, report mode as unknown, and allow the normal stop path. Invalid mode metadata must not hide a running tunnel or prevent disconnecting it.
+- [ ] Persist the account preference as non-secret metadata. Carry mode into the Mac's installed profile metadata and decode it alongside the secret reference. Keep the canonical config and its hash unchanged so inventory authorization, secret recovery, and cloud refresh keep working.
+- [ ] Apply the transformation inside the Mac packet tunnel after its one-use grant resolves the canonical secret and before starting WireGuard. Reuse the existing start authorization. Do not write derived configs or secrets to disk or logs.
+- [ ] Add a controller-owned mode operation using the current acceptance/confirmation/result workflow. Include mode in request validation and deduplication. Reject overlapping mutations and extension-update work. An accepted operation continues if the menu closes or the CLI detaches.
+- [ ] Initially switch by confirmed stop, metadata save/reload, fresh start grant, then start of the same client. Acquire the short-lived grant after the stop. Existing `connect` returns early for an already-active profile, so the mode operation must explicitly handle the restart. Handle failure without silently substituting another mode or client.
+- [ ] Preserve mode through profile replacement, refresh, offline starts, secret recovery, region switching, and managed extension-update reconnect. Recover active-session mode after controller restart from trustworthy session/profile evidence. If that evidence is unavailable, show unknown rather than the latest preference.
+- [ ] Extend menu snapshots, controller status/IPC, CLI parser/help/text/JSON, and operation lookup. Preserve all existing combined status output and add mode plus the existing auth summary. Add `mode status` and keep `auth status` as focused reads. Keep backward-compatible coarse status and stop behavior. Because saving profile metadata does not change a running adapter, establish active mode only after the corresponding session applies it and is observed connected. Add a small provider acknowledgement if profile/session evidence cannot establish that reliably.
 
 A reconnect briefly interrupts mesh sessions. Switching from Full can also interrupt existing internet sessions as their public source address changes. Existing Mac lifecycle code already supports stop-and-wait and authenticated restarts. WireGuardKit supports live updates underneath, but the Mac provider currently exposes start/stop only. Live switching would add an update command, serialization with stop, acknowledgement, and applied-state handling. Defer it unless avoiding reconnects becomes a requirement.
 
@@ -112,7 +115,11 @@ Reuse the same Full/Mesh only semantics, command names, default, and selected/ap
 
 Fixed aggregate routing does not require new backend metadata. If a future HTTP-only Linux client needs dynamic regional subnet discovery, the current HTTP region summaries would need expansion. Firestore region documents already contain those fields, but today's generic client region model does not carry them.
 
-## Validation when implemented
+## Validation
+
+- [ ] Run the repository Apple checks, including host-free mode lifecycle and CLI tests
+- [ ] Complete independent implementation review, with at most three review rounds
+- [ ] Update the macOS user/development docs and commit completed checkpoints locally
 
 Run the repository's macOS target, and Apple targets if shared behavior changes. Add focused coverage for runtime transformation, legacy defaults, controller mode operations, persistence, and status/IPC compatibility as part of implementation.
 
