@@ -540,26 +540,35 @@ For a faster local install, use the command below. It builds and verifies the
 signed Release app and extension, then replaces `/Applications/CloudGateway.app`.
 It skips tests and dead-code scans and uses Apple Development signing.
 
-Before rebuilding a changed VPN extension, increment the tunnel target's
-`CURRENT_PROJECT_VERSION` in every project configuration. macOS uses the
-extension's version numbers to decide whether to offer replacement. Reusing them
+The app, CLI, controller, and VPN extension share one marketing version and
+integer build number. The CLI and controller use the app's bundled executable.
+Run `python3 scripts/macos-release.py --bump-build` before each new local install
+or release preparation. It increments the highest current build and synchronizes
+both targets in Debug, Release, and DeveloperID. Add `--version 1.1.1` to set a new
+marketing version, or `--build <higher-number>` to advance past an installed build.
+Build numbers never reset when the marketing version changes. The script edits
+the tracked project file without staging or committing it.
+
+The local install command below includes that bump as its first step. macOS uses
+the extension's version numbers to decide whether to offer replacement. Reusing them
 for changed code leaves macOS reporting the old copy as already active. doctor
 and `cloudgateway update` then report `extension_replacement_blocked`, and
 `update` refuses before stopping the VPN. Re-signing identical extension code
 with the same certificate and profile keeps the same identity. A different or
 renewed certificate, or a regenerated profile, changes it and needs a build
-bump. The app build number does not replace the extension build number.
+bump. Always bump both targets together, including for app-only changes.
 
 The first installation of the synchronized lifecycle needs a one-time controller
 restart because an older controller cannot perform the new handshake. Quit the
 old menu and wait for pending work and any ten-minute result retention, or restart
 the job explicitly after accepted work finishes. Subsequent replacements are
 detected automatically, including local app rebuilds with reused version numbers.
-Extension replacement still requires the extension build increment described above.
+Extension replacement still requires the synchronized build increment described above.
 
 ```sh
 (
   set -e
+  python3 scripts/macos-release.py --bump-build
   xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
     -scheme CloudGateway -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
@@ -633,8 +642,10 @@ at login. See the plan's
 [runtime proof](../../../TODO/macos-cli.md#1-signed-runtime-proof-before-the-full-command-surface).
 Run the containing app from `/Applications` with SIP enabled.
 
-Build and publish a notarized Developer ID DMG with
-`./scripts/macos-release.sh --build <next-build-number> --previous-distributed-app <latest-signed-app> --publish`. Omit
+For a new notarized Developer ID DMG, run
+`python3 scripts/macos-release.py --bump-build`, then
+`./scripts/macos-release.sh --previous-distributed-app <latest-signed-app> --publish`.
+The archive uses the same version/build for both bundles. Omit
 `--publish` to keep the release local. See
 [macOS release deployment](../../../docs/apple-macos-release.md) for signing
 setup, prepared artifacts, notarization retries, publishing existing builds,

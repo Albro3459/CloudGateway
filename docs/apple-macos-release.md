@@ -2,27 +2,45 @@
 
 CloudGateway distributes directly as a Developer ID-signed, notarized DMG for
 Apple silicon on macOS 26 or later. Run the release command from the repository
-root after the required validation passes:
+root. Bump the shared version/build, validate, then prepare the release:
 
 ```sh
+python3 scripts/macos-release.py --bump-build
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 7 \
+./scripts/macos-release.sh \
   --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
-Choose an app build number higher than `CLOUDGATEWAY_APP_BUILD` in the project
-and every previous distributed app release. `--build` overrides only
-`CLOUDGATEWAY_APP_BUILD`. The app marketing version comes from
-`CLOUDGATEWAY_APP_VERSION` unless `--version` overrides it:
+Use one version and build for the app, CLI, controller, and VPN extension.
+The CLI and controller are entry points of the app's executable and inherit its
+bundle version. The extension has its own bundle, synchronized by the bump command.
+Keep the marketing version as `major.minor.patch`, and increase the integer build
+for every new local installation or release preparation. Never reset the build
+when changing the marketing version.
+
+This standard also applies to Developer ID builds distributed outside the App
+Store. macOS compares `CFBundleShortVersionString` and `CFBundleVersion` when
+[replacing a system extension](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
+The marketing version can stay the same while the build increases.
+
+`--bump-build` chooses a build higher than both current targets and updates Debug,
+Release, and DeveloperID together. It keeps the higher existing marketing version
+unless `--version` selects a new one. To choose a new release version:
 
 ```sh
-./scripts/macos-release.sh --build 8 --version 1.1.1 \
-  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
+python3 scripts/macos-release.py --bump-build --version 1.1.1
 ```
 
-App build and version overrides apply to the archive. The VPN extension keeps
-its explicit `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION` from the project.
-Keep each target's versions consistent across Debug, Release, and DeveloperID.
+Add `--build <number>` to the bump command when a specific higher build is needed,
+including when an installed or previously distributed build exceeds the checkout.
+The bump command edits only the project file. It does not build, sign, contact
+Apple, stage, or commit anything. Review and commit that source change separately.
+
+New releases default to the synchronized project version/build. Optional release
+`--build` and `--version` overrides apply to both bundles in the archive; they do
+not edit the project. Older builds and marketing versions are rejected. Prefer
+bumping the tracked settings first so the source and release identify the same build.
+Preparation refuses unsynchronized project versions before signing or network calls.
 Every new preparation requires `--previous-distributed-app` pointing to the exact
 signed app from the latest release actually distributed to users. Extract it
 from the retained distributed DMG if needed. The script verifies its Developer
@@ -32,10 +50,10 @@ local archive or export as the baseline automatically. The operator must identif
 the latest distributed app correctly, including a release distributed outside
 GitHub. Local signature checks cannot establish distribution history.
 
-Before signing or contacting Apple, preparation requires the extension's
-`CURRENT_PROJECT_VERSION` to strictly exceed the baseline build. Its marketing
-version must not decrease. Bump the extension build in all project configurations
-for every new preparation, including app-only releases. Archive/export can change
+Before signing or contacting Apple, preparation requires the shared build to
+strictly exceed the baseline extension build. Its marketing version must not
+decrease. Run the bump command for every new preparation, including app-only releases.
+Archive/export can change
 the CMS signature even when extension code has not changed. The Mach service
 name includes the extension build, so increasing it also avoids stale endpoint
 registration during replacement.
@@ -54,9 +72,11 @@ Use `--initial-distribution` instead of `--previous-distributed-app` only when n
 extension has ever been distributed. This explicit first-release declaration is
 recorded in the manifest. It must not be used to bypass an existing baseline.
 
-Project versions and Git staging stay unchanged. Release metadata records both
+Archive, notarization, and publication leave project versions and Git staging
+unchanged. Only `--bump-build` updates the project. Release metadata records both
 targets' versions, the source commit, and whether the working tree had changes.
-Commit the reviewed release work separately.
+Resuming an existing prepared release keeps its exact artifacts and does not need
+another bump.
 
 ## Signing prerequisites
 
@@ -126,7 +146,8 @@ metadata, notarization submission records, notary logs, and `SHA256SUMS`.
 To build and inspect artifacts before submitting software:
 
 ```sh
-./scripts/macos-release.sh --prepare-only --build 6 \
+python3 scripts/macos-release.py --bump-build
+./scripts/macos-release.sh --prepare-only \
   --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app
 ```
 

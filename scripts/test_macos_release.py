@@ -76,7 +76,7 @@ class ReleaseTests(unittest.TestCase):
                 (release.APP_ID, 'CLOUDGATEWAY_APP_BUILD = 3; CLOUDGATEWAY_APP_VERSION = 1.1.0; '
                  'CURRENT_PROJECT_VERSION = "$(CLOUDGATEWAY_APP_BUILD)"; '
                  'MARKETING_VERSION = "$(CLOUDGATEWAY_APP_VERSION)";'),
-                (release.EXTENSION_ID, "CURRENT_PROJECT_VERSION = 2; MARKETING_VERSION = 1.0.0;"),
+                (release.EXTENSION_ID, "CURRENT_PROJECT_VERSION = 3; MARKETING_VERSION = 1.1.0;"),
             ] for _ in range(3)
         ))
         patcher = mock.patch.object(release, "PROJECT", self.project)
@@ -91,7 +91,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_same_or_older_extension_build_stops_before_signing_or_network(self) -> None:
         app = self.directory / "previous/CloudGateway.app"
-        for version, build in [("1.0.0", 2), ("0.9.0", 3)]:
+        for version, build in [("1.0.0", 4), ("0.9.0", 5)]:
             write_app(app, "1.0.0", 3, version, build)
             with self.subTest(version=version, build=build), \
                     mock.patch.object(release, "verify_app") as verify, \
@@ -118,7 +118,7 @@ class ReleaseTests(unittest.TestCase):
         def command(*args: str, **kwargs: object) -> str:
             if args[:2] == ("xcodebuild", "-exportArchive"):
                 exported = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
-                write_app(exported, "1.1.0", 4, "1.0.0", 2)
+                write_app(exported, "1.1.0", 4, "1.1.0", 4)
             return ""
 
         with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
@@ -264,14 +264,62 @@ class ReleaseTests(unittest.TestCase):
                 release.finish(self.directory)
             submit.assert_not_called()
 
-    def test_version_selection_rejects_existing_build_and_malformed_version(self) -> None:
-        for build in [2, 3]:
-            with self.subTest(build=build), self.assertRaisesRegex(ValueError, "must exceed"):
+    def test_version_selection_rejects_older_build_and_malformed_version(self) -> None:
+        for build in [0, 2]:
+            with self.subTest(build=build), self.assertRaisesRegex(ValueError, "must not be lower"):
                 release.release_version(build, None)
         with self.assertRaisesRegex(ValueError, "major.minor.patch"):
             release.release_version(4, "../unexpected")
         self.assertEqual(release.release_version(4, "1.2.3"), "1.2.3")
         self.assertEqual(release.release_version(4, None), "1.1.0")
+        self.assertEqual(release.release_version(3, None), "1.1.0")
+        with self.assertRaisesRegex(ValueError, "must not decrease"):
+            release.release_version(4, "1.0.0")
+
+    def test_bump_synchronizes_all_configurations_without_external_commands(self) -> None:
+        original = self.project_file.read_text()
+        with mock.patch.object(release, "command") as command:
+            self.assertEqual(release.bump_project_versions(None, None), ("1.1.0", 4))
+            command.assert_not_called()
+        self.assertEqual(release.project_versions(release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"), ("1.1.0", 4))
+        self.assertEqual(release.project_versions(release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"), ("1.1.0", 4))
+        self.assertEqual(self.project_file.read_text(), original.replace("BUILD = 3;", "BUILD = 4;")
+                         .replace("CURRENT_PROJECT_VERSION = 3;", "CURRENT_PROJECT_VERSION = 4;"))
+        self.assertEqual(release.bump_project_versions(8, "1.2.0"), ("1.2.0", 8))
+        self.assertEqual(release.project_versions(release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"), ("1.2.0", 8))
+
+    def test_bump_uses_the_highest_existing_version_and_build(self) -> None:
+        self.project_file.write_text(self.project_file.read_text()
+                                     .replace("CURRENT_PROJECT_VERSION = 3;", "CURRENT_PROJECT_VERSION = 7;")
+                                     .replace("MARKETING_VERSION = 1.1.0;", "MARKETING_VERSION = 1.2.0;"))
+        self.assertEqual(release.bump_project_versions(None, None), ("1.2.0", 8))
+        self.assertEqual(release.project_versions(release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"), ("1.2.0", 8))
+
+    def test_invalid_bump_leaves_the_project_unchanged(self) -> None:
+        original = self.project_file.read_text()
+        for build, version in [(3, None), (0, None), (None, "1.0.0"), (None, "1.2"), (None, "../invalid")]:
+            with self.subTest(build=build, version=version), self.assertRaises(ValueError):
+                release.bump_project_versions(build, version)
+            self.assertEqual(self.project_file.read_text(), original)
+        self.project_file.write_text(original.replace("CLOUDGATEWAY_APP_BUILD = 3;", "CLOUDGATEWAY_APP_BUILD = 5;", 1))
+        malformed = self.project_file.read_text()
+        with self.assertRaises(ValueError):
+            release.bump_project_versions(None, None)
+        self.assertEqual(self.project_file.read_text(), malformed)
+
+    def test_bump_cli_changes_only_project_versions(self) -> None:
+        with mock.patch("sys.argv", [str(SCRIPT), "--bump-build"]), mock.patch.object(release, "command") as command:
+            release.main()
+        command.assert_not_called()
+        self.assertEqual(release.project_versions(release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"), ("1.1.0", 4))
+        self.assertEqual(release.project_versions(release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"), ("1.1.0", 4))
+
+    def test_preparation_rejects_unsynchronized_project_before_external_commands(self) -> None:
+        self.project_file.write_text(self.project_file.read_text().replace("MARKETING_VERSION = 1.1.0;", "MARKETING_VERSION = 1.0.0;"))
+        with mock.patch.object(release, "command") as command:
+            with self.assertRaisesRegex(ValueError, "--bump-build"):
+                release.prepare(4, None, "profile", initial_distribution=True)
+            command.assert_not_called()
 
     def test_project_versions_require_consistent_values_in_every_configuration(self) -> None:
         original = self.project_file.read_text()
@@ -284,9 +332,9 @@ class ReleaseTests(unittest.TestCase):
              release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
             ("CLOUDGATEWAY_APP_VERSION = 1.1.0;", "CLOUDGATEWAY_APP_VERSION = 1.1;",
              release.APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION"),
-            ("CURRENT_PROJECT_VERSION = 2;", "CURRENT_PROJECT_VERSION = 3;",
+            ("CURRENT_PROJECT_VERSION = 3;", "CURRENT_PROJECT_VERSION = 4;",
              release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"),
-            ("MARKETING_VERSION = 1.0.0;", "",
+            ("MARKETING_VERSION = 1.1.0;", "",
              release.EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION"),
         ]:
             with self.subTest(setting=setting, replacement=replacement):
@@ -294,11 +342,11 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.project_versions(bundle_id, build_setting, version_setting)
 
-    def test_prepare_overrides_only_app_versions_and_snapshots_extension(self) -> None:
+    def test_prepare_overrides_app_and_extension_versions_together(self) -> None:
         def command(*args: str, **kwargs: object) -> str:
             if args[:2] == ("xcodebuild", "-exportArchive"):
                 app = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
-                write_app(app, "1.2.0", 4, "1.0.0", 2)
+                write_app(app, "1.2.0", 4, "1.2.0", 4)
             return ""
 
         with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
@@ -309,15 +357,31 @@ class ReleaseTests(unittest.TestCase):
         archive = next(call.args for call in commands.call_args_list if "archive" in call.args)
         self.assertIn("CLOUDGATEWAY_APP_BUILD=4", archive)
         self.assertIn("CLOUDGATEWAY_APP_VERSION=1.2.0", archive)
-        self.assertFalse(any(arg.startswith(("CURRENT_PROJECT_VERSION=", "MARKETING_VERSION=")) for arg in archive))
+        self.assertIn("CURRENT_PROJECT_VERSION=4", archive)
+        self.assertIn("MARKETING_VERSION=1.2.0", archive)
         metadata = json.loads((directory / "release.json").read_text())
-        self.assertEqual(release.release_versions(metadata), ("1.2.0", 4, "1.0.0", 2))
+        self.assertEqual(release.release_versions(metadata), ("1.2.0", 4, "1.2.0", 4))
+
+    def test_prepare_defaults_to_the_synchronized_project_build(self) -> None:
+        def command(*args: str, **kwargs: object) -> str:
+            if args[:2] == ("xcodebuild", "-exportArchive"):
+                app = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
+                write_app(app, "1.1.0", 3, "1.1.0", 3)
+            return ""
+
+        with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
+                mock.patch.object(release, "signing_identity", return_value="A" * 40), \
+                mock.patch.object(release, "command", side_effect=command), \
+                mock.patch.object(release, "verify_app"):
+            directory = release.prepare(None, None, "profile", initial_distribution=True)
+        metadata = json.loads((directory / "release.json").read_text())
+        self.assertEqual(release.release_versions(metadata), ("1.1.0", 3, "1.1.0", 3))
 
     def test_prepare_rejects_an_export_with_wrong_extension_version_before_packaging(self) -> None:
         def command(*args: str, **kwargs: object) -> str:
             if args[:2] == ("xcodebuild", "-exportArchive"):
                 app = Path(args[args.index("-exportPath") + 1]) / "CloudGateway.app"
-                write_app(app, "1.1.0", 4, "1.1.0", 4)
+                write_app(app, "1.1.0", 4, "1.0.0", 2)
             return ""
 
         with mock.patch.object(release, "RELEASE_ROOT", self.directory / "releases"), \
@@ -457,6 +521,10 @@ class PublicationTests(unittest.TestCase):
 
     def test_cli_rejects_incompatible_publication_options(self) -> None:
         options = [
+            ["--bump-build", "--publish"],
+            ["--bump-build", "--prepare-only"],
+            ["--bump-build", "--notarize", "release"],
+            ["--bump-build", "--previous-distributed-app", "app"],
             ["--publish-existing", "release", "--build", "3"],
             ["--publish-existing", "release", "--version", "1.0.0"],
             ["--publish-existing", "release", "--notarize", "release"],

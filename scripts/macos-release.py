@@ -1,4 +1,4 @@
-"""Archive, notarize, and publish CloudGateway for direct macOS distribution."""
+"""Bump synchronized macOS versions, archive, notarize, and publish CloudGateway."""
 
 import argparse
 import datetime
@@ -60,6 +60,8 @@ def project_versions(bundle_id: str, build_setting: str, version_setting: str) -
     project = (PROJECT / "project.pbxproj").read_text()
     configurations = [settings for settings in re.findall(r"\bbuildSettings\s*=\s*\{([^{}]*)\}", project)
                       if re.search(rf"\bPRODUCT_BUNDLE_IDENTIFIER\s*=\s*{re.escape(bundle_id)};", settings)]
+    if len(configurations) != 3:
+        raise ValueError(f"{bundle_id} requires Debug, Release, and DeveloperID configurations")
     values = set()
     for settings in configurations:
         build = re.search(rf"\b{build_setting}\s*=\s*([0-9]+);", settings)
@@ -72,13 +74,53 @@ def project_versions(bundle_id: str, build_setting: str, version_setting: str) -
     return next(iter(values))
 
 
+def bump_project_versions(build: int | None, version: str | None) -> tuple[str, int]:
+    app_version, app_build = project_versions(APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION")
+    extension_version, extension_build = project_versions(EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION")
+    current_version = max(app_version, extension_version, key=lambda value: tuple(map(int, value.split("."))))
+    selected_version = version or current_version
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected_version) is None:
+        raise ValueError("--version must have the form major.minor.patch")
+    if tuple(map(int, selected_version.split("."))) < tuple(map(int, current_version.split("."))):
+        raise ValueError("The marketing version must not decrease")
+    selected_build = max(app_build, extension_build) + 1 if build is None else build
+    if selected_build <= max(app_build, extension_build):
+        raise ValueError("--build must exceed both current project build numbers")
+    path = PROJECT / "project.pbxproj"
+    replacements = {
+        APP_ID: {"CLOUDGATEWAY_APP_BUILD": str(selected_build), "CLOUDGATEWAY_APP_VERSION": selected_version,
+                 "CURRENT_PROJECT_VERSION": '"$(CLOUDGATEWAY_APP_BUILD)"', "MARKETING_VERSION": '"$(CLOUDGATEWAY_APP_VERSION)"'},
+        EXTENSION_ID: {"CURRENT_PROJECT_VERSION": str(selected_build), "MARKETING_VERSION": selected_version},
+    }
+
+    def update(match: re.Match[str]) -> str:
+        settings = match[2]
+        for bundle_id, values in replacements.items():
+            if re.search(rf"\bPRODUCT_BUNDLE_IDENTIFIER\s*=\s*{re.escape(bundle_id)};", settings):
+                for key, value in values.items():
+                    settings, count = re.subn(rf"(\b{key}\s*=\s*)[^;]+;", lambda item: item[1] + value + ";", settings)
+                    if count != 1:
+                        raise ValueError(f"Expected one {key} setting per {bundle_id} configuration")
+        return match[1] + settings + match[3]
+
+    updated = re.sub(r"(\bbuildSettings\s*=\s*\{)([^{}]*)(\})", update, path.read_text())
+    temporary = path.with_suffix(".pbxproj.tmp")
+    temporary.write_text(updated)
+    temporary.replace(path)
+    return selected_version, selected_build
+
+
 def release_version(build: int, version: str | None) -> str:
     project_version, project_build = project_versions(APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION")
-    if build <= project_build:
-        raise ValueError("--build must exceed the app project's current build number; also use a number higher than every previous release")
+    if project_versions(EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION") != (project_version, project_build):
+        raise ValueError("App and extension versions differ; run python3 scripts/macos-release.py --bump-build first")
+    if build < project_build:
+        raise ValueError("--build must not be lower than the synchronized project build number")
     selected = version or project_version
     if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected) is None:
         raise ValueError("--version must have the form major.minor.patch")
+    if tuple(map(int, selected.split("."))) < tuple(map(int, project_version.split("."))):
+        raise ValueError("The marketing version must not decrease")
     return selected
 
 
@@ -172,11 +214,13 @@ def verify_extension_policy(app: Path, metadata: dict) -> None:
 
 
 def prepare(
-    build: int, version: str | None, keychain_profile: str,
+    build: int | None, version: str | None, keychain_profile: str,
     previous_distributed_app: Path | None = None, initial_distribution: bool = False,
 ) -> Path:
+    if build is None:
+        _, build = project_versions(APP_ID, "CLOUDGATEWAY_APP_BUILD", "CLOUDGATEWAY_APP_VERSION")
     version = release_version(build, version)
-    extension_version, extension_build = project_versions(EXTENSION_ID, "CURRENT_PROJECT_VERSION", "MARKETING_VERSION")
+    extension_version, extension_build = version, build
     baseline = extension_baseline(previous_distributed_app, initial_distribution)
     require_fresh_extension(extension_version, extension_build, baseline)
     identity = signing_identity()
@@ -202,6 +246,7 @@ def prepare(
             "-archivePath", str(archive), "ARCHS=arm64", f"DEVELOPMENT_TEAM={TEAM_ID}",
             "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={identity}",
             f"CLOUDGATEWAY_APP_BUILD={build}", f"CLOUDGATEWAY_APP_VERSION={version}",
+            f"CURRENT_PROJECT_VERSION={build}", f"MARKETING_VERSION={version}",
             f"CLOUDGATEWAY_APP_PROFILE={app_profile}", f"CLOUDGATEWAY_TUNNEL_PROFILE={tunnel_profile}",
             "OTHER_CODE_SIGN_FLAGS=--timestamp", "archive", log=directory / "archive.log")
     command("xcodebuild", "-exportArchive", "-archivePath", str(archive),
@@ -513,8 +558,9 @@ def publish(directory: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", type=int, help="app build number higher than the app project and every previous app release")
-    parser.add_argument("--version", help="app marketing version override, for example 1.1.1")
+    parser.add_argument("--bump-build", action="store_true", help="increment and synchronize project versions without building or releasing")
+    parser.add_argument("--build", type=int, help="shared build number override; defaults to the synchronized project build")
+    parser.add_argument("--version", help="shared marketing version override, for example 1.1.1")
     parser.add_argument("--prepare-only", action="store_true", help="archive and verify without uploading to Apple")
     parser.add_argument("--notarize", type=Path, help="notarize or resume an existing prepared release directory")
     parser.add_argument("--recover-submission", help="record a confirmed app=<id> or dmg=<id> after an interrupted upload")
@@ -527,6 +573,16 @@ def main() -> None:
     baseline_options.add_argument("--initial-distribution", action="store_true",
                                   help="explicitly attest that no extension has been distributed before")
     args = parser.parse_args()
+    if args.bump_build:
+        if args.prepare_only or args.notarize or args.recover_submission or args.publish or args.publish_existing \
+                or args.previous_distributed_app or args.initial_distribution:
+            parser.error("--bump-build only accepts --build and --version")
+        try:
+            version, build = bump_project_versions(args.build, args.version)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+        print(f"App, CLI, controller, and extension: {version} ({build})")
+        return
     if args.publish_existing is not None and (
         args.build is not None or args.version or args.prepare_only or args.notarize is not None
         or args.recover_submission or args.publish
@@ -536,8 +592,8 @@ def main() -> None:
         parser.error("--publish cannot be combined with --prepare-only")
     if args.notarize is not None and (args.build is not None or args.version or args.prepare_only):
         parser.error("--notarize cannot be combined with build/version/preparation options")
-    if args.notarize is None and args.publish_existing is None and (args.build is None or args.build <= 0):
-        parser.error("provide a positive --build number for a new release")
+    if args.build is not None and args.build <= 0:
+        parser.error("provide a positive --build number")
     if args.recover_submission and args.notarize is None:
         parser.error("--recover-submission requires --notarize")
     if args.previous_distributed_app is not None or args.initial_distribution:
