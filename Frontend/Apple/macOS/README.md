@@ -311,10 +311,13 @@ mode while connected briefly stops and restarts the same client. This can
 interrupt mesh sessions and change the public IP used by internet sessions.
 The controller owns confirmed work even if the menu closes or CLI detaches.
 Mode changes do not create a new client, rotate keys, or change server mesh
-membership. Cross-region access still requires the existing mesh and account
-ACLs. Mesh only uses `10.0.0.0/16` and `fd42:42:42::/48`; overlapping local LAN
-routes can affect reachability. This is a routing preference, with no added
-kill switch or server-enforced ban on internet egress.
+membership. Repeating `up` while a connection's mode is still unknown returns
+busy and leaves the pending connection running. Cross-region access still
+requires the existing mesh and account ACLs. Mesh only uses `10.0.0.0/16` and
+`fd42:42:42::/48`; overlapping local LAN routes can affect reachability.
+This is a routing preference, with no added kill switch or server-enforced ban
+on internet egress. CLI mode changes wait for an inventory refresh to finish
+within the command timeout before submitting work.
 
 `status` retains its VPN, observation, config, operation, and update details,
 and adds mode and auth. `status --operation` retains its existing lookup

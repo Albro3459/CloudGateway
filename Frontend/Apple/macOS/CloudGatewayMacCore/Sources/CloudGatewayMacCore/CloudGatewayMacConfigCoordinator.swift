@@ -260,6 +260,9 @@ public actor CloudGatewayMacConfigCoordinator {
         guard displacingOtherProfiles || !activeProfiles.contains(where: { $0.identifier != config.identifier }) else {
             throw CloudGatewayMacConfigError.busy
         }
+        if selected.status == .connecting, selected.mode != config.mode {
+            throw CloudGatewayMacConfigError.busy
+        }
         if selected.mode == config.mode,
            selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
             return false

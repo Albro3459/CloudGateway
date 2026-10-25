@@ -607,14 +607,28 @@ func macConfigInactiveValidationFencesAuthorizationAroundTheFreshRead(deniedChec
     #expect(config.snapshot.secretReference.account == fixture.reference.value)
 }
 
-@Test func macConfigAlreadyActiveModeDoesNotSaveStopOrRequestAGrant() async throws {
+@Test(arguments: [CloudGatewayTunnelStatus.connected, .reasserting, .connecting])
+func macConfigAlreadyActiveModeDoesNotSaveStopOrRequestAGrant(status: CloudGatewayTunnelStatus) async throws {
     let fixture = MacConfigFixture()
     var config = try await fixture.install()
     config.mode = .mesh
-    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: .connected, mode: .mesh)])
+    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: status, mode: .mesh)])
     await fixture.events.clear()
     #expect(try await fixture.coordinator.connect(config) == false)
     #expect(await fixture.events.values == ["available", "profiles"])
+}
+
+@Test(arguments: CloudGatewayRoutingMode.allCases)
+func macConfigConnectingWithUnknownModeDoesNotSaveStopOrRequestAGrant(mode: CloudGatewayRoutingMode) async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    config.mode = mode
+    let profile = CloudGatewayMacInstalledProfile(identifier: config.identifier, reference: fixture.reference, status: .connecting, mode: nil)
+    await fixture.profiles.setProfiles([profile])
+    await fixture.events.clear()
+    await #expect(throws: CloudGatewayMacConfigError.busy) { try await fixture.coordinator.connect(config) }
+    #expect(await fixture.events.values == ["available", "profiles"])
+    #expect(await fixture.profiles.values == [profile])
 }
 
 @Test func macConfigModeStopFailureNeverSavesOrStarts() async throws {

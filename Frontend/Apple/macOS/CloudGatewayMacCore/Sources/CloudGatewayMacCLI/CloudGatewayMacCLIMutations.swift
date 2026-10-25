@@ -99,7 +99,7 @@ extension CloudGatewayMacCLISession {
                     && !state.clients.contains { $0.identifier == target }
                 return state.isPendingRestoration || state.isAwaitingVerification
                     || (action == .connect && state.setup == .checkingConnection)
-                    || (selector != nil ? state.inventory == .refreshing : unresolved)
+                    || (selector != nil || action == .setMode ? state.inventory == .refreshing : unresolved)
             }
             guard settled else { throw CloudGatewayMacCLIError(.timeout) }
             let state = try Self.state(of: reply)

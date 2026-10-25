@@ -218,6 +218,38 @@ private let modeConfig = "uid1/us-chicago-1/78ab8633-ae25-4287-885f-57bbbf6e7f63
 }
 
 @MainActor
+@Test func cliModeMutationWaitsForRefreshingInventoryWithAVisibleSelection() async throws {
+    let client = cliClient(modeConfig, regionName: "Chicago", name: "Mac")
+    let refreshing = cliState(inventory: .refreshing, clients: [client], selected: modeConfig, selectedMode: .full)
+    let ready = cliState(clients: [client], selected: modeConfig, selectedMode: .full)
+    let harness = CLIHarness(refreshing, ready)
+    harness.onRequest = { request in
+        switch request.action {
+        case .setMode:
+            #expect(harness.actions.filter { $0 == .snapshot }.count == 2)
+            return .init(operation: .init(id: request.id, state: .accepted))
+        case .confirmOperation:
+            return .init(state: ready, operation: .init(id: try #require(request.contextId), state: .completed), outcome: .completed(warning: nil))
+        default: return nil
+        }
+    }
+    #expect(await harness.run("mode", "mesh", "--json") == 0)
+    #expect(harness.actions == [.lifecycle, .userActivity, .snapshot, .snapshot, .setMode, .confirmOperation])
+    #expect(harness.clock.now == CloudGatewayMacCLISession.pollInterval)
+}
+
+@MainActor
+@Test func cliModeMutationTimesOutBeforeReservingWorkWhenInventoryKeepsRefreshing() async throws {
+    let client = cliClient(modeConfig, regionName: "Chicago", name: "Mac")
+    let state = cliState(inventory: .refreshing, clients: [client], selected: modeConfig, selectedMode: .full)
+    let harness = CLIHarness(state)
+    #expect(await harness.run("mode", "mesh", "--timeout", "1", "--json") == 8)
+    #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "timeout")
+    #expect(!harness.actions.contains(.setMode))
+    #expect(!harness.actions.contains(.confirmOperation))
+}
+
+@MainActor
 @Test func cliModeMutationReportsControllerFailureAndObservedStateWithoutRetrying() async throws {
     let state = cliState(selectedMode: .mesh)
     for failure in [CloudGatewayMacCommandFailure.signInRequired, .busy, .stopTimedOut, .vpnFailed] {

@@ -131,6 +131,7 @@ final class CloudGatewayMacControllerService {
             isRuntimeInitialized: { runtime.initialized != nil },
             diagnostics: {
                 let snapshot = runtime.initialized?.controller.snapshot()
+                let inventoryFailure = runtime.initialized?.inventory.lastFailure
                 async let registration = ExtensionRegistrationProbe.diagnosticReadiness()
                 async let preferences = CloudGatewayMacPassivePreferences.read()
                 var extensionState = await registration
@@ -151,7 +152,7 @@ final class CloudGatewayMacControllerService {
                              credentials: snapshot?.domain.credentials, extensionState: extensionState,
                              preferences: preferences,
                              regionId: snapshot?.domain.clients.first?.regionId,
-                             inventoryFailure: runtime.initialized?.inventory.lastFailure)
+                             inventoryFailure: inventoryFailure)
             },
             login: { request in
                 let controller = runtime.require().controller
