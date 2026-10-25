@@ -220,9 +220,23 @@ after replacement/restart. Never replay uncertain work automatically. Verify
 doctor changes no session, inventory, preferences, or VPN state and reports
 unsupported credential/approval evidence as unknown. Include reboot before
 desktop login, final SSH disconnect, locked credentials, concurrent menu/SSH
-startup, and active-VPN replacement. These remain manual release gates.
-See the [CLI guide](../Frontend/Apple/macOS/README.md#command-line-tool) for
-commands, common options, NDJSON schema/exits, and recovery semantics.
+startup, and active-VPN replacement. Repeat these manual release checks for
+future releases. See the [CLI guide](../Frontend/Apple/macOS/README.md#command-line-tool)
+for commands, common options, NDJSON schema/exits, and recovery semantics.
+
+### Runtime acceptance (2026-10-24)
+
+The user confirmed that the signed runtime matrix above passed for the
+controller, CLI, and client-removal stack. This includes live VPN behavior,
+reboot before graphical desktop login, pre-desktop SSH and credential access,
+final SSH disconnect, locked credentials, concurrent menu/SSH startup, command
+recovery, and active-VPN replacement. Manual runtime acceptance for this stack
+is complete. These results are user-reported.
+
+The agent also ran `./scripts/test.sh apple --signed` successfully. Shared tests,
+all 780 macOS host-free tests, all five strict Periphery scans, signed iOS and
+macOS Release builds, macOS signature/entitlement/profile verification, and all
+88 packaged CLI checks passed.
 
 ## GitHub publication
 
@@ -275,7 +289,8 @@ replacement waits until all owned tunnels are idle and preserves Apple's
 approval or reboot requirement. See the local install command in the macOS
 README and validate the signed live update matrix before distributing it.
 Build/signature checks alone do not prove background launch or pre-desktop SSH
-Keychain access. Run those checks in the planned runtime session.
+Keychain access. The [runtime acceptance record](#runtime-acceptance-2026-10-24)
+covers the reviewed stack. Repeat the relevant checks for later releases.
 
 The release directory saves `publication.json` with the release and DMG URLs.
 The command prints both URLs. To make a later build available on the website,

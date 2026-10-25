@@ -24,8 +24,10 @@ Current CLI implementation uses the same bundled executable and background
 controller for `auth login/status/logout`, `list`, `status`, `up`, `down`,
 `refresh`, and `doctor`. See the [macOS README](../Frontend/Apple/macOS/README.md#command-line-tool)
 for installation, options, schema version 1, exits, and command recovery.
-The historical checkpoint results below remain useful context. Signed runtime
-and pre-desktop SSH evidence remain release gates, not implementation blockers.
+The user confirmed on 2026-10-24 that the signed runtime checks passed, including
+live VPN behavior, reboot, and pre-desktop SSH/Keychain access. See the
+[runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
+The checkpoint results below describe earlier validation.
 
 `./scripts/test.sh macos` is the entry point for all automated CLI validation.
 It runs the host-free Swift fixtures, installer temporary-filesystem cases,
@@ -111,8 +113,7 @@ implicitly relaunching an idle controller. Confirmed backend work continues
 independently. The controller can exit when pending work, extension state,
 requests, and result recovery allow it. The tunnel extension keeps an active VPN running independently. The next
 menu interaction or CLI invocation starts the controller again if needed. Sleep
-never schedules inventory wakeups or catches up missed refresh intervals. See
-the [polling plan](../TODO/macos-inventory-polling.md).
+never schedules inventory wakeups or catches up missed refresh intervals.
 
 The menu polls snapshots while active and recovers controller launch on user
 interaction. While open, menu items stay in place so polling cannot dismiss a
@@ -148,15 +149,14 @@ After controller restart, authenticated readiness can reconcile a retained
 attempt. An explicit OS reboot requirement remains fenced until a verified
 later boot. Automatic update preparation waits for readiness work to finish,
 and a rejected busy preparation does not consume its automatic attempt.
-The signed pre-desktop SSH/Keychain proof
-still gates release acceptance. This implementation is a launch candidate, not proof that
-every macOS security session permits its auth and VPN APIs. See the
-[controller plan](../TODO/macos-cli.md).
+The user-reported signed runtime results cover the tested pre-desktop
+SSH/Keychain context. Other launch contexts still need their own validation.
+See the [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
 
 Keep the installed menu app and active VPN running during host-free tests and
 builds. Do not launch another real controller alongside the old app: both would
-own Firebase session recovery. A later planned session will replace the app and
-exercise the menu and CLI. Test retained profiles first,
+own Firebase session recovery. Use a planned runtime session to replace the app
+and exercise the menu and CLI. Test retained profiles first,
 then perform any agreed clean-setup checks. A build does not authorize profile
 deletion, extension replacement, or a reboot.
 
@@ -219,18 +219,20 @@ both targets' signatures, entitlements, profiles, and Hardened Runtime.
 The verifier explicitly requests XML entitlements from `codesign`, whose
 default readable output cannot be parsed as a plist.
 Activation, real System Keychain/XPC behavior, native browser session
-persistence, and live VPN/network checks remain pending. No validation
-activated the extension, installed a live VPN profile, or changed the running VPN.
+persistence, and live VPN/network checks were pending at this checkpoint. These
+automated runs did not activate the extension, install a live VPN profile, or
+change the running VPN. Later manual acceptance is recorded above.
 
 The implementation received at most two review passes per chunk and an
-integrated auth/menu review. Local commits are stable WIP checkpoints while
-those signed runtime gates remain pending.
+integrated auth/menu review. Those local commits were stable WIP checkpoints
+while signed runtime acceptance was pending.
 
 The eight follow-up review fixes passed the full no-target `./scripts/test.sh`
 gate, including API, web, infrastructure, Firebase emulator, both Apple builds,
 all five scans, and 100 macOS core/IPC tests. WireGuard startup and six settings
 regressions run through the shared Apple gate. Two review loops completed with
-no remaining confirmed issues. Signed runtime checks remain pending.
+no remaining confirmed issues. Signed runtime checks were pending at that
+checkpoint.
 
 ## Signing and installation
 
@@ -464,6 +466,10 @@ returns a full config to the menu app.
 
 ## Runtime checklist
 
+The user confirmed this checklist passed for the reviewed stack on 2026-10-24.
+See the [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
+Keep the checklist for future releases and runtime changes.
+
 Record build version, macOS version, architecture, and pass/fail outcomes.
 Use an isolated test config and account. Do not record its keys, config, tokens,
 addresses, approval code, traffic, DNS queries, or connection history.
@@ -500,4 +506,5 @@ Do not add traffic probes, runtime-counter polling, or automatic recovery.
 
 Use [macOS release deployment](apple-macos-release.md) to archive, export,
 notarize, package a signed DMG, and publish it to GitHub Releases. Clean release
-installation and VPN runtime checks remain manual gates.
+installation and VPN runtime checks remain manual requirements for future
+releases. The reviewed stack's runtime acceptance is complete.

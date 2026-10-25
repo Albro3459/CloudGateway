@@ -61,7 +61,9 @@ For this failure, install the newer signed app and allow its extension update
 while the VPN is off. Repeating activation of the affected build did not repair
 the endpoint. The build 4 workaround passed 199 macOS host-free tests, both
 strict Periphery scans, the unsigned arm64 build, and packaging verification.
-Signed installation and live upgrade confirmation remain pending.
+Signed installation and live upgrade confirmation were pending at that
+checkpoint. The later user-reported runtime checks passed. See the
+[runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
 
 ## Retained secrets reject a changed signing identity
 
@@ -98,8 +100,10 @@ The generated plist now includes that session setting. `ProcessType = Background
 controls resource limits and does not select the launch session. Preserve the
 fixed installed executable path and per-user ownership lock when changing the
 launcher. A regression checks the plist setting. This local bootstrap result
-does not establish pre-desktop SSH or Firebase Keychain behavior.
-See the [controller runbook](apple-macos-development.md) for launch details.
+did not establish pre-desktop SSH or Firebase Keychain behavior. The user later
+confirmed the full signed runtime matrix passed. See the
+[runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24)
+and [controller runbook](apple-macos-development.md) for launch details.
 
 ## System extension activation fails with error 9
 

@@ -1,9 +1,8 @@
 # CloudGateway macOS
 
-Native menu bar app and packet-tunnel system extension. See
-[controller plan](../../../TODO/macos-cli.md) for the implementation checkpoints
-and [development runbook](../../../docs/apple-macos-development.md) for signing,
-installation, storage boundaries, and runtime checks.
+Native menu bar app and packet-tunnel system extension. See the
+[development runbook](../../../docs/apple-macos-development.md) for controller
+architecture, signing, installation, storage boundaries, and runtime checks.
 
 Capture a clean menu image with `swift scripts/macos-menu-screenshot.swift`
 from the repository root. See the
@@ -58,7 +57,9 @@ The menu uses authenticated, versioned XPC to reach a separate controller mode
 of the same bundled executable. The controller acquires per-user ownership
 before initializing Firebase. It owns accepted commands after the menu closes.
 Shared Kit/AppCore, the Firebase adapter, and iOS remain unchanged. The CLI uses
-the same controller. Signed launch/Keychain runtime proof remains a release gate.
+the same controller. The user confirmed signed runtime acceptance, including
+pre-desktop SSH/Keychain access, passed on 2026-10-24. See the
+[acceptance record](../../../docs/apple-macos-release.md#runtime-acceptance-2026-10-24).
 
 Controller startup requires `/Applications/CloudGateway.app`. The menu registers
 an on-demand launchd job in `user/<uid>`, with its private plist and ownership
@@ -75,7 +76,7 @@ user activity. Menu polling pauses at the same idle limit. Reopening the menu
 starts the controller if needed and refreshes stale inventory in the background,
 without replaying a VPN command. CLI `list` waits for stale inventory within its
 caller deadline. Explicit Refresh fetches immediately through the same controller.
-See the [polling plan](../../../TODO/macos-inventory-polling.md). An app/build mismatch requires closing
+An app/build mismatch requires closing
 the menu, allowing pending work and the idle grace period to finish, then
 reopening the installed app. Never run the old in-process owner alongside it.
 
@@ -162,8 +163,9 @@ The root system extension owns full configs in the System Keychain. The user
 app transfers installation material through authenticated XPC and retains
 opaque references. App Group containers and user Keychain items do not cross
 the root/user boundary. The synchronous iOS secret adapter is not the Mac
-adapter. See the plan's
-[ownership boundaries](../../../TODO/macos-cli.md#ownership-and-boundaries).
+adapter. See
+[secret storage and IPC](../../../docs/apple-macos-development.md#secret-storage-and-ipc)
+for ownership boundaries.
 
 Use memory-only Firestore SDK caching and persist metadata-only offline
 inventory/selection per Firebase UID. Keep raw `wireGuardConfig` documents and
@@ -642,8 +644,8 @@ separate to avoid Keychain identity mismatches.
 Signed checks cover activation/replacement, root/user isolation, repeated
 sessions, sleep/wake, network changes, offline use, account switching, status
 changes through macOS controls, retained VPN after sign-out/quit, and launch
-at login. See the plan's
-[runtime proof](../../../TODO/macos-cli.md#1-signed-runtime-proof-before-the-full-command-surface).
+at login. The user confirmed these checks passed for this stack. See the
+[runtime acceptance record](../../../docs/apple-macos-release.md#runtime-acceptance-2026-10-24).
 Run the containing app from `/Applications` with SIP enabled.
 
 For a new notarized Developer ID DMG, run
