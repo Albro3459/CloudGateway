@@ -65,6 +65,19 @@ reconnects the VPN. Access checks and parallel region/client reads have separate
 10-second deadlines; only server snapshots count as fresh, and listeners detach
 on completion, cancellation, or timeout.
 
+VPN profile/status notifications invalidate the controller's Firestore
+connection. Before its next inventory read, the controller replaces that
+read-only Firestore instance and keeps its memory-cache settings. This closes
+connections left on an earlier VPN route when Firebase's general reachability
+state does not change. Firebase Auth and the VPN session are independent of this
+replacement.
+
+The optional `doctor` inventory check reports the most recent failed step and
+an allowlisted error source/code, including a local read deadline. This evidence
+stays in controller memory and can remain after recovery. It is not a current
+reachability check. Inventory failure evidence excludes error descriptions, URLs, account/client
+identifiers, document contents, tokens, and configs.
+
 Commands reserve an operation UUID before the frontend confirms acceptance.
 Unconfirmed reservations expire after 30 seconds. Confirmed work belongs to the
 controller after caller loss; an uncertain outcome never authorizes automatic

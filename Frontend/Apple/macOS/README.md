@@ -459,6 +459,10 @@ and optional known-region health. Unsupported or uninitialized evidence stays
 unknown. Required setup failure takes exit precedence over required online
 failure; a caller deadline returns partial results.
 
+The optional inventory check retains the latest failed step and safe error code,
+including access-token, access-request, and region/client read deadlines. It can
+remain visible after recovery and does not make another inventory request.
+
 ### Update from the CLI or SSH
 
 `cloudgateway update` installs/activates the VPN extension bundled in the signed

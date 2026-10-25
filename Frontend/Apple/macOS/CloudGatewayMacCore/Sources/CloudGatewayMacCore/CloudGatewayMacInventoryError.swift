@@ -1,5 +1,41 @@
 import Foundation
 
+public struct CloudGatewayMacInventoryDiagnostic: Codable, Equatable, Sendable {
+    public enum Stage: String, Codable, Sendable {
+        case accessToken, accessRequest, accessResponse, regions, clients, removalToken, connection
+    }
+
+    public enum Source: String, Codable, Sendable {
+        case url, firestore, auth, http, deadline, invalidResponse, other
+    }
+
+    public let stage: Stage
+    public let source: Source
+    public let code: Int?
+
+    public init(stage: Stage, source: Source, code: Int? = nil) {
+        self.stage = stage
+        self.source = source
+        self.code = code
+    }
+
+    public init?(stage: Stage, error: Error) {
+        guard !(error is CancellationError) else { return nil }
+        let error = error as NSError
+        let source: Source = switch error.domain {
+        case NSURLErrorDomain: .url
+        case "FIRFirestoreErrorDomain": .firestore
+        case "FIRAuthErrorDomain": .auth
+        default: .other
+        }
+        self.init(stage: stage, source: source, code: source == .other ? nil : error.code)
+    }
+
+    public var summary: String {
+        "\(stage.rawValue): \(source.rawValue)\(code.map { " (\($0))" } ?? "")"
+    }
+}
+
 public enum CloudGatewayMacInventoryError: Error, Equatable, Sendable {
     case accessDenied
     case offline

@@ -156,6 +156,25 @@ Cleanup encountered `network_unavailable` responses from cloud inventory/removal
 
 Only sanitized pass/fail results and build IDs are recorded here. Runtime identifiers and probe details remain outside the repository. No logout, auth reset, or changes to other users' clients were performed.
 
+### Cleanup connectivity investigation, 2026-10-25
+
+Committed the original passing live results and build 15 as `c39bf36` before investigating the cleanup error. The instrumented build 16 reproduced inventory failures before any client deletion: access verification succeeded, but server-backed Firestore Regions/Clients reads reached the local ten-second deadline after switching Full configs. Five attempts failed in approximately 10.5–11.3 seconds. A later refresh recovered on the same unchanged VPN connection, so reconnecting the original config was not required for recovery.
+
+The pinned Firebase SDK monitors general available/unavailable reachability and suppresses unchanged states. A VPN route change can therefore leave its gRPC connection on the earlier path while new HTTPS requests work. Its keepalive/retry recovery can exceed the app's ten-second inventory budget. The Mac did not explicitly reopen Firestore after those changes. This reproduced a client transport-lifecycle defect without DELETE or server reconciliation being involved. The original uninstrumented cleanup attempts cannot be assigned retrospectively to an exact dependency.
+
+The fix marks the controller's read-only Firestore connection stale on VPN profile/status notifications and replaces it before the next inventory read. Concurrent readers join one replacement task, and caller cancellation does not abandon a half-replaced instance. It preserves memory-cache settings and Firebase Auth. The existing friendly CLI network message remains unchanged. Doctor now retains only the failed step, an allowlisted error source, and a numeric code in controller memory.
+
+Validation on signed build 17:
+
+- The complete 102-assertion live mode matrix passed again
+- All 19 targeted refresh/removal checks passed without command failures or retries, including eight immediate refreshes after Full config switches, four after mode switches, removal while the other temporary client stayed connected in Full, and refresh/removal immediately after VPN off
+- Immediate refreshes after config/mode changes completed in approximately 2.1–3.3 seconds. The VPN-off refresh completed in approximately 1.1 seconds
+- Both temporary clients were removed by exact UUID. Original cloud inventory, installed-profile flags, selection, Full connection, and login were verified restored
+- `./scripts/test.sh macos --signed` passed: 833 host-free tests, shared packages, strict dead-code scans, signed app/extension build, and packaging checks. Build 17 also passed signed verification and all 96 bounded packaged CLI checks
+- Secure-account reviews traced both server and client paths and reviewed the final fix with no remaining actionable findings
+
+Doctor retained an access-request `NSURLErrorNetworkConnectionLost` diagnostic from earlier route-changing activity. It remained unchanged throughout the successful targeted checks. That retained event is separate from the reproduced Firestore read deadlines and is not a current reachability result. No server deployment, auth reset, credential change, or changes to other users' clients were made.
+
 ## Source anchors and review
 
 Research used independent Codex main and secure account subagents. Both concluded that the routing preference can be client-only and recommended aggregate routes, local DNS, canonical-config preservation, and reconnect-based switching. Findings were checked against the current source. No live hosts were accessed and no builds/tests were run for this docs-only research.

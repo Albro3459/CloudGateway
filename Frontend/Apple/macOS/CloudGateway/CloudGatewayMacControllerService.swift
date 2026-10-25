@@ -150,7 +150,8 @@ final class CloudGatewayMacControllerService {
                 return await .init(runtimeInitialized: snapshot != nil, access: snapshot?.domain.access,
                              credentials: snapshot?.domain.credentials, extensionState: extensionState,
                              preferences: preferences,
-                             regionId: snapshot?.domain.clients.first?.regionId)
+                             regionId: snapshot?.domain.clients.first?.regionId,
+                             inventoryFailure: runtime.initialized?.inventory.lastFailure)
             },
             login: { request in
                 let controller = runtime.require().controller
