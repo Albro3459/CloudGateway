@@ -208,6 +208,68 @@ automatic outage recovery, or notifications.
 
 ## Runtime checklist
 
+### Local replacement and mesh validation loop
+
+Use this workflow for a planned development install and live VPN session.
+Record actual results separately after running it. Use the
+[local signed install command](quick-deployment.md#install-macos-app-for-local-testing)
+and repeat the relevant automated checks after code changes.
+
+1. Record the current version/build, selected client, routing mode, and VPN state
+   privately so the session can restore them. Check for pending controller or
+   extension-update work before replacing the app. Quit the menu app using its
+   normal Quit action, then wait at least 60 seconds. Quitting the menu leaves
+   the VPN and background controller running; elapsed time alone does not prove
+   controller work has drained.
+2. Run the local install command. It bumps the tracked app and extension builds,
+   builds the signed Release bundle, and verifies it before trashing the old app
+   and copying the new bundle into `/Applications` with `ditto`. Unlock signing
+   credentials privately if needed. The app, menu, controller, and CLI share one
+   executable/build; the separate extension must match. The bump command
+   synchronizes both targets across all build configurations. Choose an explicit
+   higher build if the installed build is ahead of the checkout.
+3. Run `cloudgateway update --allow-disconnect`, retaining its operation ID
+   privately. This authorizes the existing stop/update/reconnect flow. If the
+   command loses its connection or times out after confirmation, inspect
+   `cloudgateway status --operation '<operation-id>'` before retrying. Complete
+   Apple approval or restart only if reported. Verify that an initially connected
+   VPN returns to the same client and mode, and an initially off VPN stays off.
+4. Run `cloudgateway doctor`, `cloudgateway status`, `cloudgateway version`, and
+   `cloudgateway mode status`. Confirm installed and running controller/extension
+   identities match the intended build, readiness is established, auth is usable,
+   and selected versus active mode reflects the observed tunnel. Keep these
+   commands available through the installed app's explicit CLI entry point if
+   the shell link is unavailable. Open the new menu app and compare its state.
+5. Exercise `cloudgateway mode mesh` and `cloudgateway mode full` while connected,
+   checking each operation and applied mode after reconnect. Repeat while off:
+   changing mode must save the preference without starting the VPN, and the next
+   `up` must use it. Check repeat selections, menu/CLI agreement, app/controller
+   restart, and a client/region change. Verify ordinary IPv4/IPv6 internet egress
+   and actual resolver settings in each mode without retaining addresses, DNS
+   queries, or traffic. Doctor's HTTPS check alone does not establish split routing.
+6. When client creation is included in the session, create a clearly named
+   temporary client, refresh inventory, and select its exact returned UUID.
+   Validate same-region and cross-region tunnel-IP reachability with controlled
+   endpoints, including SSH where configured. Keep public management-path SSH
+   separate from SSH over a mesh address when recording outcomes. An admin's
+   cross-region success does not establish ordinary-account ACL isolation.
+7. If connectivity fails, first identify whether the failing layer is SSH access,
+   endpoint resolution, tunnel routing, host firewall, mesh membership, account
+   ACLs, or OCI interface private-IP assignment. Use existing private credentials
+   without displaying them. Reconcile a confirmed missing or stale OCI assignment
+   against the infrastructure's intended allocation before retesting. Preserve
+   unrelated VM configuration and update tracked infrastructure when its desired
+   state changes.
+8. Disconnect and remove only temporary clients created for this session, then
+   restore the original client, mode, and VPN state. After fixes, run the relevant
+   automated checks, bump the build again, reinstall/update, and repeat the failed
+   checks plus the baseline status/identity checks. Commit source/build changes
+   separately from private runtime notes. Record only build IDs and sanitized
+   pass/fail results in committed docs; keep host aliases, account/client IDs,
+   addresses, credentials, configs, and command output with private details out.
+
+### Broader runtime checks
+
 Record build, macOS version, architecture, and sanitized pass/fail outcomes with
 an isolated account/config. Never record keys, tokens, configs, approval codes,
 addresses, traffic, DNS queries, or connection history.

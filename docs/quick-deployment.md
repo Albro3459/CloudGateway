@@ -48,6 +48,12 @@ Development signing, and replaces `/Applications/CloudGateway.app`. It skips tes
 and dead-code scans. The build bump edits the tracked project file without staging
 or committing it.
 
+For a live validation session, quit the menu app normally and wait at least 60
+seconds before running this command. Quitting leaves the controller and VPN
+running. Check for pending work first, then follow the
+[local replacement and mesh validation loop](apple-macos-development.md#local-replacement-and-mesh-validation-loop)
+for update, identity checks, and routing tests.
+
 ```sh
 (
   set -e
