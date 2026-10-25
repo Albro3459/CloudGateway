@@ -532,7 +532,7 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
             case .brokenLink:
                 message = "A broken symbolic link exists at \(explicitPath). Restore its target or move the link yourself before trying again."
             case .manualShellConfiguration, .unsafeStartupFile:
-                message = "Shell configuration needs a manual edit. Review your shell's startup files and add ~/.local/bin to PATH if needed. Automatic editing supports /bin/zsh with a ~/.zprofile containing only comments and simple exports, no ZDOTDIR or ~/.zshenv, and no existing PATH customizations. Symlinked or shared startup files are left alone."
+                message = "Shell configuration needs a manual edit. Review your shell's startup files and add ~/.local/bin to PATH if needed. Automatic editing supports /bin/zsh with a ~/.zprofile containing only comments and simple exports, no ZDOTDIR or ~/.zshenv, and no existing PATH customizations. Later PATH assignments in ~/.zshrc must preserve or explicitly restore ~/.local/bin. Symlinked or shared startup files are left alone."
             case .unsafeDirectory:
                 message = "The home, ~/.local, or ~/.local/bin directory is linked, shared, or not owned by this user. Review its ownership and permissions before trying again."
             case .filesystemFailure, nil:

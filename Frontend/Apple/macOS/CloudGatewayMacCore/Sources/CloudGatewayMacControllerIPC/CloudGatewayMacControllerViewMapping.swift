@@ -10,7 +10,7 @@ extension CloudGatewayMacControllerView {
         let isTransitioning = state.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
         let canConnect = state.accountId != nil && state.accessAuthorized && !state.commandInFlight
             && !state.isRestoringSession && !state.isAuthSettling && state.setup == .ready
-        let canRemove = state.removalAllowed && state.accountId != nil && state.auth == .signedIn && state.accessAuthorized
+        let canRemove = state.removalAllowed && state.accountId != nil && state.accessAuthorized
             && !state.commandInFlight && !state.isRestoringSession && !state.isAuthSettling
             && (state.inventory == .current || state.inventory == .cached)
         let activeIdentifiers = Set(state.observedProfiles.filter {

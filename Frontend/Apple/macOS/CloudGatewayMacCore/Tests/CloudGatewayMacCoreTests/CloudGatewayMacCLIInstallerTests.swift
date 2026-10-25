@@ -275,14 +275,25 @@ func cliInstallerRecognizesStartupPathWithoutChangingFiles(line: String) throws 
 @Test(arguments: [
     "# export PATH=\"$HOME/.local/bin:$PATH\"",
     "echo '$HOME/.local/bin'",
-    "export PATH='$HOME/.local/bin:/usr/bin'",
     "export PATH=\"~/.local/bin:$PATH\"",
     "export PATH=\"$HOME/.local/bin-other:$PATH\"",
+    "path=(\"$HOME/.local/bin\"-other $path)",
+    "path=($HOME/.local/bin\"-other\" $path)"
+])
+func cliInstallerAddsProfileWhenRcDoesNotSupplyOrRemoveBin(line: String) throws {
+    let fixture = try CLIInstallerFixture()
+    defer { fixture.cleanup() }
+    let rc = fixture.home.appendingPathComponent(".zshrc")
+    try Data(line.utf8).write(to: rc)
+    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .added)
+    #expect(try String(contentsOf: rc, encoding: .utf8) == line)
+}
+
+@Test(arguments: [
+    "export PATH='$HOME/.local/bin:/usr/bin'",
     "export PATH=\"$PATH:$HOME/.local/bin",
     "path=(\"\\$HOME/.local/bin\" $path)",
     "PATH=/usr/bin:/bin\nPATH+=\"$HOME/.local/bin\"",
-    "path=(\"$HOME/.local/bin\"-other $path)",
-    "path=($HOME/.local/bin\"-other\" $path)",
     "path=(\"prefix $HOME/.local/bin suffix\"-other /usr/bin /bin)",
     "path=(\"prefix $HOME/.local/bin suffix $path)",
     "export PATH=\"$HOME/.local/bin\"#old",
@@ -293,13 +304,90 @@ func cliInstallerRecognizesStartupPathWithoutChangingFiles(line: String) throws 
     "path=(${OTHER:-prefix $HOME/.local/bin suffix} $path)",
     "path=($path # $HOME/.local/bin)"
 ])
-func cliInstallerIgnoresUnexpandedPathsCommentsAndSimilarDirectories(line: String) throws {
+func cliInstallerRejectsAssignmentsWithoutAUsableBinEntry(line: String) throws {
     let fixture = try CLIInstallerFixture()
     defer { fixture.cleanup() }
     let rc = fixture.home.appendingPathComponent(".zshrc")
     try Data(line.utf8).write(to: rc)
-    #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .added)
-    #expect(try String(contentsOf: rc, encoding: .utf8) == line)
+    #expect(throws: CloudGatewayMacCLIInstallError.manualShellConfiguration) {
+        try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:])
+    }
+    #expect(try Data(contentsOf: rc) == Data(line.utf8))
+    #expect(!FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent(".zprofile").path))
+}
+
+@Test(arguments: [
+    "PATH=/usr/bin:/bin",
+    "path=(/usr/bin /bin)",
+    "path=()",
+    "PATH+=/opt/bin",
+    "PATH=\"$(printenv PATH)\"",
+    "PATH=\"$HOME/.local/bin:$PATH\"\nPATH=\"${OTHER:-/usr/bin}\"",
+    "PATH=\"$HOME/.local/bin\"\nPATH+=/opt/bin",
+    "PATH=\"$HOME/.local/bin\"\nPATH=\"${OTHER:-/usr/bin}\"\nPATH=\"$PATH:/opt/bin\"",
+    "path=(~/.local/bin)\npath=(${OTHER})\npath=($path /opt/bin)"
+])
+func cliInstallerRejectsLaterPathReplacementBeforeEditingProfile(line: String) throws {
+    for contents in [nil, "# existing setup\nexport EDITOR=vi", "export PATH=\"$PATH:$HOME/.local/bin\"\n"] as [String?] {
+        let fixture = try CLIInstallerFixture()
+        defer { fixture.cleanup() }
+        let profile = fixture.home.appendingPathComponent(".zprofile")
+        let rc = fixture.home.appendingPathComponent(".zshrc")
+        if let contents { try Data(contents.utf8).write(to: profile) }
+        try Data(line.utf8).write(to: rc)
+        #expect(throws: CloudGatewayMacCLIInstallError.manualShellConfiguration) {
+            try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:])
+        }
+        if let contents { #expect(try Data(contentsOf: profile) == Data(contents.utf8)) }
+        else { #expect(!FileManager.default.fileExists(atPath: profile.path)) }
+        #expect(try Data(contentsOf: rc) == Data(line.utf8))
+    }
+}
+
+@Test(arguments: [
+    "PATH=\"/opt/bin:$PATH\"",
+    "export PATH=\"${PATH}:/opt/bin\"",
+    "PATH+=:/opt/bin",
+    "path=(/opt/bin $path)",
+    "path=(${path} /opt/bin)",
+    "path+=(/opt/bin)"
+])
+func cliInstallerCarriesProfileBinThroughPreservingAssignments(line: String) throws {
+    for configured in [false, true] {
+        let fixture = try CLIInstallerFixture()
+        defer { fixture.cleanup() }
+        let profile = fixture.home.appendingPathComponent(".zprofile")
+        let rc = fixture.home.appendingPathComponent(".zshrc")
+        let managed = "export PATH=\"$HOME/.local/bin:$PATH\"\n"
+        if configured { try Data(managed.utf8).write(to: profile) }
+        try Data(line.utf8).write(to: rc)
+        let expected: CloudGatewayMacCLIInstaller.PathResult = configured ? .alreadyConfigured(file: ".zprofile") : .added
+        #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == expected)
+        #expect(try Data(contentsOf: profile) == Data(managed.utf8))
+        #expect(try Data(contentsOf: rc) == Data(line.utf8))
+    }
+}
+
+@Test(arguments: [
+    "PATH=/usr/bin:/bin\nPATH=\"$HOME/.local/bin:$PATH\"",
+    "path=(/usr/bin /bin)\npath+=(~/.local/bin)",
+    "PATH+=/opt/bin\nPATH+=:$HOME/.local/bin",
+    "PATH=\"${OTHER:-/usr/bin}\"\nPATH=\"$HOME/.local/bin:$PATH\"",
+    "path=(${OTHER})\npath=(~/.local/bin $path)"
+])
+func cliInstallerRecognizesExplicitRcRestorationAfterReplacement(line: String) throws {
+    for contents in [nil, "PATH=/usr/bin\n", "export PATH=\"$HOME/.local/bin:$PATH\"\n"] as [String?] {
+        let fixture = try CLIInstallerFixture()
+        defer { fixture.cleanup() }
+        let profile = fixture.home.appendingPathComponent(".zprofile")
+        let rc = fixture.home.appendingPathComponent(".zshrc")
+        if let contents { try Data(contents.utf8).write(to: profile) }
+        try Data(line.utf8).write(to: rc)
+        #expect(try fixture.installer.addToZshPath(shell: "/bin/zsh", environment: [:]) == .alreadyConfigured(file: ".zshrc"))
+        if let contents { #expect(try Data(contentsOf: profile) == Data(contents.utf8)) }
+        else { #expect(!FileManager.default.fileExists(atPath: profile.path)) }
+        #expect(try Data(contentsOf: rc) == Data(line.utf8))
+    }
 }
 
 @Test func cliInstallerRecognizesFinalConfiguredAssignmentAndAvoidsAddingMoreDuplicates() throws {

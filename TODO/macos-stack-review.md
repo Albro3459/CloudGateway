@@ -2,7 +2,7 @@
 
 Date: 2026-10-24
 Reviewed head: `a83ccee6` on `mac-remove-client`
-Status: complete, one P2 and two P3 findings open
+Status: review complete, all three findings resolved by the subsequent fixes
 
 The review covers all three layers of stack 18, including their integration at
 the top layer. Existing successful functionality is assumed. The focus is
@@ -13,6 +13,36 @@ security, authorization, concurrency, and failures outside the normal workflow.
 | Controller architecture | [#17](https://github.com/Albro3459/CloudGateway/pull/17) | `main`, `9f426542` | `b7d0410d` |
 | Mac CLI | [#16](https://github.com/Albro3459/CloudGateway/pull/16) | controller architecture | `373f854f` |
 | Client removal in both interfaces | [#19](https://github.com/Albro3459/CloudGateway/pull/19) | Mac CLI | `a83ccee6` |
+
+## Resolution update
+
+The findings below describe the reviewed snapshot. The user subsequently
+authorized all three fixes. The
+[fix plan](/Users/alexbrodsky/GitHub/CloudGateway/TODO/macos-stack-fixes.md)
+passed a fresh Secure Codex plan review, and the implementation passed fresh
+Secure Codex review round 1 with no actionable findings. Both used
+`gpt-6.1-sol` with high reasoning. The fixes are committed with this update.
+
+- Resolved menu removal by using settled account authorization independently of
+  browser sign-in state. The
+  [retained-session regression](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:53)
+  covers online and cached restoration, another refresh, and sign-out.
+- Resolved cache recovery by making preload optional while preserving the
+  session fence and mandatory fresh authorization/persistence. Tests cover
+  [invalid metadata recovery](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:75),
+  [offline/denied inventory](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:92),
+  and [failed persistence](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacControllerTests.swift:122).
+- Resolved false PATH setup success by accounting for later assignments before
+  accepting or editing profile configuration. Tests cover
+  [rejection without file changes](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacCLIInstallerTests.swift:330),
+  [preserved inheritance](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacCLIInstallerTests.swift:355),
+  and [explicit restoration](/Users/alexbrodsky/GitHub/CloudGateway/Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCoreTests/CloudGatewayMacCLIInstallerTests.swift:378).
+
+The full unsigned macOS check passed with 789 macOS host-free tests, both
+Periphery scans, shared package checks, the unsigned arm64 app/extension build,
+packaging verification, and 88 CLI smoke checks. No signed operations ran.
+Installer fixtures do not execute real shell startup files; signed platform and
+live service behavior remain outside this validation.
 
 ## Validated findings
 
@@ -163,5 +193,6 @@ The earlier add denial/sign-out and creation/Disconnect findings are fixed in
 cleanup warning issue remains rejected: the injected active-profile fixture
 does not establish a production start without the required one-use grant.
 
-No production fixes, commits, staging, pushes, or external review comments are
-part of this review.
+The original review changed documentation only. Later local review, plan, and
+fix commits were explicitly authorized and are covered in the resolution update.
+Nothing was pushed, and no external review comments were posted.

@@ -243,8 +243,12 @@ at that location rather than copying its entitled executable out of the bundle.
 
 The separate **Add to Zsh PATH…** action appends
 `export PATH="$HOME/.local/bin:$PATH"` to an ordinary `~/.zprofile` once. It
-first checks the app's current PATH and reads common PATH assignments in
-`~/.zshrc` and `~/.zprofile`. Existing entries leave shell files unchanged.
+first checks the app's current PATH and reads common PATH assignments in startup
+order: `~/.zprofile`, then `~/.zshrc`. Existing entries leave shell files unchanged
+when later assignments preserve or explicitly restore the local bin directory.
+If `~/.zshrc` removes that entry or uses an unsupported PATH assignment without
+explicitly restoring local bin afterward, automatic setup requires a manual edit
+and leaves both files untouched, including when `~/.zprofile` does not exist yet.
 Startup-file inspection does not execute shell code. The app reports which file
 contains an entry, or that its current PATH already contains the local bin
 directory. Terminal and SSH may have different environments, so check with

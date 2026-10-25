@@ -403,10 +403,11 @@ public final class CloudGatewayMacController {
                 await pendingCancellation?.value
                 try requireCurrent(epoch, token: token)
                 if options.isEmpty {
-                    let saved = try await cache.load(accountId: account.uid)
+                    let saved = try? await cache.load(accountId: account.uid)
                     try requireCurrent(epoch, token: token)
-                    installed = saved.configs
-                    lastSelectedIdentifier = saved.selectedIdentifier
+                    installed = saved?.configs ?? []
+                    lastSelectedIdentifier = saved?.selectedIdentifier
+                    if saved == nil { hasAuthorizedInventory = false }
                     notifyChange()
                 }
                 let role = try await inventory.checkAccess(for: account)

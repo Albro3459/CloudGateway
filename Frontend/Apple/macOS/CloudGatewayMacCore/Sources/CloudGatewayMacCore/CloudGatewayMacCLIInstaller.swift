@@ -76,9 +76,11 @@ public struct CloudGatewayMacCLIInstaller {
         }
         let home = try openHome()
         defer { close(home) }
-        for name in [".zshrc", ".zprofile"] {
-            if try startupFileIncludesBin(name, in: home) { return .alreadyConfigured(file: name) }
-        }
+        let profile = try startupFilePathState(".zprofile", in: home)
+        let rc = try startupFilePathState(".zshrc", in: home)
+        if rc.includesBin { return .alreadyConfigured(file: ".zshrc") }
+        guard rc.retainsBin else { throw CloudGatewayMacCLIInstallError.manualShellConfiguration }
+        if profile.includesBin { return .alreadyConfigured(file: ".zprofile") }
         // A zshenv can redirect startup files before zprofile is read
         var info = stat()
         guard fstatat(home, ".zshenv", &info, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
@@ -121,10 +123,10 @@ public struct CloudGatewayMacCLIInstaller {
 
     private static let pathLine = "export PATH=\"$HOME/.local/bin:$PATH\""
 
-    private func startupFileIncludesBin(_ name: String, in home: Int32) throws -> Bool {
+    private func startupFilePathState(_ name: String, in home: Int32) throws -> (includesBin: Bool, retainsBin: Bool) {
         // Follow startup-file links for inspection only, never for editing
         let file = openat(home, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
-        if file < 0, errno == ENOENT { return false }
+        if file < 0, errno == ENOENT { return (false, true) }
         guard file >= 0 else { throw CloudGatewayMacCLIInstallError.unsafeStartupFile }
         defer { close(file) }
         var info = stat()
@@ -140,8 +142,13 @@ public struct CloudGatewayMacCLIInstaller {
         let assignments = contents.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.range(of: "^(export[ \\t]+)?(PATH|path)\\+?=", options: .regularExpression) != nil }
         var includesBin = false
-        for assignment in assignments { includesBin = try assignmentIncludesBin(assignment, retaining: includesBin) }
-        return includesBin
+        // Track both starting states so zshrc can retain a profile entry without supplying its own
+        var retainsBin = true
+        for assignment in assignments {
+            includesBin = try assignmentIncludesBin(assignment, retaining: includesBin)
+            retainsBin = try assignmentIncludesBin(assignment, retaining: retainsBin)
+        }
+        return (includesBin, retainsBin)
     }
 
     private func assignmentIncludesBin(_ last: String, retaining existing: Bool) throws -> Bool {

@@ -50,6 +50,98 @@ import Testing
 }
 
 @Test(arguments: [false, true])
+@MainActor func macControllerRestoredSessionAllowsMenuRemovalWithoutBrowserSignIn(offline: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    if offline {
+        try await fixture.seedCache()
+        fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
+    }
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    #expect(fixture.snapshot.accountId == "user-a")
+    #expect(fixture.domainSnapshot.domain.accessAuthorized)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == (offline ? .cached : .current))
+    #expect(fixture.snapshot.browserState == .signedOut)
+    #expect(fixture.snapshot.canRemoveClient)
+    #expect(await fixture.deviceAuth.requestCount == 0)
+
+    #expect(await fixture.controller.awaitRefresh() == (offline ? .unavailable : .refreshed))
+    #expect(fixture.snapshot.canRemoveClient)
+    #expect(fixture.controller.signOut())
+    #expect(!fixture.snapshot.canRemoveClient)
+}
+
+@Test(arguments: [false, true])
+@MainActor func macControllerOnlineInventoryRepairsInvalidAdminCache(validJSON: Bool) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedInvalidAdminCache(validJSON: validJSON)
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    #expect(fixture.inventory.fetchCount == 1)
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .current)
+    #expect(fixture.domainSnapshot.domain.clients.map(\.identifier) == [fixture.config.identifier])
+    let rewritten = try await CloudGatewayMacAccountCache(directory: fixture.directory).load(accountId: "user-a")
+    #expect(rewritten.accessAllowed)
+    #expect(rewritten.configs.isEmpty)
+    #expect(rewritten.selectedIdentifier == nil)
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.inventory.fetchCount == 2)
+}
+
+@Test(arguments: [CloudGatewayMacInventoryError.offline, .accessDenied])
+@MainActor func macControllerInvalidCacheStillRejectsOfflineAndDeniedInventory(
+    failure: CloudGatewayMacInventoryError
+) async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedInvalidAdminCache()
+    fixture.inventory.fetchError = failure
+    fixture.controller.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.inventory.fetchCount == 1)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.domainSnapshot.domain.installedIdentifiers.isEmpty)
+    #expect(fixture.snapshot.lastSelectedIdentifier == nil)
+    #expect(!fixture.snapshot.canRemoveClient)
+    #expect(!fixture.controller.connectClient(identifier: fixture.config.identifier))
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.installCount == 0)
+    if failure == .offline {
+        #expect(fixture.auth.currentUser?.uid == "user-a")
+        #expect(fixture.domainSnapshot.domain.inventoryFreshness == .unavailable)
+        await #expect(throws: CloudGatewayMacCacheError.unavailable) {
+            try await fixture.cache.load(accountId: "user-a")
+        }
+    } else {
+        #expect(fixture.auth.currentUser == nil)
+        #expect(fixture.domainSnapshot.domain.access == .denied)
+        #expect(!(try await fixture.cache.load(accountId: "user-a").accessAllowed))
+    }
+}
+
+@Test @MainActor func macControllerCacheRecoveryRequiresAuthoritativePersistence() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedInvalidAdminCache()
+    let fetch = MacControllerGate()
+    fixture.inventory.fetchGate = fetch
+    fixture.controller.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { await fetch.entered }
+    let namespace = try #require(FileManager.default.contentsOfDirectory(
+        at: fixture.directory, includingPropertiesForKeys: nil
+    ).first)
+    try FileManager.default.moveItem(at: namespace, to: fixture.directory.appendingPathComponent("backup"))
+    try Data("block writes".utf8).write(to: namespace)
+    await fetch.release()
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    #expect(fixture.domainSnapshot.domain.inventoryFreshness == .unavailable)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+    #expect(fixture.snapshot.lastSelectedIdentifier == nil)
+    #expect(await fixture.controller.awaitRefresh() == .unavailable)
+    #expect(fixture.domainSnapshot.domain.clients.isEmpty)
+}
+
+@Test(arguments: [false, true])
 @MainActor func macControllerReportsFailedSignOutCleanupAndAllowsRetry(suppressesSession: Bool) async throws {
     let fixture = try MacControllerFixture()
     await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
@@ -1874,6 +1966,20 @@ private struct MacControllerFixture {
         try await cache.authorize(accountId: "user-a", role: .user, options: [option()])
         try await cache.save(config)
         try await cache.select(identifier: config.identifier, accountId: "user-a")
+    }
+
+    func seedInvalidAdminCache(validJSON: Bool = false) async throws {
+        inventory.role = .admin
+        try await cache.authorize(accountId: "user-a", role: .admin, options: [option()])
+        let namespace = try #require(FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ).first)
+        let path = namespace.appendingPathComponent("inventory.json")
+        if validJSON {
+            var payload = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+            payload["version"] = 2
+            try JSONSerialization.data(withJSONObject: payload).write(to: path)
+        } else { try Data("invalid JSON".utf8).write(to: path) }
     }
 
     func start(ready: Bool = true) async throws {
