@@ -167,7 +167,10 @@ public struct CloudGatewayMacCLI {
             exitCode = error.code.exitCode
             record.operationId = error.operationId?.uuidString.lowercased() ?? record.operationId
             record = .init(type: .error, command: command, operationId: record.operationId, data: error.data, error: .init(error))
-            standardOutput = error.data.map(renderer.render) ?? ""
+            switch error.data {
+            case .mutation(let mutation)? where error.code == .networkUnavailable && mutation.update == nil: break
+            default: standardOutput = error.data.map(renderer.render) ?? ""
+            }
             standardError = renderer.render(error)
         }
         if isJSON {

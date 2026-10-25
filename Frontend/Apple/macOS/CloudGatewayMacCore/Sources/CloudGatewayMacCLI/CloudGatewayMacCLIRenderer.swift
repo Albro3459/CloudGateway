@@ -59,6 +59,7 @@ struct CloudGatewayMacCLIRenderer {
     }
 
     func render(_ error: CloudGatewayMacCLIError) -> String {
+        if error.code == .networkUnavailable { return "Waiting for network… Try again soon.\n" }
         let message = CloudGatewayMacCLIText.sanitize(error.message)
         return "Error: \(message)\n" + (error.suggestion.map { "\($0)\n" } ?? "")
     }

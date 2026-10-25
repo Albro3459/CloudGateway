@@ -249,6 +249,10 @@ private func expectRemovalRecovery(_ harness: CLIHarness, isJSON: Bool) throws {
                 #expect((record["error"] as? [String: Any])?["code"] as? String == code)
                 #expect(record["operationId"] as? String == harness.operation?.id.uuidString.lowercased())
                 #expect(((record["data"] as? [String: Any])?["operation"] as? [String: Any])?["result"] as? String == "failed")
+            } else if failure == .networkUnavailable {
+                #expect(harness.diagnostics == "Waiting for network… Try again soon.\n")
+                let id = try #require(harness.operation?.id).uuidString.lowercased()
+                #expect(harness.output == "Accepted operation \(id)\n")
             }
             if failure == .clientActive {
                 #expect((harness.output + harness.diagnostics).contains("Disconnect that client and wait for it to stop before removing it"))

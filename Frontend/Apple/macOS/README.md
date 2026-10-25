@@ -395,6 +395,11 @@ failure is reported explicitly. Bare `down` works while signed out and succeeds
 only after a confirmed local stop, including an already-stopped state. Quit only
 detaches the menu.
 
+Network failures print `Waiting for network… Try again soon.` and exit with code 6
+without retrying. Ordinary mutations omit extra failure details. Diagnostic
+reports, explicit operation lookups, cached inventory, and update details remain
+visible. JSON keeps the structured error and operation details.
+
 Common options are `-h`/`--help`, `--json`, `--non-interactive`, and
 `--timeout <positive-finite-seconds>`. Reads and mutations default to 30 seconds,
 and `update` defaults to 300 seconds to cover stop, activation, readiness, and reconnect.

@@ -59,6 +59,11 @@ private let refreshConfig = "uid1/us-east-1/mac"
         else { inventory = try #require(data["inventory"] as? [String: Any]) }
         #expect(inventory["freshness"] as? String == "stale")
         #expect((harness.json?["error"] as? [String: Any])?["code"] as? String == "network_unavailable")
+        harness.output = ""
+        #expect(await harness.run(command) == 6)
+        #expect(harness.output.contains("Inventory: stale\n"))
+        #expect(harness.output.contains("Mac"))
+        #expect(harness.diagnostics == "Waiting for network… Try again soon.\n")
     }
 }
 

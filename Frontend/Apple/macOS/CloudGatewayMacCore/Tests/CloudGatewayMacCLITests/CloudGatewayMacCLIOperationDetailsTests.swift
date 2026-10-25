@@ -35,6 +35,20 @@ private let operationConfig = "uid1/us-sanjose-1/78ab8633-ae25-4287-885f-57bbbf6
 }
 
 @MainActor
+@Test func cliNetworkFailureLookupKeepsItsOperationAndCurrentTunnel() async {
+    let id = UUID()
+    let harness = CLIHarness()
+    harness.status = .init(hasActiveTunnel: true, needsStop: true, observationAvailable: true, phase: .connected)
+    harness.operation = .init(id: id, state: .failed)
+    harness.outcome = .failed(.networkUnavailable)
+    #expect(await harness.run("status", "--operation", id.uuidString) == 6)
+    #expect(harness.output.contains("VPN:          connected\n"))
+    #expect(harness.output.contains("Operation:    \(id.uuidString.lowercased()) failed, failed\n"))
+    #expect(harness.diagnostics == "Waiting for network… Try again soon.\n")
+    #expect(harness.actions == [.lifecycle, .userActivity, .operation])
+}
+
+@MainActor
 @Test func cliOperationLookupUsesTheSameDetailedObservationAsOrdinaryStatus() async throws {
     for (observed, timestamp) in [(true, Optional(cliObservedAt)), (false, Optional(cliObservedAt)), (false, nil)] {
         let state = cliState(profiles: timestamp == nil ? [] : [.init(identifier: activeConfig, status: .connected)],

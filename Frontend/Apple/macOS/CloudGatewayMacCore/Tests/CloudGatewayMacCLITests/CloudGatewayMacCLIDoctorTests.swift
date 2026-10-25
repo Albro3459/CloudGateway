@@ -78,12 +78,19 @@ import Testing
 }
 
 @MainActor
-@Test func doctorRequiredOnlineFailureReturnsSix() async {
+@Test func doctorRequiredOnlineFailureKeepsReportAndReturnsSix() async {
     let doctor = CloudGatewayMacCLIDoctor(probes: [
         .init(name: "https", requirement: .online) { .init(name: "https", status: .fail, evidence: "HTTP 500") }
     ])
-    guard case .failure(let error) = await doctor.execute(timeout: .seconds(30)) else { Issue.record("Expected online failure"); return }
-    #expect(error.code.exitCode == 6)
+    var output = ""
+    var diagnostics = ""
+    let cli = CloudGatewayMacCLI(version: "1.2.0", build: "7",
+                                terminal: .init(isOutputTerminal: false, variables: [:]), clock: CLITestClock().clock,
+                                output: { output += $0 }, diagnostics: { diagnostics += $0 }, doctor: doctor,
+                                connect: { throw CloudGatewayMacCLIError(.internalError) })
+    #expect(await cli.run(["doctor"]) == 6)
+    #expect(output == "[fail] https: HTTP 500\n")
+    #expect(diagnostics == "Waiting for network… Try again soon.\n")
 }
 
 @MainActor

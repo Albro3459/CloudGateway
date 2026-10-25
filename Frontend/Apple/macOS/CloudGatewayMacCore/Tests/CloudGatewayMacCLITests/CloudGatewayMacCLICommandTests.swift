@@ -323,7 +323,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
                     #expect(harness.json?["data"] is NSNull)
                 } else {
                     #expect(harness.output.isEmpty)
-                    #expect(harness.diagnostics.hasPrefix("Error: Inventory is unavailable for this account\n"))
+                    #expect(harness.diagnostics == "Waiting for network… Try again soon.\n")
                 }
                 #expect(!harness.output.contains("No configs"))
                 #expect(!harness.output.contains("unavailable in this account's current inventory"))
