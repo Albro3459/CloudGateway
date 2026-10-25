@@ -59,10 +59,8 @@ Replacement waits for all owned VPNs to become idle and preserves disconnect.
 
 For this failure, install the newer signed app and allow its extension update
 while the VPN is off. Repeating activation of the affected build did not repair
-the endpoint. The build 4 workaround passed 199 macOS host-free tests, both
-strict Periphery scans, the unsigned arm64 build, and packaging verification.
-Signed installation and live upgrade confirmation were pending at that
-checkpoint. The later user-reported runtime checks passed. See the
+the endpoint. The workaround passed automated validation; later user-reported
+signed runtime checks passed. See the
 [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
 
 ## Retained secrets reject a changed signing identity
@@ -84,10 +82,10 @@ requests cannot replace it. Other storage, transport, timeout, and cancellation
 failures retain their existing handling. ACLs remain restricted and old secrets
 remain retained.
 
-The recovery passed targeted host-free coverage and the macOS validation gate.
-Signed reinstall and live switching confirmation remained pending at diagnosis.
-See [secret storage and IPC](apple-macos-development.md#secret-storage-and-ipc)
-for the ownership and recovery rules.
+Automated validation covered recovery; the original diagnosis did not include
+signed reinstall/live switching. See
+[secret storage and IPC](apple-macos-development.md#secret-storage-and-ipc) for
+ownership and recovery rules.
 
 ## Controller bootstrap fails in the user domain
 
@@ -99,9 +97,8 @@ and the user confirmed the menu recovered through authenticated XPC.
 The generated plist now includes that session setting. `ProcessType = Background`
 controls resource limits and does not select the launch session. Preserve the
 fixed installed executable path and per-user ownership lock when changing the
-launcher. A regression checks the plist setting. This local bootstrap result
-did not establish pre-desktop SSH or Firebase Keychain behavior. The user later
-confirmed the full signed runtime matrix passed. See the
+launcher. A regression checks the plist setting. Later user-reported runtime
+checks covered pre-desktop SSH/Keychain behavior. See the
 [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24)
 and [controller runbook](apple-macos-development.md) for launch details.
 
@@ -130,4 +127,4 @@ session. Discovering a certificate does not prove that signing can use its
 private key. Validate access in the session performing the build. This result
 does not prove Firebase Data Protection Keychain access from a background
 controller. Other causes can also surface as `errSecInternalComponent`.
-See the [signing validation record](apple-macos-development.md#background-controller-checkpoint).
+See the [validation guide](apple-macos-development.md#validation).

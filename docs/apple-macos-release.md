@@ -1,8 +1,7 @@
-# macOS release deployment
+# macOS releases
 
-CloudGateway distributes directly as a Developer ID-signed, notarized DMG for
-Apple silicon on macOS 26 or later. Run the release command from the repository
-root. Bump the shared version/build, validate, then prepare the release:
+CloudGateway distributes as a Developer ID-signed, notarized DMG for Apple
+silicon on macOS 26 or later. Run from the repository root:
 
 ```sh
 python3 scripts/macos-release.py --bump-build
@@ -11,95 +10,69 @@ python3 scripts/macos-release.py --bump-build
   --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
-Use one version and build for the app, CLI, controller, and VPN extension.
-The CLI and controller are entry points of the app's executable and inherit its
-bundle version. The extension has its own bundle, synchronized by the bump command.
-Keep the marketing version as `major.minor.patch`, and increase the integer build
-for every new local installation or release preparation. Never reset the build
-when changing the marketing version.
+Omit `--publish` to retain a local release. For development-signed testing
+installs, use [Quick Deployment](quick-deployment.md#install-macos-app-for-local-testing).
 
-This standard also applies to Developer ID builds distributed outside the App
-Store. macOS compares `CFBundleShortVersionString` and `CFBundleVersion` when
-[replacing a system extension](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
-The marketing version can stay the same while the build increases.
+## Version and artifact policy
 
-`--bump-build` chooses a build higher than both current targets and updates Debug,
-Release, and DeveloperID together. It keeps the higher existing marketing version
-unless `--version` selects a new one. To choose a new release version:
+The app, CLI, controller, and extension share one `major.minor.patch` version and
+integer build. CLI/controller are entry points of the app executable. Before
+every new local install or release preparation, bump both targets together:
 
 ```sh
+python3 scripts/macos-release.py --bump-build
 python3 scripts/macos-release.py --bump-build --version 1.1.1
 ```
 
-Add `--build <number>` to the bump command when a specific higher build is needed,
-including when an installed or previously distributed build exceeds the checkout.
-The bump command edits only the project file. It does not build, sign, contact
-Apple, stage, or commit anything. Review and commit that source change separately.
+Choose one command. `--bump-build` advances past both targets and synchronizes
+Debug, Release, and DeveloperID. Without `--version`, it keeps the higher existing
+marketing version. Add `--build <higher-number>` to advance past an installed or
+distributed build. Never reset builds after a marketing-version change. Only
+this bump command edits the project; it does not build, sign, contact Apple,
+stage, or commit. Review/commit the project edit separately.
 
-New releases default to the synchronized project version/build. Optional release
-`--build` and `--version` overrides apply to both bundles in the archive; they do
-not edit the project. Older builds and marketing versions are rejected. Prefer
-bumping the tracked settings first so the source and release identify the same build.
-Preparation refuses unsynchronized project versions before signing or network calls.
-Every new preparation requires `--previous-distributed-app` pointing to the exact
-signed app from the latest release actually distributed to users. Extract it
-from the retained distributed DMG if needed. The script verifies its Developer
-ID signature, team, profiles, and packaged dependencies before reading its
-extension version, build, and artifact digest. It never selects an untracked
-local archive or export as the baseline automatically. The operator must identify
-the latest distributed app correctly, including a release distributed outside
-GitHub. Local signature checks cannot establish distribution history.
+Every new release preparation requires the exact signed app most recently
+distributed to users as `--previous-distributed-app`, including distributions
+outside GitHub. Extract it from the retained DMG if needed. Local signature
+verification cannot establish which release users received. Preparation checks
+the baseline's Developer ID signature, team, profiles, and dependencies before
+reading the extension version/build and artifact digest.
 
-Before signing or contacting Apple, preparation requires the shared build to
-strictly exceed the baseline extension build. Its marketing version must not
-decrease. Run the bump command for every new preparation, including app-only releases.
-Archive/export can change
-the CMS signature even when extension code has not changed. The Mach service
-name includes the extension build, so increasing it also avoids stale endpoint
-registration during replacement.
+The new build must strictly exceed the baseline extension build, and its
+marketing version cannot decrease. This applies to app-only releases: export
+may change extension signature bytes even without source changes. The build is
+also part of the extension Mach service name. macOS
+[uses both version fields for replacement](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
 
-The script records a SHA-256 manifest of the full exported extension tree,
-including executable signature bytes, resources, file modes, and symlink targets.
-Notarization resumption and publication check that manifest and the baseline
-policy again. A re-signed extension at an unchanged version/build is rejected,
-even if its CodeDirectory remains the same. Existing signer and authenticated
-runtime identity checks remain required.
+New preparations reject unsynchronized project versions before signing/network
+calls. Optional release `--version`/`--build` overrides affect both archived
+bundles without editing source, but prefer bumping tracked settings first.
+Use `--initial-distribution` only when no extension has ever been distributed;
+it records that declaration and cannot substitute for an existing baseline.
 
-Exact reuse is supported by resuming the same prepared release. New preparation
-always signs/exports again and therefore requires a fresh extension build. There
-is no command to transplant a previously signed extension into a new app.
-Use `--initial-distribution` instead of `--previous-distributed-app` only when no
-extension has ever been distributed. This explicit first-release declaration is
-recorded in the manifest. It must not be used to bypass an existing baseline.
-
-Archive, notarization, and publication leave project versions and Git staging
-unchanged. Only `--bump-build` updates the project. Release metadata records both
-targets' versions, the source commit, and whether the working tree had changes.
-Resuming an existing prepared release keeps its exact artifacts and does not need
-another bump.
+Preparation records the full exported extension tree's SHA-256 manifest,
+including signature bytes, resources, modes, and symlinks. Notarization and
+publication recheck it and the baseline policy. Re-signing at unchanged versions
+is rejected even if the CodeDirectory digest matches. Reuse exact artifacts by
+resuming their preparation; there is no extension-transplant command.
 
 ## Signing prerequisites
 
-The Mac's login Keychain must contain an accessible Developer ID Application
-certificate and its private key for team `CRQWDQ7QQR`. The script requires one
-matching signing identity, then uses its fingerprint for the archive, export,
-and DMG. Keep that identity available when resuming a release.
+The login Keychain needs an accessible Developer ID Application certificate and
+private key for team `CRQWDQ7QQR`. The script selects one matching identity and
+uses its fingerprint for archive, export, and DMG. Retain it for resumptions.
 
-Install these Developer ID provisioning profiles, including Network Extensions
-and App Group `group.com.gocloudlaunch.gateway.macos`:
-
-| Product | Bundle ID | Profile name |
+| Product | Bundle ID | Developer ID profile |
 |---|---|---|
-| Menu app | `com.gocloudlaunch.gateway.macos` | `CloudGateway MacOS` |
-| VPN extension | `com.gocloudlaunch.gateway.tunnel.macos` | `CloudGateway-Tunnel MacOS` |
+| App | `com.gocloudlaunch.gateway.macos` | `CloudGateway MacOS` |
+| Extension | `com.gocloudlaunch.gateway.tunnel.macos` | `CloudGateway-Tunnel MacOS` |
 
-The app profile also authorizes System Extension installation and the Firebase
-session Keychain group. Both profiles must authorize
-`packet-tunnel-provider-systemextension`. The script defaults to those profile
-names; set `CLOUDGATEWAY_APP_PROFILE` and `CLOUDGATEWAY_TUNNEL_PROFILE` if renamed.
+Both profiles need `packet-tunnel-provider-systemextension` and App Group
+`group.com.gocloudlaunch.gateway.macos`. The app also needs System Extension
+installation and its Firebase Keychain group. Override renamed profiles with
+`CLOUDGATEWAY_APP_PROFILE` and `CLOUDGATEWAY_TUNNEL_PROFILE`.
 
-The existing App Store Connect API key also supports notarization. Store its
-credentials once, outside the repository:
+Store notarization credentials outside the repository:
 
 ```sh
 xcrun notarytool store-credentials CloudGateway-notary \
@@ -108,42 +81,26 @@ xcrun notarytool store-credentials CloudGateway-notary \
   --issuer 9157d52e-3841-40de-8e45-fc74f01dfd2f
 ```
 
-Use `--keychain-profile <name>` or `CLOUDGATEWAY_NOTARY_PROFILE` for a different
-saved credential profile when preparing a release. The chosen name is recorded
-for resumptions. Keep the `.p8` file and private signing key out of Git and logs.
+Override the saved name with `--keychain-profile <name>` or
+`CLOUDGATEWAY_NOTARY_PROFILE` during preparation. It is recorded for resumption.
+Keep private keys out of Git/logs. Unlock and validate signing-key access in the
+session running the build; see [known issues](apple-known-issues.md).
 
-## Release artifacts and checks
+## Preparation and notarization
 
-The script archives with the DeveloperID configuration, exports with manual
-distribution profiles, and validates both bundles before any software upload.
-Checks cover the signing team and Developer ID Application certificate,
-Hardened Runtime, secure timestamps, release entitlements, embedded profiles,
-each bundle's expected version and build, architecture, and packaged dependencies.
-Current release products also require the bundled CLI executable and controller
-Firebase resource, then pass 58 bounded help/version/invalid-usage checks through
-direct `--cli` and a temporary `cloudgateway` symlink. Each invocation uses a
-temporary home, redirected stdin, and a five-second deadline. JSON checks verify
-schema version 1, line completeness, usage errors, and the bundle's version/build
-through both entry points. No real CLI installation, service registration,
-auth restoration, or VPN operation is part of these static checks. The verified
-previous-distribution baseline accepts the original fixed Mach service name as
-well as the build-specific name, while retaining Developer ID signature and
-identity checks. Older releases that predate the CLI remain valid baselines.
-New release products require the build-specific Mach service name.
+The script archives with DeveloperID and manual profiles. Before upload it checks
+both bundles' identity, secure timestamps, Hardened Runtime, entitlements,
+profiles, versions/builds, architecture, dependencies, build-specific Mach name,
+and controller Firebase resource. Bounded CLI help/version/invalid-usage checks
+cover direct and symlink entry points, JSON schema, and version reporting in
+temporary homes. They do not install the CLI or exercise auth/controller/VPN.
+Older signed pre-CLI/fixed-Mach-name releases remain valid baselines.
 
-It submits an app ZIP to Apple, saves the submission ID and log, and staples the
-accepted ticket to the app. It then builds a signed DMG containing the app and
-an Applications shortcut, notarizes and staples that DMG, and checks both
-artifacts with Gatekeeper. The release stops on signing or notarization failure.
-Review both notary logs even after acceptance.
+It notarizes an app ZIP, staples the app, builds/signs/notarizes/staples a DMG,
+and checks both with Gatekeeper. Signing or notarization failure stops the release.
+Review app and DMG notary logs even after acceptance.
 
-Artifacts live in a unique directory under
-`Frontend/Apple/macOS/.build/releases/`. The script prints the final
-`CloudGateway-<version>-<build>-arm64.dmg` path and SHA-256 checksum. Each
-directory retains its archive, exported app, build/export logs, release
-metadata, notarization submission records, notary logs, and `SHA256SUMS`.
-
-To build and inspect artifacts before submitting software:
+To inspect artifacts before submission:
 
 ```sh
 python3 scripts/macos-release.py --bump-build
@@ -151,35 +108,31 @@ python3 scripts/macos-release.py --bump-build
   --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app
 ```
 
-Continue with the directory printed by that command:
+Continue using the directory printed by preparation:
 
 ```sh
 ./scripts/macos-release.sh --notarize '/absolute/path/to/prepared-release'
 ```
 
-Each wait lasts at most 20 minutes. If Apple still reports In Progress, use the
-same `--notarize` command later. Existing submission IDs are reused; changed
-artifacts cannot reuse an earlier submission. Partial work remains available
-for diagnosis and retry.
+Each wait is bounded to 20 minutes. If still In Progress, rerun the same command;
+it reuses submission IDs and refuses changed artifacts. Partial work is retained.
 
-Preparation saves the app's `version` and `build`, the extension's
-`extensionVersion` and `extensionBuild`, and the `extensionBaseline` and
-`extensionArtifact` manifests in `release.json`. Keep this directory intact for
-resumption and retain the distributed DMG for the next release baseline. Both
-`--notarize` and `--publish-existing` check the exported bundles against those saved versions,
-even if the project versions have since changed. Older metadata without either
-extension version field expects the extension to match the app's version and
-build. Partially present or malformed extension fields stop the release. Releases
-prepared before the artifact policy was added cannot resume or publish through
-this script, because they lack a trustworthy recorded baseline and artifact
-manifest. Prepare a new release against the latest distributed app with fresh
-app and extension builds. Do not add manifests retroactively to old outputs.
-Baseline options apply only to new preparation. Resumed releases use their saved
-policy.
+Outputs live under `Frontend/Apple/macOS/.build/releases/`. Keep the directory
+intact: archive, exported app, logs, notarization records, `release.json`, final
+`CloudGateway-<version>-<build>-arm64.dmg`, and `SHA256SUMS`. The script prints the
+DMG path and checksum. Retain the distributed DMG as the next baseline.
 
-If an upload is interrupted before its submission ID is saved, the script
-refuses to upload it again automatically. Match the artifact and attempt time
-in `notary-<app|dmg>-attempt.json` against Apple's history:
+`release.json` records source commit/dirty state, app `version`/`build`,
+`extensionVersion`/`extensionBuild`, `extensionBaseline`, and `extensionArtifact`.
+Resumption uses saved versions even after project settings change. Legacy metadata
+without both extension version fields expects the app's versions; partial or
+malformed fields fail. Preparations lacking the baseline/artifact manifests cannot
+resume or publish. Prepare fresh builds against the latest distributed app;
+never manufacture manifests for old output. Baseline options apply only to new
+preparations. Archive/notarization/publication do not edit source or Git staging.
+
+If upload ends before a submission ID is saved, automatic re-upload is refused.
+Match the artifact/time in `notary-<app|dmg>-attempt.json` against Apple's history:
 
 ```sh
 xcrun notarytool history --keychain-profile CloudGateway-notary
@@ -187,117 +140,64 @@ xcrun notarytool history --keychain-profile CloudGateway-notary
   --recover-submission app=<confirmed-submission-id>
 ```
 
-Use `dmg=<confirmed-submission-id>` for an interrupted DMG upload. Confirm the
-correct submission in Apple's history before recording it.
+Use `dmg=<confirmed-submission-id>` for DMG recovery. Verify the match first.
 
-## Installation and distribution
+## Installation checks
 
-Test the final DMG from a browser download, preferably on a separate Mac. Quit
-the previous menu app, drag CloudGateway into Applications, and run
-`/Applications/CloudGateway.app`. Confirm Gatekeeper accepts it, sign-in works,
-and Setup VPN opens the normal extension/VPN approval flow with SIP enabled.
-Check real VPN connectivity and extension replacement using a later build.
-Automated signing and Gatekeeper checks do not establish those runtime results.
+Test a browser-downloaded final DMG, preferably on another Mac, using the
+[development runtime checklist](apple-macos-development.md#runtime-checklist).
+Cover Gatekeeper, approvals with SIP enabled, connectivity, extension replacement,
+CLI/PATH installation, account/offline boundaries, and operation recovery. Include
+reboot/pre-desktop SSH, credential access, concurrent startup, and caller loss
+with another access path available. Signing/Gatekeeper checks alone do not prove
+these runtime behaviors.
 
-Use **Install Command Line Tool…** while signed out and verify the user-local
-link targets the executable inside `/Applications/CloudGateway.app`. Repeat
-installation, conflict/broken-link handling, and the separate zsh PATH offer.
-Test `~/.local/bin/cloudgateway --version` and `help` from Terminal and
-noninteractive SSH without relying on `.zprofile`. Verify setup recognizes the
-app's existing PATH and common entries in `~/.zshrc` or `~/.zprofile` without
-changing files. Unrecognized custom configuration, linked startup files, and
-unsupported shells must receive manual guidance before any edit. App replacement
-at the same path keeps the link valid; app
-movement/removal leaves it broken without replacing another user's file.
-
-Complete one-time desktop extension/VPN approval, then run the planned signed
-CLI matrix with an isolated account/config and another access path. Cover login
-approval/expiry/cancellation, JSON output/exits, offline access, refresh without
-reconnect, successful start submission versus observed connection, confirmed
-stop, signed-out disconnect, and logout retaining VPN/profiles/secrets/cache.
-Check `status --operation <uuid>` after caller/SSH loss and an unknown result
-after replacement/restart. Never replay uncertain work automatically. Verify
-doctor changes no session, inventory, preferences, or VPN state and reports
-unsupported credential/approval evidence as unknown. Include reboot before
-desktop login, final SSH disconnect, locked credentials, concurrent menu/SSH
-startup, and active-VPN replacement. Repeat these manual release checks for
-future releases. See the [CLI guide](../Frontend/Apple/macOS/README.md#command-line-tool)
-for commands, common options, NDJSON schema/exits, and recovery semantics.
+Install at `/Applications/CloudGateway.app`. Keep the signed bundle intact;
+the CLI installer creates only a user-local symlink. The first controller lifecycle
+migration needs a one-time old-controller restart after accepted work finishes.
+Later verified app replacements drain work without stopping the VPN. Automatic
+extension replacement waits for every owned tunnel to be idle and preserves
+Apple approval/reboot requirements. For explicit stop/update/reconnect, see
+[CLI update](../Frontend/Apple/macOS/README.md#update-from-the-cli-or-ssh).
 
 ### Runtime acceptance (2026-10-24)
 
-The user confirmed that the signed runtime matrix above passed for the
-controller, CLI, and client-removal stack. This includes live VPN behavior,
-reboot before graphical desktop login, pre-desktop SSH and credential access,
-final SSH disconnect, locked credentials, concurrent menu/SSH startup, command
-recovery, and active-VPN replacement. Manual runtime acceptance for this stack
-is complete. These results are user-reported.
+The user reported the signed controller/CLI/client-removal runtime matrix passed,
+including live VPN, reboot before desktop login, pre-desktop SSH/Keychain access,
+final SSH disconnect, locked credentials, concurrent startup, command recovery,
+and active-VPN replacement. This acceptance covers the reviewed stack; repeat
+relevant checks for future changes.
 
-The agent also ran `./scripts/test.sh apple --signed` successfully. Shared tests,
-all 780 macOS host-free tests, all five strict Periphery scans, signed iOS and
-macOS Release builds, macOS signature/entitlement/profile verification, and all
-88 packaged CLI checks passed.
+The agent also recorded a successful `./scripts/test.sh apple --signed` run:
+shared tests, 780 macOS host-free tests, all five strict Periphery scans, signed
+iOS/macOS Release builds, signature/entitlement/profile verification, and 88
+packaged CLI checks. These are historical results, not current test counts.
 
 ## GitHub publication
 
-Add `--publish` to a new build or a resumed `--notarize` command to publish after
-all notarization and Gatekeeper checks pass. Without that option, the command
-keeps the finished release local. To publish a finished release after manual
-installation checks:
+Add `--publish` to new preparation or resumed notarization, or publish an already
+finished release after installation checks:
 
 ```sh
 ./scripts/macos-release.sh --publish-existing '/absolute/path/to/finished-release'
 ```
 
-`--publish-existing` verifies the existing app, signed DMG, accepted submission
-records, stapled tickets, Gatekeeper acceptance, and exact `SHA256SUMS` contents.
-It does not build, submit to Apple, staple, or regenerate checksums. It cannot
+`--publish-existing` verifies bundles, signed DMG, accepted submissions, staples,
+Gatekeeper, and exact checksums without rebuilding/submitting/stapling. It cannot
 be combined with build, preparation, notarization, or `--publish` options.
 
-Publication requires an authenticated GitHub CLI with release write access to
-the public `Albro3459/CloudGateway` repository. The exact `sourceCommit` recorded
-in `release.json` must already exist on GitHub. The command never pushes Git
-changes or falls back to another commit. Release notes retain the recorded
-working-tree status, including local changes present when the archive was made.
+Publication needs authenticated GitHub CLI release access to
+`Albro3459/CloudGateway`. The recorded `sourceCommit` must already be on GitHub;
+the script never pushes or substitutes another commit. Notes retain the recorded
+working-tree state.
 
-The command creates a draft tagged `macos-v<version>-build.<build>`, titled
-`CloudGateway for Mac <version> (build <build>)`, uploads only the final DMG and
-`SHA256SUMS`, checks their GitHub SHA-256 digests, then publishes with
-`--latest=true`. New macOS releases become the repository's Latest release;
-the Caddy release script uses `--latest=false` to leave that selection unchanged.
-Retries reuse a matching draft or published release, skip assets whose digests
-match, and stop on a conflicting tag, target, or asset. Existing assets are
-never overwritten. Failed attempts retain local artifacts and any remote draft.
-After creating a draft, the command briefly retries release-list reads while
-GitHub makes it visible. If visibility is still delayed, rerun the same command
-to resume the existing draft.
+It creates a draft tagged `macos-v<version>-build.<build>`, uploads only the DMG
+and `SHA256SUMS`, checks GitHub SHA-256 digests, then publishes as Latest. The
+Caddy release uses `--latest=false`. Retries reuse matching releases/assets and
+stop on conflicting tags, targets, or digests without overwriting. If draft
+visibility is delayed, rerun the same command. Artifacts and remote drafts survive
+failures.
 
-The app also carries headless controller and CLI entry points. They use the same
-executable, resources, signing identity, and provisioning profile. There is no
-separate controller or CLI binary to sign or copy out of the bundle. Keep the
-signed app unchanged after installation; the installer creates only a user-local
-symlink. The CLI's static help/version/usage paths work without the controller.
-Operational commands retain the ordinary authenticated version/signature checks.
-
-Install at `/Applications/CloudGateway.app`, the controller's fixed launch path.
-For the first controller migration, quit the old menu before launching the new
-app so two Firebase owners cannot overlap. The first installation of the
-synchronized lifecycle also needs a one-time controller restart. Later updates
-verify the fixed installed bundle, drain accepted work, and reconnect to the
-replacement controller automatically. Active VPNs stay connected. Extension
-replacement waits until all owned tunnels are idle and preserves Apple's
-approval or reboot requirement. See the local install command in the macOS
-README and validate the signed live update matrix before distributing it.
-Build/signature checks alone do not prove background launch or pre-desktop SSH
-Keychain access. The [runtime acceptance record](#runtime-acceptance-2026-10-24)
-covers the reviewed stack. Repeat the relevant checks for later releases.
-
-The release directory saves `publication.json` with the release and DMG URLs.
-The command prints both URLs. To make a later build available on the website,
-update the version, build, and exact DMG URL in
-`Frontend/Web/src/helpers/macAppRelease.ts`, then deploy the web dashboard.
-
-See the
-[macOS development runbook](apple-macos-development.md) for runtime checks,
-[Apple's notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
-and [Apple's packaging guidance](https://developer.apple.com/documentation/xcode/packaging-mac-software-for-distribution).
+`publication.json` and command output contain release/DMG URLs. Update version,
+build, and exact DMG URL in `Frontend/Web/src/helpers/macAppRelease.ts`, then
+deploy the web dashboard to advertise the release.

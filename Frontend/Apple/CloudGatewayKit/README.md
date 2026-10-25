@@ -98,7 +98,7 @@ Firebase belongs behind containing-app adapters:
 * macOS app: a menu bar agent with browser sign-in and native session,
   account-scoped inventory, lifecycle, Apple VPN status, and IPC adapters. It
   does not instantiate the blackout monitor or implement notifications. See the
-  [macOS plan](../../../TODO/macos-app.md).
+  [macOS development guide](../../../docs/apple-macos-development.md).
 * Packet tunnel extension: stays VPN-only and must not link Firebase unless a later product decision explicitly requires it.
 
 Platform packet-tunnel extensions retain lifecycle, WireGuardKit mapping,

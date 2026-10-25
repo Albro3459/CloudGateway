@@ -1,256 +1,141 @@
-# Apple Tunnel Health Detection And Outage Notification
+# Tunnel health and outage notifications
 
-The iOS packet tunnel extension detects a dead VPN tunnel and, when notification
-permission is available, raises one local notification plus an in-app warning
-so the user can act. This document
-describes why the feature exists, how detection and recovery work, and the
-guardrails that keep it from producing false alarms.
+The iOS packet extension detects a tunnel that appears connected but no longer
+passes traffic, attempts recovery, and warns the user. Detection continues while
+the app is closed, backgrounded, or signed out. Shared policies compile for
+macOS, but the macOS extension does not enable this monitor or notifications.
 
-## Why This Exists
+The tunnel stays fail-closed. Recovery never disconnects it or routes traffic
+outside the VPN; the user decides whether to disconnect. No external reachability
+probes, traffic logs, or persisted runtime counters are used.
 
-During a server deployment, the VPN host can go down while the Network
-Extension stays "Connected." Because CloudGateway is a fail-closed full
-tunnel, every packet the device sends is routed into a tunnel that no longer
-answers. The user still has working Wi-Fi or cellular underneath, but nothing
-loads and iOS gives no indication why.
+## User behavior
 
-That state is the black hole this feature targets: **the device has Internet,
-but the VPN is dead, so all traffic disappears into a stuck tunnel.**
-Disconnecting the VPN is the only immediate way for the user to get back
-online, and without a notification they have no way to know that.
+* Transient failures that recover silently produce no warning.
+* A persistent failure creates one stable-ID notification per continuous episode
+  when authorized, plus an in-app banner. Denied notification authorization is
+  terminal for that session; the banner can still use the shared snapshot.
+* The warning says the connection may be weak or the server may be under
+  maintenance. Transport evidence cannot establish the cause.
+* **Disconnect & Reload** waits up to 30 seconds for confirmed disconnection
+  before reloading. The deadline includes the stop request and status reads.
+  Ordinary VPN toggles remain optimistic.
+* Two consecutive healthy polls withdraw the warning. Stop clears it. There is
+  no separate recovery notification.
 
-The tunnel intentionally stays fail-closed throughout. CloudGateway never
-auto-disconnects or routes traffic outside the VPN; it only tells the user so
-*they* can choose to disconnect.
+Expected detection is roughly 30–55 seconds after meaningful traffic fails;
+path settling can add up to 30 seconds. Earlier device evidence measured 50–55
+seconds before the shared-monitor cutover. Those measurements do not establish
+timing for every current device/path. Do not tighten constants without signed
+device evidence. A changed server IP may require a user toggle because binding
+refresh does not re-resolve the endpoint hostname.
 
-## User Experience
+## Detection and recovery
 
-* A likely-dead tunnel is first repaired silently (see recovery below). A
-  transient problem that recovers produces nothing.
-* A persistent failure produces one stable-ID local notification per continuous
-  episode when notification permission is available, plus one in-app banner:
-  "VPN connection interrupted - Your internet connection may be weak, or the VPN server may be down for maintenance for a few minutes. You can wait, or disconnect to use this network without the VPN." Denied authorization is terminal for that tunnel session, but the app can still consume the shared snapshot and show the banner.
-* Users are expected to be notified about 30-55 seconds after meaningful traffic
-  starts failing. Historical, pre-coordinator device evidence measured 50-55
-  seconds for a full blackhole with continuing traffic; the shared-monitor
-  cutover still requires real-device verification. Episodes that begin during a network transition can
-  take up to ~30 seconds longer while the new path settles.
-* The in-app banner's action is "Disconnect & Reload": it stops the tunnel and
-  waits up to 30 seconds for iOS to report the tunnel fully disconnected, then
-  reloads app state over the now-direct Internet connection, so the user lands
-  on an up-to-date dashboard instead of sending the reload through a route that
-  is still tearing down. The 30-second deadline covers the stop request and
-  status reads, so a stalled system API cannot hold the app indefinitely. Normal
-  VPN toggles remain optimistic and do not wait.
-* The warning withdraws automatically once traffic verifiably resumes or the
-  tunnel is stopped. There is no separate "recovered" notification.
-* The copy is causal-neutral on purpose: transport evidence cannot prove
-  "server down" versus "weak network," so the message offers both as hedged
-  possibilities and never claims the server is offline.
+`CloudGatewayTunnelHealthMonitor` owns one cancellable wake, reads WireGuard
+stats every five seconds, and feeds the pure `CloudGatewayTunnelHealthCoordinator`.
+`CloudGatewayTunnelHealthEvaluator` recognizes:
 
-A deployment that changes the server's public IP is still warned about, but
-recovery may require the user to toggle the VPN off and on after the new
-server is up; the lightweight refresh does not re-resolve the endpoint
-hostname.
+* No handshake ten seconds after startup.
+* A newest handshake older than 180 seconds.
+* Flat RX with at least 4096 bytes of new TX in a bounded ten-second window.
+  The window starts with outbound activity, discards sub-threshold noise, and
+  latches failure until RX advances.
 
-## How Detection Works
+`CloudGatewayTunnelRecoveryPolicy` maps evidence to `unknown`, `passingTraffic`,
+or `notPassingTraffic`. Before confirming a normal traffic failure it requests:
 
-Everything runs inside the packet tunnel extension so it keeps working when
-the app is backgrounded, closed, or signed out. The extension's platform
-adapters feed a shared `CloudGatewayTunnelHealthMonitor` in `CloudGatewayKit`. The
-monitor owns one cancellable wake, reads WireGuard runtime stats every 5
-seconds, and sends plain events through the pure
-`CloudGatewayTunnelHealthCoordinator`. The coordinator composes these unit-tested
-policies:
+1. `refreshNetworkBinding`, a lightweight UDP/NAT binding refresh.
+2. If fresh failure persists, `restartBackend`, an in-place wireguard-go restart
+   that reapplies network settings while preserving fail-closed routing.
+3. Confirmation only after the post-attempt verification period.
 
-This composition runs in the iOS packet-extension process today. The shared
-types build for macOS, but no macOS app or packet-extension target exists yet.
+Each attempt needs at least ten seconds and fresh post-attempt failure evidence.
+Restart resets handshake warmup and counters. Idle/static counters cannot prove
+failure; an idle recovery stays `unknown`. A failed restart after stopping the
+old backend attempts one fallback using prior settings. Runtime absence can also
+request restart from temporary shutdown using retained settings. Traffic must
+verify success; a successful callback alone is insufficient.
 
-1. `CloudGatewayTunnelHealthEvaluator` turns raw counters into evidence. Failure
-   evidence is one of:
-   * **Never handshaked**: no handshake 10 seconds after tunnel start.
-   * **Stale handshake**: newest handshake older than 180 seconds.
-   * **One-way traffic**: RX flat while TX grows by at least 4096 bytes over
-     a bounded 10-second window that starts only when new outbound traffic
-     appears. Once concluded, one-way failure stays latched until RX actually
-     advances, so a continuous blackhole cannot blink healthy between windows.
-2. `CloudGatewayTunnelRecoveryPolicy` converts that evidence into the outward
-   health verdict (`unknown` / `passingTraffic` / `notPassingTraffic`) and
-   drives recovery. Only entry into `notPassingTraffic` posts the
-   notification.
+Missing runtime follows a separate ladder on a stable satisfied path: 20 seconds
+to binding refresh, another 20 to backend restart, then 20 more before confirmation.
+A runtime read whose callback never returns instead confirms after its 20-second
+deadline on a satisfied path. The monitor keeps its heartbeat fresh and avoids
+queuing work behind the stalled adapter. A later callback requires the usual
+two healthy polls before withdrawal.
 
-Before any warning, the policy attempts recovery:
+## Path and episode rules
 
-* Attempt one requests a **lightweight WireGuard binding refresh**
-  (`refreshNetworkBinding` on the pinned `wireguard-apple` fork), the same UDP
-  re-bind Apple-driven path changes use. This silently repairs stale NAT/UDP
-  bindings.
-* If fresh failure evidence persists, attempt two performs an **in-place
-  backend restart** (`restartBackend`): it stops wireguard-go, reapplies the
-  tunnel network settings, and starts a fresh backend while the VPN remains
-  fail-closed. This is intended to repair dead cellular route/flow state that
-  a socket re-bind alone cannot. If the deep restart fails after stopping the
-  old backend, the fork makes one fallback start against the still-active
-  prior network settings before giving up in temporary shutdown. Runtime
-  absence can also request this restart from temporary shutdown using its
-  saved settings, rather than counting a rejected operation as recovery.
-  Runtime traffic still verifies any start; real-device validation remains
-  required.
-* After each attempt it waits at least 10 seconds and requires **fresh
-  post-attempt failure evidence** (new outbound traffic with no handshake or
-  RX progress) before escalating. Static counters or an idle tunnel can never
-  prove failure; an idle tunnel stays `unknown` indefinitely.
-* Missing runtime state follows the same recovery ladder. After 20 seconds on
-  a stable, satisfied path it requests a binding refresh, after another 20
-  seconds it requests the backend restart, and only 20 seconds of continued
-  unavailability after that confirms a failure. A missing runtime sample can
-  never bypass recovery and notify immediately.
-* A runtime read that does not return is handled separately from a `nil` runtime
-  result. After a 20-second read deadline on a satisfied path, the extension
-  confirms the outage directly and keeps its health heartbeat fresh without
-  queuing more reads or recovery work behind the stalled WireGuard adapter
-  queue. If the original read eventually returns, the normal two-poll healthy
-  probation is required before the warning withdraws.
+Only a continuously satisfied network path advances an outage. Airplane mode
+and no service stay silent; a satisfied captive/upstream-less network is still
+possible. A meaningful path change starts ten seconds of settling, capped at
+30 seconds across churn. Fingerprints include status, interface types, gateways,
+and IP/DNS capability, excluding quality and expensive/constrained chatter.
+Only satisfaction and an opaque route generation leave the platform adapter.
 
-Runtime reads and recovery operations remain callback-driven and are never
-awaited by the monitor. Each operation has a bounded logical deadline and a
-session-qualified token. A missing callback therefore cannot stop path,
-heartbeat, notification, or recovery deadlines, and a late or duplicate
-callback cannot mutate a replacement tunnel session. The monitor also rejects
-out-of-order path route generations before they reach the coordinator.
+A confirmed episode stays latched through transient path loss and missing stats.
+A materially new path re-arms binding refresh and backend restart while keeping
+outward health at `notPassingTraffic`, so the notification is neither withdrawn
+nor reposted. Two healthy polls clear the latch. On an unchanged path there is
+no periodic re-probe; an idle dead tunnel stays parked.
 
-Snapshot writes and notification operations run through a serialized artifact
-reconciler. It tracks desired state separately from completed state, retries
-failed writes and clears (including the startup clear), and checks both pending
-and delivered notifications before retrying an ambiguous add. The app-group
-store adapter enqueues writes and clears on one private FIFO lane, so submitting
-an operation never blocks the monitor and a later clear cannot overtake an
-earlier write.
+## Callback and artifact ordering
 
-Every persistence or notification submission also crosses a generation-aware
-effect-submission arbiter. Admission and FIFO queue insertion are one atomic
-operation. Normal stop rejects new effects but lets already-admitted effects
-reach their platform adapters before `adapter.stop` is submitted. If the
-five-second stop deadline wins, effects that have not started submission are
-cancelled and adapter stop is queued after the bounded submission point;
-already-started effects may finish later and request a final repair toward the
-newest session's desired artifacts.
+Runtime/recovery operations are callback-driven, with logical deadlines and
+session-qualified tokens. The monitor never awaits WireGuard callbacks. Late,
+duplicate, or prior-session completions cannot mutate the current session;
+out-of-order route generations are rejected.
 
-Notification registration has a second, platform-boundary fence. Each request
-gets an epoch that is checked after asynchronous authorization and immediately
-before `UNUserNotificationCenter.add`. Withdrawal, stop, or replacement
-invalidates the old epoch, preventing delayed authorization or add callbacks
-from posting or removing a newer session's stable notification. Notification
-denial remains terminal for the session; transient failures and missing
-callbacks use bounded retry and reconciliation deadlines.
+A serialized artifact reconciler tracks desired versus completed snapshot and
+notification state. It retries failed writes/clears, including startup clear,
+and checks pending/delivered notifications before retrying an ambiguous add.
+The app-group store uses one FIFO lane so clear cannot overtake an earlier write.
 
-All elapsed deadlines use injected monotonic time. Wall-clock `Date` is limited
-to WireGuard handshake epochs and snapshot `updatedAt`; app-side freshness also
-bounds future-dated snapshots so a clock correction cannot keep them fresh
-indefinitely.
+A generation-aware effect arbiter makes admission and queue insertion atomic.
+Normal stop rejects new effects but submits admitted effects before adapter
+stop. At the five-second stop deadline, still-queued effects are cancelled and
+stop is submitted after the bounded submission point. Best-effort cleanup then
+completes without waiting for physical callbacks or claiming durable success.
+Already-started effects can finish later and repair toward current desired state.
 
-## How False Positives Are Prevented
+Notification registration has an epoch fence checked after authorization and
+immediately before `UNUserNotificationCenter.add`. Withdrawal, stop, and session
+replacement invalidate it, preventing stale callbacks from affecting the newer
+stable notification. Denial is terminal; transient failures/missing callbacks
+use bounded retry deadlines.
 
-The original detector notified on the first raw failure sample, which flagged
-weak Wi-Fi and network switches as outages. The current design adds these
-gates, in order of importance:
+Elapsed deadlines use injected monotonic time. Wall time is limited to handshake
+epochs and snapshot `updatedAt`; app freshness bounds future-dated snapshots.
 
-* **Bounded one-way windows.** The failed-traffic window starts with new TX
-  activity, never with accumulated idle time, so a single burst after a long
-  idle period cannot instantly look like a blackhole. Sub-threshold keepalive
-  noise is discarded per window and cannot accumulate.
-* **Recovery before accusation.** A binding refresh followed, only when
-  necessary, by one backend restart gives Apple, WireGuard, and the active
-  network path a chance to self-heal. A recovered tunnel produces no warning.
-* **Path awareness.** A second `NWPathMonitor` (policy-only, separate from
-  WireGuardKit's) gates confirmation. Only a continuously satisfied path can
-  advance an outage; airplane mode and no service stay silent. A captive or
-  upstream-less network can still report a satisfied path, so recovery and
-  causal-neutral copy remain necessary. Every meaningful path change (status,
-  interface types, gateways, IP/DNS capability) starts a 10-second settling
-  window; link-quality and expensive/constrained chatter are excluded from the
-  fingerprint so poor Wi-Fi cannot restart settling forever. Settling
-  suppression is capped at 30 seconds so a real outage during churn is still
-  bounded.
-* **Fresh evidence for every escalation.** Each recovery attempt resets its
-  evidence window; escalation requires new outbound traffic that gets no
-  answer. The backend restart also starts a new handshake warmup and counter
-  baseline. A tunnel that goes idle mid-recovery parks at `unknown` instead
-  of confirming.
-* **Hysteresis on both edges.** Confirmation requires the full
-  evidence-refresh-verify sequence; withdrawal requires two consecutive
-  healthy polls. A confirmed episode survives transient path loss or missing
-  stats without withdrawing and reposting, so one outage is one notification.
-* **A network change re-arms a confirmed outage.** Confirmation is not
-  terminal: a materially new path (Wi-Fi to cellular, an airplane-mode cycle,
-  a new Wi-Fi) re-arms the full recovery ladder from scratch - binding refresh
-  first, backend restart second - because the failure may have been specific
-  to the old path (stale NAT/UDP binding, black-holed socket). Throughout the
-  retry an outage latch keeps outward health pinned at `notPassingTraffic`, so
-  the edge-triggered notification is neither withdrawn nor reposted while the
-  re-armed ladder runs; the latch clears only when two consecutive healthy
-  polls prove `passingTraffic`, and a failed re-armed ladder silently
-  re-confirms. On the same unchanged network there is no periodic re-probe: an
-  idle dead tunnel stays parked by design.
+## App boundary and privacy
 
-The deliberate cost of these gates is latency: roughly 30-55 seconds to
-notify instead of seconds. That trade is intentional - a warning that fires
-during ordinary network transitions trains users to ignore it, and a user who
-disconnects because of a false alarm exposes traffic outside the VPN for no
-reason. Detection constants may be tightened only with signed-device evidence.
+Only tunnel ID, health enum, and update time reach the shared snapshot. Raw
+counters, recovery state, and path fingerprint details stay in the extension and
+are never persisted or logged. Notification/banner copy shares
+`CloudGatewayTunnelHealthNotification`.
 
-## Boundaries And Privacy
+While running, the app silently reconciles local VPN status once per fresh
+dead-tunnel snapshot update, including Settings/Control Center changes. This
+needs no network request, loading overlay, or persistent background subscription.
+The app is not required for detection or notification.
 
-* The app and UI consume only the outward health snapshot (tunnel identifier,
-  health enum, update time) from the app group store. Raw counters enter shared
-  in-process code but never leave the packet-extension process. Recovery state
-  and counters are never persisted or logged. Fingerprint details stay in the
-  iOS path adapter; only path satisfaction and an opaque route generation reach
-  the shared monitor.
-* While the app is running, a fresh dead-tunnel snapshot triggers one silent
-  local VPN-status reconciliation for that snapshot update. This lets the
-  banner reflect VPN changes made in Settings or Control Center without a
-  loading overlay, network request, persistent background subscription, or any
-  dependency on the app process for detection and notification.
-* There is no external reachability probe: probing from the tunnel would
-  expose the user's real IP and timing to the probe endpoint. Attribution
-  stays imperfect by choice.
-* Notification and banner share one copy source
-  (`CloudGatewayTunnelHealthNotification`); posting is edge-triggered on the
-  transition into `notPassingTraffic`. Registration and ambiguous-add
-  reconciliation use one stable identifier across pending and delivered
-  notifications.
-* Tunnel shutdown arms its five-second deadline on entry, synchronously closes
-  effect admission, cancels the path session, and joins any start continuation
-  still installing health monitoring. The normal path preserves admitted
-  effect order through adapter-stop submission and waits for artifact
-  reconciliation plus the WireGuard stop callback. The deadline cancels only
-  still-queued effects, submits WireGuard stop after the bounded submission
-  point, performs idempotent best-effort clear/withdraw, and completes without
-  waiting for physical callbacks or claiming durable cleanup succeeded.
+## Device validation
 
-## Remaining Device Validation
+Deterministic tests cover policies, ordering, restart races, and app consumption.
+Signed real-device checks remain necessary for platform behavior and timing:
 
-The shared state machine, adapter ordering, restart races, and app consumption
-are covered by deterministic tests. Signed real-device validation is still
-required before changing detection timing or claiming platform parity. Exercise
-healthy traffic, a full blackhole, never-handshake/runtime-loss cases, recovery
-before and after notification, airplane mode, Wi-Fi/cellular switches and path
-churn, app background/termination, a signed-out installed tunnel, each
-notification permission state, stop with outstanding callbacks, extension
-restart with late callbacks, and wall-clock correction.
+* Healthy traffic, full blackhole, never-handshake, runtime loss, and stalled reads.
+* Recovery before/after notification, idle traffic, and two-poll withdrawal.
+* Airplane mode, Wi-Fi/cellular switches, churn, and clock correction.
+* App background/termination, signed-out installs, and every permission state.
+* Stop with outstanding callbacks, extension restart, and late old-session work.
 
-For each case verify that normal settling stays silent, a continuous outage
-creates one snapshot and at most one stable notification, recovery requires two
-healthy polls, stop removes artifacts, deadline completion remains bounded and
-late work repairs toward current desired state, traffic stays fail-closed, and
-no private runtime data is logged. macOS adapter implementation and device
-validation remain separate future work.
+Check silent settling, one stable notification per outage, snapshot cleanup,
+bounded shutdown, current-session repair, fail-closed routing, and absence of
+private logs. Shared code availability does not establish macOS adapter parity.
 
-## Related Documents
-
-* Shared orchestration: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/CloudGatewayTunnelHealthCoordinator.swift`, `CloudGatewayTunnelHealthMonitor.swift`, `CloudGatewayTunnelHealthArtifactDriver.swift`, `CloudGatewayTunnelHealthEffectSubmissionArbiter.swift`, and `CloudGatewayTunnelHealthNotificationRegistrationFence.swift`.
-* Health evidence and policies: `Frontend/Apple/CloudGatewayKit/Sources/CloudGatewayKit/CloudGatewayTunnelHealth.swift`, `CloudGatewayTunnelRecoveryPolicy.swift`, `CloudGatewayTunnelPathPolicy.swift`, and `CloudGatewayTunnelHealthPersistencePolicy.swift`.
-* Extension orchestration: `Frontend/Apple/iOS/CloudGatewayTunnel/PacketTunnelProvider.swift`.
-* Fork recovery APIs: `wireguard-apple` `WireGuardAdapter.refreshNetworkBinding` / `restartBackend`.
-* Tests: `Frontend/Apple/CloudGatewayKit/Tests/CloudGatewayKitTests/CloudGatewayTunnelHealthCoordinatorTests.swift`, `CloudGatewayTunnelHealthMonitorTests.swift`, `CloudGatewayTunnelHealthEffectSubmissionArbiterTests.swift`, and `CloudGatewayTunnelHealthAdapterTests.swift`.
+Implementation lives in Kit's `CloudGatewayTunnelHealthMonitor`, coordinator,
+evaluator/recovery/path/persistence policies, artifact driver, effect arbiter,
+and notification fence. The iOS `PacketTunnelProvider` owns platform composition.
+See the [shared package](../Frontend/Apple/CloudGatewayKit/README.md) and
+[iOS architecture](apple-ios-app.md) for those boundaries.

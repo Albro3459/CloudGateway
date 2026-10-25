@@ -1,510 +1,225 @@
 # macOS development
 
-The menu app and packet-tunnel system extension target macOS 26 on Apple
-silicon. Build and test from the repository root:
+The menu app, `cloudgateway` CLI, and background controller share one signed
+executable. The root packet-tunnel system extension runs separately. The app
+targets macOS 26 on Apple silicon; shared Kit/AppCore deployment floors stay
+unchanged.
+
+* [CLI setup and reference](../Frontend/Apple/macOS/README.md#command-line-tool)
+* [Local testing install](quick-deployment.md#install-macos-app-for-local-testing)
+* [Developer ID releases](apple-macos-release.md)
+* [Known issues](apple-known-issues.md)
+
+## Validation
+
+Run from the repository root:
 
 ```sh
 ./scripts/test.sh macos
 ./scripts/test.sh macos --signed
-./scripts/test.sh ios
 ./scripts/test.sh apple
 ```
 
-The `ios` and `macos` targets select each platform. `apple` runs both, and the
-default suite runs every target. Shared package tests and repeated targets run
-once per invocation. Automated checks do not activate extensions,
-install VPN profiles, or change the running VPN. Unsigned builds prove
-compilation and packaging. Signed builds also inspect signatures, embedded
-profiles, and entitlements. Neither proves activation, authenticated IPC,
-System Keychain access, or networking on a real machine.
+The macOS gate runs host-free core/IPC and installer fixtures, Python
+verifier/release fixtures, strict Periphery scans, an unsigned arm64 build, and
+bounded packaged CLI help/version/usage checks in temporary homes. `--signed`
+also checks signatures, profiles, entitlements, and Hardened Runtime. `apple`
+runs both platforms with shared tests once.
 
-## Background controller checkpoint
+These checks do not install the app/CLI, edit real shell files, activate an
+extension, or change the VPN. Keep the installed menu and VPN running during
+validation; use a planned runtime session for replacement and live checks.
+Signed runtime acceptance for the reviewed stack is recorded
+[here](apple-macos-release.md#runtime-acceptance-2026-10-24).
 
-Current CLI implementation uses the same bundled executable and background
-controller for `auth login/status/logout`, `list`, `status`, `up`, `down`,
-`refresh`, and `doctor`. See the [macOS README](../Frontend/Apple/macOS/README.md#command-line-tool)
-for installation, options, schema version 1, exits, and command recovery.
-The user confirmed on 2026-10-24 that the signed runtime checks passed, including
-live VPN behavior, reboot, and pre-desktop SSH/Keychain access. See the
-[runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
-The checkpoint results below describe earlier validation.
+## Controller and frontends
 
-`./scripts/test.sh macos` is the entry point for all automated CLI validation.
-It runs the host-free Swift fixtures, installer temporary-filesystem cases,
-Python verifier/release fixtures, strict Periphery scans, unsigned arm64 builds,
-and current-bundle `--cli-smoke` verification. The latter makes 20 direct/private
-`--cli` and temporary-symlink invocations for help, version, and invalid usage,
-each bounded to five seconds with redirected input and a temporary home.
-Help/version never need signing identity checks, AppKit startup, Firebase,
-credentials, or a controller. Operational unsigned commands retain signing
-requirements and are tested through injected effects. These checks never
-install the CLI, edit your real startup files, or exercise a live controller/VPN.
+`CloudGatewayMacController` owns auth, account-scoped inventory, offline
+metadata, VPN commands, and observed status in the Foundation-only macOS core.
+The composition layer supplies Firebase, memory-only Firestore, preferences,
+cache, and extension IPC adapters. The menu owns AppKit presentation, dialogs,
+browser opening, activation, and optional launch at login. It does not reuse
+the full iOS view model. Snapshots exclude full configs, tokens, and secret
+references.
 
-The installer is Foundation/POSIX code in the macOS core, with an AppKit menu
-adapter. Its installed-app verification requires the captured running identity
-to match the fixed signed bundle. Directory operations reject symlinks and
-unsafe ownership/modes, and link creation never replaces a destination. A
-separate explicit zsh edit preserves startup contents/mode and refuses custom
-`ZDOTDIR`, `~/.zshenv`, linked/shared files, and existing PATH code. Always test
-SSH with `~/.local/bin/cloudgateway`, since `.zprofile` is not guaranteed there.
-Before editing, setup checks the app's PATH and reads common PATH assignments
-and zsh `path` arrays in `~/.zshrc` and `~/.zprofile`. Recognized entries produce
-a notice without changing files, including linked startup files. Inspection
-never executes shell code or establishes the PATH of another Terminal/SSH session.
+The private `--controller` entry point acquires a per-user ownership lock before
+initializing Firebase. It runs through an on-demand launchd Mach service in
+`user/<uid>`, using `/Applications/CloudGateway.app` and private files under
+`~/Library/Application Support/CloudGateway/macOS`. Its plist requires
+`LimitLoadToSessionType = Background`; `ProcessType` only controls resource limits.
+Both XPC peers require the same non-root UID, signing identity/team, protocol,
+app version/build, and captured CodeDirectory fingerprint. Never start a second
+Firebase owner as a fallback.
 
-VPN acceptance is flushed before confirmation and caller loss detaches accepted
-work. `status --operation <uuid>` retrieves the active/latest result for up to
-ten minutes; a newer result, restart, or replacement can make it unknown sooner.
-No caller retries uncertain work automatically. `up` reports successful start
-submission separately from observed connection; `down` needs confirmed stop.
-`refresh` leaves the VPN alone. Logout retains it and reports credential-cleanup
-failure. Status/disconnect remain available while signed out.
+Inventory refresh runs every minute for the first two minutes after activity,
+then every five minutes until 15 minutes idle. Menu interactions and CLI
+invocations count as activity; passive polls and a connected VPN do not.
+Menu polling pauses at 15 minutes. The controller can exit once requests,
+accepted work, extension work, and retained results allow it; the tunnel stays
+connected independently. Sleep does not catch up missed refreshes.
 
-Login polling is controller-owned and scoped to an attempt. Explicit cancellation
-or deadline cleans up that attempt; unexpected frontend loss leaves polling
-bounded by server expiry. Test terminal restoration, stdin EOF, output failure,
-and cancellation with injected terminal/clock/transport effects. Do not add
-live credentials or approval challenges to fixtures or logs.
+Menu opening shows cached state and refreshes inventory older than 30 seconds.
+CLI `list` waits for that refresh within its deadline. Explicit Refresh and
+`list --refresh` fetch immediately, joining an existing fetch. Refresh never
+reconnects the VPN. Access checks and parallel region/client reads have separate
+10-second deadlines; only server snapshots count as fresh, and listeners detach
+on completion, cancellation, or timeout.
 
-Doctor can bootstrap a passive authenticated controller before normal runtime
-initialization. A cold diagnostic read leaves auth/access/credentials unknown
-and does not restore/sign out a session, fetch inventory, or invalidate caches.
-Production checks use bounded supported signals for app/resources/platform,
-signature/link/PATH, controller/extension/preferences, existing auth evidence,
-network path/DNS/dashboard HTTPS, and optional known-region health. Probe
-failures cannot establish an unsupported permissions diagnosis. Setup failure
-precedes online failure; the overall deadline returns partial results.
+Commands reserve an operation UUID before the frontend confirms acceptance.
+Unconfirmed reservations expire after 30 seconds. Confirmed work belongs to the
+controller after caller loss; an uncertain outcome never authorizes automatic
+replay. Results remain available for ten minutes, subject to replacement or
+restart. Request UUID/digest receipts persist for ten minutes, with at most 64
+live entries. The [client-removal contract](../Frontend/Apple/macOS/README.md#controller-client-removal-contract)
+details removal's separate result and cleanup rules.
 
-The menu now delegates service ownership to `CloudGatewayMacController` in the
-macOS core. The controller has injected auth, inventory, preferences, cache,
-and config services. The app composition layer creates the real adapters, and
-the menu handles presentation, browser opening, dialogs, and extension activation.
-Its snapshots contain no full VPN configs, auth tokens, or secret references.
-
-The menu now communicates with a separate controller through authenticated XPC.
-The private `--controller` entry point starts Foundation event processing without
-creating `NSApplication`. It acquires the per-user ownership lock before the
-real adapters initialize Firebase. Both sides require the same non-root UID,
-exact app signing identity/team, protocol version, and app version/build.
-Snapshots exclude secrets. Add Client retains its account/session fencing.
-Shared Kit/AppCore, the Firebase adapter, and iOS are outside this refactor.
-
-The launch candidate uses a launchd Mach service in `user/<uid>`. Registration
-requires the canonical `/Applications/CloudGateway.app` executable, with a
-private generated plist and stable ownership lock under
-`~/Library/Application Support/CloudGateway/macOS`. Startup waits are bounded.
-The plist must set `LimitLoadToSessionType = Background` to register in this
-domain. `ProcessType = Background` only selects resource limits. On macOS 26,
-omitting the session type caused `launchctl bootstrap user/<uid>` to fail with
-error 5 before starting the controller.
-The controller owns shared inventory refresh scheduling: every 60 seconds during
-the first 2 minutes after user activity, every 5 minutes until 15 minutes, then
-no automatic refresh. Failed automatic requests back off independently with
-jitter. Menu opening and CLI invocations count as activity. Passive snapshots,
-login/result polls, and a connected VPN do not. Menu opening shows cached state
-immediately and triggers one stale refresh in the background. CLI `list` waits
-for that refresh within its existing deadline. Explicit Refresh and `list --refresh`
-fetch immediately, joining a fetch already in progress. Inventory
-refresh does not reconnect the VPN.
-
-After 15 minutes without user activity, all passive menu polling pauses,
-including while a dialog is open. This also prevents Mach-service requests from
-implicitly relaunching an idle controller. Confirmed backend work continues
-independently. The controller can exit when pending work, extension state,
-requests, and result recovery allow it. The tunnel extension keeps an active VPN running independently. The next
-menu interaction or CLI invocation starts the controller again if needed. Sleep
-never schedules inventory wakeups or catches up missed refresh intervals.
-
-The menu polls snapshots while active and recovers controller launch on user
-interaction. While open, menu items stay in place so polling cannot dismiss a
-hovered submenu. Fresh snapshots update existing items in place, including
-enabling cached rows after idle. Structural changes appear after closing or
-before the next opening. The status icon keeps updating. Controller requests still validate current
-state when an action is selected. It never starts
-another Firebase owner as a fallback. A version-independent authenticated
-lifecycle handshake reports the captured running identity and verified installed
-target. Normal commands also require the exact startup fingerprint, a digest of
-the signed CodeDirectory, so reused version numbers do not hide different code,
-resources, entitlements, or requirements. Re-signing identical code with the
-same certificate and profile keeps the same fingerprint. A valid installed
-replacement closes mutation
-admission, drains accepted work, and exits without stopping the VPN. Stale menus
-reopen the fixed verified app; clients never select the replacement executable.
-Invalid or partial installations do not authorize a handoff. Older controllers
-need a one-time restart when first installing this lifecycle.
-
-The controller stays alive while requests, core work, extension work, or a
-retained latest result are pending. Idle exit requires 15 minutes without user
-activity, and each latest result retains its ten-minute recovery window. launchd
-can start it on demand again. It does not replay
-commands across controller restarts. Recent request UUIDs and request digests
-persist for ten minutes, capped at 64 live entries without eviction. Acceptance
-confirms submission, and an unknown outcome never authorizes an automatic retry.
-Extension updates reserve a target-bound attempt before asynchronous work,
-inspect all owned tunnel activity, and wait for idle without disconnecting.
-Approval and reboot states survive relaunch and reject stale readiness results.
-While an activation is live, matching extension pings cannot reopen starts
-before its terminal OS callback, including after the activation deadline.
-After controller restart, authenticated readiness can reconcile a retained
-attempt. An explicit OS reboot requirement remains fenced until a verified
-later boot. Automatic update preparation waits for readiness work to finish,
-and a rejected busy preparation does not consume its automatic attempt.
-The user-reported signed runtime results cover the tested pre-desktop
-SSH/Keychain context. Other launch contexts still need their own validation.
-See the [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
-
-Keep the installed menu app and active VPN running during host-free tests and
-builds. Do not launch another real controller alongside the old app: both would
-own Firebase session recovery. Use a planned runtime session to replace the app
-and exercise the menu and CLI. Test retained profiles first,
-then perform any agreed clean-setup checks. A build does not authorize profile
-deletion, extension replacement, or a reboot.
-
-The background checkpoint passed `./scripts/test.sh macos` on 2026-10-21:
-139 macOS host-free tests, both strict Periphery scans, unsigned arm64
-app/extension builds, and packaging inspection. Shared Kit/AppCore and Firebase
-adapter tests passed. Main and Secure Codex accounts split implementation and
-review, with no remaining findings after fixes. Signing and live runtime checks
-were skipped as requested. The installed app and active VPN stayed untouched.
-
-The app's project defaults are `1.1.0` build `4`. The extension stays at
-`1.0.0` build `2`, matching the installed release. Release build/version
-overrides now apply only to the app. Readiness continues to compare the running
-extension with its embedded counterpart, independently of the app version.
-
-Earlier extraction validation on 2026-10-21: `./scripts/test.sh macos` passed, including 112 macOS
-core/IPC tests, both strict macOS Periphery scans, unsigned arm64 builds, and
-packaging inspection. The shared Kit/AppCore and Firebase adapter tests also
-passed. Two Sol reviews found no remaining confirmed issues. The user then ran
-`./scripts/test.sh macos --signed` successfully over SSH after unlocking the
-login Keychain in that same session. The agent independently verified the
-resulting Release bundle's packaging, signatures, entitlements, profiles, and
-Hardened Runtime.
-
-The agent's separate remote security session reported the login Keychain locked,
-and its signing logs showed `errSecInteractionNotAllowed` behind the initial
-`errSecInternalComponent` failure. Treat Keychain unlock/access as dependent on
-the execution session. Certificate discovery alone does not prove private-key
-access. This signing result does not establish Firebase Data Protection
-Keychain access in the future controller's launch context. Neither the installed
-app nor the running extension was replaced or launched by validation.
-
-## Validation checkpoint (2026-10-02)
-
-The final no-argument `./scripts/test.sh` run exited successfully with
-`All checks passed.` It covered API, web, infrastructure, Firebase emulator,
-iOS, and macOS gates, including:
-
-* 260 shared Kit/AppCore tests, 31 Firebase adapter tests, and 73 macOS
-  core/IPC tests, plus packaging-verifier tests
-* All five strict Apple Periphery scans
-* Unsigned iOS device and macOS arm64 app/extension builds
-* macOS bundle packaging inspection and test-runner routing/failure checks
-
-An earlier run reproduced macOS dead-code findings from a Periphery cache
-containing both iOS and macOS indexes. Periphery derives its cache identity from
-the project basename and scheme set, without the project's full path; see its
-[cache implementation](https://github.com/peripheryapp/periphery/blob/3.7.4/Sources/XcodeSupport/Xcodebuild.swift).
-The macOS scan now uses both `CloudGateway` and `CloudGatewayTunnel` schemes,
-keeping its cache separate from iOS. A regression check protects that distinction.
-
-The follow-up access/session guards and extension-version check passed
-`./scripts/test.sh apple`, including 90 macOS tests, all five strict Apple
-Periphery scans, both unsigned builds, and macOS packaging verification.
-
-Signed macOS builds were initially blocked by missing matching development
-profiles and a registered development Mac. After signing setup,
-`./scripts/test.sh macos --signed` passed the Release build and inspection of
-both targets' signatures, entitlements, profiles, and Hardened Runtime.
-The verifier explicitly requests XML entitlements from `codesign`, whose
-default readable output cannot be parsed as a plist.
-Activation, real System Keychain/XPC behavior, native browser session
-persistence, and live VPN/network checks were pending at this checkpoint. These
-automated runs did not activate the extension, install a live VPN profile, or
-change the running VPN. Later manual acceptance is recorded above.
-
-The implementation received at most two review passes per chunk and an
-integrated auth/menu review. Those local commits were stable WIP checkpoints
-while signed runtime acceptance was pending.
-
-The eight follow-up review fixes passed the full no-target `./scripts/test.sh`
-gate, including API, web, infrastructure, Firebase emulator, both Apple builds,
-all five scans, and 100 macOS core/IPC tests. WireGuard startup and six settings
-regressions run through the shared Apple gate. Two review loops completed with
-no remaining confirmed issues. Signed runtime checks were pending at that
-checkpoint.
+A five-second installed-bundle check detects verified replacements, closes new
+mutation admission, drains accepted work, and exits without stopping the VPN.
+Stale menus reopen the verified fixed app. Invalid/partial installations cannot
+authorize handoff. Status and signed-out local disconnect remain available while
+draining. Older controllers need a one-time restart on their first lifecycle
+migration. Managed CLI update has its own durable operation recovery; see
+[CLI updates](../Frontend/Apple/macOS/README.md#update-from-the-cli-or-ssh).
 
 ## Signing and installation
 
-Both targets use the same development team. Register these identifiers and
-include the macOS App Group in both provisioning profiles:
+Both targets use the same team and macOS App Group:
 
-| Purpose | Identifier |
+| Resource | Identifier |
 |---|---|
-| Menu app | `com.gocloudlaunch.gateway.macos` |
+| App | `com.gocloudlaunch.gateway.macos` |
 | Packet tunnel | `com.gocloudlaunch.gateway.tunnel.macos` |
-| App Group | `group.com.gocloudlaunch.gateway.macos` |
-| Mach service | `group.com.gocloudlaunch.gateway.macos.tunnel.<extension-build>` |
+| App group | `group.com.gocloudlaunch.gateway.macos` |
+| Extension Mach service | `group.com.gocloudlaunch.gateway.macos.tunnel.<build>` |
 
-Development profiles authorize `packet-tunnel-provider`. Developer ID profiles
+Development profiles authorize `packet-tunnel-provider`; Developer ID profiles
 authorize `packet-tunnel-provider-systemextension`. The app also needs System
-Extension installation and Firebase Keychain Sharing. The extension uses App
-Sandbox and network access. It has no Firebase configuration or session access
-group. See [Apple packaging guidance](https://developer.apple.com/forums/thread/800887)
-and [TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment).
+Extension installation and Firebase Keychain Sharing. The extension needs App
+Sandbox and network access, with no Firebase config/session access group.
+Register the development Mac and install matching profiles before signed builds;
+a certificate alone is insufficient. See [TN3134](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment).
 
-Run the signed app from `/Applications/CloudGateway.app`. Keep SIP enabled.
-For a build, signing check, and install without the full test suite, use the
-[local install command](../Frontend/Apple/macOS/README.md#implementation-and-validation).
-Choose Setup VPN explicitly and handle macOS approval in System Settings.
-The app reports pending approval, failure, and a required reboot. A preferences
-save is not evidence that the provider started.
-When activation requires a restart, Refresh and repeat activation cannot clear
-the warning during the current app session.
+Install the signed app at `/Applications/CloudGateway.app`, keep SIP enabled,
+and complete Setup VPN and Apple approvals in the GUI. See the
+[local install command](quick-deployment.md#install-macos-app-for-local-testing).
+Keep development and Developer ID installations separate to avoid Keychain
+identity mismatches. Bump the synchronized app/extension build for every new
+installation or release preparation, including signing/profile changes and
+app-only releases.
+The [release guide](apple-macos-release.md#version-and-artifact-policy) owns the
+version and distributed-artifact policy.
 
-Readiness compares the running extension's build and marketing versions,
-returned over authenticated XPC, with the copy embedded in the app. A mismatch
-or an older reply without version metadata shows Update VPN Extension and
-disables new connections. Choosing that action submits the activation request;
-opening or refreshing the menu only checks readiness. A missing or invalid
-embedded extension requires reinstalling the app. Existing VPNs are retained
-until an explicit command or macOS replacement changes them.
+Readiness requires an authenticated ping matching the embedded extension's
+versions and signed identity. OS activation state or saved preferences alone do
+not prove readiness. A mismatch blocks new connections while preserving status
+and disconnect. `cloudgateway update` refuses changed extension code at reused
+versions before stopping a VPN; doctor reports `extension_replacement_blocked`.
+Use a higher build. The menu's explicit update action can replace a same-version
+artifact only in System Extension developer mode.
 
-Increment the extension's project build number whenever its implementation,
-linked code, entitlements, or signing requirements change. App-only releases can
-reuse the exact extension artifact. Readiness also compares the CodeDirectory
-digest, so changed code with identical versions never becomes ready.
-`cloudgateway update` refuses that case before stopping the VPN, and doctor
-reports `extension_replacement_blocked`. That refusal also applies in System
-Extension developer mode, where macOS could replace the copy. Bump the build or
-use the menu's **Update VPN Extension** there.
-macOS skips the replacement callback when both extension versions match outside
-System Extension developer mode, even if the signed artifact differs. An
-activation log containing `alreadyActive` and `existing entry of same version`,
-paired with a doctor identity mismatch, requires a higher extension build and a
-rebuilt signed app. Repeating activation or reinstalling the same app cannot
-replace that same-version extension. See Apple's
-[replacement callback documentation](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
+Activation waits for all owned tunnels to be idle. Pending approval and reboot
+requirements survive relaunch; a confirmed reboot requirement remains fenced
+until a later boot. Late callbacks cannot reopen old attempts. Authenticated
+readiness can reconcile an interrupted attempt unless macOS required a reboot.
+An automatic attempt never disconnects a tunnel.
 
-The extension declares a build-specific `NEMachServiceName`. Both controller
-clients derive that endpoint from the bundled extension build. The listener
-checks that its declared name matches its captured signed build. Changing the
-name works around the
-[extension replacement endpoint issue](apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197).
-Packaging checks reject a fixed name or a suffix for another build.
-If the new endpoint is unreachable, the controller queries macOS extension
-properties to distinguish an installed extension needing an update from first
-setup or pending approval. Only the authenticated ping can establish readiness.
+The extension belongs under `Contents/Library/SystemExtensions/` and must embed
+or statically link its dependencies. It cannot rely on the app's Frameworks or
+build directories. Its Info.plist needs `NSSystemExtensionUsageDescription`,
+the packet provider, and a build-specific `NEMachServiceName`. Startup calls
+`NEProvider.startSystemExtensionMode()` before the extra XPC listener.
+See the [endpoint replacement issue](apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197).
+Both Apple projects build the checked-in `wireguard-apple` submodule.
 
-The extension belongs at
-`Contents/Library/SystemExtensions/com.gocloudlaunch.gateway.tunnel.macos.systemextension`.
-Its `NetworkExtension` dictionary declares the packet provider and exact Mach
-service name. It starts through `NEProvider.startSystemExtensionMode()`.
-The extension's Info.plist also includes a nonempty
-`NSSystemExtensionUsageDescription` explaining the VPN's purpose. macOS checks
-this during activation category validation, before approval. Omitting it caused
-error 9 on the first live setup attempt. Both packaging verification modes now
-reject a missing or invalid description.
-Package dependencies must be statically linked or embedded inside the extension.
-The installed system extension cannot depend on the original build directory or
-the containing app's Frameworks directory.
+## Auth and inventory
 
-Both Apple projects use the checked-in `Frontend/Apple/wireguard-apple`
-submodule for Swift sources and the Go bridge. Initialize that submodule when
-checking out the repository. Local fork revisions are recorded by the containing
-repository. The build does not fetch a separate remote WireGuard package.
+The controller uses the native Firebase config bundled with the app. Browser
+approval follows the [device-auth flow](device-auth.md): validate the full HTTPS
+approval URL, preserve leading zeros in the code, keep secrets/tokens in memory,
+and honor polling interval, lifetime, and `Retry-After`.
 
-Before runtime checks, inspect the built products with the validation script.
-Confirm the bundle IDs, team, development entitlement value, App Group, extension
-sandbox/network entitlements, profiles, arm64 executable, and framework runpaths.
-Move the signed app out of its build directory before checking activation.
+Firebase persists its session in the user's Keychain. Cancelled exchanges are
+fenced; an unsettled-exchange marker forces cleanup after relaunch. Failed
+cleanup hides the session until sign-out succeeds. Product access precedes
+inventory. Sign-out remains available during failed restoration and retains the
+VPN, profiles, committed secrets, and account caches.
 
-If automatic provisioning reports no registered devices or matching Mac App
-Development profiles, register the development Mac with the team and generate
-profiles for both IDs with their required capabilities and App Group membership.
-The Apple Development certificate alone does not supply those profiles. Retry
-the signed build before treating the app as ready for activation.
+Offline inventory and last selection are metadata-only and scoped to Firebase
+UID and authorization role. Known denial blocks offline fallback. An admin-to-user
+change clears admin inventory before fetching; failed invalidation signs out.
+Role-less caches require an online refresh. Temporary token-verification outages
+retain the session/cache without authorizing fresh inventory. Successful refresh
+prunes removed clients and stale hashes.
 
-### Known issue: extension replacement loses its Mach endpoint (FB17032197)
+Add Client preparation has a 20-second total budget with four concurrent
+capacity reads; unresolved capacity stays unknown. Closing its frontend cancels
+preparation without cancelling confirmed VPN work. Creation requires fresh access
+and known capacity. Creation does not install
+or connect; a failed refresh after success asks the user to refresh before retrying.
+Removal requires fresh authorization and an inactive target, sends DELETE once,
+and reports cloud success separately from local cleanup/refresh warnings.
+Active or unobservable targets are retained. Another active client stays connected.
 
-The permanent [Apple known-issues record](apple-known-issues.md#extension-replacement-loses-its-mach-endpoint-fb17032197)
-contains the diagnostic timeline, Apple references, build-specific endpoint
-workaround, recovery steps, and validation status.
-
-## Firebase and browser sign-in
-
-The native Firebase app is registered in `cloud-launch-gateway` with bundle ID
-`com.gocloudlaunch.gateway.macos`. Its `GoogleService-Info.plist` lives in
-`Frontend/Apple/macOS/CloudGateway/` and belongs to the menu app only. The app
-checks the configuration before starting Firebase. Keep the existing SDK pin
-and the web API key's restrictions. No dashboard Referer is sent by the app.
-See [Firebase Apple setup](https://firebase.google.com/docs/ios/setup).
-
-The browser approves the deployed device-auth request. The menu displays its
-six-digit code, including leading zeros, with Open Browser and Cancel actions.
-The app validates the complete approval URL against the configured HTTPS
-dashboard origin. Device secrets and custom tokens stay in memory. Polling
-honors the server interval, fixed lifetime, and `Retry-After`.
-
-Firebase persists the accepted native session in the user's Keychain. A canceled
-SDK exchange is fenced and cleaned up even if its completion arrives after
-sign-out. A metadata-only unsettled-exchange marker causes local cleanup on
-relaunch after an interrupted exchange. Failed cleanup keeps the session hidden
-until local sign-out succeeds. Product-access checks precede menu inventory.
-Sign Out remains available for a retained session while restoration is pending
-or has failed, so the user can clear it and sign in to another account.
-
-Firestore uses memory-only SDK caching and explicit server reads. The app keeps
-a separate metadata-only installed cache and last selection per Firebase UID.
-Known access denial prevents offline fallback. Cache authorization records the
-role that permitted its inventory. A confirmed admin-to-user change clears the
-admin cache before fetching inventory. If invalidation cannot persist, local
-sign-out prevents restoring stale access after relaunch. An online refresh
-rebuilds access under the current role. Caches without a recorded
-role require an online refresh. Successful refresh prunes
-removed clients and outdated config hashes. No cache file contains a full
-config, private key, Firebase session, or pending device secret.
-
-The signed-in menu offers Add Client. It loads enabled regions and current
-capacity when selected, then creates the named client through the regional API.
-Creation does not install or connect the new profile. A successful API response
-followed by a failed inventory refresh tells the user to refresh before trying
-again, preventing accidental duplicate clients.
-
-Remove Client appears directly below Add Client. Its modal groups configs by
-region and submits the selected canonical client identifier through the existing
-owner-controller removal command. The user must disconnect that config and wait
-for it to stop first. All active and transitional statuses block Delete. Fresh
-profile observations determine inactivity, even when a cached client row has no
-usable config or matching secret reference. Other active configs stay connected.
-Region capacity, connect eligibility, and last-used selection do not determine
-whether a client can be selected for deletion.
-
-The dialog updates as controller snapshots change and closes when its account
-or controller is no longer current. Deletion uses one operation ID through
-confirmation and terminal outcome lookup. Lost confirmation never triggers a
-second delete. Typed failure messages distinguish an active config, lost access,
-and unavailable network. A completed cloud deletion can report incomplete local
-cleanup or a failed inventory refresh. Refresh the client list before retrying
-an uncertain result. No config bytes, private keys, or tokens enter the dialog.
-
-Removed client history is excluded from the live inventory cap. Temporary
-Firebase token-verification service failures return a retryable error, preserving
-the native session and cached metadata without authorizing fresh online inventory.
-Invalid, revoked, disabled, or deleted identities still fail as access denial.
-
-The top menu row is a native checkmarked VPN toggle. VPN connected disconnects,
-and VPN off reconnects only the current account's last-used usable client.
-Connecting and disconnecting disable the row. Without a usable last-used client,
-VPN off is disabled, and the region/client submenus select a connection.
-The title and checkmark follow observed Apple VPN status. A pending inventory
-refresh or command does not replace VPN off with Working. Cloud transport
-failures use cached inventory without labeling the internet connection offline.
-The Refresh row shows Refreshing clients while inventory is loading.
-Disconnecting retains profiles, secrets, and cloud clients.
-An inventory transport failure does not leave Add Client disabled after the
-refresh ends. The dialog can retry region/capacity requests, and submission
-still checks account access before creating a cloud client. Successful creation
-and inventory reload return presentation to the fresh cloud inventory.
-
-Inventory refresh leaves authorized connections, cached profile restoration,
-and local disconnect available. A connect command cancels the competing refresh;
-its late result cannot replace command state or clear a newer refresh. Restoring
-a missing profile requires this account's authorized metadata and its available
-committed system secret. Previously fetched in-memory configs remain installable.
-A missing or unreadable retained secret can trigger one reinstall from an
-authorized in-memory cloud config during profile restoration or connection.
-Keychain authorization failures do not relax the ACL or delete old secrets.
-Replacement installation finishes before stopping another active VPN; if
-recovery cannot proceed, the current VPN remains connected.
-Cloud access checks have a 10-second deadline, including token retrieval. Region
-and client queries run in parallel with separate 10-second deadlines and removable
-listeners. Only server snapshots count as fresh inventory; completion, timeout,
-and cancellation all detach the listener. Menu openings reuse inventory for
-30 seconds; explicit Refresh always attempts a new read when idle.
-Account switching keeps commands blocked until prior cancellation and required
-profile/secret recovery finish. Failed VPN preferences reads retain the last
-observed status and show the existing error, which only a successful preferences
-read clears. No additional visible status state is introduced.
+Connecting cancels a competing refresh and ignores its late result. Cached
+metadata may restore a missing profile using its committed system secret.
+A missing/unreadable secret permits one reinstall from an authorized in-memory
+cloud config, preparing the replacement before stopping another VPN. Account
+switching waits for cancellation and required installation cleanup. Failed
+preferences reads retain the last observed status until a successful read.
 
 ## Secret storage and IPC
 
-The extension stores configs in the file-based System Keychain. The user app's
-Data Protection Keychain and App Group container are not shared with a root
-system extension. Both XPC peers require the other target's signed identity.
-The app connects to the privileged Mach service. The listener derives the
-macOS user from the connection's operating-system identity.
+The root extension stores configs in the file-based System Keychain. The user's
+Data Protection Keychain and App Group files are not shared with it. Authenticated
+XPC verifies the exact peer target; the extension derives the user from OS
+connection identity. No method returns a full config to the menu.
 
-Installation creates a provisional opaque reference. Save and reload the VPN
-profile, then commit the reference. Rollback is allowed only for provisional
-references when preference inspection proves no profile uses them. A failed
-commit, ambiguous preferences result, or metadata persistence failure retains
-the secret for recovery. Replacing a profile retains its prior committed secret.
-Sign-out, quit, and XPC disconnection never delete committed secrets.
-The encoded secret record is size-checked before add/update with the same bound
-used for reads, so an accepted write cannot create an oversized unreadable item.
+Installation creates a provisional opaque reference, saves/reloads the profile,
+then commits the reference. Rollback requires proof that no profile uses it.
+Ambiguous preferences, failed commit, or failed metadata persistence retain the
+secret for recovery. Replacement retains prior committed secrets; sign-out,
+quit, and IPC loss never delete them. Encoded writes use the same size bound as
+reads so accepted records remain readable.
 
-A signed app obtains a short-lived, single-use start grant bound to its macOS
-user, config, and opaque reference. The provider consumes that grant before
-reading the secret. The grant remains in memory and is passed as a start option.
-It is never saved in preferences. An asserted owner ID in a profile is not an
-authorization source. Start VPNs through the menu app. Starts from System
-Settings without a grant fail closed. System Settings can still stop a retained
-VPN and display its status.
+Start requires a short-lived, single-use in-memory grant bound to user, config,
+and reference. The provider consumes it before reading the secret. Profile
+owner fields do not authorize access. System Settings can stop and display a
+VPN but cannot start it without the controller's grant.
 
-The provider reports startup failure if WireGuard cannot bring its device up or
-network settings miss their completion deadline. An unconfirmed settings call
-fences that adapter, including late callbacks and restart paths. A new provider
-instance is needed to retry after that timeout. Backend shutdown must complete
-before NetworkExtension receives stop completion. A stop deadline alone does
-not confirm disconnection or permit a replacement to start.
-
-Use an isolated fixture to check persistence across app relaunch and extension
-replacement. Verify unsigned/wrong-target callers and another macOS user cannot
-read, commit, roll back, or start with the first user's reference. No XPC method
-returns a full config to the menu app.
+Startup fails if WireGuard or network settings fail. An unconfirmed settings
+call fences the adapter, including late callbacks, until a new provider instance.
+Backend shutdown must finish before stop completion; a deadline alone cannot
+permit a replacement tunnel. macOS does not enable traffic health monitoring,
+automatic outage recovery, or notifications.
 
 ## Runtime checklist
 
-The user confirmed this checklist passed for the reviewed stack on 2026-10-24.
-See the [runtime acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24).
-Keep the checklist for future releases and runtime changes.
+Record build, macOS version, architecture, and sanitized pass/fail outcomes with
+an isolated account/config. Never record keys, tokens, configs, approval codes,
+addresses, traffic, DNS queries, or connection history.
 
-Record build version, macOS version, architecture, and pass/fail outcomes.
-Use an isolated test config and account. Do not record its keys, config, tokens,
-addresses, approval code, traffic, DNS queries, or connection history.
+1. Install from a browser-downloaded notarized DMG at `/Applications`; check
+   Gatekeeper, approval/denial, replacement, and reboot with SIP enabled.
+   Repeat with the build directory unavailable.
+2. Connect, verify Apple's status and controlled TCP/IP, DNS, and UDP connectivity,
+   then repeat start/stop, sleep/wake, and network changes. A stop timeout blocks
+   replacement. Check wrong-target/unsigned and other-user IPC rejection.
+3. Quit/relaunch and sign out while connected. The VPN stays on; signed-out
+   status/disconnect work and inventory stays hidden. Check macOS status changes
+   and Launch at Login without an automatic connection.
+4. Exercise browser approval, cancellation, expiry, denial, token exchange,
+   restoration, and cleanup. Verify offline inventory belongs only to the
+   authorized account and role; known access denial cannot reveal cached clients.
+5. Install the CLI while signed out. Check repeated installation, conflicts,
+   PATH offers, JSON/exits, and explicit-path noninteractive SSH. Existing PATH
+   entries must not cause startup-file changes. App replacement preserves the link.
+6. Verify refresh leaves VPN state alone; logout retains it; doctor changes no
+   auth/inventory/VPN state. Recover accepted commands by UUID after caller loss
+   without replay. Restart/replacement may make ordinary results unknown.
+7. With another access path available, check reboot before desktop login,
+   pre-desktop SSH/Keychain access, final SSH disconnect, lock/logout, unavailable
+   credentials, concurrent menu/SSH startup, and active-VPN app replacement.
 
-1. Check activation from `/Applications`, pending/denied approval, retry,
-   replacement, and any reboot result. Confirm the installed version after a
-   rebuild. Repeat with the original build directory unavailable.
-2. Explicitly connect the fixture. Verify provider startup and Apple's status,
-   then TCP/IP, DNS, and UDP connectivity through a controlled destination.
-3. Repeat connect/stop in the same extension process. Check sleep/wake and
-   network changes. A stop timeout must prevent the next tunnel from starting.
-4. Quit and relaunch the menu app while connected. The VPN must remain running.
-   Sign-out must retain the VPN while hiding inventory. Local status and
-   disconnect remain available, including through the CLI.
-5. Verify offline connection only for the current account's previously
-   authorized installed cache. A permission denial must clear presentation
-   rather than reveal cached clients. Another account must not inherit it.
-6. Check browser approval, native custom-token exchange, session restoration,
-   cancellation, expiry, denial, consumed requests, and local sign-out.
-7. Change VPN status through macOS controls and reopen the menu. Check optional
-   Launch at Login, including required approval. Launching never connects.
-8. From a downloaded notarized/stapled DMG installation, install the CLI while
-   signed out. Check repeat installation, conflicts, the separate PATH offer,
-   explicit-path noninteractive SSH, and link behavior after app replacement.
-9. Check Terminal/local agent, desktop plus SSH, pre-desktop reboot, final SSH
-   disconnect, lock/logout, and unavailable credentials in a planned session
-   with another access path. Recover an accepted operation by UUID without
-   replaying it. Confirm refresh does not reconnect, logout retains the VPN,
-   signed-out disconnect works, and doctor changes no auth/VPN state.
-
-Only sanitized activation/setup errors are suitable diagnostics. Discard raw
-WireGuard log payloads. OS crashes should be reported with sanitized context.
-Do not add traffic probes, runtime-counter polling, or automatic recovery.
-
-Use [macOS release deployment](apple-macos-release.md) to archive, export,
-notarize, package a signed DMG, and publish it to GitHub Releases. Clean release
-installation and VPN runtime checks remain manual requirements for future
-releases. The reviewed stack's runtime acceptance is complete.
+The [2026-10-24 acceptance record](apple-macos-release.md#runtime-acceptance-2026-10-24)
+covers the reviewed stack. Repeat relevant checks for later runtime changes and
+releases. Builds alone do not establish activation, IPC, Keychain, or networking.

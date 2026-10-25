@@ -3,10 +3,11 @@
 Native menu bar app and packet-tunnel system extension. See the
 [development runbook](../../../docs/apple-macos-development.md) for controller
 architecture, signing, installation, storage boundaries, and runtime checks.
+The [Apple docs index](../README.md) links the platform and shared guides.
 
 Capture a clean menu image with `swift scripts/macos-menu-screenshot.swift`
 from the repository root. See the
-[screenshot instructions](../../../docs/apple-macos-screenshots.md) for setup.
+[screenshot instructions](../../../docs/apple-screenshots.md#macos-menu) for setup.
 
 The initial app targets macOS 26 on Apple silicon. Shared Kit/AppCore floors
 stay unchanged. It uses `NSStatusItem` and `NSMenu` as an `LSUIElement` agent,
@@ -61,24 +62,9 @@ the same controller. The user confirmed signed runtime acceptance, including
 pre-desktop SSH/Keychain access, passed on 2026-10-24. See the
 [acceptance record](../../../docs/apple-macos-release.md#runtime-acceptance-2026-10-24).
 
-Controller startup requires `/Applications/CloudGateway.app`. The menu registers
-an on-demand launchd job in `user/<uid>`, with its private plist and ownership
-locks under `~/Library/Application Support/CloudGateway/macOS`. Development and
-mounted DMG copies cannot register themselves under the production service name.
-The job sets `LimitLoadToSessionType = Background` for the user domain;
-`ProcessType = Background` controls resource limits and does not select the session.
-The controller refreshes shared inventory every minute for 2 minutes after user
-activity, then every 5 minutes until 15 minutes of inactivity. It becomes eligible
-to exit after 15 minutes, once pending work, extension activation/approval, active
-requests, and retained results allow it. The latest command result keeps its
-ten-minute recovery window. Passive menu polls and a connected VPN do not reset
-user activity. Menu polling pauses at the same idle limit. Reopening the menu
-starts the controller if needed and refreshes stale inventory in the background,
-without replaying a VPN command. CLI `list` waits for stale inventory within its
-caller deadline. Explicit Refresh fetches immediately through the same controller.
-An app/build mismatch requires closing
-the menu, allowing pending work and the idle grace period to finish, then
-reopening the installed app. Never run the old in-process owner alongside it.
+Controller startup requires `/Applications/CloudGateway.app`. See the
+[controller runbook](../../../docs/apple-macos-development.md#controller-and-frontends)
+for launchd registration, inventory scheduling, idle exit, and update handoff.
 
 The tunnel links Kit, the existing WireGuard fork/Go bridge, and necessary Apple
 frameworks. It has no AppCore, Firebase, Google Sign-In, AppKit, SwiftUI, UIKit,
@@ -521,138 +507,25 @@ Old records without update work retain their existing shape.
 
 ## Implementation And Validation
 
-The menu, browser auth, account-scoped inventory, packet provider, and
-authenticated IPC are implemented. Automated validation covers host-free
-workflows, race handling, dead code, compilation, and bundle packaging.
-The new background controller still needs signed runtime checks for activation,
-live Keychain/XPC access, VPN networking, and pre-desktop SSH use.
+Run `./scripts/test.sh macos` for host-free tests, strict Periphery scans,
+unsigned arm64 builds, packaging checks, and static CLI checks in temporary homes.
+Add `--signed` for signing/profile/entitlement inspection; use `apple` for both
+platforms with shared tests once. Automated checks leave the installed app,
+shell files, extension, and VPN untouched.
 
-Both Apple projects build the existing `../wireguard-apple` submodule. Its
-startup checks fail when the backend cannot start or network settings remain
-unconfirmed. A settings timeout fences that adapter against another startup.
-Provider stop completion waits for actual backend shutdown, including after
-the stop deadline. The app reports a stop timeout instead of starting a replacement.
+For a signed build and local install without the test suite, use
+[Quick Deployment](../../../docs/quick-deployment.md#install-macos-app-for-local-testing).
+It bumps the synchronized app/extension build, verifies the bundle, and replaces
+`/Applications/CloudGateway.app`. Follow it with `cloudgateway update`; use
+`--allow-disconnect` when explicitly allowing stop/update/reconnect. Initial
+setup and Apple approvals still require the GUI.
 
-Run `./scripts/test.sh macos` for host-free tests, Periphery, unsigned arm64 builds,
-and packaging checks, including bounded packaged direct/symlink static CLI
-checks in temporary homes. Installer tests use temporary filesystems and do not
-edit your shell or installed app. Use `./scripts/test.sh macos --signed` for signed builds and
-profile/entitlement inspection. Use `ios` for the iOS regression gate and
-`apple` for both platforms. The default suite runs every target. Shared package
-tests run once per invocation. Automated checks do not activate extensions
-or change the running VPN.
+See the [development runbook](../../../docs/apple-macos-development.md) for
+controller handoff, signing, storage, and the runtime checklist. The reviewed
+stack passed user-reported signed runtime checks on 2026-10-24, including
+pre-desktop SSH/Keychain access; see the
+[acceptance record](../../../docs/apple-macos-release.md#runtime-acceptance-2026-10-24).
+Future runtime changes require relevant manual checks.
 
-For a faster local install, use the command below. It builds and verifies the
-signed Release app and extension, then replaces `/Applications/CloudGateway.app`.
-It skips tests and dead-code scans and uses Apple Development signing.
-
-The app, CLI, controller, and VPN extension share one marketing version and
-integer build number. The CLI and controller use the app's bundled executable.
-Run `python3 scripts/macos-release.py --bump-build` before each new local install
-or release preparation. It increments the highest current build and synchronizes
-both targets in Debug, Release, and DeveloperID. Add `--version 1.1.1` to set a new
-marketing version, or `--build <higher-number>` to advance past an installed build.
-Build numbers never reset when the marketing version changes. The script edits
-the tracked project file without staging or committing it.
-
-The local install command below includes that bump as its first step. macOS uses
-the extension's version numbers to decide whether to offer replacement. Reusing them
-for changed code leaves macOS reporting the old copy as already active. doctor
-and `cloudgateway update` then report `extension_replacement_blocked`, and
-`update` refuses before stopping the VPN. Re-signing identical extension code
-with the same certificate and profile keeps the same identity. A different or
-renewed certificate, or a regenerated profile, changes it and needs a build
-bump. Always bump both targets together, including for app-only changes.
-
-The first installation of the synchronized lifecycle needs a one-time controller
-restart because an older controller cannot perform the new handshake. Quit the
-old menu and wait for pending work and any ten-minute result retention, or restart
-the job explicitly after accepted work finishes. Subsequent replacements are
-detected automatically, including local app rebuilds with reused version numbers.
-Extension replacement still requires the synchronized build increment described above.
-
-```sh
-(
-  set -e
-  python3 scripts/macos-release.py --bump-build
-  xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
-    -scheme CloudGateway -configuration Release \
-    -destination 'platform=macOS,arch=arm64' \
-    -derivedDataPath Frontend/Apple/macOS/.build/Xcode \
-    ARCHS=arm64 -allowProvisioningUpdates build
-  python3 scripts/verify_macos_build.py \
-    Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed --cli-smoke
-  if [ -e /Applications/CloudGateway.app ]; then
-    trash /Applications/CloudGateway.app
-    echo "Trashed previous app"
-  fi
-  ditto Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app \
-    /Applications/CloudGateway.app
-)
-```
-
-After the command succeeds, run `cloudgateway update` to reconcile the running
-VPN extension with the installed bundle. If a VPN is active and replacement is
-needed, use `cloudgateway update --allow-disconnect` to authorize stop/update/
-reconnect. Opening the menu app is optional for this request. Initial setup or
-actual Apple approval still needs the GUI. Keep the printed operation ID for
-lookup if SSH disappears.
-
-The controller checks the fixed installed bundle's signature and fingerprint
-every five seconds. A verified replacement closes admission to new mutations,
-finishes accepted work, and exits without stopping the VPN. launchd starts the
-installed controller on the next request. Stale menus reopen the verified app;
-clients never choose the replacement executable. Partial or invalid copies do
-not authorize a handoff. Recent request UUIDs and request digests survive the
-handoff for ten minutes, with a maximum of 64 live receipts. The controller first
-returns an operation ID and reserves the command. The frontend confirms receipt
-before execution can change routes. Unconfirmed reservations expire after 30
-seconds. Accepted, running, completed, failed, and unknown outcomes are separate
-from observed tunnel status. Ordinary active/latest results stay in memory,
-without a connection history. Results become unknown after controller restart,
-and uncertain ordinary commands are never replayed automatically. The managed
-CLI update has its own durable record and reconciled recovery described above.
-
-Status and idempotent local disconnect use a small authenticated compatibility
-contract while a replaced controller drains. The menu labels retained observations
-when reconnecting and disables new starts until it reaches the current controller.
-Disconnect works while signed out and does not depend on receipt capacity or disk
-writes. Add Client preparation has a 20-second aggregate budget and four concurrent
-capacity reads. Unresolved capacities remain unknown, and closing its frontend
-cancels the preparation without cancelling confirmed VPN work.
-
-A changed VPN extension blocks new connections while status and disconnect stay
-available. Its update waits until every owned tunnel is idle, including profiles
-outside the signed-in account. The menu then attempts Apple's activation flow
-once automatically; Set Up/Update remains available for an explicit retry.
-Approval and reboot requirements persist across relaunch. An interrupted
-activation becomes outcome unknown. An authenticated probe of the exact target
-can recover it without a reboot. Only an OS-confirmed reboot requirement remains
-blocked until a later boot. Readiness and activation completion share durable
-terminal receipts, so delayed callbacks cannot reopen an old update. Updates
-never disconnect a tunnel automatically.
-
-Every distributed app build must increase. Every new release preparation also
-requires a fresh extension build and a verified baseline from the latest
-distributed signed app.
-Archive/export may change signature bytes even when extension source is unchanged.
-Resuming a preparation requires the exact recorded extension artifact, and drift
-is rejected before publication. Keep development and Developer ID installations
-separate to avoid Keychain identity mismatches.
-
-
-Signed checks cover activation/replacement, root/user isolation, repeated
-sessions, sleep/wake, network changes, offline use, account switching, status
-changes through macOS controls, retained VPN after sign-out/quit, and launch
-at login. The user confirmed these checks passed for this stack. See the
-[runtime acceptance record](../../../docs/apple-macos-release.md#runtime-acceptance-2026-10-24).
-Run the containing app from `/Applications` with SIP enabled.
-
-For a new notarized Developer ID DMG, run
-`python3 scripts/macos-release.py --bump-build`, then
-`./scripts/macos-release.sh --previous-distributed-app <latest-signed-app> --publish`.
-The archive uses the same version/build for both bundles. Omit
-`--publish` to keep the release local. See
-[macOS release deployment](../../../docs/apple-macos-release.md) for signing
-setup, prepared artifacts, notarization retries, publishing existing builds,
-and installation checks.
+For notarized DMGs, version/baseline rules, resumption, and publication, use the
+[release guide](../../../docs/apple-macos-release.md).

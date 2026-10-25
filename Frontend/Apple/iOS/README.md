@@ -1,6 +1,8 @@
 # CloudGateway iOS
 
-Native iOS app project home.
+Native SwiftUI app and packet tunnel extension. See the
+[architecture guide](../../../docs/apple-ios-app.md) for storage and lifecycle
+invariants, and the [Apple docs index](../README.md) for related guides.
 
 Targets:
 
@@ -11,25 +13,16 @@ Both targets should use the app group `group.com.gocloudlaunch.gateway`.
 
 ## App Composition
 
-The app target is a thin native composition layer:
-
-* `CloudGatewayAppCore` supplies the shared service contracts, control-plane
-  client, service facade, app model, and presentation-refresh lifecycle;
-* `CloudGatewayKit` supplies VPN/config, cache, Keychain, and tunnel-health APIs;
-* `CloudGatewayFirebaseAuthAdapter` is a local Swift package that alone wraps
-  Firebase Auth behind the AppCore auth protocol;
-* the iOS target supplies Firebase Core setup, the Firestore repository, Google
-  Sign-In presentation, notification authorization, injected production
-  identifiers, SwiftUI views, and app lifecycle.
-
-`CloudGatewayIOSCompositionRoot` constructs this graph explicitly. The shared
-`CloudGatewayViewModel` owns the immediate presentation refresh and its
-cancellable five-second status/health loop; `ContentView` only starts those
-operations from its existing appearance and task lifecycle.
+`CloudGatewayIOSCompositionRoot` composes Kit VPN/storage APIs, the AppCore
+view model and control-plane client, the Firebase Auth adapter, and iOS
+Firestore, Google Sign-In, notification, and UI adapters. `ContentView` starts
+the model's immediate refresh and cancellable five-second presentation loop.
+Shared product responsibilities live in the [package README](../CloudGatewayKit/README.md).
 
 ## Firebase And Control Plane
 
-The app target uses Firebase email/password auth, reads client and role state from Firestore, fetches enabled regions from the apex API, and verifies access through the apex API endpoint:
+The app reads clients/roles from Firestore, authenticates through Firebase,
+and uses the apex API for regions and product access:
 
 ```text
 GET  https://api.gocloudlaunch.com/api/regions
@@ -37,7 +30,10 @@ POST https://api.gocloudlaunch.com/api/auth/check-access
 DELETE https://api.gocloudlaunch.com/api/account
 ```
 
-The signed-in user can browse enabled regions, see region capacity, filter owned configs by region, create a config in the selected region, delete a selected config, refresh Firestore/API state, and install/start/stop a chosen WireGuard config internally. The user explicitly selects a VPN config, and the app loads and installs it from the account's inventory.
+Signed-in users select clients from their inventory, install VPN profiles, and
+connect/disconnect in the app. They can filter by region, create/delete clients,
+and refresh state. Unknown regional capacity keeps creation disabled until a
+refresh establishes room below the limit.
 
 Regional API calls use the selected region endpoint:
 
@@ -64,24 +60,12 @@ the full peer audit log via `ShareLink`, never written to disk or logs. Treat
 that log as admin-only operational data: it can include user emails, client
 names, client IDs, public keys, and tunnel IPs.
 
-The app target directly links:
-
-* `FirebaseCore`
-* `FirebaseFirestore`
-* `GoogleSignIn`
-* `CloudGatewayAppCore`
-* `CloudGatewayKit`
-* `CloudGatewayFirebaseAuthAdapter`
-
-`CloudGatewayFirebaseAuthAdapter` links `FirebaseAuth` behind its
-`CloudGatewayAuthServicing` implementation. The app supplies the Firestore and
-Google presentation adapters; the shared control-plane client owns URLSession
-and API request behavior.
-
-Do not link Firebase, Google Sign-In, or AppCore to `CloudGatewayTunnel`. The
-packet tunnel extension links only `CloudGatewayKit`, WireGuardKit, its iOS Go
-bridge, and Apple system frameworks, and receives installed provider
-configuration from the containing app.
+`GoogleService-Info.plist` belongs under `CloudGateway/` and in the app bundle
+only. It contains Firebase app identifiers, not service account credentials.
+The tunnel extension links Kit, WireGuardKit, the iOS Go bridge, and Apple
+frameworks. Keep Firebase, Google Sign-In, and AppCore out of that target.
+Both Apple projects build the checked-in `../wireguard-apple` submodule;
+initialize it when checking out the repository.
 
 ## Tunnel Health
 
@@ -92,15 +76,80 @@ persist the app warning, and post at most one stable local notification per
 continuous outage. Detection remains active while the app is backgrounded,
 closed, or signed out. Persistence, notification registration, and stop
 ordering are generation-fenced so late work cannot overwrite a newer session.
-See [Apple tunnel health detection](../../../docs/apple-tunnel-health-notification.md).
+See [tunnel health](../../../docs/apple-tunnel-health-notification.md).
 
-`GoogleService-Info.plist` belongs under `CloudGateway/` and must be included in the app bundle only. It contains Firebase app identifiers, not service account credentials.
+## App Store Release
 
-## App Store Archive Symbols
+App Store archives require source Firestore. Its default binary distribution
+embeds frameworks whose missing dSYMs can cause App Store Connect warnings.
+The release script selects source Firestore automatically.
 
-Firestore resolves to a binary distribution by default when Xcode evaluates the Firebase Swift package. App Store Connect may reject that archive with missing dSYM warnings for `FirebaseFirestoreInternal.framework`, `absl.framework`, `grpc.framework`, `grpcpp.framework`, and `openssl_grpc.framework`.
+Run from the repository root with a clean working tree:
 
-Archive from Xcode with the source Firestore environment:
+```sh
+./scripts/ios-release.sh
+```
+
+The script increments the build number on every run. Use `--version patch`,
+`--version minor`, or `--version major` to bump the marketing version as well;
+those runs also increment the build number. The script validates the individual
+App Store Connect API key, archives with source Firestore, exports an IPA,
+uploads it with Transporter, and commits a `Deploy iOS v<version> (build <n>)`
+commit without pushing it.
+
+The configured team key path is
+`$HOME/.ssh/Apple_API_KEY/AuthKey_YDM2P5LSK8.p8`. It must have mode `600`. The
+key ID and issuer ID are identifiers, not secrets; never commit or log the `.p8`
+private key.
+
+Code signing uses your login keychain. If it is locked, the release script
+unlocks it before archiving and macOS prompts for the password. To unlock it
+beforehand, run the command without a password so macOS prompts for it:
+
+```sh
+security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
+```
+
+### Distribution signing profiles
+
+Export uses manual signing. `ios-release.sh` writes an `ExportOptions.plist`
+that pins each bundle ID to a named App Store provisioning profile:
+
+* `com.gocloudlaunch.gateway` -> `CloudGateway AppStore`
+* `com.gocloudlaunch.gateway.tunnel` -> `CloudGateway Tunnel AppStore`
+
+Both profiles must be installed in
+`~/Library/Developer/Xcode/UserData/Provisioning Profiles/` and must embed the
+team's current Apple Distribution certificate, whose private key lives in the
+login keychain. The App Store Connect API key only authorizes the upload; it
+cannot sign the binary, so a valid certificate and a profile that lists it are
+required locally.
+
+The recorded profiles/certificate expire 2027-07-19; inspect installed copies
+after renewal. Expired or mismatched profiles can fail export with:
+
+```
+error: exportArchive Provisioning profile "..." doesn't include signing certificate "Apple Distribution: ... (CRQWDQ7QQR)".
+```
+
+Recreate both profiles against the live certificate:
+
+1. In the Apple Developer portal, create two App Store Connect distribution
+   profiles, one for `com.gocloudlaunch.gateway` and one for
+   `com.gocloudlaunch.gateway.tunnel`, each selecting the current Apple
+   Distribution certificate. Name them `CloudGateway AppStore` and
+   `CloudGateway Tunnel AppStore` so they match `ExportOptions`.
+2. Download both and double-click to install; they land in the directory above,
+   keyed by UUID.
+3. Re-run `./scripts/ios-release.sh`.
+
+Use the existing valid distribution identity and regenerate the profiles
+against it. Creating another certificate does not repair a profile that omits
+the certificate used for signing.
+
+### Manual Xcode archive
+
+Use source Firestore when archiving outside the release script:
 
 1. Quit Xcode.
 2. Reopen the project from the repo root:
@@ -112,73 +161,33 @@ Archive from Xcode with the source Firestore environment:
 3. In Xcode, choose `Product > Archive`.
 4. Quit and reopen Xcode normally after archiving for faster development device builds.
 
-The source distribution compiles Firestore, abseil, gRPC, and BoringSSL into the app build instead of embedding those dependencies as separate prebuilt frameworks. The code is still present; the standalone framework folders are not.
-
-Both Apple projects build WireGuardKit and its Go bridge from the existing
-`../wireguard-apple` submodule. Initialize that submodule when checking out the
-repository. Backend startup and unconfirmed network-settings failures propagate
-as errors. An adapter with a settings timeout stays fenced until its provider
-instance is replaced.
-
-If Xcode archiving does not work, use isolated DerivedData and SwiftPM checkout directories for the other package dependencies:
+If Xcode mixes binary and source package graphs, use isolated build/checkouts:
 
 ```sh
 mkdir -p /private/tmp/CloudGatewaySourceFirestoreDerivedData /private/tmp/CloudGatewaySourceFirestorePackages
-FIREBASE_SOURCE_FIRESTORE=1 xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS -configuration Release -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
+FIREBASE_SOURCE_FIRESTORE=1 \
+CLOUDGATEWAY_SOURCE_PACKAGES_DIR=/private/tmp/CloudGatewaySourceFirestorePackages \
+  xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj \
+    -scheme CloudGateway -destination generic/platform=iOS -configuration Release \
+    -derivedDataPath /private/tmp/CloudGatewaySourceFirestoreDerivedData \
+    -clonedSourcePackagesDirPath /private/tmp/CloudGatewaySourceFirestorePackages archive
 ```
 
-After archiving, confirm the archive no longer embeds the binary Firestore dependency frameworks under `Products/Applications/CloudGateway.app/Frameworks/`.
+After archiving, `CloudGateway.app` should not contain `FirebaseFirestoreInternal`, `absl`, `grpc`, `grpcpp`, or `openssl_grpc` under `Frameworks/`.
 
-## Current Limitations
+## Validation
 
-Shared sorting, filtering, reconciliation, selection/merge, cache, VPN, and
-tunnel-health behavior are covered by `CloudGatewayKitTests`. App workflows,
-control-plane transport, service composition, view-model orchestration, and the
-presentation loop are covered by `CloudGatewayAppCoreTests` against protocol
-doubles, so no Firebase project or network is involved. Both suites run in the
-`CloudGatewayKit` package gate. The separate Firebase-auth-adapter package also
-runs native macOS mapping tests; iOS Firestore and Google presentation adapters
-are covered by compilation in the full app build.
-
-Capacity is best-effort. If a regional capacity request fails, the region
-remains visible with "Capacity unavailable," but client creation stays disabled
-until a later refresh provides a known capacity below the region limit.
-
-## No-Device Build Verification
-
-From the repo root:
+Run from the repository root:
 
 ```sh
 ./scripts/test.sh ios
 ./scripts/test.sh ios --signed
 ```
 
-The unsigned iOS target validates the release-script syntax, runs the
-CloudGatewayKit/AppCore package tests, runs the Firebase-auth-adapter package
-tests, lists the Xcode project, and performs the no-device app build. The signed
-variant replaces only the unsigned build with explicit provisioning for the app
-and tunnel extension. Use `./scripts/test.sh apple` to validate both iOS and
-macOS, with shared package tests run once.
-
-Signed builds and archives use your login keychain. If it is locked, unlock it
-first with a command that omits the password so macOS prompts for it:
-
-```sh
-security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
-```
-
-Release export signs manually against the installed `CloudGateway AppStore` and
-`CloudGateway Tunnel AppStore` profiles, which embed the team's Apple
-Distribution certificate and expire 2027-07-19. See
-[apple-ios-app.md](../../../docs/apple-ios-app.md#distribution-signing-profiles)
-for how to recreate them when they lapse.
-
-Equivalent raw commands:
-
-```sh
-swift test --package-path Frontend/Apple/CloudGatewayKit
-swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter
-xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj
-xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build
-xcodebuild -project Frontend/Apple/iOS/CloudGateway.xcodeproj -scheme CloudGateway -destination generic/platform=iOS build
-```
+The gate runs Kit/AppCore host-free tests, native Firebase-adapter tests,
+strict Periphery scans, release-script checks, and an unsigned device build.
+`--signed` adds device provisioning; `apple` runs both platforms with shared tests
+once. Shared workflows use protocol doubles without Firebase/network access;
+iOS Firestore and Google presentation adapters are compiled in the full app.
+Real-device runtime checks are listed in the
+[architecture guide](../../../docs/apple-ios-app.md#validation).
