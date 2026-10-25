@@ -118,12 +118,22 @@ Fixed aggregate routing does not require new backend metadata. If a future HTTP-
 ## Validation
 
 - [x] Run the repository Apple checks, including host-free mode lifecycle and CLI tests
-- [ ] Complete independent implementation review, with at most three review rounds
-- [ ] Update the macOS user/development docs and commit completed checkpoints locally
+- [x] Complete independent implementation review, with at most three review rounds
+- [x] Update the macOS user/development docs and commit completed checkpoints locally
 
 Run the repository's macOS target, and Apple targets if shared behavior changes. Add focused coverage for runtime transformation, legacy defaults, controller mode operations, persistence, and status/IPC compatibility as part of implementation.
 
 Manually verify IPv4 and IPv6 mesh access within/across regions, access denial across accounts, unchanged iOS peers, ordinary internet egress/DNS in each mode, local LAN overlap, and switching while active. Check restart failure, offline start, controller restart, menu/CLI agreement, frontend detach, profile refresh, and managed extension updates. Cover invalid-mode observation/stop and mixed-build status/operation lookup with unavailable mode/auth. Verify actual routes/resolver settings locally without recording traffic, DNS queries, configs, or keys. Do not treat `doctor` HTTPS success as proof of mesh routing.
+
+### Implementation results, 2026-10-25
+
+- `./scripts/test.sh ios` passed, including shared tests, all three dead-code scans, and the unsigned no-device iOS build
+- `./scripts/test.sh macos` passed after the review fixes: 831 host-free core/IPC/CLI tests, 266 shared Kit/AppCore tests, 31 Firebase adapter tests, WireGuard startup regressions, both Mac dead-code scans, unsigned arm64 app/extension build, packaging/release verifier tests, and all 96 bounded packaged CLI checks
+- Two independent implementation review rounds completed. Round 1 found signed-out mode commands returning busy and stale installed metadata after secret recovery. Both are fixed with regression coverage. Round 2 used Codex 6.1 Sol with high reasoning on the secure account and found no material issues
+- Local implementation checkpoints: `a0e1e18` for shared routing and `907add3` for the Mac app, controller, tunnel, CLI, and docs
+- `git diff --check` passed
+
+Live VPN checks listed above remain unperformed: same/cross-region IPv4/IPv6 access, account ACL enforcement, actual egress/resolver behavior, LAN overlap, and switching against an installed running extension. Automated lifecycle tests cover controller restart, offline starts, failures, secret recovery, session changes, frontend detach, and extension-update integration. No server deployment or installed VPN change was performed.
 
 ## Source anchors and review
 
