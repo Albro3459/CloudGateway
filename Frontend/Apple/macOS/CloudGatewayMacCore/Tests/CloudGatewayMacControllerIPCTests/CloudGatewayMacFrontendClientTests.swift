@@ -55,7 +55,7 @@ private final class FrontendTransport {
         case .status:
             return envelope(.init(status: .init(hasActiveTunnel: active, needsStop: active, observationAvailable: true),
                                   update: managedUpdate))
-        case .turnOff, .connect:
+        case .turnOff, .connect, .setMode:
             return envelope(.init(operation: .init(id: request.id, state: .accepted), accepted: true, operationId: request.id))
         case .confirmOperation:
             let id = try #require(request.contextId)
@@ -965,4 +965,32 @@ func frontendManagedStatusIsClearedWhenTheControllerFailsOrHandsOff(draining: Bo
     let matching = try await client.request(.operation, contextId: updateId)
     #expect(matching.operation == .init(id: updateId, state: .completed))
     #expect(matching.update?.id == updateId)
+}
+
+@MainActor
+@Test func frontendModeRequestsForwardModeAndConfirmTheReservedOperation() async throws {
+    let transport = FrontendTransport()
+    let client = transport.make()
+    try await client.poll()
+    let id = UUID()
+    let result = try await client.userRequest(.setMode, id: id, mode: .mesh)
+    #expect(result.operation?.id == id)
+    #expect(result.operation?.state == .running)
+    let request = try #require(transport.requests.first { $0.action == .setMode })
+    #expect(request.id == id)
+    #expect(request.mode == .mesh)
+    #expect(request.identifier == nil)
+    #expect(transport.requests.last?.action == .confirmOperation)
+    #expect(transport.requests.last?.contextId == id)
+    #expect(transport.requests.last?.mode == nil)
+    transport.installed = controllerBoundaryReplacement
+    transport.lifecycleState = .draining
+    try await client.poll()
+    #expect(!client.presentation.canSetMode)
+    #expect(try await client.request(.turnOff).operation?.state == .running)
+    await #expect(throws: CloudGatewayMacControllerFailure.busy) {
+        try await client.userRequest(.setMode, mode: .full)
+    }
+    #expect(transport.requests.filter { $0.action == .setMode }.count == 1)
+    client.shutdown()
 }

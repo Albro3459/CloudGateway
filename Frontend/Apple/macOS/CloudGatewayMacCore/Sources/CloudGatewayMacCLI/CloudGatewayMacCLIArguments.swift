@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import Foundation
 
 enum CloudGatewayMacCLIOption: CaseIterable {
@@ -51,7 +52,8 @@ enum CloudGatewayMacCLIOption: CaseIterable {
 
 struct CloudGatewayMacCLITopic {
     enum Kind {
-        case root, auth, authLogin, authStatus, authLogout, list, status, up, down, add, remove, update, refresh, doctor, help, version
+        case root, auth, authLogin, authStatus, authLogout, mode, modeStatus, modeFull, modeMesh
+        case list, status, up, down, add, remove, update, refresh, doctor, help, version
     }
 
     let kind: Kind
@@ -76,7 +78,7 @@ struct CloudGatewayMacCLITopic {
     var subtopics: [Self] {
         switch kind {
         case .root: Self.all.filter { $0.path.count > 0 && $0.kind != .auth }
-        case .auth: Self.all.filter { $0.path.count == 2 }
+        case .auth, .mode: Self.all.filter { $0.path.count == 2 && $0.path.first == path.first }
         default: []
         }
     }
@@ -108,6 +110,24 @@ struct CloudGatewayMacCLITopic {
               summary: "Sign out, keeping the running VPN and saved configs",
               notes: ["Logout does not disconnect. Run `cloudgateway down` to stop the VPN"],
               examples: ["cloudgateway auth logout"]),
+        .init(kind: .mode, path: ["mode"], arguments: "[status | full | mesh]", options: [],
+              summary: "Show or change this account's routing mode on this Mac",
+              notes: ["Without a subcommand, shows the selected and observed active mode",
+                      "Changing mode while connected restarts the same client. Confirmed work continues after timeout or interruption",
+                      "After acceptance, use status --operation to check an uncertain result before retrying"],
+              examples: ["cloudgateway mode", "cloudgateway mode mesh", "cloudgateway mode full"]),
+        .init(kind: .modeStatus, path: ["mode", "status"], arguments: nil, options: [],
+              summary: "Show the selected preference and observed active routing mode",
+              notes: ["A saved preference does not prove the running tunnel applied it"],
+              examples: ["cloudgateway mode status --json"]),
+        .init(kind: .modeFull, path: ["mode", "full"], arguments: nil, options: [],
+              summary: "Route internet and mesh traffic through the VPN",
+              notes: ["Saves the preference while disconnected. Restarts the same client while connected"],
+              examples: ["cloudgateway mode full"]),
+        .init(kind: .modeMesh, path: ["mode", "mesh"], arguments: nil, options: [],
+              summary: "Route only CloudGateway mesh traffic through the VPN",
+              notes: ["Saves the preference while disconnected. Restarts the same client while connected"],
+              examples: ["cloudgateway mode mesh"]),
         .init(kind: .list, path: ["list"], arguments: nil, options: [.region, .refresh, .long],
               summary: "Show authorized configs grouped by region",
               notes: ["Waits for stale controller inventory to refresh",
@@ -116,7 +136,7 @@ struct CloudGatewayMacCLITopic {
                       "Indices restart at 1 in each region. Rerun `ls` after inventory changes. Use a UUID in scripts"],
               examples: ["cloudgateway ls", "cloudgateway ls -l", "cloudgateway list --region sanjose --json"]),
         .init(kind: .status, path: ["status"], arguments: nil, options: [.operation],
-              summary: "Show the observed VPN state, active update, and latest command result",
+              summary: "Show the observed VPN state, routing mode, auth, active update, and latest command result",
               notes: ["A successful status read does not mean the VPN is connected"],
               examples: ["cloudgateway status", "cloudgateway status --operation <operation-id>"]),
         .init(kind: .up, path: ["up"], arguments: "[<client-uuid> | <region> <index>]", options: [],
@@ -187,6 +207,7 @@ struct CloudGatewayMacCLITopic {
 
 enum CloudGatewayMacCLICommand: Equatable {
     case authLogin(showsQR: Bool), authStatus, authLogout
+    case modeStatus, setMode(CloudGatewayRoutingMode)
     case list(regionId: String?, refresh: Bool, long: Bool = false)
     case status(operationId: UUID?)
     case up(selector: CloudGatewayMacCLISelector?)
@@ -201,6 +222,8 @@ enum CloudGatewayMacCLICommand: Equatable {
         case .authLogin: "auth login"
         case .authStatus: "auth status"
         case .authLogout: "auth logout"
+        case .modeStatus: "mode status"
+        case .setMode(let mode): "mode \(mode.rawValue)"
         case .list: "list"
         case .status: "status"
         case .up: "up"
@@ -307,6 +330,9 @@ enum CloudGatewayMacCLIParser {
         case .authLogin: command = .authLogin(showsQR: !flags.contains(.noQR))
         case .authStatus: command = .authStatus
         case .authLogout: command = .authLogout
+        case .mode, .modeStatus: command = .modeStatus
+        case .modeFull: command = .setMode(.full)
+        case .modeMesh: command = .setMode(.mesh)
         case .list:
             let regionId = try values[.region].map { value in
                 guard validRegion(value) else { throw failure("Invalid region '\(CloudGatewayMacCLIText.sanitize(value))'", words: named) }
@@ -347,6 +373,7 @@ enum CloudGatewayMacCLIParser {
         switch topic.kind {
         case .root: throw failure("Unknown command \(quoted(operand))", words: [])
         case .auth: throw failure("Unknown auth command \(quoted(operand))", words: topic.path)
+        case .mode: throw failure("Unknown mode \(quoted(operand)). Use status, full, or mesh", words: topic.path)
         case .up, .down, .remove:
             _ = try selector(operands, topic: topic)
         case .add:

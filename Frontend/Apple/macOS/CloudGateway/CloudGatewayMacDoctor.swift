@@ -36,6 +36,7 @@ final class CloudGatewayMacDoctor {
             .init(name: "preferences", requirement: .setup) { self.preferences() },
             .init(name: "credentials", requirement: .optional) { self.credentials() },
             .init(name: "access", requirement: .optional) { self.access() },
+            .init(name: "inventory", requirement: .optional) { self.inventory() },
             .init(name: "network_path", requirement: .online) { await Self.networkPath() },
             .init(name: "dns", requirement: .online) { await Self.dns() },
             .init(name: "https", requirement: .online) { await self.https() },
@@ -194,6 +195,14 @@ final class CloudGatewayMacDoctor {
         .init(name: "access", status: evidence?.access == .online || evidence?.access == .offline ? .pass : .unknown,
               evidence: evidence?.access.map { "Existing runtime access evidence: \($0.rawValue)" }
                 ?? "Account access is uninitialized. Doctor does not restore or verify the account")
+    }
+
+    private func inventory() -> Check {
+        guard let failure = evidence?.inventoryFailure else {
+            return .init(name: "inventory", status: .unknown, evidence: "No inventory failure retained by this controller")
+        }
+        return .init(name: "inventory", status: .warning,
+                     evidence: "Most recent inventory failure: \(failure.summary). This is retained evidence, not a current reachability check")
     }
 
     private static func networkPath() async -> Check {

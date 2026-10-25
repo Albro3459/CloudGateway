@@ -66,6 +66,17 @@ import Testing
     #expect(CloudGatewayMacControllerDiagnostics.extensionReadiness(installed: target, observed: nil) == .enabled)
 }
 
+@Test func inventoryFailureEvidenceSurvivesDiagnosticSetupMapping() throws {
+    let failure = CloudGatewayMacInventoryDiagnostic(stage: .regions, source: .deadline)
+    let evidence = CloudGatewayMacControllerDiagnostics(runtimeInitialized: true, inventoryFailure: failure)
+    #expect(evidence.withSetupState(.ready).inventoryFailure == failure)
+    let encoded = try JSONEncoder().encode(evidence)
+    #expect(try JSONDecoder().decode(CloudGatewayMacControllerDiagnostics.self, from: encoded) == evidence)
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+        try CloudGatewayMacControllerDiagnostics(runtimeInitialized: false, inventoryFailure: failure).validate()
+    }
+}
+
 @MainActor
 @Test func firstNormalCommandStartsReadinessWhileLifecycleAndDoctorStayPassive() async throws {
     var initialized = false

@@ -32,6 +32,7 @@ public final class CloudGatewayMacController {
     private var sessionEpoch: UInt64 = 0
     private var sessionFence = CloudGatewayMacSessionFence()
     private var lastSelectedIdentifier: String?
+    private var selectedMode: CloudGatewayRoutingMode?
     private var cancellationTask: Task<Void, Never>?
     private var profileEpoch: UInt64 = 0
     private var profileTask: Task<Void, Never>?
@@ -165,12 +166,12 @@ public final class CloudGatewayMacController {
                     : hasAuthorizedInventory ? (isOffline ? .cached : .current) : .unavailable,
                 installedIdentifiers: installed.map(\.identifier),
                 observedProfiles: profileObservation.profiles.map {
-                    CloudGatewayMacObservedProfile(identifier: $0.identifier, status: $0.status)
+                    CloudGatewayMacObservedProfile(identifier: $0.identifier, status: $0.status, mode: $0.mode)
                 },
                 observationIsFresh: hasObservedProfiles && profileTask == nil && profileObservation.errorMessage == nil,
                 profilesObservedAt: profilesObservedAt,
                 commandInFlight: !canIssueLocalCommand, stopAllowed: canIssueStop,
-                clients: clientMetadata
+                clients: clientMetadata, selectedMode: selectedMode
             ),
             lastSelectedIdentifier: lastSelectedIdentifier,
             browserState: visibleBrowserState, login: retainedLogin ?? browser.loginStatus, isRestoringSession: restorationTask != nil,
@@ -332,6 +333,7 @@ public final class CloudGatewayMacController {
                     accessResult = nil
                     installed = saved.configs
                     lastSelectedIdentifier = saved.selectedIdentifier
+                    selectedMode = saved.selectedMode
                     isOffline = true
                     hasAuthorizedInventory = true
                     errorMessage = nil
@@ -407,6 +409,7 @@ public final class CloudGatewayMacController {
                     try requireCurrent(epoch, token: token)
                     installed = saved?.configs ?? []
                     lastSelectedIdentifier = saved?.selectedIdentifier
+                    selectedMode = saved?.selectedMode
                     if saved == nil { hasAuthorizedInventory = false }
                     notifyChange()
                 }
@@ -439,6 +442,7 @@ public final class CloudGatewayMacController {
                 ) {
                     installed = saved.configs
                     lastSelectedIdentifier = saved.selectedIdentifier
+                    selectedMode = saved.selectedMode
                     hasAuthorizedInventory = true
                 } else {
                     installed = []
@@ -489,6 +493,7 @@ public final class CloudGatewayMacController {
             inventoryReadAt = now()
             installed = saved.configs
             lastSelectedIdentifier = saved.selectedIdentifier
+            selectedMode = saved.selectedMode
             isOffline = false
             hasAuthorizedInventory = true
             errorMessage = nil
@@ -520,6 +525,7 @@ public final class CloudGatewayMacController {
         installed = []
         hasAuthorizedInventory = false
         lastSelectedIdentifier = nil
+        selectedMode = nil
         notifyChange()
     }
 
@@ -548,6 +554,7 @@ public final class CloudGatewayMacController {
         sessionEpoch &+= 1
         sessionFence.changeAccount(to: nil)
         lastSelectedIdentifier = nil
+        selectedMode = nil
         pendingLoginInventory = nil
         cancelPendingWork()
         user = nil
@@ -674,6 +681,7 @@ public final class CloudGatewayMacController {
         try requireCurrent(epoch, token: session)
         installed = saved.configs
         lastSelectedIdentifier = saved.selectedIdentifier
+        selectedMode = saved.selectedMode
         options.removeAll { "\(session.accountId)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
         notifyChange()
     }
@@ -777,6 +785,7 @@ public final class CloudGatewayMacController {
         let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
             else if setupState != .ready { setupState.commandFailure }
             else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
+            else if selectedMode == nil { .configUnavailable }
             else if let resolved, hasConnectableConfig(identifier: resolved, accountId: user?.uid ?? "") { nil }
             else { requested == nil ? .selectionUnavailable : .configUnavailable }
         guard rejection == nil, let account = user, let identifier = resolved else {
@@ -806,43 +815,14 @@ public final class CloudGatewayMacController {
                 guard hasConnectableConfig(identifier: identifier, accountId: account.uid) else {
                     throw CloudGatewayMacConfigError.unavailable
                 }
-                let option = options.first { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
-                let saved = installed.first { $0.identifier == identifier && $0.accountId == account.uid }
-                let latestProfiles = try await profiles.installedProfiles()
-                try requireCurrent(epoch, token: token)
-                if !displacingOtherProfiles, latestProfiles.contains(where: { $0.needsConfirmedStop && $0.identifier != identifier }) {
-                    throw CloudGatewayMacConfigError.busy
-                }
-                let savedProfileExists = saved.map { config in
-                    latestProfiles.contains { $0.identifier == config.identifier && $0.reference == (try? config.reference) }
-                } ?? false
-                var config: CloudGatewayMacInstalledConfig
-                if let saved, isOffline || option == nil || option.map({ CloudGatewayConfigSelection.configMatches(saved.snapshot, option: $0) }) == true {
-                    let authorized = try await cache.load(accountId: account.uid)
-                    try requireCurrent(epoch, token: token)
-                    guard authorized.accessAllowed, authorized.configs.contains(where: {
-                        $0.identifier == saved.identifier && $0.snapshot.configHash == saved.snapshot.configHash
-                            && $0.snapshot.secretReference == saved.snapshot.secretReference
-                    }) else { throw CloudGatewayMacConfigError.unavailable }
-                    config = saved
-                } else if let option, !isOffline {
-                    config = try await configs.install(option: option, accountId: account.uid)
-                } else { throw CloudGatewayMacConfigError.unavailable }
-                try requireCurrent(epoch, token: token)
-                do {
-                    if config == saved, !savedProfileExists { try await configs.restore(config) }
-                    try requireCurrent(epoch, token: token)
-                    connectInFlight = true
-                    startRequested = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
-                } catch CloudGatewayMacConfigError.unavailable {
-                    connectInFlight = false
-                    try requireCurrent(epoch, token: token)
-                    guard config == saved, let option, !isOffline else { throw CloudGatewayMacConfigError.unavailable }
-                    config = try await configs.install(option: option, accountId: account.uid)
-                    try requireCurrent(epoch, token: token)
-                    connectInFlight = true
-                    startRequested = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
-                }
+                guard let mode = selectedMode else { throw CloudGatewayMacConfigError.invalidConfig }
+                let connection = try await connectConfiguration(
+                    identifier: identifier, accountId: account.uid, mode: mode,
+                    displacingOtherProfiles: displacingOtherProfiles, epoch: epoch, token: token,
+                    onConnect: { connectInFlight = $0 }
+                )
+                let config = connection.config
+                startRequested = connection.started
                 connectInFlight = false
                 try requireCurrent(epoch, token: token)
                 try await cache.select(identifier: config.identifier, accountId: account.uid)
@@ -851,6 +831,7 @@ public final class CloudGatewayMacController {
                 try requireCurrent(epoch, token: token)
                 installed = savedMetadata.configs
                 lastSelectedIdentifier = savedMetadata.selectedIdentifier
+                selectedMode = savedMetadata.selectedMode
                 try requireCurrent(epoch, token: token)
                 outcome = Self.startOutcome(startRequested == true, identifier: identifier, warning: nil)
                 errorMessage = nil
@@ -887,6 +868,150 @@ public final class CloudGatewayMacController {
         }
         notifyChange()
         return true
+    }
+
+    @discardableResult
+    public func setMode(
+        _ mode: CloudGatewayRoutingMode,
+        onCompletion: @escaping @MainActor (CloudGatewayMacCommandOutcome) -> Void
+    ) -> Bool {
+        let rejection: CloudGatewayMacCommandFailure? = if !canIssueLocalCommand { .busy }
+            else if user == nil || auth.currentUser?.uid != user?.uid { .signInRequired }
+            else if !canStartInventoryMutation { .busy }
+            else if !hasAuthorizedInventory { .accessDenied }
+            else { nil }
+        guard rejection == nil, let account = user, let token = sessionFence.currentToken else {
+            onCompletion(.failed(rejection ?? .signInRequired))
+            return false
+        }
+        let epoch = sessionEpoch
+        commandTask = Task { [weak self] in
+            guard let self else { onCompletion(.unknown); return }
+            var outcome = CloudGatewayMacCommandOutcome.failed(.vpnFailed)
+            var connectInFlight = false
+            var acceptedConnection: (identifier: String, started: Bool)?
+            defer {
+                if sessionEpoch == epoch {
+                    commandTask = nil
+                    resumeDeferredInventoryRefresh()
+                    refreshProfiles()
+                    notifyChange()
+                }
+                onCompletion(outcome)
+            }
+            do {
+                try requireCurrent(epoch, token: token)
+                let observed = try await profiles.installedProfiles()
+                try requireCurrent(epoch, token: token)
+                let active = observed.filter(\.needsConfirmedStop)
+                guard active.count <= 1 else { throw CloudGatewayMacConfigError.busy }
+                if let profile = active.first {
+                    guard hasConnectableConfig(identifier: profile.identifier, accountId: account.uid),
+                          profile.identifier.hasPrefix("\(account.uid)/") else {
+                        throw CloudGatewayMacConfigError.unavailable
+                    }
+                    guard setupState == .ready else {
+                        outcome = .failed(setupState.commandFailure)
+                        return
+                    }
+                    if selectedMode == mode, profile.mode == mode,
+                       profile.status == .connected || profile.status == .reasserting || profile.status == .connecting {
+                        outcome = .alreadyActive(identifier: profile.identifier, warning: nil)
+                        return
+                    }
+                } else if selectedMode == mode {
+                    outcome = .completed(warning: nil)
+                    return
+                }
+                try await cache.selectMode(mode, accountId: account.uid)
+                try requireCurrent(epoch, token: token)
+                selectedMode = mode
+                notifyChange()
+                guard let active = active.first else {
+                    errorMessage = nil
+                    outcome = .completed(warning: nil)
+                    return
+                }
+                let connection = try await connectConfiguration(
+                    identifier: active.identifier, accountId: account.uid, mode: mode,
+                    displacingOtherProfiles: false, epoch: epoch, token: token,
+                    onConnect: { connectInFlight = $0 }
+                )
+                acceptedConnection = (connection.config.identifier, connection.started)
+                connectInFlight = false
+                try requireCurrent(epoch, token: token)
+                let savedMetadata = try await cache.load(accountId: account.uid)
+                try requireCurrent(epoch, token: token)
+                installed = savedMetadata.configs
+                lastSelectedIdentifier = savedMetadata.selectedIdentifier
+                selectedMode = savedMetadata.selectedMode
+                outcome = Self.startOutcome(connection.started, identifier: connection.config.identifier, warning: nil)
+                errorMessage = nil
+            } catch {
+                if let acceptedConnection {
+                    outcome = Self.startOutcome(acceptedConnection.started, identifier: acceptedConnection.identifier, warning: .selectionNotSaved)
+                } else if isShuttingDown || connectInFlight && (Task.isCancelled || error is CancellationError
+                    || error as? CloudGatewayMacConfigError == .cancelled || sessionEpoch != epoch) {
+                    outcome = .unknown
+                } else { outcome = .failed(Self.failure(for: error)) }
+                guard sessionEpoch == epoch, !Task.isCancelled else { return }
+                if acceptedConnection != nil {
+                    errorMessage = "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again"
+                    return
+                }
+                errorMessage = "VPN mode could not be applied. Check VPN status before trying again"
+            }
+        }
+        notifyChange()
+        return true
+    }
+
+    private func connectConfiguration(
+        identifier: String, accountId: String, mode: CloudGatewayRoutingMode,
+        displacingOtherProfiles: Bool, epoch: UInt64, token: CloudGatewayMacSessionToken?,
+        onConnect: (Bool) -> Void
+    ) async throws -> (config: CloudGatewayMacInstalledConfig, started: Bool) {
+        var started = false
+        let option = options.first { "\(accountId)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
+        let saved = installed.first { $0.identifier == identifier && $0.accountId == accountId }
+        let latestProfiles = try await profiles.installedProfiles()
+        try requireCurrent(epoch, token: token)
+        if !displacingOtherProfiles, latestProfiles.contains(where: { $0.needsConfirmedStop && $0.identifier != identifier }) {
+            throw CloudGatewayMacConfigError.busy
+        }
+        let savedProfileExists = saved.map { config in
+            latestProfiles.contains { $0.identifier == config.identifier && $0.reference == (try? config.reference) }
+        } ?? false
+        var config: CloudGatewayMacInstalledConfig
+        if let saved, isOffline || option == nil || option.map({ CloudGatewayConfigSelection.configMatches(saved.snapshot, option: $0) }) == true {
+            let authorized = try await cache.load(accountId: accountId)
+            try requireCurrent(epoch, token: token)
+            guard authorized.accessAllowed, authorized.configs.contains(where: {
+                $0.identifier == saved.identifier && $0.snapshot.configHash == saved.snapshot.configHash
+                    && $0.snapshot.secretReference == saved.snapshot.secretReference
+            }) else { throw CloudGatewayMacConfigError.unavailable }
+            config = saved
+        } else if let option, !isOffline {
+            config = try await configs.install(option: option, accountId: accountId, mode: mode)
+        } else { throw CloudGatewayMacConfigError.unavailable }
+        let usesSavedConfig = config == saved
+        config.mode = mode
+        try requireCurrent(epoch, token: token)
+        do {
+            if usesSavedConfig, !savedProfileExists { try await configs.restore(config) }
+            try requireCurrent(epoch, token: token)
+            onConnect(true)
+            started = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
+        } catch CloudGatewayMacConfigError.unavailable {
+            onConnect(false)
+            try requireCurrent(epoch, token: token)
+            guard usesSavedConfig, let option, !isOffline else { throw CloudGatewayMacConfigError.unavailable }
+            config = try await configs.install(option: option, accountId: accountId, mode: mode)
+            try requireCurrent(epoch, token: token)
+            onConnect(true)
+            started = try await configs.connect(config, displacingOtherProfiles: displacingOtherProfiles)
+        }
+        return (config, started)
     }
 
     private static func startOutcome(

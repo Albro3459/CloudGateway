@@ -500,7 +500,7 @@ import Testing
     #expect(fixture.snapshot.hasActiveTunnel)
     #expect(fixture.snapshot.canTurnOff)
     #expect(!fixture.domainSnapshot.domain.observationIsFresh)
-    #expect(fixture.snapshot.statusTitle == "VPN connected (last observed)")
+    #expect(fixture.snapshot.statusTitle == "VPN connected · Full (last observed)")
 
     await fixture.profiles.failReads()
     fixture.controller.profilesDidChange()
@@ -512,7 +512,7 @@ import Testing
     #expect(fixture.snapshot.hasActiveTunnel)
     #expect(fixture.snapshot.errorMessage == "Unable to read VPN preferences. Try Refresh again")
     #expect(!fixture.domainSnapshot.domain.observationIsFresh)
-    #expect(fixture.snapshot.statusTitle == "VPN connected (last observed)")
+    #expect(fixture.snapshot.statusTitle == "VPN connected · Full (last observed)")
 }
 
 @Test @MainActor func macControllerShutdownDetachesAuthListenerAndRejectsFutureCommands() async throws {
@@ -2153,6 +2153,7 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     private(set) var completedReads = 0
     private(set) var startedIdentifiers: [String] = []
     private(set) var savedIdentifiers: [String] = []
+    private(set) var savedModes: [CloudGatewayRoutingMode] = []
     private(set) var stoppedIdentifiers: [String] = []
     private(set) var removedIdentifiers: [String] = []
 
@@ -2182,9 +2183,10 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws {
         try Task.checkCancellation()
         savedIdentifiers.append(config.identifier)
+        savedModes.append(config.mode)
         values.removeAll { $0.identifier == config.identifier }
         values.append(CloudGatewayMacInstalledProfile(
-            identifier: config.identifier, reference: try config.reference, status: .disconnected
+            identifier: config.identifier, reference: try config.reference, status: .disconnected, mode: config.mode
         ))
     }
 
@@ -2216,7 +2218,7 @@ private actor MacControllerProfiles: CloudGatewayMacProfileAdapter {
         stoppedIdentifiers.append(identifier)
         values = values.map {
             $0.identifier == identifier
-                ? CloudGatewayMacInstalledProfile(identifier: $0.identifier, reference: $0.reference, status: .disconnected)
+                ? CloudGatewayMacInstalledProfile(identifier: $0.identifier, reference: $0.reference, status: .disconnected, mode: $0.mode)
                 : $0
         }
     }
@@ -2242,6 +2244,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     private var available = true
     private(set) var installCount = 0
     private(set) var installedHashes: [String] = []
+    private(set) var authorizationCount = 0
 
     init(reference: CloudGatewayMacSecretReference) { self.reference = reference }
     func pauseAuthorization(_ gate: MacControllerGate) { authorizationGate = gate }
@@ -2275,6 +2278,7 @@ private actor MacControllerSecrets: CloudGatewayMacSecretClient {
     }
 
     func authorizeStart(reference: CloudGatewayMacSecretReference, configId: String) async throws -> String {
+        authorizationCount += 1
         await authorizationGate?.arriveAndWait()
         try Task.checkCancellation()
         if let authorizationError { throw authorizationError }
@@ -4437,4 +4441,251 @@ private final class MacControllerRemovalIPC {
     #expect(!fixture.domainSnapshot.domain.clients.contains { $0.identifier.hasPrefix("user-a/") })
     #expect(await fixture.profiles.savedIdentifiers.isEmpty)
     #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test @MainActor func macControllerDisconnectedModeIsPreferenceOnlyAndSurvivesRefresh() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .completed(warning: nil))
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.authorizationCount == 0)
+    #expect(await fixture.controller.awaitRefresh() == .refreshed)
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    let reopened = CloudGatewayMacAccountCache(directory: fixture.directory)
+    #expect(try await reopened.load(accountId: "user-a").selectedMode == .mesh)
+    outcome = nil
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.savedModes == [.mesh])
+}
+
+@Test @MainActor func macControllerModeSwitchWaitsForStopBeforeSavingOrGranting() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let stop = MacControllerGate()
+    await fixture.profiles.pauseStop(stop)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { await stop.entered }
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.authorizationCount == 0)
+    var overlap: CloudGatewayMacCommandOutcome?
+    #expect(!fixture.controller.setMode(.full) { overlap = $0 })
+    #expect(overlap == .failed(.busy))
+    await stop.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+    #expect(await fixture.profiles.savedModes == [.mesh])
+    #expect(await fixture.secrets.authorizationCount == 1)
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+    #expect(fixture.domainSnapshot.domain.observedProfiles.allSatisfy { $0.status != .connected })
+}
+
+@Test @MainActor func macControllerAlreadySelectedAndAppliedModeIsIdempotent() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.cache.selectMode(.mesh, accountId: "user-a")
+    await fixture.profiles.setProfiles([.init(identifier: fixture.config.identifier, reference: try fixture.config.reference, status: .connected, mode: .mesh)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .alreadyActive(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.authorizationCount == 0)
+}
+
+@Test @MainActor func macControllerModeStopTimeoutPreservesActiveEvidenceAndRequestedPreference() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    await fixture.profiles.setStopError(.stopTimedOut)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.stopTimedOut))
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(fixture.domainSnapshot.domain.observedProfiles.first?.mode == .full)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.authorizationCount == 0)
+}
+
+@Test @MainActor func macControllerModeStartFailureNeverFallsBackOrClaimsActiveMode() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    await fixture.profiles.setStartError(.unavailable)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(await fixture.profiles.savedModes.allSatisfy { $0 == .mesh })
+    #expect(fixture.domainSnapshot.domain.observedProfiles.allSatisfy { $0.status == .disconnected })
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+}
+
+@Test @MainActor func macControllerModeCannotRestartAnotherAccountsTunnel() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([.init(identifier: "other/region/client", reference: try fixture.config.reference, status: .connected, mode: .mesh)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .failed(.configUnavailable))
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.stoppedIdentifiers.isEmpty)
+    #expect(fixture.domainSnapshot.domain.selectedMode == .full)
+    #expect(fixture.controller.signOut())
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    outcome = nil
+    #expect(!fixture.controller.setMode(.full) { outcome = $0 })
+    #expect(outcome == .failed(.signInRequired))
+}
+
+@Test @MainActor func macControllerOfflineAndManagedReconnectUseAccountMode() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.cache.selectMode(.mesh, accountId: "user-a")
+    fixture.inventory.accessError = CloudGatewayMacInventoryError.offline
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier, displacingOtherProfiles: false) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.savedModes == [.mesh])
+    #expect(await fixture.secrets.installCount == 0)
+    #expect(try await fixture.cache.load(accountId: "user-a").selectedMode == .mesh)
+}
+
+@Test @MainActor func macControllerUnknownModeCanStopAfterSignOut() async throws {
+    let fixture = try MacControllerFixture()
+    await fixture.profiles.setProfiles([.init(identifier: fixture.config.identifier, reference: try fixture.config.reference, status: .connected, mode: nil)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { fixture.domainSnapshot.domain.observedProfiles.first?.status == .connected }
+    #expect(fixture.domainSnapshot.domain.observedProfiles.first?.mode == nil)
+    #expect(fixture.controller.signOut())
+    try await controllerWaitUntil { !fixture.controller.hasPendingWork }
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.turnOff { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .completed(warning: nil))
+    #expect(await fixture.profiles.stoppedIdentifiers == [fixture.config.identifier])
+}
+
+@Test @MainActor func macControllerModeSwitchCancelledBySignOutNeverRestarts() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let stop = MacControllerGate()
+    await fixture.profiles.pauseStop(stop)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { await stop.entered }
+    #expect(fixture.controller.signOut())
+    await stop.release()
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(fixture.domainSnapshot.domain.selectedMode == nil)
+    #expect(await fixture.profiles.startedIdentifiers.isEmpty)
+    #expect(await fixture.profiles.savedIdentifiers.isEmpty)
+    #expect(await fixture.secrets.authorizationCount == 0)
+}
+
+@Test @MainActor func macControllerSecretRecoveryPreservesMeshModeAndCanonicalHash() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    try await fixture.cache.selectMode(.mesh, accountId: "user-a")
+    await fixture.profiles.setProfiles([try fixture.profile(status: .disconnected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    await fixture.secrets.setAvailable(false)
+    await fixture.secrets.setInstallReference(try .init(value: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.connectClient(identifier: fixture.config.identifier) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.savedModes == [.mesh])
+    #expect(await fixture.secrets.installedHashes == [fixture.config.snapshot.configHash])
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(try await fixture.cache.load(accountId: "user-a").selectedMode == .mesh)
+}
+
+@Test @MainActor func macControllerModeRecoveryUsesNewSecretReferenceForNextSwitchWithoutRefresh() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let recoveredReference = try CloudGatewayMacSecretReference(value: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    await fixture.secrets.setAvailable(false)
+    await fixture.secrets.setInstallReference(recoveredReference)
+    let fetches = fixture.inventory.fetchCount
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(try await fixture.cache.load(accountId: "user-a").configs.first?.reference == recoveredReference)
+    await fixture.profiles.setProfiles([
+        .init(identifier: fixture.config.identifier, reference: recoveredReference, status: .connected, mode: .mesh)
+    ])
+    outcome = nil
+    #expect(fixture.controller.setMode(.full) { outcome = $0 })
+    try await controllerWaitUntil { outcome != nil && !fixture.controller.hasPendingWork }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: nil))
+    #expect(await fixture.profiles.savedModes == [.mesh, .full])
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier, fixture.config.identifier])
+    #expect(await fixture.secrets.installCount == 1)
+    #expect(fixture.inventory.fetchCount == fetches)
+    #expect(fixture.domainSnapshot.domain.selectedMode == .full)
+}
+
+@Test @MainActor func macControllerModeMetadataReloadFailurePreservesAcceptedStartWithWarning() async throws {
+    let fixture = try MacControllerFixture()
+    try await fixture.seedCache()
+    await fixture.profiles.setProfiles([try fixture.profile(status: .connected)])
+    try await fixture.start()
+    defer { fixture.controller.shutdown() }
+    let start = MacControllerGate()
+    await fixture.profiles.pauseStart(start)
+    var outcome: CloudGatewayMacCommandOutcome?
+    #expect(fixture.controller.setMode(.mesh) { outcome = $0 })
+    try await controllerWaitUntil { await start.entered }
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: fixture.directory, includingPropertiesForKeys: nil).first)
+    try Data("invalid JSON".utf8).write(to: accountDirectory.appendingPathComponent("inventory.json"), options: .atomic)
+    await start.release()
+    try await controllerWaitUntil { outcome != nil }
+    #expect(outcome == .startRequested(identifier: fixture.config.identifier, warning: .selectionNotSaved))
+    #expect(await fixture.profiles.startedIdentifiers == [fixture.config.identifier])
+    #expect(fixture.domainSnapshot.domain.selectedMode == .mesh)
+    #expect(fixture.domainSnapshot.errorMessage == "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again")
 }

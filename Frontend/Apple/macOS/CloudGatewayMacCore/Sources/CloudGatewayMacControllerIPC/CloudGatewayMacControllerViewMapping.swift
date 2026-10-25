@@ -50,6 +50,11 @@ extension CloudGatewayMacControllerView {
         else if state.accountId == nil { title = "Signed out" }
         else if state.setup != .ready { title = state.setup.title }
         else { title = "VPN off" }
+        if status.hasActiveTunnel, !isTransitioning, let mode = state.activeMode {
+            title += " · \(mode.displayName)"
+        } else if isTransitioning, let mode = state.selectedMode {
+            title += " · \(mode.displayName)"
+        }
         if !state.observationAvailable {
             if state.observedProfiles.isEmpty, state.accountId != nil, state.setup == .ready {
                 title = "VPN status unavailable"
@@ -71,7 +76,9 @@ extension CloudGatewayMacControllerView {
             hasUnlistedActiveProfile: state.observedProfiles.contains { profile in
                 profile.status != .invalid && profile.status != .disconnected
                     && !state.clients.contains { $0.identifier == profile.identifier }
-            }, canUpdateExtension: state.canUpdateExtension
+            }, canUpdateExtension: state.canUpdateExtension,
+            selectedMode: state.selectedMode, activeMode: state.activeMode,
+            canSetMode: canConnect && !isTransitioning && state.modeChangeAllowed != false
         )
     }
 }
@@ -119,6 +126,7 @@ enum ControllerVisibleError {
         "The VPN profile was saved, but secure storage did not finish. Refresh before retrying",
         "The VPN profile was saved, but offline metadata could not be saved. Refresh before retrying",
         "VPN command could not finish. Refresh preferences before trying again",
+        "VPN mode could not be applied. Check VPN status before trying again",
         "VPN connection was accepted, but offline metadata could not refresh. Choose Refresh before trying again",
         "Saved VPN configuration is unavailable. Refresh and try again",
         "Unable to access secure VPN storage",

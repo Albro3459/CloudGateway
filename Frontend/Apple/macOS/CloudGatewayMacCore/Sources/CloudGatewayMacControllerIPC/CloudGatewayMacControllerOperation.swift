@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacCore
 import Foundation
 
@@ -36,16 +37,22 @@ public struct CloudGatewayMacControllerStatus: Codable, Equatable, Sendable {
     public let hasActiveTunnel: Bool
     public let needsStop: Bool
     public let observationAvailable: Bool
+    public let selectedMode: CloudGatewayRoutingMode?
+    public let activeMode: CloudGatewayRoutingMode?
 
-    public init(hasActiveTunnel: Bool, needsStop: Bool, observationAvailable: Bool, phase: Phase? = nil) {
+    public init(hasActiveTunnel: Bool, needsStop: Bool, observationAvailable: Bool, phase: Phase? = nil,
+                selectedMode: CloudGatewayRoutingMode? = nil, activeMode: CloudGatewayRoutingMode? = nil) {
         self.phase = phase ?? (hasActiveTunnel ? .connected : needsStop ? .connecting : .disconnected)
         self.hasActiveTunnel = hasActiveTunnel
         self.needsStop = needsStop
         self.observationAvailable = observationAvailable
+        self.selectedMode = selectedMode
+        self.activeMode = activeMode
     }
 
     func validate() throws {
         guard (!hasActiveTunnel || needsStop),
+              activeMode == nil || hasActiveTunnel,
               phase != .connected || hasActiveTunnel,
               phase == .disconnected || needsStop else { throw CloudGatewayMacControllerFailure.invalidRequest }
     }

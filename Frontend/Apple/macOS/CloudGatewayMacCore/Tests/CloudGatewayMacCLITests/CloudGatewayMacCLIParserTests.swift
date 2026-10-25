@@ -36,6 +36,9 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
     #expect(try topic(["add", "--help"]) == "add")
     #expect(try topic(["help", "add", "--json"]) == "add")
     #expect(try topic(["--json", "help", "status"]) == "status")
+    #expect(try topic(["mode", "--help"]) == "mode")
+    #expect(try topic(["help", "mode", "--json"]) == "mode")
+    #expect(try topic(["mode", "status", "--help", "--json"]) == "mode status")
 }
 
 @Test func cliParserAcceptsCommandsWithFlagsBeforeOrAfterWords() throws {
@@ -47,6 +50,10 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
     #expect(try command(["auth", "login", "--no-qr"]) == .authLogin(showsQR: false))
     #expect(try command(["auth", "login"]) == .authLogin(showsQR: true))
     #expect(try command(["auth", "logout"]) == .authLogout)
+    #expect(try command(["mode"]) == .modeStatus)
+    #expect(try command(["mode", "status"]) == .modeStatus)
+    #expect(try command(["mode", "mesh", "--json"]) == .setMode(.mesh))
+    #expect(try command(["--non-interactive", "mode", "full"]) == .setMode(.full))
     #expect(try command(["list"]) == .list(regionId: nil, refresh: false))
     #expect(try command(["list", "--region", "us-east-1", "--refresh"]) == .list(regionId: "us-east-1", refresh: true))
     #expect(try command(["--region=eu_west.2", "list"]) == .list(regionId: "eu_west.2", refresh: false))
@@ -76,6 +83,10 @@ private func usageFailure(_ arguments: [String]) -> CloudGatewayMacCLIUsageFailu
 @Test func cliParserRejectsMalformedInvocations() {
     let cases: [([String], String)] = [
         (["bogus"], "Unknown command 'bogus'"),
+        (["mode", "bogus"], "Unknown mode 'bogus'. Use status, full, or mesh"),
+        (["mode", "Mesh"], "Unknown mode 'Mesh'. Use status, full, or mesh"),
+        (["mode", "full", "extra"], "Unexpected argument 'extra'"),
+        (["mode", "status", "--operation", UUID().uuidString], "--operation is not valid for mode status"),
         (["list", "--bogus"], "Unknown option '--bogus'"),
         (["--controller"], "Unknown option '--controller'"),
         (["list", "--region"], "--region needs a value"),

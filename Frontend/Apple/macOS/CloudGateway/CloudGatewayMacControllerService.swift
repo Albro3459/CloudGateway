@@ -67,6 +67,9 @@ final class CloudGatewayMacControllerService {
             hasPendingWork: { runtime.initialized?.controller.hasPendingWork ?? false },
             perform: { request, complete in
                 switch request.action {
+                case .setMode:
+                    guard let mode = request.mode else { return false }
+                    return runtime.require().controller.setMode(mode, onCompletion: complete)
                 case .connect:
                     return runtime.require().controller.connectClient(identifier: request.identifier, onCompletion: complete)
                 case .disconnectClient:
@@ -128,6 +131,7 @@ final class CloudGatewayMacControllerService {
             isRuntimeInitialized: { runtime.initialized != nil },
             diagnostics: {
                 let snapshot = runtime.initialized?.controller.snapshot()
+                let inventoryFailure = runtime.initialized?.inventory.lastFailure
                 async let registration = ExtensionRegistrationProbe.diagnosticReadiness()
                 async let preferences = CloudGatewayMacPassivePreferences.read()
                 var extensionState = await registration
@@ -147,7 +151,8 @@ final class CloudGatewayMacControllerService {
                 return await .init(runtimeInitialized: snapshot != nil, access: snapshot?.domain.access,
                              credentials: snapshot?.domain.credentials, extensionState: extensionState,
                              preferences: preferences,
-                             regionId: snapshot?.domain.clients.first?.regionId)
+                             regionId: snapshot?.domain.clients.first?.regionId,
+                             inventoryFailure: inventoryFailure)
             },
             login: { request in
                 let controller = runtime.require().controller

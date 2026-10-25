@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import Foundation
@@ -85,11 +86,12 @@ extension CloudGatewayMacCLISession {
     }
 
     func mutate(_ action: CloudGatewayMacControllerRequest.Action, selector: CloudGatewayMacCLISelector? = nil,
+                mode: CloudGatewayRoutingMode? = nil,
                 accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
         if action == .turnOff { _ = try await call { [client] in try await client.handshake() } }
         else { try await requireCurrentBuild() }
         var identifier: String?
-        if action == .connect || action == .disconnectClient || action == .removeClient {
+        if action == .connect || action == .disconnectClient || action == .removeClient || action == .setMode {
             let (reply, settled) = try await poll(.snapshot, until: deadline) {
                 let state = try Self.state(of: $0)
                 let target = state.selectedIdentifier
@@ -97,7 +99,7 @@ extension CloudGatewayMacCLISession {
                     && !state.clients.contains { $0.identifier == target }
                 return state.isPendingRestoration || state.isAwaitingVerification
                     || (action == .connect && state.setup == .checkingConnection)
-                    || (selector != nil ? state.inventory == .refreshing : unresolved)
+                    || (selector != nil || action == .setMode ? state.inventory == .refreshing : unresolved)
             }
             guard settled else { throw CloudGatewayMacCLIError(.timeout) }
             let state = try Self.state(of: reply)
@@ -111,10 +113,11 @@ extension CloudGatewayMacCLISession {
                 identifier = try CloudGatewayMacCLIInventoryOrder.resolve(selector, state: state, accountId: accountId)
             }
         }
-        return try await submit(action, identifier: identifier, accepted: accepted)
+        return try await submit(action, identifier: identifier, mode: mode, accepted: accepted)
     }
 
     private func submit(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil,
+                        mode: CloudGatewayRoutingMode? = nil,
                         creation: CloudGatewayMacCLIClientCreation? = nil, contextId: UUID? = nil,
                         accepted: (UUID) throws -> Void) async throws -> CloudGatewayMacCLIData {
         let id = UUID()
@@ -134,7 +137,7 @@ extension CloudGatewayMacCLISession {
         do {
             reservation = try await call { [client] in
                 try await client.send(action, id: id, identifier: identifier, regionId: creation?.regionId,
-                                      clientName: creation?.name, contextId: contextId)
+                                      clientName: creation?.name, contextId: contextId, mode: mode)
             }
         } catch {
             if action == .removeClient { throw observationFailure(error) }
@@ -172,10 +175,13 @@ extension CloudGatewayMacCLISession {
             case .turnOff, .disconnectClient: .down
             case .createClient: .add
             case .removeClient: .remove
+            case .setMode: .mode
             default: .logout
             }
             let data = CloudGatewayMacCLIData.mutation(.init(command: command, operation: operation, tunnel: tunnel, choices: choices,
-                                                            update: reply.update.map(CloudGatewayMacCLIUpdate.init), creation: creation))
+                                                            update: reply.update.map(CloudGatewayMacCLIUpdate.init), creation: creation,
+                                                            requestedMode: mode,
+                                                            mode: action == .setMode ? reply.state.map(CloudGatewayMacCLIModeStatus.init) : nil))
             if var failure = operation.failure {
                 failure.data = data
                 failure.operationId = id

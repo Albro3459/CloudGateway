@@ -2,6 +2,24 @@ import Foundation
 import Testing
 @testable import CloudGatewayMacCore
 
+@Test func macInventoryDiagnosticsKeepOnlyKnownErrorCodes() throws {
+    let sensitive: [String: Any] = [NSLocalizedDescriptionKey: "private account and credentials",
+        NSURLErrorFailingURLErrorKey: URL(string: "https://private.invalid/account")!]
+    let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost, userInfo: sensitive)
+    let evidence = try #require(CloudGatewayMacInventoryDiagnostic(stage: .accessRequest, error: error))
+    #expect(evidence.source == .url)
+    #expect(evidence.code == NSURLErrorNetworkConnectionLost)
+    let encoded = try JSONEncoder().encode(evidence)
+    let text = String(decoding: encoded, as: UTF8.self)
+    #expect(!text.contains("private"))
+    #expect(!text.contains("credentials"))
+    #expect(try JSONDecoder().decode(CloudGatewayMacInventoryDiagnostic.self, from: encoded) == evidence)
+    let unknown = try #require(CloudGatewayMacInventoryDiagnostic(stage: .clients,
+        error: NSError(domain: "private.invalid/account", code: 123, userInfo: sensitive)))
+    #expect(unknown.source == .other && unknown.code == nil)
+    #expect(CloudGatewayMacInventoryDiagnostic(stage: .clients, error: CancellationError()) == nil)
+}
+
 @Test func macAccessResponseDistinguishesDeniedIdentityFromVerifierOutage() {
     #expect(CloudGatewayMacInventoryError.accessResponseFailure(statusCode: 200) == nil)
     for status in [401, 403] {

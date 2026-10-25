@@ -17,6 +17,7 @@ final class CloudGatewayMacControllerRuntime {
     }
 
     let controller: CloudGatewayMacController
+    let inventory: CloudGatewayMacInventoryService
     private let profiles: CloudGatewayMacVPNProfileAdapter
 
     init() {
@@ -31,7 +32,7 @@ final class CloudGatewayMacControllerRuntime {
         settings.cacheSettings = MemoryCacheSettings()
         database.settings = settings
         let auth = CloudGatewayFirebaseAuthAdapter()
-        let inventory = CloudGatewayMacInventoryService(auth: auth, database: database)
+        inventory = CloudGatewayMacInventoryService(auth: auth, database: database)
         let cache = CloudGatewayMacAccountCache(directory: Self.directory)
         let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
         let secrets: CloudGatewayMacXPCSecretClient
@@ -52,7 +53,10 @@ final class CloudGatewayMacControllerRuntime {
             inventory: inventory, profiles: profiles, cache: cache, configs: configs,
             dashboardOrigin: dashboard
         )
-        profiles.onChange = { [weak controller] in controller?.profilesDidChange() }
+        profiles.onChange = { [weak controller, weak inventory] in
+            inventory?.vpnStateDidChange()
+            controller?.profilesDidChange()
+        }
     }
 
     func shutdown() {

@@ -92,6 +92,7 @@ public struct CloudGatewayMacDomainSnapshot: Equatable, Sendable {
     public let commandInFlight: Bool
     public var stopAllowed: Bool? = nil
     public let clients: [CloudGatewayMacClientMetadata]
+    public var selectedMode: CloudGatewayRoutingMode? = nil
 }
 
 public struct CloudGatewayMacClientMetadata: Equatable, Sendable {
@@ -117,6 +118,7 @@ public struct CloudGatewayMacClientMetadata: Equatable, Sendable {
 public struct CloudGatewayMacObservedProfile: Equatable, Sendable {
     public let identifier: String
     public let status: CloudGatewayTunnelStatus
+    public var mode: CloudGatewayRoutingMode? = .full
 }
 
 public struct CloudGatewayMacControllerSnapshot: Equatable, Sendable {

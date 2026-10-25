@@ -161,8 +161,8 @@ private final class MacLifecycleFixture: Sendable {
         })
     }
 
-    func start() {
-        lifecycle.start(operation: { [state] attempt in
+    func start(appliedState: CloudGatewayMacTunnelAppliedState? = nil) {
+        lifecycle.start(appliedState: appliedState, operation: { [state] attempt in
             attempt.submitAdapterStart { callback in
                 state.update {
                     $0.events.append("start")
@@ -208,5 +208,40 @@ private final class MacLifecycleState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         body(&storage)
+    }
+}
+
+@Test func macTunnelAppliedModeRequiresAdapterSuccessAndClearsOnStop() async {
+    let fixture = MacLifecycleFixture()
+    let expected = CloudGatewayMacTunnelAppliedState(configId: "account/region/client", mode: .mesh)
+    fixture.start(appliedState: expected)
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == nil)
+    fixture.state.value.startCallback?(nil)
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == expected)
+    fixture.stop()
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == nil)
+    fixture.state.value.startCallback?(nil)
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == nil)
+    fixture.state.value.stopCallback?()
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == nil)
+}
+
+@Test func macTunnelFailedStartNeverAcknowledgesRequestedMode() async {
+    let fixture = MacLifecycleFixture()
+    fixture.start(appliedState: .init(configId: "account/region/client", mode: .mesh))
+    await fixture.drain()
+    fixture.state.value.startCallback?(CloudGatewayMacTunnelLifecycleError.cancelled)
+    await fixture.drain()
+    #expect(await macAppliedState(fixture.lifecycle) == nil)
+}
+
+private func macAppliedState(_ lifecycle: CloudGatewayMacTunnelLifecycle) async -> CloudGatewayMacTunnelAppliedState? {
+    await withCheckedContinuation { continuation in
+        lifecycle.readAppliedState { continuation.resume(returning: $0) }
     }
 }

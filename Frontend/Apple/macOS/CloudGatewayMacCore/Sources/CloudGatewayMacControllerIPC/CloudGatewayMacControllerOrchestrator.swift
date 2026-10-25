@@ -289,13 +289,13 @@ public final class CloudGatewayMacControllerOrchestrator {
         }
         let activity: Set<CloudGatewayMacControllerRequest.Action> = [
             .userActivity, .recordActivity, .menuWillOpen, .connect, .turnOff, .disconnectClient, .signIn, .cancelSignIn, .signOut,
-            .refresh, .awaitRefresh, .prepareClient, .createClient, .removeClient, .beginLogin, .cancelLogin, .update
+            .refresh, .awaitRefresh, .prepareClient, .createClient, .removeClient, .beginLogin, .cancelLogin, .update, .setMode
         ]
         if activity.contains(request.action), update.canAcceptMutations || request.action == .turnOff {
             lastActivity = effects.monotonicNow()
             effects.userActivity(request.action == .userActivity)
         }
-        if request.action == .removeClient,
+        if request.action == .removeClient || request.action == .setMode,
            request.buildIdentity != update.running || request.appVersion != update.running.version || request.appBuild != update.running.build {
             return .init(error: .incompatibleVersion)
         }
@@ -445,6 +445,10 @@ public final class CloudGatewayMacControllerOrchestrator {
                 guard pending == nil, runningOperation == nil,
                       isStop || pendingCreation == nil && runningCreation == nil else { return .init(error: .busy) }
             }
+            if request.action == .setMode {
+                guard canAdmitMode else { return .init(error: .busy) }
+                guard modeSessionIsSettled else { return .init(error: .rejected) }
+            }
             if request.action == .removeClient {
                 guard canAdmitRemoval else { return .init(error: .busy) }
                 guard removalSessionIsSettled(request) else { return .init(error: .rejected) }
@@ -472,6 +476,19 @@ public final class CloudGatewayMacControllerOrchestrator {
             else { pending = reservation }
             return operationReply(operation, request: request)
         } catch { return .init(error: error as? CloudGatewayMacControllerFailure ?? .unavailable) }
+    }
+
+    private var canAdmitMode: Bool {
+        guard canAdmitRemoval, setupState == .ready else { return false }
+        let snapshot = effects.snapshot(setupState, false)
+        return !snapshot.commandInFlight && !snapshot.isRestoringSession && !snapshot.isAuthSettling
+            && snapshot.setup == .ready && !snapshot.observedProfiles.contains { $0.status == .connecting || $0.status == .disconnecting }
+    }
+
+    private var modeSessionIsSettled: Bool {
+        let snapshot = effects.snapshot(setupState, false)
+        return effects.session().map { $0.accountId == snapshot.accountId } == true
+            && snapshot.accessAuthorized && !snapshot.isRestoringSession && !snapshot.isAuthSettling
     }
 
     private var canAdmitRemoval: Bool {
@@ -509,6 +526,18 @@ public final class CloudGatewayMacControllerOrchestrator {
             return controlReply(for: confirmation, operation: requests.finish(
                 id: id, state: .failed, failure: .rejected, outcome: .failed(.signInRequired), session: pending.session
             ))
+        }
+        if request.action == .setMode {
+            let failure: CloudGatewayMacCommandFailure? = if !canAdmitMode { .busy }
+                else if !modeSessionIsSettled { .signInRequired }
+                else { nil }
+            if let failure {
+                clearPending(id: id)
+                return controlReply(for: confirmation, operation: requests.finish(
+                    id: id, state: .failed, failure: failure == .busy ? .busy : .rejected,
+                    outcome: .failed(failure), session: pending.session
+                ))
+            }
         }
         if request.action == .removeClient {
             let failure: CloudGatewayMacCommandFailure? = if !canAdmitRemoval { .busy }
@@ -698,6 +727,8 @@ public final class CloudGatewayMacControllerOrchestrator {
 
     private func frontendSnapshot(canUpdateExtension: Bool) -> CloudGatewayMacControllerState {
         var snapshot = effects.snapshot(setupState, canUpdateExtension)
+        snapshot.modeChangeAllowed = canAdmitMode && pending == nil && runningOperation == nil
+            && pendingCreation == nil && runningCreation == nil
         snapshot.removalAllowed = canAdmitRemoval && pending == nil && runningOperation == nil
             && pendingCreation == nil && runningCreation == nil
         return snapshot

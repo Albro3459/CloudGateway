@@ -10,7 +10,9 @@ public enum CloudGatewayMacProfileMetadata {
               let reference = try? CloudGatewayMacSecretReference(value: value) else {
             throw CloudGatewayMacConfigError.invalidConfig
         }
-        return .init(identifier: identifier, reference: reference, status: status)
+        let mode: CloudGatewayRoutingMode? = metadata[CloudGatewayMacProviderKey.routingMode] == nil
+            ? .full : (metadata[CloudGatewayMacProviderKey.routingMode] as? String).flatMap(CloudGatewayRoutingMode.init(rawValue:))
+        return .init(identifier: identifier, reference: reference, status: status, mode: mode)
     }
 
     public static func validateUnique(_ profiles: [CloudGatewayMacInstalledProfile]) throws {

@@ -23,7 +23,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             completion.callback(MacTunnelError.authorizationFailed)
             return
         }
-        lifecycle.start(operation: { [self] attempt in
+        let mode: CloudGatewayRoutingMode?
+        if let value = metadata[CloudGatewayMacProviderKey.routingMode] {
+            mode = (value as? String).flatMap(CloudGatewayRoutingMode.init(rawValue:))
+        } else { mode = .full }
+        guard let mode else {
+            completion.callback(MacTunnelError.invalidConfiguration)
+            return
+        }
+        lifecycle.start(appliedState: .init(configId: configId, mode: mode), operation: { [self] attempt in
             let runtime = runtime
             Task {
                 do {
@@ -40,7 +48,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                         return
                     }
                     attempt.submitAdapterStart { callback in
-                        runtime.start(config: parsed, completion: callback)
+                        runtime.start(config: mode.configuration(from: parsed), completion: callback)
                     }
                 } catch {
                     attempt.fail(MacTunnelError.authorizationFailed)
@@ -49,6 +57,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }, completion: { error in
             completion.callback(error)
         })
+    }
+
+    // periphery:ignore - NetworkExtension invokes this provider callback
+    override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
+        guard messageData == CloudGatewayMacTunnelAppliedState.request else {
+            completionHandler?(nil)
+            return
+        }
+        let completion = MacMessageCompletion(callback: completionHandler)
+        lifecycle.readAppliedState { state in
+            completion.callback?(state.flatMap { try? JSONEncoder().encode($0) })
+        }
     }
 
     // periphery:ignore - NetworkExtension invokes this provider callback
@@ -74,6 +94,10 @@ private enum MacTunnelError: Error, LocalizedError {
         case .backendFailed: "CloudGateway could not start the VPN backend."
         }
     }
+}
+
+private struct MacMessageCompletion: @unchecked Sendable {
+    let callback: ((Data?) -> Void)?
 }
 
 private struct MacStartCompletion: @unchecked Sendable {

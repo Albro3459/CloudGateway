@@ -10,9 +10,12 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
     typealias Failure = CloudGatewayMacInventoryError
 
     private let auth: CloudGatewayFirebaseAuthAdapter
-    private let database: Firestore
+    private var database: Firestore
+    private var reconnectBeforeRead = false
+    private var reconnectTask: Task<Void, Error>?
     private let session: URLSession
     private let controlPlane: CloudGatewayControlPlaneClient
+    private(set) var lastFailure: CloudGatewayMacInventoryDiagnostic?
 
     init(auth: CloudGatewayFirebaseAuthAdapter, database: Firestore) {
         self.auth = auth
@@ -29,20 +32,28 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
     }
 
     func checkAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
-        try await CloudGatewayMacInventoryRequest.read { complete in
+        var stage = CloudGatewayMacInventoryDiagnostic.Stage.accessToken
+        return try await CloudGatewayMacInventoryRequest.read(onTimeout: { [self] in
+            lastFailure = .init(stage: stage, source: .deadline)
+            return .failure(Failure.offline)
+        }) { complete in
             let task = Task {
-                do { complete(.success(try await loadAccess(for: user))) }
+                do { complete(.success(try await loadAccess(for: user, onRequest: { stage = .accessRequest }))) }
                 catch { complete(.failure(Failure.classify(error))) }
             }
             return { task.cancel() }
         }
     }
 
-    private func loadAccess(for user: AuthenticatedUser) async throws -> CloudGatewayMacAccountRole {
+    private func loadAccess(for user: AuthenticatedUser, onRequest: () -> Void) async throws -> CloudGatewayMacAccountRole {
         guard auth.currentUser?.uid == user.uid else { throw Failure.accessDenied }
         let token: String
         do { token = try await auth.idToken(forceRefresh: false) }
-        catch { throw Failure.classify(error) }
+        catch {
+            try Task.checkCancellation()
+            lastFailure = .init(stage: .accessToken, error: error)
+            throw Failure.classify(error)
+        }
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         var request = URLRequest(url: try CloudGatewayAPIURLBuilder.apexAPIURL(
@@ -58,16 +69,31 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         request.setValue("CloudGateway-macOS/1.0", forHTTPHeaderField: "User-Agent")
         let data: Data
         let response: URLResponse
+        onRequest()
         do { (data, response) = try await session.data(for: request) }
-        catch { throw Failure.classify(error) }
+        catch {
+            if !(error is CancellationError), (error as NSError).code != NSURLErrorCancelled {
+                lastFailure = .init(stage: .accessRequest, error: error)
+            }
+            throw Failure.classify(error)
+        }
         try Task.checkCancellation()
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
-        guard let response = response as? HTTPURLResponse, response.url == request.url else { throw Failure.unavailable }
-        if let failure = Failure.accessResponseFailure(statusCode: response.statusCode) { throw failure }
+        guard let response = response as? HTTPURLResponse, response.url == request.url else {
+            lastFailure = .init(stage: .accessResponse, source: .invalidResponse)
+            throw Failure.unavailable
+        }
+        if let failure = Failure.accessResponseFailure(statusCode: response.statusCode) {
+            lastFailure = .init(stage: .accessResponse, source: .http, code: response.statusCode)
+            throw failure
+        }
         guard data.count <= 64 * 1024,
               let result = try? JSONDecoder().decode(CloudGatewayAccessCheck.self, from: data),
               result.userId == user.uid,
-              let role = CloudGatewayMacAccountRole(rawValue: result.role) else { throw Failure.unavailable }
+              let role = CloudGatewayMacAccountRole(rawValue: result.role) else {
+            lastFailure = .init(stage: .accessResponse, source: .invalidResponse)
+            throw Failure.unavailable
+        }
         return role
     }
 
@@ -75,11 +101,13 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         guard auth.currentUser?.uid == user.uid else {
             throw Failure.accessDenied
         }
+        try await prepareDatabase()
+        guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         let regionQuery = database.collection("Regions").whereField("enabled", isEqualTo: true)
         let instances = database.collectionGroup("Instances")
         let clientQuery: Query = role == .admin ? instances : instances.whereField("ownerUid", isEqualTo: user.uid)
         let (fetchedRegions, fetchedClients) = try await CloudGatewayMacInventoryRequest.inventory(loadRegions: { [self] in
-            try await documents(regionQuery) { document -> CloudGatewayRegion? in
+            try await documents(regionQuery, stage: .regions) { document -> CloudGatewayRegion? in
                 let data = document.data()
                 guard data["enabled"] as? Bool == true,
                       let name = CloudGatewayFirestoreClientMapper.string(data["displayName"]) else { return nil }
@@ -87,7 +115,7 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
                                           displayOrder: (data["displayOrder"] as? NSNumber)?.intValue ?? 1000)
             }
         }, loadClients: { [self] in
-            try await documents(clientQuery) { document -> CloudGatewayClient? in
+            try await documents(clientQuery, stage: .clients) { document -> CloudGatewayClient? in
                 var data = document.data()
                 if let timestamp = data["updatedAt"] as? Timestamp { data["updatedAt"] = timestamp.dateValue() }
                 guard let client = CloudGatewayFirestoreClientMapper.client(
@@ -100,6 +128,36 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
         guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
         let regionsById = Dictionary(uniqueKeysWithValues: fetchedRegions.map { ($0.regionId, $0) })
         return fetchedClients.map { CloudGatewayClientOption(client: $0, region: regionsById[$0.regionId]) }
+    }
+
+    func vpnStateDidChange() {
+        reconnectBeforeRead = true
+    }
+
+    private func prepareDatabase() async throws {
+        while reconnectBeforeRead || reconnectTask != nil {
+            if reconnectTask == nil {
+                reconnectBeforeRead = false
+                // Firestore's reachability monitor can miss VPN changes that keep the internet reachable
+                reconnectTask = Task { [self, database] in
+                    defer { reconnectTask = nil }
+                    do {
+                        let settings = database.settings
+                        let app = database.app
+                        try await database.terminate()
+                        let next = Firestore.firestore(app: app)
+                        next.settings = settings
+                        self.database = next
+                    } catch {
+                        reconnectBeforeRead = true
+                        lastFailure = .init(stage: .connection, error: error)
+                        throw Failure.classify(error)
+                    }
+                }
+            }
+            try await reconnectTask?.value
+            try Task.checkCancellation()
+        }
     }
 
     func fetchCreateRegions(for user: AuthenticatedUser) async throws -> [CloudGatewayRegion] {
@@ -159,7 +217,11 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
             originHost: "gocloudlaunch.com", session: session,
             loadToken: { [self] in
                 do { return try await auth.idToken(forceRefresh: false) }
-                catch { throw Failure.classify(error) }
+                catch {
+                    try Task.checkCancellation()
+                    lastFailure = .init(stage: .removalToken, error: error)
+                    throw Failure.classify(error)
+                }
             },
             validateSession: { [self] in
                 guard auth.currentUser?.uid == user.uid else { throw CancellationError() }
@@ -170,10 +232,16 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
 
     private func documents<Value: Sendable>(
         _ query: Query,
+        stage: CloudGatewayMacInventoryDiagnostic.Stage,
         map: @escaping @Sendable (QueryDocumentSnapshot) -> Value?
     ) async throws -> [Value] {
+        var timedOut = false
         do {
-            return try await CloudGatewayMacInventoryRequest.read { complete in
+            return try await CloudGatewayMacInventoryRequest.read(onTimeout: { [self] in
+                timedOut = true
+                lastFailure = .init(stage: stage, source: .deadline)
+                return .failure(Failure.offline)
+            }) { complete in
                 let listener = query.addSnapshotListener(includeMetadataChanges: true) { @Sendable snapshot, error in
                     if let error { complete(.failure(error)) }
                     else if let snapshot, !snapshot.metadata.isFromCache {
@@ -184,6 +252,7 @@ final class CloudGatewayMacInventoryService: CloudGatewayMacInventoryServicing {
             }
         } catch {
             try Task.checkCancellation()
+            if !timedOut { lastFailure = .init(stage: stage, error: error) }
             throw Failure.classify(error)
         }
     }

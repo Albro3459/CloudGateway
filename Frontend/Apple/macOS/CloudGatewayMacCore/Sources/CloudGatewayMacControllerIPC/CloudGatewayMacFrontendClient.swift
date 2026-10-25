@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacCore
 import CloudGatewayMacIPC
 import Foundation
@@ -66,7 +67,8 @@ public final class CloudGatewayMacFrontendClient {
                 accountId: snapshot.accountId, lastSelectedIdentifier: snapshot.lastSelectedIdentifier,
                 browserState: snapshot.browserState, login: snapshot.login, setupState: snapshot.setupState,
                 isRestoringSession: snapshot.isRestoringSession, isAuthSettling: snapshot.isAuthSettling,
-                hasRetainedSession: snapshot.hasRetainedSession, errorMessage: snapshot.errorMessage)
+                hasRetainedSession: snapshot.hasRetainedSession, errorMessage: snapshot.errorMessage,
+                selectedMode: snapshot.selectedMode, activeMode: snapshot.activeMode)
         }
         let live = safeStatus?.observationAvailable == true
         let active = safeStatus?.hasActiveTunnel ?? snapshot?.hasActiveTunnel ?? false
@@ -164,7 +166,7 @@ public final class CloudGatewayMacFrontendClient {
     public func userRequest(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                             identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
                             contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
-                            allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
+                            allowDisconnect: Bool? = nil, mode: CloudGatewayRoutingMode? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         try Task.checkCancellation()
         lastActivity = now()
@@ -185,7 +187,7 @@ public final class CloudGatewayMacFrontendClient {
             _ = try await request(.recordActivity)
         }
         return try await request(action, id: id, identifier: identifier, regionId: regionId,
-                                 clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect)
+                                 clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect, mode: mode)
     }
 
     private func prepareForInteraction() async throws {
@@ -255,9 +257,9 @@ public final class CloudGatewayMacFrontendClient {
     public func request(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                         identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
                         contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
-                        allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
+                        allowDisconnect: Bool? = nil, mode: CloudGatewayRoutingMode? = nil) async throws -> CloudGatewayMacControllerReply {
         let reply = try await send(action, id: id, identifier: identifier, regionId: regionId,
-                                   clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect)
+                                   clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect, mode: mode)
         guard action.requiresConfirmation, reply.operation?.state == .accepted else { return reply }
         let confirmed = try await confirm(id)
         // Removal needs its typed terminal outcome, including immediate failures and cleanup warnings
@@ -273,7 +275,7 @@ public final class CloudGatewayMacFrontendClient {
     public func send(_ action: CloudGatewayMacControllerRequest.Action, id: UUID = UUID(),
                      identifier: String? = nil, regionId: String? = nil, clientName: String? = nil,
                      contextId: UUID? = nil, loginOrigin: CloudGatewayMacLoginOrigin? = nil,
-                     allowDisconnect: Bool? = nil) async throws -> CloudGatewayMacControllerReply {
+                     allowDisconnect: Bool? = nil, mode: CloudGatewayRoutingMode? = nil) async throws -> CloudGatewayMacControllerReply {
         guard !isShuttingDown else { throw CancellationError() }
         let callback: Set<CloudGatewayMacControllerRequest.Action> = [
             .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed
@@ -286,7 +288,7 @@ public final class CloudGatewayMacFrontendClient {
         let currentSequence = sequence
         let currentGeneration = generation
         let request = CloudGatewayMacControllerRequest(action: action, id: id, identifier: identifier,
-            regionId: regionId, clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect,
+            regionId: regionId, clientName: clientName, contextId: contextId, loginOrigin: loginOrigin, allowDisconnect: allowDisconnect, mode: mode,
             appVersion: identity.version, appBuild: identity.build, buildIdentity: identity)
         let reply: CloudGatewayMacControllerReply
         do { reply = try await transport(request) }

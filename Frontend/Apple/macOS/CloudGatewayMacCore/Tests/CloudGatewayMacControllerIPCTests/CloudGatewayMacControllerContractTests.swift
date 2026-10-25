@@ -389,3 +389,89 @@ func controllerActivityRequiresTheCurrentBuildAndNoArguments(action: CloudGatewa
         }
     }
 }
+
+@Test(arguments: CloudGatewayRoutingMode.allCases)
+func modeRequestsRequireOnlyAValidModeAndTheCurrentBuild(mode: CloudGatewayRoutingMode) throws {
+    let request = CloudGatewayMacControllerRequest(action: .setMode, mode: mode)
+    let data = try CloudGatewayMacControllerProtocol.encodeRequest(request, appVersion: appVersion, appBuild: appBuild)
+    let decoded = try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: appBuild)
+    #expect(decoded.mode == mode)
+    #expect(decoded.id == request.id)
+    #expect(!request.action.isCompatibleControl)
+    #expect(request.action.requiresConfirmation)
+    #expect(request.action.hasAccountBoundOutcome)
+    #expect(throws: CloudGatewayMacControllerFailure.incompatibleVersion) {
+        try CloudGatewayMacControllerProtocol.decodeRequest(data, appVersion: appVersion, appBuild: "other")
+    }
+    for invalid in [
+        CloudGatewayMacControllerRequest(action: .setMode),
+        .init(action: .setMode, identifier: "account/region/client", mode: mode),
+        .init(action: .setMode, regionId: "region", mode: mode),
+        .init(action: .setMode, clientName: "Mac", mode: mode),
+        .init(action: .setMode, contextId: UUID(), mode: mode),
+        .init(action: .setMode, loginOrigin: .cli, mode: mode),
+        .init(action: .setMode, allowDisconnect: true, mode: mode),
+        .init(action: .snapshot, mode: mode),
+        .init(action: .turnOff, mode: mode),
+        .init(action: .connect, mode: mode)
+    ] {
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.encodeRequest(invalid, appVersion: appVersion, appBuild: appBuild)
+        }
+    }
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    for value in ["Mesh", "mesh-only", "", String(repeating: "x", count: 128)] {
+        object["mode"] = value
+        #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) {
+            try CloudGatewayMacControllerProtocol.decodeRequest(
+                JSONSerialization.data(withJSONObject: object), appVersion: appVersion, appBuild: appBuild
+            )
+        }
+    }
+}
+
+@Test func legacyControllerPayloadsDecodeWithoutModeFields() throws {
+    let state = controllerContractState()
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+    for key in ["selectedMode", "activeMode", "modeChangeAllowed"] { object.removeValue(forKey: key) }
+    let legacyState = try JSONDecoder().decode(CloudGatewayMacControllerState.self, from: JSONSerialization.data(withJSONObject: object))
+    #expect(legacyState.selectedMode == nil)
+    #expect(legacyState.activeMode == nil)
+    let view = CloudGatewayMacControllerView(state: state)
+    object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(view)) as? [String: Any])
+    for key in ["selectedMode", "activeMode", "canSetMode"] { object.removeValue(forKey: key) }
+    let legacyView = try JSONDecoder().decode(CloudGatewayMacControllerView.self, from: JSONSerialization.data(withJSONObject: object))
+    #expect(!legacyView.canSetMode)
+    #expect(legacyView.selectedMode == nil)
+    #expect(legacyView.activeMode == nil)
+    let status = CloudGatewayMacControllerStatus(hasActiveTunnel: true, needsStop: true, observationAvailable: true)
+    let legacyStatus = try JSONDecoder().decode(CloudGatewayMacControllerStatus.self, from: JSONEncoder().encode(status))
+    #expect(legacyStatus.activeMode == nil)
+    #expect(legacyStatus.selectedMode == nil)
+}
+
+@Test func modeStatusRemainsAdditiveOnCompatibleOperationLookups() throws {
+    let operation = CloudGatewayMacControllerOperation(id: UUID(), state: .completed)
+    let status = CloudGatewayMacControllerStatus(hasActiveTunnel: true, needsStop: true, observationAvailable: true,
+        selectedMode: .mesh, activeMode: .full)
+    let data = CloudGatewayMacControllerProtocol.encodeReply(.init(status: status, operation: operation),
+        appVersion: appVersion, appBuild: appBuild, instanceId: UUID(), action: .operation)
+    let decoded = try CloudGatewayMacControllerProtocol.decodeReply(data,
+        appVersion: appVersion, appBuild: "other", action: .operation)
+    #expect(decoded.operation == operation)
+    #expect(decoded.status?.phase == .connected)
+    #expect(decoded.status?.selectedMode == .mesh)
+    #expect(decoded.status?.activeMode == .full)
+    #expect(decoded.state == nil)
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    var legacyStatus = try #require(object["status"] as? [String: Any])
+    legacyStatus.removeValue(forKey: "selectedMode")
+    legacyStatus.removeValue(forKey: "activeMode")
+    object["status"] = legacyStatus
+    let legacy = try CloudGatewayMacControllerProtocol.decodeReply(JSONSerialization.data(withJSONObject: object),
+        appVersion: appVersion, appBuild: "other", action: .operation)
+    #expect(legacy.operation == operation)
+    #expect(legacy.status?.hasActiveTunnel == true)
+    #expect(legacy.status?.selectedMode == nil)
+    #expect(legacy.status?.activeMode == nil)
+}

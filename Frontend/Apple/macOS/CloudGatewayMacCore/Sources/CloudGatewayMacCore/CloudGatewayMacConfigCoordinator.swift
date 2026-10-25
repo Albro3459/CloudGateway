@@ -7,6 +7,12 @@ public struct CloudGatewayMacInstalledConfig: Codable, Equatable, Sendable {
     public let accountId: String
     public let identifier: String
     public let snapshot: CloudGatewayConfigSnapshot
+    public var mode: CloudGatewayRoutingMode = .full
+
+    // Inject the account preference for each start, outside canonical cached config metadata
+    private enum CodingKeys: String, CodingKey {
+        case accountId, identifier, snapshot
+    }
 
     public init(accountId: String, identifier: String, snapshot: CloudGatewayConfigSnapshot) {
         self.accountId = accountId
@@ -28,11 +34,13 @@ public struct CloudGatewayMacInstalledProfile: Equatable, Sendable {
     public let identifier: String
     public let reference: CloudGatewayMacSecretReference
     public let status: CloudGatewayTunnelStatus
+    public var mode: CloudGatewayRoutingMode?
 
-    public init(identifier: String, reference: CloudGatewayMacSecretReference, status: CloudGatewayTunnelStatus) {
+    public init(identifier: String, reference: CloudGatewayMacSecretReference, status: CloudGatewayTunnelStatus, mode: CloudGatewayRoutingMode? = .full) {
         self.identifier = identifier
         self.reference = reference
         self.status = status
+        self.mode = mode
     }
 
     public var needsConfirmedStop: Bool {
@@ -114,16 +122,18 @@ public actor CloudGatewayMacConfigCoordinator {
 
     public func install(
         option: CloudGatewayClientOption,
-        accountId: String
+        accountId: String,
+        mode: CloudGatewayRoutingMode = .full
     ) async throws -> CloudGatewayMacInstalledConfig {
         try await runCommand { command in
-            try await self.performInstall(option: option, accountId: accountId, command: command)
+            try await self.performInstall(option: option, accountId: accountId, mode: mode, command: command)
         }
     }
 
     private func performInstall(
         option: CloudGatewayClientOption,
         accountId: String,
+        mode: CloudGatewayRoutingMode,
         command: UInt64
     ) async throws -> CloudGatewayMacInstalledConfig {
         guard !accountId.isEmpty, option.client.hasUsableConfig,
@@ -159,11 +169,12 @@ public actor CloudGatewayMacConfigCoordinator {
             serverEndpointIpv4: option.client.serverEndpointIpv4,
             serverEndpointHostname: option.client.serverEndpointHostname
         )
-        let installed = CloudGatewayMacInstalledConfig(
+        var installed = CloudGatewayMacInstalledConfig(
             accountId: accountId,
             identifier: identifier,
             snapshot: snapshot
         )
+        installed.mode = mode
         do {
             try await profiles.saveAndReload(installed)
         } catch {
@@ -249,7 +260,11 @@ public actor CloudGatewayMacConfigCoordinator {
         guard displacingOtherProfiles || !activeProfiles.contains(where: { $0.identifier != config.identifier }) else {
             throw CloudGatewayMacConfigError.busy
         }
-        if selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
+        if selected.status == .connecting, selected.mode != config.mode {
+            throw CloudGatewayMacConfigError.busy
+        }
+        if selected.mode == config.mode,
+           selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
             return false
         }
         for active in activeProfiles {
@@ -257,6 +272,14 @@ public actor CloudGatewayMacConfigCoordinator {
             try await profiles.stopAndWait(identifier: active.identifier)
         }
         try requireCurrent(command)
+        if selected.mode != config.mode {
+            do { try await profiles.saveAndReload(config) }
+            catch {
+                try requireCurrent(command)
+                throw CloudGatewayMacConfigError.profileInstallationFailed
+            }
+            try requireCurrent(command)
+        }
         let grant = try await secrets.authorizeStart(reference: reference, configId: config.identifier)
         try requireCurrent(command)
         try await profiles.start(identifier: config.identifier, grant: grant, displacingOtherProfiles: displacingOtherProfiles)

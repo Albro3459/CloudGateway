@@ -18,11 +18,13 @@ public struct CloudGatewayMacControllerDiagnostics: Codable, Equatable, Sendable
     public let preferences: Evidence
     public let regionId: String?
     public let setupState: CloudGatewayMacControllerView.SetupState?
+    public let inventoryFailure: CloudGatewayMacInventoryDiagnostic?
 
     public init(runtimeInitialized: Bool, access: CloudGatewayMacAccessState? = nil,
                 credentials: CloudGatewayMacCredentialEvidence? = nil,
                 extensionState: ExtensionState = .unknown, preferences: Evidence = .unknown,
-                regionId: String? = nil, setupState: CloudGatewayMacControllerView.SetupState? = nil) {
+                regionId: String? = nil, setupState: CloudGatewayMacControllerView.SetupState? = nil,
+                inventoryFailure: CloudGatewayMacInventoryDiagnostic? = nil) {
         self.runtimeInitialized = runtimeInitialized
         self.access = access
         self.credentials = credentials
@@ -30,15 +32,17 @@ public struct CloudGatewayMacControllerDiagnostics: Codable, Equatable, Sendable
         self.preferences = preferences
         self.regionId = regionId
         self.setupState = setupState
+        self.inventoryFailure = inventoryFailure
     }
 
     func withSetupState(_ state: CloudGatewayMacSetupState) -> Self {
         .init(runtimeInitialized: runtimeInitialized, access: access, credentials: credentials,
-              extensionState: extensionState, preferences: preferences, regionId: regionId, setupState: .init(state))
+              extensionState: extensionState, preferences: preferences, regionId: regionId, setupState: .init(state),
+              inventoryFailure: inventoryFailure)
     }
 
     func validate() throws {
-        guard runtimeInitialized || (access == nil && credentials == nil && regionId == nil),
+        guard runtimeInitialized || (access == nil && credentials == nil && regionId == nil && inventoryFailure == nil),
               regionId.map(CloudGatewayMacControllerProtocol.validComponent) ?? true else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }

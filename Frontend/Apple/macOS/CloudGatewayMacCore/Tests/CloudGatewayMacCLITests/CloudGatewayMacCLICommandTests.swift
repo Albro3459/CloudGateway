@@ -298,7 +298,7 @@ private func onlineState(access: CloudGatewayMacAccessState = .online,
     harness.status = .init(hasActiveTunnel: true, needsStop: true, observationAvailable: true)
     #expect(await harness.run("status", "--operation", id.uuidString, "--json") == 10)
     #expect(harness.output == #"""
-        {"command":"status","data":{"operation":{"configId":null,"error":{"code":"operation_unknown","message":"The operation result is unknown or no longer retained","suggestion":"Run cloudgateway status before trying again"},"id":"6f9619ff-8b86-d011-b42d-00c04fc964ff","result":null,"state":"unknown","warning":null},"tunnel":{"configId":null,"observation":"current","observedAt":null,"state":"connected"}},"error":{"code":"operation_unknown","message":"The operation result is unknown or no longer retained","suggestion":"Run cloudgateway status before trying again"},"operationId":"6f9619ff-8b86-d011-b42d-00c04fc964ff","schemaVersion":1,"type":"error"}
+        {"command":"status","data":{"auth":null,"mode":null,"operation":{"configId":null,"error":{"code":"operation_unknown","message":"The operation result is unknown or no longer retained","suggestion":"Run cloudgateway status before trying again"},"id":"6f9619ff-8b86-d011-b42d-00c04fc964ff","result":null,"state":"unknown","warning":null},"tunnel":{"configId":null,"observation":"current","observedAt":null,"state":"connected"}},"error":{"code":"operation_unknown","message":"The operation result is unknown or no longer retained","suggestion":"Run cloudgateway status before trying again"},"operationId":"6f9619ff-8b86-d011-b42d-00c04fc964ff","schemaVersion":1,"type":"error"}
 
         """#)
     #expect(harness.diagnostics.isEmpty)

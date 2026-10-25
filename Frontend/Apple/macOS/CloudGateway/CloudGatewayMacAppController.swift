@@ -1,4 +1,5 @@
 import AppKit
+import CloudGatewayKit
 import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import CloudGatewayMacIPC
@@ -171,6 +172,20 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         if state.canToggleVPN {
             status.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
         }
+        let modes = NSMenu()
+        modes.autoenablesItems = false
+        for mode in CloudGatewayRoutingMode.allCases {
+            let choice = NSMenuItem(title: mode.displayName, action: #selector(selectMode), keyEquivalent: "")
+            choice.target = self
+            choice.representedObject = mode.rawValue
+            choice.state = state.selectedMode == mode ? .on : .off
+            choice.isEnabled = client.isSnapshotFresh && client.isCurrentBuild && state.canSetMode && actionTask == nil
+            modes.addItem(choice)
+        }
+        let modeItem = NSMenuItem(title: "Mode", action: nil, keyEquivalent: "")
+        modeItem.submenu = modes
+        modeItem.isEnabled = true
+        menu.addItem(modeItem)
         if let message = frontendErrorMessage ?? client.errorMessage ?? state.errorMessage { add(message) }
         updateMenuItem = nil
         if let title = updateTitle, title != state.statusTitle {
@@ -247,6 +262,8 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         let current = client.isSnapshotFresh && client.isCurrentBuild
         CloudGatewayMacMenuUpdates.updateClients(in: menu, from: state, isSnapshotFresh: current,
             canConnect: actionTask == nil && setupState == .ready)
+        CloudGatewayMacMenuUpdates.updateModes(in: menu, from: state, isSnapshotFresh: current,
+            canSetMode: actionTask == nil)
         for item in menu.items {
             switch item.action {
             case #selector(toggleVPN):
@@ -300,6 +317,12 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     @objc private func selectClient(_ item: NSMenuItem) {
         guard let identifier = item.representedObject as? String else { return }
         send(.connect, identifier: identifier)
+    }
+
+    @objc private func selectMode(_ item: NSMenuItem) {
+        guard client.isSnapshotFresh, client.isCurrentBuild, snapshot.canSetMode,
+              let value = item.representedObject as? String, let mode = CloudGatewayRoutingMode(rawValue: value) else { return }
+        send(.setMode, mode: mode)
     }
 
     @objc private func toggleVPN() {
@@ -371,14 +394,15 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         render()
     }
 
-    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil) {
+    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil,
+                      mode: CloudGatewayRoutingMode? = nil) {
         guard actionTask == nil, !isShuttingDown else { return }
         frontendErrorMessage = nil
         actionTask = Task { [weak self] in
             guard let self else { return }
             defer { actionTask = nil; render() }
             let id = UUID()
-            do { _ = try await client.userRequest(action, id: id, identifier: identifier) }
+            do { _ = try await client.userRequest(action, id: id, identifier: identifier, mode: mode) }
             catch is CancellationError { }
             catch {
                 frontendErrorMessage = client.message(for: error)

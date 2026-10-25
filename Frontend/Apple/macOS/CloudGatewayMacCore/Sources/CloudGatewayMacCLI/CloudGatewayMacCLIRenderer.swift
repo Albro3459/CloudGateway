@@ -33,6 +33,7 @@ struct CloudGatewayMacCLIRenderer {
         case .help(let help): lines = render(help)
         case .version(let version): lines = ["CloudGateway \(version.version) (\(version.build))"]
         case .auth(let auth): lines = render(auth)
+        case .mode(let mode): lines = table(modeRows(mode))
         case .status(let status): lines = render(status)
         case .inventory(let inventory): lines = render(inventory)
         case .mutation(let mutation):
@@ -45,10 +46,13 @@ struct CloudGatewayMacCLIRenderer {
                 mutation.creation.map { "Client created: \($0.name) (\($0.regionId))" } ?? "Client created"
             case .completed where mutation.command == .update: "VPN extension update completed"
             case .completed where mutation.command == .remove: "Client removed"
+            case .completed where mutation.command == .mode:
+                mutation.requestedMode.map { "Routing mode selected: \($0.rawValue)" } ?? "Routing mode selected"
             case _ where mutation.command == .update: "VPN extension update \(mutation.operation.state.rawValue)"
             default: "Command \(mutation.operation.state.rawValue)"
             }
-            lines = [summary] + render(.init(tunnel: mutation.tunnel, operation: mutation.operation, update: mutation.update))
+            lines = [summary] + render(.init(tunnel: mutation.tunnel, operation: mutation.operation, update: mutation.update,
+                                            mode: mutation.mode), includesSession: false)
                 + (mutation.choices.map { ["", "Available configs:"] + render($0) } ?? [])
         case .refresh(let refresh):
             lines = ["Inventory refresh: \(label(refresh.result.rawValue))"]
@@ -85,6 +89,10 @@ struct CloudGatewayMacCLIRenderer {
     }
 
     private func render(_ auth: CloudGatewayMacCLIAuthStatus) -> [String] {
+        table(authRows(auth))
+    }
+
+    private func authRows(_ auth: CloudGatewayMacCLIAuthStatus) -> [(String, String)] {
         let summary = switch auth.state {
         case .signedOut: "Signed out"
         case .retained: "Session retained, access not verified"
@@ -96,10 +104,17 @@ struct CloudGatewayMacCLIRenderer {
         var rows = [("Auth", summary), ("Account", auth.accountId ?? "none"), ("Access", auth.access.rawValue),
                     ("Credentials", auth.credentials.rawValue)]
         if auth.loginPending { rows.append(("Login", "in progress")) }
-        return table(rows)
+        return rows
     }
 
-    private func render(_ status: CloudGatewayMacCLIStatus) -> [String] {
+    private func modeRows(_ mode: CloudGatewayMacCLIModeStatus) -> [(String, String)] {
+        let active = mode.activeMode?.rawValue
+            ?? (mode.tunnelState == .disconnected && mode.observation == .current ? "none" : "unknown")
+        return [("Selected mode", mode.selectedMode?.rawValue ?? "unavailable"), ("Active mode", active),
+                ("Mode observation", observationLabel(mode.observation, observedAt: mode.observedAt))]
+    }
+
+    private func render(_ status: CloudGatewayMacCLIStatus, includesSession: Bool = true) -> [String] {
         let tunnel = status.tunnel
         let observation = observationLabel(tunnel.observation, observedAt: tunnel.observedAt)
         var rows = [("VPN", tunnel.state.rawValue), ("Observation", observation)]
@@ -145,7 +160,11 @@ struct CloudGatewayMacCLIRenderer {
             if let error = update.error { rows.append(("Update error", error.message)) }
             if let warning = update.warning { rows.append(("Update warning", warning.message)) }
         }
-        return table(rows)
+        var lines = table(rows)
+        if let mode = status.mode { lines += table(modeRows(mode)) }
+        else if includesSession { lines += table([("Mode", "unavailable")]) }
+        if includesSession { lines += table(status.auth.map(authRows) ?? [("Auth", "unavailable")]) }
+        return lines
     }
 
     private func render(_ inventory: CloudGatewayMacCLIInventory) -> [String] {

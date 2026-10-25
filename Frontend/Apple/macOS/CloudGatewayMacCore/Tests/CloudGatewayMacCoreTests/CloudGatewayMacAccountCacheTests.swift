@@ -412,6 +412,39 @@ func evictionRejectsInvalidAccountNamespaces(accountId: String) async throws {
     #expect(try Data(contentsOf: path) == invalid)
 }
 
+@Test func accountRoutingPreferencePersistsAcrossRefreshAndAccounts() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayModeTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (config, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(config)
+    try await cache.selectMode(.mesh, accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    let reopened = CloudGatewayMacAccountCache(directory: directory)
+    #expect(try await reopened.load(accountId: "user-a").selectedMode == .mesh)
+    let restored = try #require(try await reopened.load(accountId: "user-a").configs.first)
+    #expect(restored.accountId == config.accountId)
+    #expect(restored.identifier == config.identifier)
+    #expect(restored.snapshot.configHash == config.snapshot.configHash)
+    #expect(restored.snapshot.secretReference == config.snapshot.secretReference)
+    #expect(try await reopened.load(accountId: "user-b").selectedMode == .full)
+    await #expect(throws: CloudGatewayMacCacheError.accessDenied) {
+        try await reopened.selectMode(.mesh, accountId: "user-b")
+    }
+}
+
+@Test func routingPreferenceLegacyDefaultsAndInvalidValuesStayUnknown() throws {
+    let legacy = Data(#"{"configs":[],"accessAllowed":true}"#.utf8)
+    #expect(try JSONDecoder().decode(CloudGatewayMacAccountCacheSnapshot.self, from: legacy).selectedMode == .full)
+    for invalid in [#""unsupported""#, "null", "42"] {
+        let data = Data("{\"configs\":[],\"accessAllowed\":true,\"selectedMode\":\(invalid)}".utf8)
+        let snapshot = try JSONDecoder().decode(CloudGatewayMacAccountCacheSnapshot.self, from: data)
+        #expect(snapshot.selectedMode == nil)
+        let roundTrip = try JSONDecoder().decode(CloudGatewayMacAccountCacheSnapshot.self, from: JSONEncoder().encode(snapshot))
+        #expect(roundTrip.selectedMode == nil)
+    }
+}
+
 private func accountCacheFixture(
     accountId: String,
     clientId: String = "client-a",
@@ -440,4 +473,30 @@ private func accountCacheFixture(
         readAt: Date(timeIntervalSince1970: 1), updatedAt: nil
     )
     return (CloudGatewayMacInstalledConfig(accountId: accountId, identifier: "\(accountId)/us-a/\(clientId)", snapshot: snapshot), option)
+}
+
+@Test func invalidStoredRoutingPreferenceSurvivesRefreshUntilExplicitlyRepaired() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CloudGatewayModeTests-\(UUID())")
+    let cache = CloudGatewayMacAccountCache(directory: directory)
+    let (config, option) = try accountCacheFixture(accountId: "user-a")
+    try await cache.authorize(accountId: "user-a", role: .user, options: [option])
+    try await cache.save(config)
+    let accountDirectory = try #require(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+    let path = accountDirectory.appendingPathComponent("inventory.json")
+    var payload = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+    var snapshot = try #require(payload["snapshot"] as? [String: Any])
+    snapshot["selectedMode"] = "unsupported"
+    payload["snapshot"] = snapshot
+    try JSONSerialization.data(withJSONObject: payload).write(to: path, options: .atomic)
+    let reopened = CloudGatewayMacAccountCache(directory: directory)
+    #expect(try await reopened.load(accountId: "user-a").selectedMode == nil)
+    try await reopened.authorize(accountId: "user-a", role: .user, options: [option])
+    #expect(try await reopened.load(accountId: "user-a").selectedMode == nil)
+    let restored = try #require(try await reopened.load(accountId: "user-a").configs.first)
+    #expect(restored.accountId == config.accountId)
+    #expect(restored.identifier == config.identifier)
+    #expect(restored.snapshot.configHash == config.snapshot.configHash)
+    #expect(restored.snapshot.secretReference == config.snapshot.secretReference)
+    try await reopened.selectMode(.mesh, accountId: "user-a")
+    #expect(try await reopened.load(accountId: "user-a").selectedMode == .mesh)
 }

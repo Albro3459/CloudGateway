@@ -65,6 +65,19 @@ reconnects the VPN. Access checks and parallel region/client reads have separate
 10-second deadlines; only server snapshots count as fresh, and listeners detach
 on completion, cancellation, or timeout.
 
+VPN profile/status notifications invalidate the controller's Firestore
+connection. Before its next inventory read, the controller replaces that
+read-only Firestore instance and keeps its memory-cache settings. This closes
+connections left on an earlier VPN route when Firebase's general reachability
+state does not change. Firebase Auth and the VPN session are independent of this
+replacement.
+
+The optional `doctor` inventory check reports the most recent failed step and
+an allowlisted error source/code, including a local read deadline. This evidence
+stays in controller memory and can remain after recovery. It is not a current
+reachability check. Inventory failure evidence excludes error descriptions, URLs, account/client
+identifiers, document contents, tokens, and configs.
+
 Commands reserve an operation UUID before the frontend confirms acceptance.
 Unconfirmed reservations expire after 30 seconds. Confirmed work belongs to the
 controller after caller loss; an uncertain outcome never authorizes automatic
@@ -72,6 +85,20 @@ replay. Results remain available for ten minutes, subject to replacement or
 restart. Request UUID/digest receipts persist for ten minutes, with at most 64
 live entries. The [client-removal contract](../Frontend/Apple/macOS/README.md#controller-client-removal-contract)
 details removal's separate result and cleanup rules.
+
+Routing mode is account-local metadata with a legacy Full default. The Mac
+extension resolves the canonical System Keychain config through the existing
+single-use grant, then derives Full or Mesh only in memory. The canonical hash
+and secret remain unchanged. A mode change uses the controller's confirmed
+operation flow and reconnects the same authorized client after a confirmed stop.
+The new start receives a fresh grant after stop and profile save/reload.
+
+Applied mode comes from a bounded packet-provider reply containing only config
+identity and mode after adapter startup succeeds. The selected preference is
+separate. Missing or unreadable applied evidence remains unknown. Invalid mode
+metadata rejects starts without hiding the profile or preventing local stop.
+Combined CLI status adds auth from the same snapshot and retains the coarse
+status/stop path for compatible older builds.
 
 A five-second installed-bundle check detects verified replacements, closes new
 mutation admission, drains accepted work, and exits without stopping the VPN.
@@ -193,6 +220,93 @@ permit a replacement tunnel. macOS does not enable traffic health monitoring,
 automatic outage recovery, or notifications.
 
 ## Runtime checklist
+
+### Local replacement and mesh validation loop
+
+Use this workflow for a planned development install and live VPN session.
+Record actual results separately after running it. Use the
+[local signed install command](quick-deployment.md#install-macos-app-for-local-testing)
+and repeat the relevant automated checks after code changes.
+
+This mesh check uses the existing signed-in admin session. Do not sign out,
+reset auth, or change credentials. ACL tests and another account are outside this
+session's scope. Leave all pre-existing clients/configs unchanged and never
+remove them, including those visible through admin access. Create temporary
+clients for test connections and track their exact UUIDs privately. Every `up`,
+scoped `down`, and `remove` must name an explicit UUID; never rely on last
+selection, a region index, or a name for these commands. Mode is account-local,
+so restore the original preference after the tests.
+
+1. Record the current version/build, selected client, routing mode, and VPN state
+   privately so the session can restore them. Check for pending controller or
+   extension-update work and let it finish before replacing the app. Quit the
+   menu app using its normal Quit action. No fixed delay is required. Quitting
+   leaves the VPN and background controller running; verify controller handoff
+   and extension readiness after replacement instead of treating elapsed time
+   as proof that work drained.
+2. Run the local install command. It bumps the tracked app and extension builds,
+   builds the signed Release bundle, and verifies it before trashing the old app
+   and copying the new bundle into `/Applications` with `ditto`. Unlock signing
+   credentials privately if needed. The app, menu, controller, and CLI share one
+   executable/build; the separate extension must match. The bump command
+   synchronizes both targets across all build configurations. Choose an explicit
+   higher build if the installed build is ahead of the checkout.
+3. Run `cloudgateway update --allow-disconnect`, retaining its operation ID
+   privately. This authorizes the existing stop/update/reconnect flow. If the
+   command loses its connection or times out after confirmation, inspect
+   `cloudgateway status --operation '<operation-id>'` before retrying. Complete
+   Apple approval or restart only if reported. Verify that an initially connected
+   VPN returns to the same client and mode, and an initially off VPN stays off.
+4. Run `cloudgateway doctor`, `cloudgateway status`, `cloudgateway version`, and
+   `cloudgateway mode status`. Confirm installed and running controller/extension
+   identities match the intended build, readiness is established, auth is usable,
+   and selected versus active mode reflects the observed tunnel. Keep these
+   commands available through the installed app's explicit CLI entry point if
+   the shell link is unavailable. Open the new menu app and compare its state.
+5. Create clearly named temporary clients in the regions being tested. Capture
+   their exact UUIDs from creation results or freshly refreshed inventory and
+   verify which records this session created before connecting. Use
+   `cloudgateway up '<temporary-client-uuid>'` for every test start. If the
+   original VPN is still active, stop it with its recorded explicit UUID before
+   starting a temporary client. Limit pre-existing client connection changes to
+   the managed update, that planned stop, and final restoration.
+6. On a temporary client, exercise `cloudgateway mode full` and
+   `cloudgateway mode mesh`, checking operation results and applied mode after
+   reconnect. In both modes, test controlled same-region and cross-region server
+   mesh addresses over IPv4 and IPv6, including SSH where configured. Stop with
+   `cloudgateway down '<temporary-client-uuid>'`, confirm disconnected status,
+   and repeat against the same mesh destinations: they should be unreachable
+   with the VPN off. Public management-path SSH is a separate diagnostic and
+   cannot establish mesh reachability. Verify ordinary internet uses VPN egress
+   and DNS in Full, and the underlying connection in Mesh only, without retaining
+   addresses, DNS queries, or traffic. Doctor's HTTPS check alone does not
+   establish split routing.
+7. While off, change modes and confirm that only the preference changes. Start
+   the temporary client again with its explicit UUID and verify the selected
+   mode applies. Check repeat selections, menu/CLI agreement, normal app
+   relaunch, and switching between the temporary regional clients. Preserve the
+   existing auth session throughout; omit logout and auth-reset checks from the
+   broader checklist below.
+8. If connectivity fails, first identify whether the failing layer is SSH access,
+   endpoint resolution, tunnel routing, host firewall, mesh membership, account
+   ACLs, or OCI interface private-IP assignment. Use existing private credentials
+   without displaying them. Reconcile a confirmed missing or stale OCI assignment
+   against the infrastructure's intended allocation before retesting. Preserve
+   unrelated VM configuration and update tracked infrastructure when its desired
+   state changes.
+9. Disconnect each temporary client with its explicit UUID before removing it
+   with `cloudgateway remove '<temporary-client-uuid>' --yes`. Remove only UUIDs
+   recorded as created during this session. Restore the original mode while off;
+   if the VPN was originally connected, reconnect only its recorded original UUID
+   using `cloudgateway up '<original-client-uuid>'`. An originally off VPN stays
+   off at the end. After fixes, run the relevant automated checks, bump the build
+   again, reinstall/update, and repeat the failed
+   checks plus the baseline status/identity checks. Commit source/build changes
+   separately from private runtime notes. Record only build IDs and sanitized
+   pass/fail results in committed docs; keep host aliases, account/client IDs,
+   addresses, credentials, configs, and command output with private details out.
+
+### Broader runtime checks
 
 Record build, macOS version, architecture, and sanitized pass/fail outcomes with
 an isolated account/config. Never record keys, tokens, configs, approval codes,
