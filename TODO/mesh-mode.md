@@ -133,7 +133,28 @@ Manually verify IPv4 and IPv6 mesh access within/across regions, access denial a
 - Local implementation checkpoints: `a0e1e18` for shared routing and `907add3` for the Mac app, controller, tunnel, CLI, and docs
 - `git diff --check` passed
 
-Live VPN checks listed above remain unperformed: same/cross-region IPv4/IPv6 access, account ACL enforcement, actual egress/resolver behavior, LAN overlap, and switching against an installed running extension. Automated lifecycle tests cover controller restart, offline starts, failures, secret recovery, session changes, frontend detach, and extension-update integration. No server deployment or installed VPN change was performed.
+Automated lifecycle tests cover controller restart, offline starts, failures, secret recovery, session changes, frontend detach, and extension-update integration. Live results for the requested mode and config-switching checks follow below. Account ACL enforcement and LAN overlap remain untested in this session.
+
+### Live macOS results, 2026-10-25
+
+Installed signed Release build 15, replacing build 14. Signed entitlements, provisioning profiles, Hardened Runtime, bundle dependencies, and all 96 bounded packaged CLI checks passed. The managed extension update restored the original connected client in Full. Final doctor checks passed for the app, controller, extension, credentials, access, network, DNS, HTTPS, and service.
+
+All 102 assertions in the live CLI matrix passed using two newly created temporary regional clients:
+
+- Full and Mesh only reached both regional servers over IPv4 and IPv6, including the opposite region, verified by SSH service banners
+- Switching configs in both directions preserved the preselected mode and applied it to the new tunnel
+- Changing modes while connected restarted the same client and reported matching selected and active modes. Repeating the current mode succeeded
+- Full installed public IPv4/IPv6 tunnel routes, used regional VPN DNS, and changed internet egress from the underlying connection
+- Mesh only retained IPv4/IPv6 mesh tunnel routes, used underlying internet egress and DNS, and left public traffic outside the VPN
+- With the VPN off, both servers' mesh addresses were unreachable over IPv4 and IPv6 while ordinary internet remained available
+- Changing modes while off saved the preference without starting a tunnel. The next explicit client start applied it
+- Menu app relaunch and inventory refresh preserved Mesh only and the active client
+
+The native menu also passed live checks: both choices were present, its checkmarks and connected-status text agreed with CLI state after config switching, and selecting Mesh only then Full restarted the same temporary client in the requested mode.
+
+Cleanup encountered `network_unavailable` responses from cloud inventory/removal calls. Retained operation lookup and refreshed inventory established that the first removal had failed before retrying it. Cloud access recovered, both temporary clients were removed by their recorded UUIDs, and the original client, selection, Full mode, installed-profile flags, cloud inventory, and signed-in session were verified restored. The cause of these cleanup network errors was not established. No mode or config-switching assertion failed, and no server changes were needed.
+
+Only sanitized pass/fail results and build IDs are recorded here. Runtime identifiers and probe details remain outside the repository. No logout, auth reset, or changes to other users' clients were performed.
 
 ## Source anchors and review
 
