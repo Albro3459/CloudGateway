@@ -1,4 +1,16 @@
+import CloudGatewayKit
 import Foundation
+
+public struct CloudGatewayMacTunnelAppliedState: Codable, Equatable, Sendable {
+    public static let request = Data("cloudgateway.applied-mode.v1".utf8)
+    public let configId: String
+    public let mode: CloudGatewayRoutingMode
+
+    public init(configId: String, mode: CloudGatewayRoutingMode) {
+        self.configId = configId
+        self.mode = mode
+    }
+}
 
 public enum CloudGatewayMacTunnelLifecycleError: Error, Equatable, Sendable {
     case busy
@@ -39,8 +51,11 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
         var stopCompletions: [StopCompletion] = []
         var stopDeadlineExpired = false
         var adapterSubmitted = false
+        let requestedState: CloudGatewayMacTunnelAppliedState?
+        var appliedState: CloudGatewayMacTunnelAppliedState?
 
-        init(completion: @escaping StartCompletion) {
+        init(state: CloudGatewayMacTunnelAppliedState?, completion: @escaping StartCompletion) {
+            requestedState = state
             startCompletion = completion
         }
     }
@@ -61,6 +76,7 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
     }
 
     public func start(
+        appliedState: CloudGatewayMacTunnelAppliedState? = nil,
         operation: @escaping @Sendable (StartAttempt) -> Void,
         completion: @escaping StartCompletion
     ) {
@@ -71,9 +87,15 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
                     : CloudGatewayMacTunnelLifecycleError.busy)
                 return
             }
-            let next = Session(completion: completion)
+            let next = Session(state: appliedState, completion: completion)
             session = next
             operation(StartAttempt(lifecycle: self, id: next.id))
+        }
+    }
+
+    public func readAppliedState(_ completion: @escaping @Sendable (CloudGatewayMacTunnelAppliedState?) -> Void) {
+        queue.async { [self] in
+            completion(session?.stopping == false ? session?.appliedState : nil)
         }
     }
 
@@ -133,6 +155,8 @@ public final class CloudGatewayMacTunnelLifecycle: @unchecked Sendable {
         session.startCompletion = nil
         if error != nil {
             self.session = nil
+        } else {
+            session.appliedState = session.requestedState
         }
         completion(error)
     }

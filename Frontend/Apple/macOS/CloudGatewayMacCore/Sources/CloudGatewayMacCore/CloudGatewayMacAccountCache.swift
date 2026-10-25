@@ -11,11 +11,34 @@ public struct CloudGatewayMacAccountCacheSnapshot: Codable, Equatable, Sendable 
     public var configs: [CloudGatewayMacInstalledConfig]
     public var selectedIdentifier: String?
     public var accessAllowed: Bool
+    public var selectedMode: CloudGatewayRoutingMode?
 
-    public init(configs: [CloudGatewayMacInstalledConfig] = [], selectedIdentifier: String? = nil, accessAllowed: Bool = false) {
+    public init(configs: [CloudGatewayMacInstalledConfig] = [], selectedIdentifier: String? = nil, accessAllowed: Bool = false, selectedMode: CloudGatewayRoutingMode? = .full) {
         self.configs = configs
         self.selectedIdentifier = selectedIdentifier
         self.accessAllowed = accessAllowed
+        self.selectedMode = selectedMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case configs, selectedIdentifier, accessAllowed, selectedMode
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        configs = try values.decode([CloudGatewayMacInstalledConfig].self, forKey: .configs)
+        selectedIdentifier = try values.decodeIfPresent(String.self, forKey: .selectedIdentifier)
+        accessAllowed = try values.decode(Bool.self, forKey: .accessAllowed)
+        selectedMode = values.contains(.selectedMode)
+            ? (try? values.decode(CloudGatewayRoutingMode.self, forKey: .selectedMode)) : .full
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(configs, forKey: .configs)
+        try values.encodeIfPresent(selectedIdentifier, forKey: .selectedIdentifier)
+        try values.encode(accessAllowed, forKey: .accessAllowed)
+        try values.encode(selectedMode, forKey: .selectedMode)
     }
 }
 
@@ -162,6 +185,13 @@ public actor CloudGatewayMacAccountCache: CloudGatewayMacSnapshotPersisting {
             throw CloudGatewayMacCacheError.invalidMetadata
         }
         payload.snapshot.selectedIdentifier = identifier
+        try write(payload)
+    }
+
+    public func selectMode(_ mode: CloudGatewayRoutingMode, accountId: String) throws {
+        var payload = try loadPayload(accountId: accountId)
+        guard payload.snapshot.accessAllowed else { throw CloudGatewayMacCacheError.accessDenied }
+        payload.snapshot.selectedMode = mode
         try write(payload)
     }
 

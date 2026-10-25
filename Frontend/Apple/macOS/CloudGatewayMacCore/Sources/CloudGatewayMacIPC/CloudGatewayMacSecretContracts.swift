@@ -34,6 +34,7 @@ public enum CloudGatewayMacProviderKey {
     public static let secretReference = "macSecretReference"
     public static let configId = "macConfigId"
     public static let startGrant = "macStartGrant"
+    public static let routingMode = "macRoutingMode"
 }
 
 enum CloudGatewayMacSecretBounds {

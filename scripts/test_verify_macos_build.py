@@ -54,11 +54,14 @@ class MacOSCLIVerificationTests(unittest.TestCase):
         if "add" in flags:
             self.assertTrue(any(flag in flags for flag in ["help", "--help"]) or invalid_add)
         is_help = any(flag in flags for flag in ["help", "--help"])
+        invalid_mode = flags[:2] == ["mode", "bogus"]
+        if "mode" in flags:
+            self.assertTrue(is_help or invalid_mode)
         invalid_remove = "remove" in flags and not is_help
         if "remove" in flags:
             self.assertTrue(is_help or "--yes" not in flags or flags[:2] == ["remove", "--yes"]
                             or any(flag in flags for flag in ["not-a-uuid", "0", "extra", "--unexpected"]))
-        invalid = invalid_add or invalid_remove or flags == ["status", "--yes", "--json"] or any(
+        invalid = invalid_add or invalid_remove or invalid_mode or flags == ["status", "--yes", "--json"] or any(
             flag in flags for flag in ["--unknown-option", "--unexpected", "0"]
         )
         if flags[:2] == ["auth", "login"]:
@@ -73,6 +76,8 @@ class MacOSCLIVerificationTests(unittest.TestCase):
             command = "add"
         elif invalid_remove:
             command = "remove"
+        elif invalid_mode:
+            command = "mode"
         elif any(flag in flags for flag in ["version", "--version", "-v"]) and not any(
             flag in flags for flag in ["help", "--help"]
         ):
@@ -98,12 +103,14 @@ class MacOSCLIVerificationTests(unittest.TestCase):
     def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
         with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
             verifier.verify_cli(self.app)
-        self.assertEqual(run.call_count, 88)
+        self.assertEqual(run.call_count, 96)
         symlink = next(entry.args[0][0] for entry in run.call_args_list
                        if Path(entry.args[0][0]).name == "cloudgateway")
         for prefix in ([str(self.binary.absolute()), "--cli"], [symlink]):
             for flags in (["version"], ["-v"], ["--version"], ["version", "--json"], ["-v", "--json"],
                           ["--version", "--json"], ["ls", "-l", "--help", "--json"],
+                          ["mode", "--help"], ["help", "mode", "--json"],
+                          ["mode", "status", "--help", "--json"], ["mode", "bogus", "--json"],
                           ["update", "--allow-disconnect", "--help", "--json"],
                           ["update", "--unexpected", "--json"], ["add", "--help"], ["help", "add", "--json"],
                           ["add", "sanjose"], ["add", "us-sanjose-1", "", "--json"],

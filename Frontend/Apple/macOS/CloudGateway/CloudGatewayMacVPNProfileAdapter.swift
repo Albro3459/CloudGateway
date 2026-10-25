@@ -46,7 +46,18 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
 
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         let loaded = try await loadManagers()
-        let profiles = try loaded.filter(Self.isOwned).map(Self.profile)
+        var profiles: [CloudGatewayMacInstalledProfile] = []
+        for manager in loaded where Self.isOwned(manager) {
+            var profile = try Self.profile(manager)
+            if profile.needsConfirmedStop {
+                let state = await MacVPNModeReader().read(manager.connection as? NETunnelProviderSession)
+                let status = CloudGatewayTunnelStatus(manager.connection.status)
+                profile = .init(identifier: profile.identifier, reference: profile.reference, status: status,
+                                mode: profile.mode != nil && state?.configId == profile.identifier
+                                    && (status == .connected || status == .reasserting) ? state?.mode : nil)
+            }
+            profiles.append(profile)
+        }
         try CloudGatewayMacProfileMetadata.validateUnique(profiles)
         return profiles
     }
@@ -73,6 +84,7 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
                 CloudGatewayProviderConfigurationKey.configHash: config.snapshot.configHash,
                 CloudGatewayMacProviderKey.configId: config.identifier,
                 CloudGatewayMacProviderKey.secretReference: try config.reference.value,
+                CloudGatewayMacProviderKey.routingMode: config.mode.rawValue,
             ]
             let otherActive = loaded.contains { other in
                 other !== manager && Self.needsConfirmedStop(other.connection.status)
@@ -85,7 +97,8 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
             try await manager.saveToPreferences()
             try await manager.loadFromPreferences()
             let reloaded = try Self.profile(manager)
-            guard reloaded.identifier == config.identifier, reloaded.reference == (try config.reference) else {
+            guard reloaded.identifier == config.identifier, reloaded.reference == (try config.reference),
+                  reloaded.mode == config.mode else {
                 throw CloudGatewayMacVPNProfileError.invalidProfile
             }
         })
@@ -106,7 +119,8 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
             try await manager.saveToPreferences()
         }
         try await manager.loadFromPreferences()
-        guard try Self.profile(manager).identifier == identifier else {
+        let profile = try Self.profile(manager)
+        guard profile.identifier == identifier, profile.mode != nil else {
             throw CloudGatewayMacVPNProfileError.invalidProfile
         }
         guard let session = manager.connection as? NETunnelProviderSession else {
@@ -260,5 +274,36 @@ private final class MacVPNStopWaiter {
         timeoutTask?.cancel()
         timeoutTask = nil
         continuation.resume(with: result)
+    }
+}
+
+@MainActor
+private final class MacVPNModeReader {
+    private var continuation: CheckedContinuation<CloudGatewayMacTunnelAppliedState?, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    func read(_ session: NETunnelProviderSession?) async -> CloudGatewayMacTunnelAppliedState? {
+        guard let session, session.status == .connected || session.status == .reasserting else { return nil }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            timeoutTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.finish(nil)
+            }
+            do {
+                try session.sendProviderMessage(CloudGatewayMacTunnelAppliedState.request) { [weak self] data in
+                    let state = data.flatMap { try? JSONDecoder().decode(CloudGatewayMacTunnelAppliedState.self, from: $0) }
+                    Task { @MainActor [weak self] in self?.finish(state) }
+                }
+            } catch { finish(nil) }
+        }
+    }
+
+    private func finish(_ state: CloudGatewayMacTunnelAppliedState?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(returning: state)
     }
 }

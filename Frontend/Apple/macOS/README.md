@@ -272,6 +272,10 @@ cloudgateway version               # Also available as -v
 cloudgateway help auth login
 cloudgateway auth login --no-qr
 cloudgateway auth status --json
+cloudgateway status                # VPN details, routing mode, and auth
+cloudgateway mode status           # Routing mode only; bare mode is shorthand
+cloudgateway mode mesh             # Mesh only, with ordinary internet outside the VPN
+cloudgateway mode full             # Internet and mesh through the VPN (default)
 cloudgateway list --region us-east-1
 cloudgateway list --refresh --json
 cloudgateway ls -l                 # VPN id, tunnel IP, connection URL, owner email
@@ -292,6 +296,37 @@ cloudgateway doctor --json
 cloudgateway update                # Update the extension from the installed app
 cloudgateway update --allow-disconnect --json
 ```
+
+### Routing modes and status
+
+The menu's **Mode** submenu and `cloudgateway mode full|mesh` share one
+preference per account on this Mac. **Full** is the default and keeps regional
+VPN DNS and internet egress. **Mesh only** carries CloudGateway tunnel addresses
+through the selected region while ordinary internet traffic and DNS use the
+Mac's normal connection. Ordinary DNS no longer receives CloudGateway's AdGuard
+filtering in Mesh only. Both modes retain the same mesh access permissions.
+
+Changing mode while disconnected saves it for the next connection. Changing
+mode while connected briefly stops and restarts the same client. This can
+interrupt mesh sessions and change the public IP used by internet sessions.
+The controller owns confirmed work even if the menu closes or CLI detaches.
+Mode changes do not create a new client, rotate keys, or change server mesh
+membership. Cross-region access still requires the existing mesh and account
+ACLs. Mesh only uses `10.0.0.0/16` and `fd42:42:42::/48`; overlapping local LAN
+routes can affect reachability. This is a routing preference, with no added
+kill switch or server-enforced ban on internet egress.
+
+`status` retains its VPN, observation, config, operation, and update details,
+and adds mode and auth. `status --operation` retains its existing lookup
+behavior and includes the current observed state. `mode status` (or `mode`)
+shows mode only. `auth status` keeps the focused auth details. Selected mode
+and active mode can differ during a switch or failed start. Unknown or
+unavailable mode is reported explicitly. A signed-out account can still have
+a connected VPN, and retained credentials alone do not prove verified access.
+Compatible status from a different build keeps coarse VPN information when
+mode or auth information is unavailable.
+
+### Client commands
 
 `add <region> <name>` creates a client for the signed-in account. Both arguments
 are required. Names are trimmed, must contain 1–80 characters without control
@@ -489,6 +524,13 @@ also support `--json` and never connect to the controller.
 Update/status records add an `update` object when relevant, with the durable
 phase, target identity, reconnect decision, and account-filtered config ID.
 Old records without update work retain their existing shape.
+Combined status adds nullable `mode` and `auth` objects. Mode contains
+`selectedMode`, `activeMode`, tunnel state, observation freshness, and observation
+time. Serialized mode values are `full` and `mesh`. A missing active mode is
+interpreted with tunnel state and freshness, so a stopped tunnel differs from
+unknown applied mode. Focused `mode status` returns that mode object directly.
+Auth uses the same state and access evidence as `auth status`. Different-build
+compatible status leaves both new objects null when unavailable.
 
 | Exit | Meaning |
 | --- | --- |

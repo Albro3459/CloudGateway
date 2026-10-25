@@ -1,4 +1,5 @@
 import AppKit
+import CloudGatewayKit
 
 public enum CloudGatewayMacMenuUpdates {
     @MainActor
@@ -10,10 +11,24 @@ public enum CloudGatewayMacMenuUpdates {
     }
 
     @MainActor
+    public static func updateModes(in menu: NSMenu, from snapshot: CloudGatewayMacControllerView,
+                                   isSnapshotFresh: Bool, canSetMode: Bool) {
+        for item in menu.items {
+            if let value = item.representedObject as? String, let mode = CloudGatewayRoutingMode(rawValue: value) {
+                item.state = snapshot.selectedMode == mode ? .on : .off
+                item.isEnabled = isSnapshotFresh && canSetMode && snapshot.canSetMode
+            }
+            if let submenu = item.submenu {
+                updateModes(in: submenu, from: snapshot, isSnapshotFresh: isSnapshotFresh, canSetMode: canSetMode)
+            }
+        }
+    }
+
+    @MainActor
     private static func updateClients(in menu: NSMenu, rows: [String: CloudGatewayMacControllerView.Client],
                                       isSnapshotFresh: Bool, canConnect: Bool) {
         for item in menu.items {
-            if let identifier = item.representedObject as? String {
+            if let identifier = item.representedObject as? String, CloudGatewayRoutingMode(rawValue: identifier) == nil {
                 let row = rows[identifier]
                 item.isEnabled = isSnapshotFresh && canConnect && row?.isEnabled == true
                 item.state = isSnapshotFresh && (row?.status == .connected || row?.status == .reasserting) ? .on : .off

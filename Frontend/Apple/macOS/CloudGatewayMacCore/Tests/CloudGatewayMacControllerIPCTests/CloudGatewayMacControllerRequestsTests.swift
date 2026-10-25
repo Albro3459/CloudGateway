@@ -231,3 +231,25 @@ func controllerRequestsRejectCrossSlotIdentifierCollisions(stopFirst: Bool) thro
     #expect(try restored.lookup(add)?.state == .unknown)
     #expect(try restored.lookup(stop) == nil)
 }
+
+@MainActor
+@Test func controllerRequestsDeduplicateModesInMemoryAndAfterRestart() throws {
+    let store = RequestReceiptStore()
+    let requests = try store.make()
+    let id = UUID()
+    let mesh = CloudGatewayMacControllerRequest(action: .setMode, id: id, mode: .mesh)
+    let full = CloudGatewayMacControllerRequest(action: .setMode, id: id, mode: .full)
+    #expect(try requests.accept(mesh).state == .accepted)
+    #expect(try requests.lookup(mesh)?.state == .accepted)
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) { try requests.lookup(full) }
+    requests.finish(id: id, state: .running)
+    #expect(try requests.accept(mesh).state == .running)
+    #expect(store.writes == 1)
+    let restored = try store.make()
+    #expect(try restored.lookup(mesh)?.state == .unknown)
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) { try restored.lookup(full) }
+    #expect(throws: CloudGatewayMacControllerFailure.invalidRequest) { try restored.accept(full) }
+    let text = String(decoding: try #require(store.data), as: UTF8.self)
+    #expect(!text.contains("mesh"))
+    #expect(!text.contains("setMode"))
+}

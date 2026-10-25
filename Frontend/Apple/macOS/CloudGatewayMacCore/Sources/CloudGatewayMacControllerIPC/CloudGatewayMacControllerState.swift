@@ -51,6 +51,9 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
     public let commandInFlight: Bool
     public let stopAllowed: Bool?
     public let selectedIdentifier: String?
+    public var selectedMode: CloudGatewayRoutingMode? = nil
+    public var activeMode: CloudGatewayRoutingMode? = nil
+    var modeChangeAllowed: Bool? = nil
     public let setup: CloudGatewayMacControllerView.SetupState
     public let canUpdateExtension: Bool
     public let creationAllowed: Bool
@@ -92,6 +95,9 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         commandInFlight = snapshot.domain.commandInFlight
         stopAllowed = snapshot.domain.stopAllowed
         selectedIdentifier = snapshot.lastSelectedIdentifier.flatMap { Self.belongs($0, to: accountId) ? $0 : nil }
+        selectedMode = accountId == nil ? nil : snapshot.domain.selectedMode
+        let activeProfiles = snapshot.domain.observedProfiles.filter { $0.status == .connected || $0.status == .reasserting }
+        activeMode = activeProfiles.count == 1 ? activeProfiles.first?.mode : nil
         setup = .init(setupState)
         self.canUpdateExtension = canUpdateExtension
         creationAllowed = snapshot.canCreateClient
@@ -106,13 +112,15 @@ public struct CloudGatewayMacControllerState: Codable, Equatable, Sendable {
         else { phase = .disconnected }
         return .init(hasActiveTunnel: observedProfiles.contains { $0.status == .connected || $0.status == .reasserting },
               needsStop: observedProfiles.contains { $0.status != .invalid && $0.status != .disconnected },
-              observationAvailable: observationAvailable, phase: phase)
+              observationAvailable: observationAvailable, phase: phase, selectedMode: selectedMode, activeMode: activeMode)
     }
 
     func validate() throws {
         let bounds = CloudGatewayMacControllerProtocol.self
         let installed = Set(installedIdentifiers)
         guard accountId.map(bounds.validComponent) ?? true,
+              accountId != nil || selectedMode == nil,
+              activeMode == nil || observedProfiles.contains(where: { $0.status == .connected || $0.status == .reasserting }),
               clients.count <= 4096, installedIdentifiers.count <= 4096, observedProfiles.count <= 4096,
               Set(clients.map(\.regionId)).count <= 256,
               clients.allSatisfy({ Self.belongs($0.identifier, to: accountId)

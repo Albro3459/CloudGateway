@@ -114,8 +114,9 @@ public final class CloudGatewayMacControllerRequests {
     }
 
     private static func digest(_ request: CloudGatewayMacControllerRequest) -> String {
-        let content = [request.action.rawValue, request.identifier ?? "", request.regionId ?? "",
+        var content = [request.action.rawValue, request.identifier ?? "", request.regionId ?? "",
                        request.clientName ?? "", request.contextId?.uuidString ?? ""]
+        if let mode = request.mode { content.append(mode.rawValue) }
         return SHA256.hash(data: (try? JSONEncoder().encode(content)) ?? Data())
             .map { String(format: "%02x", $0) }.joined()
     }

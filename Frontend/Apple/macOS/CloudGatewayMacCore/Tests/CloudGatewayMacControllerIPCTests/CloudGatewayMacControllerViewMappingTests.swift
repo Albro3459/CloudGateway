@@ -117,7 +117,7 @@ import Testing
     for accountId in ["account-A._", nil] {
         let snapshot = controllerSnapshot(
             accountId: accountId, clients: [client], installedIdentifiers: [foreign],
-            observedProfiles: [.init(identifier: foreign, status: .connected)], selectedIdentifier: foreign
+            observedProfiles: [.init(identifier: foreign, status: .connected, mode: nil)], selectedIdentifier: foreign
         )
         let state = try controllerRoundTrip(.init(snapshot: snapshot, setupState: .required, canUpdateExtension: false))
         #expect(state.clients.isEmpty)
@@ -187,7 +187,7 @@ import Testing
         (.disconnecting, "VPN disconnecting…", false, false)
     ] {
         let state = try controllerRoundTrip(.init(
-            snapshot: controllerSnapshot(observedProfiles: [.init(identifier: identifier, status: status)]),
+            snapshot: controllerSnapshot(observedProfiles: [.init(identifier: identifier, status: status, mode: nil)]),
             setupState: .ready, canUpdateExtension: false
         ))
         let view = CloudGatewayMacControllerView(state: state)
@@ -196,7 +196,7 @@ import Testing
         #expect(view.canToggleVPN == toggle)
     }
     let profiles: [CloudGatewayMacObservedProfile] = [
-        .init(identifier: identifier, status: .connected), .init(identifier: "account-A._/r_E-1/other", status: .disconnecting)
+        .init(identifier: identifier, status: .connected, mode: nil), .init(identifier: "account-A._/r_E-1/other", status: .disconnecting, mode: nil)
     ]
     let state = try controllerRoundTrip(.init(
         snapshot: controllerSnapshot(observedProfiles: profiles), setupState: .ready, canUpdateExtension: false
@@ -244,7 +244,7 @@ private func controllerSnapshot(
     isRestoringSession: Bool = false, isAuthSettling: Bool = false, installedIdentifiers: [String]? = nil,
     observedProfiles: [CloudGatewayMacObservedProfile]? = nil, selectedIdentifier: String? = "account-A._/r_E-1/c_Z.9",
     observationIsFresh: Bool = true, hasRetainedSession: Bool? = nil,
-    inventoryFreshness: CloudGatewayMacInventoryFreshness = .current
+    inventoryFreshness: CloudGatewayMacInventoryFreshness = .current, selectedMode: CloudGatewayRoutingMode? = nil
 ) -> CloudGatewayMacControllerSnapshot {
     let identifier = "account-A._/r_E-1/c_Z.9"
     return CloudGatewayMacControllerSnapshot(
@@ -252,12 +252,12 @@ private func controllerSnapshot(
             accountId: accountId, hasRetainedSession: hasRetainedSession ?? (accountId != nil), accessAuthorized: accessAuthorized,
             access: accessAuthorized ? .online : .unverified, credentials: .unknown,
             inventoryFreshness: inventoryFreshness, installedIdentifiers: installedIdentifiers ?? [identifier],
-            observedProfiles: observedProfiles ?? [.init(identifier: identifier, status: .connected)],
+            observedProfiles: observedProfiles ?? [.init(identifier: identifier, status: .connected, mode: nil)],
             observationIsFresh: observationIsFresh, profilesObservedAt: nil, commandInFlight: commandInFlight, stopAllowed: stopAllowed,
             clients: clients ?? [controllerClient(
                 identifier, regionId: "r_E-1", regionName: regionName, clientName: clientName, ownerLabel: ownerLabel,
                 isEligible: isEligible, isInstalled: installedIdentifiers?.contains(identifier) ?? true, status: .connected
-            )]
+            )], selectedMode: selectedMode
         ),
         lastSelectedIdentifier: selectedIdentifier,
         browserState: accountId.map { .signedIn(AuthenticatedUser(uid: $0, email: nil)) } ?? .signedOut,
@@ -309,4 +309,80 @@ func controllerFrontendMissingStopCapabilityUsesLegacyCommandAdmission(busy: Boo
     let state = try JSONDecoder().decode(CloudGatewayMacControllerState.self, from: JSONSerialization.data(withJSONObject: json))
     #expect(state.stopAllowed == nil)
     #expect(CloudGatewayMacControllerView(state: state).canTurnOff == !busy)
+}
+
+@Test func controllerProjectsSelectedAndAppliedModesIndependently() throws {
+    let identifier = "account-A._/r_E-1/c_Z.9"
+    for (status, applied, active, title) in [
+        (CloudGatewayTunnelStatus.connected, CloudGatewayRoutingMode.full, CloudGatewayRoutingMode.full as CloudGatewayRoutingMode?, "VPN connected · Full"),
+        (.reasserting, .mesh, .mesh, "VPN connected · Mesh only"),
+        (.disconnected, .full, nil, "VPN off"),
+        (.connecting, .full, nil, "VPN connecting… · Mesh only"),
+        (.disconnecting, .full, nil, "VPN disconnecting… · Mesh only")
+    ] {
+        let state = try controllerRoundTrip(.init(snapshot: controllerSnapshot(
+            observedProfiles: [.init(identifier: identifier, status: status, mode: applied)], selectedMode: .mesh
+        ), setupState: .ready, canUpdateExtension: false))
+        #expect(state.selectedMode == .mesh)
+        #expect(state.activeMode == active)
+        #expect(state.status.selectedMode == .mesh)
+        #expect(state.status.activeMode == active)
+        let view = CloudGatewayMacControllerView(state: state)
+        #expect(view.selectedMode == .mesh)
+        #expect(view.activeMode == active)
+        #expect(view.statusTitle == title)
+        #expect(view.canSetMode == (status != .connecting && status != .disconnecting))
+    }
+}
+
+@Test func controllerRetainsSignedOutTunnelModeWithoutAccountMetadata() throws {
+    let state = try controllerRoundTrip(.init(snapshot: controllerSnapshot(
+        accountId: nil, observedProfiles: [.init(identifier: "other/region/client", status: .connected, mode: .mesh)], selectedMode: .full
+    ), setupState: .ready, canUpdateExtension: false))
+    #expect(state.selectedMode == nil)
+    #expect(state.activeMode == .mesh)
+    #expect(state.observedProfiles.first?.identifier == nil)
+    #expect(state.clients.isEmpty)
+    let view = CloudGatewayMacControllerView(state: state)
+    #expect(view.statusTitle == "VPN connected · Mesh only")
+    #expect(view.canTurnOff)
+    #expect(!view.canSetMode)
+    let text = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
+    #expect(!text.contains("other/region/client"))
+}
+
+@Test func controllerNeverInfersActiveModeFromPreferenceOrAmbiguousProfiles() throws {
+    for profiles in [
+        [CloudGatewayMacObservedProfile(identifier: "account-A._/r_E-1/c_Z.9", status: .connected, mode: nil)],
+        [.init(identifier: "account-A._/r_E-1/c_Z.9", status: .connected, mode: .mesh),
+         .init(identifier: "other/region/client", status: .connected, mode: .full)],
+        []
+    ] {
+        let state = try controllerRoundTrip(.init(snapshot: controllerSnapshot(
+            observedProfiles: profiles, selectedMode: .mesh
+        ), setupState: .ready, canUpdateExtension: false))
+        #expect(state.selectedMode == .mesh)
+        #expect(state.activeMode == nil)
+        #expect(state.status.activeMode == nil)
+        #expect(CloudGatewayMacControllerView(state: state).activeMode == nil)
+    }
+}
+
+@Test func controllerModeControlsFollowCommandAuthSetupAndTransitionGates() {
+    for (busy, authorized, restoring, settling, setup, allowed) in [
+        (false, true, false, false, CloudGatewayMacSetupState.ready, true),
+        (true, true, false, false, .ready, false),
+        (false, false, false, false, .ready, false),
+        (false, true, true, false, .ready, false),
+        (false, true, false, true, .ready, false),
+        (false, true, false, false, .updateRequired, false)
+    ] {
+        var state = CloudGatewayMacControllerState(snapshot: controllerSnapshot(
+            accessAuthorized: authorized, commandInFlight: busy, isRestoringSession: restoring, isAuthSettling: settling,
+            observedProfiles: [], selectedMode: .full
+        ), setupState: setup, canUpdateExtension: false)
+        #expect(CloudGatewayMacControllerView(state: state).canSetMode == allowed)
+        state.modeChangeAllowed = false
+        #expect(!CloudGatewayMacControllerView(state: state).canSetMode)
+    }
 }

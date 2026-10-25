@@ -1,3 +1,4 @@
+import CloudGatewayKit
 import CloudGatewayMacCore
 import Foundation
 
@@ -53,6 +54,9 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
     public let groups: [Region]
     public let statusTitle: String
     public let canToggleVPN: Bool
+    public let canSetMode: Bool
+    public let selectedMode: CloudGatewayRoutingMode?
+    public let activeMode: CloudGatewayRoutingMode?
     public let canTurnOff: Bool
     public let hasActiveTunnel: Bool
     public let reconnectIdentifier: String?
@@ -82,11 +86,15 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         isRestoringSession: Bool = false, isAuthSettling: Bool = false,
         hasRetainedSession: Bool = false, inventoryInFlight: Bool = false,
         canCreateClient: Bool = false, canRemoveClient: Bool = false, errorMessage: String? = nil,
-        hasUnlistedActiveProfile: Bool = false, canUpdateExtension: Bool = false
+        hasUnlistedActiveProfile: Bool = false, canUpdateExtension: Bool = false,
+        selectedMode: CloudGatewayRoutingMode? = nil, activeMode: CloudGatewayRoutingMode? = nil, canSetMode: Bool = false
     ) {
         self.groups = groups
         self.statusTitle = statusTitle
         self.canToggleVPN = canToggleVPN
+        self.canSetMode = canSetMode
+        self.selectedMode = selectedMode
+        self.activeMode = activeMode
         self.canTurnOff = canTurnOff
         self.hasActiveTunnel = hasActiveTunnel
         self.reconnectIdentifier = reconnectIdentifier
@@ -106,5 +114,44 @@ public struct CloudGatewayMacControllerView: Codable, Equatable, Sendable {
         self.errorMessage = errorMessage
         self.hasUnlistedActiveProfile = hasUnlistedActiveProfile
         self.canUpdateExtension = canUpdateExtension
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case groups, statusTitle, canToggleVPN, canSetMode, selectedMode, activeMode
+        case canTurnOff, hasActiveTunnel, reconnectIdentifier, canRefresh, canSignOut, accountId
+        case lastSelectedIdentifier, browserState, login, setupState, isRestoringSession, isAuthSettling
+        case hasRetainedSession, inventoryInFlight, canCreateClient, canRemoveClient, errorMessage, hasUnlistedActiveProfile
+        case canUpdateExtension
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            groups: try values.decode([Region].self, forKey: .groups),
+            statusTitle: try values.decode(String.self, forKey: .statusTitle),
+            canToggleVPN: try values.decode(Bool.self, forKey: .canToggleVPN),
+            canTurnOff: try values.decode(Bool.self, forKey: .canTurnOff),
+            hasActiveTunnel: try values.decode(Bool.self, forKey: .hasActiveTunnel),
+            reconnectIdentifier: try values.decodeIfPresent(String.self, forKey: .reconnectIdentifier),
+            canRefresh: try values.decode(Bool.self, forKey: .canRefresh),
+            canSignOut: try values.decode(Bool.self, forKey: .canSignOut),
+            accountId: try values.decodeIfPresent(String.self, forKey: .accountId),
+            lastSelectedIdentifier: try values.decodeIfPresent(String.self, forKey: .lastSelectedIdentifier),
+            browserState: try values.decode(BrowserState.self, forKey: .browserState),
+            login: try values.decodeIfPresent(CloudGatewayMacLoginStatus.self, forKey: .login),
+            setupState: try values.decode(SetupState.self, forKey: .setupState),
+            isRestoringSession: try values.decode(Bool.self, forKey: .isRestoringSession),
+            isAuthSettling: try values.decode(Bool.self, forKey: .isAuthSettling),
+            hasRetainedSession: try values.decode(Bool.self, forKey: .hasRetainedSession),
+            inventoryInFlight: try values.decode(Bool.self, forKey: .inventoryInFlight),
+            canCreateClient: try values.decode(Bool.self, forKey: .canCreateClient),
+            canRemoveClient: try values.decode(Bool.self, forKey: .canRemoveClient),
+            errorMessage: try values.decodeIfPresent(String.self, forKey: .errorMessage),
+            hasUnlistedActiveProfile: try values.decode(Bool.self, forKey: .hasUnlistedActiveProfile),
+            canUpdateExtension: try values.decode(Bool.self, forKey: .canUpdateExtension),
+            selectedMode: try values.decodeIfPresent(CloudGatewayRoutingMode.self, forKey: .selectedMode),
+            activeMode: try values.decodeIfPresent(CloudGatewayRoutingMode.self, forKey: .activeMode),
+            canSetMode: try values.decodeIfPresent(Bool.self, forKey: .canSetMode) ?? false
+        )
     }
 }

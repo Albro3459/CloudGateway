@@ -73,6 +73,20 @@ restart. Request UUID/digest receipts persist for ten minutes, with at most 64
 live entries. The [client-removal contract](../Frontend/Apple/macOS/README.md#controller-client-removal-contract)
 details removal's separate result and cleanup rules.
 
+Routing mode is account-local metadata with a legacy Full default. The Mac
+extension resolves the canonical System Keychain config through the existing
+single-use grant, then derives Full or Mesh only in memory. The canonical hash
+and secret remain unchanged. A mode change uses the controller's confirmed
+operation flow and reconnects the same authorized client after a confirmed stop.
+The new start receives a fresh grant after stop and profile save/reload.
+
+Applied mode comes from a bounded packet-provider reply containing only config
+identity and mode after adapter startup succeeds. The selected preference is
+separate. Missing or unreadable applied evidence remains unknown. Invalid mode
+metadata rejects starts without hiding the profile or preventing local stop.
+Combined CLI status adds auth from the same snapshot and retains the coarse
+status/stop path for compatible older builds.
+
 A five-second installed-bundle check detects verified replacements, closes new
 mutation admission, drains accepted work, and exits without stopping the VPN.
 Stale menus reopen the verified fixed app. Invalid/partial installations cannot

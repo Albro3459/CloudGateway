@@ -593,6 +593,74 @@ func macConfigInactiveValidationFencesAuthorizationAroundTheFreshRead(deniedChec
     #expect(await fixture.events.values == ["profiles", "profiles"])
 }
 
+@Test func macConfigModeChangeStopsBeforeSavingAndRequestsAFreshGrant() async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    let canonicalHash = config.snapshot.configHash
+    config.mode = .mesh
+    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: .connected)])
+    await fixture.events.clear()
+    #expect(try await fixture.coordinator.connect(config))
+    #expect(await fixture.events.values == ["available", "profiles", "stop:account/region/client", "save", "grant", "start:account/region/client"])
+    #expect(await fixture.profiles.values.first?.mode == .mesh)
+    #expect(config.snapshot.configHash == canonicalHash)
+    #expect(config.snapshot.secretReference.account == fixture.reference.value)
+}
+
+@Test func macConfigAlreadyActiveModeDoesNotSaveStopOrRequestAGrant() async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    config.mode = .mesh
+    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: .connected, mode: .mesh)])
+    await fixture.events.clear()
+    #expect(try await fixture.coordinator.connect(config) == false)
+    #expect(await fixture.events.values == ["available", "profiles"])
+}
+
+@Test func macConfigModeStopFailureNeverSavesOrStarts() async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    config.mode = .mesh
+    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: .connected)])
+    await fixture.profiles.failStop()
+    await fixture.events.clear()
+    await #expect(throws: MacConfigTestFailure.self) { try await fixture.coordinator.connect(config) }
+    #expect(await fixture.events.values == ["available", "profiles", "stop:account/region/client"])
+    #expect(await fixture.profiles.values.first?.mode == .full)
+}
+
+@Test func macConfigModeSaveFailureNeverRequestsGrantOrFallsBackToFull() async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    config.mode = .mesh
+    await fixture.profiles.setProfiles([.init(identifier: config.identifier, reference: fixture.reference, status: .connected)])
+    await fixture.profiles.setSaveFailure(.beforeSave)
+    await fixture.events.clear()
+    await #expect(throws: CloudGatewayMacConfigError.profileInstallationFailed) { try await fixture.coordinator.connect(config) }
+    #expect(await fixture.events.values == ["available", "profiles", "stop:account/region/client", "save"])
+}
+
+@Test func macConfigUnknownModeRemainsStoppable() async throws {
+    let fixture = MacConfigFixture()
+    await fixture.profiles.setProfiles([.init(identifier: "account/region/client", reference: fixture.reference, status: .connected, mode: nil)])
+    try await fixture.coordinator.turnOff()
+    #expect(await fixture.events.values == ["profiles", "stop:account/region/client"])
+}
+
+@Test func macConfigOfflineModeChangeKeepsCanonicalSecretAndHash() async throws {
+    let fixture = MacConfigFixture()
+    var config = try await fixture.install()
+    config.mode = .mesh
+    let persisted = try JSONEncoder().encode(config)
+    let restored = try JSONDecoder().decode(CloudGatewayMacInstalledConfig.self, from: persisted)
+    #expect(restored.snapshot == config.snapshot)
+    #expect(restored.mode == .full)
+    await fixture.events.clear()
+    try await fixture.coordinator.restore(config)
+    #expect(await fixture.events.values == ["available", "save"])
+    #expect(await fixture.profiles.values.first?.mode == .mesh)
+}
+
 private let macTestWireGuardConfig = """
 [Interface]
 PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
@@ -743,7 +811,7 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
             await events.append("replacement-stop")
         }
         values.removeAll { $0.identifier == config.identifier }
-        values.append(CloudGatewayMacInstalledProfile(identifier: config.identifier, reference: try config.reference, status: .disconnected))
+        values.append(CloudGatewayMacInstalledProfile(identifier: config.identifier, reference: try config.reference, status: .disconnected, mode: config.mode))
         await saveGate?.arriveAndWait()
         if saveFailure == .afterSave { throw MacConfigTestFailure() }
     }
@@ -760,6 +828,11 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
         await events.append("stop:\(identifier)")
         await stopGate?.arriveAndWait()
         if stopFails { throw MacConfigTestFailure() }
+        values = values.map {
+            $0.identifier == identifier
+                ? .init(identifier: $0.identifier, reference: $0.reference, status: .disconnected, mode: $0.mode)
+                : $0
+        }
     }
 
     func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
@@ -769,6 +842,11 @@ private actor MacConfigTestProfiles: CloudGatewayMacProfileAdapter {
         try Task.checkCancellation()
         await events.append("stop:\(identifier)")
         if stopFails { throw MacConfigTestFailure() }
+        values = values.map {
+            $0.identifier == identifier
+                ? .init(identifier: $0.identifier, reference: $0.reference, status: .disconnected, mode: $0.mode)
+                : $0
+        }
     }
 
     func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {

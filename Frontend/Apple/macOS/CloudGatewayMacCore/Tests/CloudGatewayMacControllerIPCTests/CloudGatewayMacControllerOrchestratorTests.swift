@@ -10,14 +10,15 @@ let controllerBoundaryBuild = CloudGatewayMacBuildIdentity(version: "1.0", build
 let controllerBoundaryReplacement = CloudGatewayMacBuildIdentity(version: "1.0", build: "3", codeHash: String(repeating: "b", count: 64))
 
 func controllerBoundaryState(active: Bool = false, setup: CloudGatewayMacSetupState = .ready,
-                             canUpdateExtension: Bool = false, authSettling: Bool = false) -> CloudGatewayMacControllerState {
+                             canUpdateExtension: Bool = false, authSettling: Bool = false, commandInFlight: Bool = false,
+                             tunnelStatus: CloudGatewayTunnelStatus? = nil) -> CloudGatewayMacControllerState {
     let identifier = "account/region/client"
     let snapshot = CloudGatewayMacControllerSnapshot(
         domain: .init(accountId: "account", hasRetainedSession: true, accessAuthorized: true,
                       access: .online, credentials: .available,
                       inventoryFreshness: .current, installedIdentifiers: [identifier],
-                      observedProfiles: [.init(identifier: identifier, status: active ? .connected : .disconnected)],
-                      observationIsFresh: true, profilesObservedAt: nil, commandInFlight: false,
+                      observedProfiles: [.init(identifier: identifier, status: tunnelStatus ?? (active ? .connected : .disconnected), mode: nil)],
+                      observationIsFresh: true, profilesObservedAt: nil, commandInFlight: commandInFlight,
                       clients: [.init(identifier: identifier, regionId: "region", regionName: "Region", regionOrder: 0,
                                       clientName: "Mac", ownerLabel: nil, internalIp: nil, cloudState: .active,
                                       eligibility: .eligible, isInstalled: true, source: .cloud,
@@ -1544,4 +1545,110 @@ func controllerOrchestratorExpiresOnlyTheUnconfirmedSlot(expireCreation: Bool) a
     #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: running.id)).operation?.state == .completed)
     #expect(effects.submissions == (expireCreation ? 0 : 1))
     #expect(effects.performed == (expireCreation ? [.turnOff] : []))
+}
+
+private func controllerModeRequest(id: UUID = UUID(), mode: CloudGatewayRoutingMode = .mesh) -> CloudGatewayMacControllerRequest {
+    .init(action: .setMode, id: id, mode: mode, appVersion: controllerBoundaryBuild.version,
+          appBuild: controllerBoundaryBuild.build, buildIdentity: controllerBoundaryBuild)
+}
+
+@MainActor
+@Test func controllerOrchestratorModeUsesConfirmedAccountBoundOperations() async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let request = controllerModeRequest()
+    let accepted = await controller.handle(request)
+    #expect(accepted.operation?.state == .accepted)
+    #expect(accepted.state.map { !CloudGatewayMacControllerView(state: $0).canSetMode } == true)
+    #expect(effects.performed.isEmpty)
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    #expect(await controller.handle(controllerModeRequest(id: request.id, mode: .full)).error == .invalidRequest)
+    let confirmation = controllerBoundaryRequest(.confirmOperation, contextId: request.id)
+    #expect(await controller.handle(confirmation).operation?.state == .running)
+    #expect(effects.performed == [.setMode])
+    #expect(effects.performedRequests.last?.mode == .mesh)
+    #expect(await controller.handle(controllerModeRequest()).error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.connect)).error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.prepareExtensionUpdate)).error == .busy)
+    effects.completion?(.completed(warning: nil))
+    let result = await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id))
+    #expect(result.operation?.state == .completed)
+    #expect(result.outcome == .completed(warning: nil))
+    #expect(result.state.map { CloudGatewayMacControllerView(state: $0).canSetMode } == true)
+    #expect(await controller.handle(confirmation).operation?.state == .completed)
+    #expect(await controller.handle(request).operation?.state == .completed)
+    #expect(effects.performed == [.setMode])
+    effects.sessions.changeAccount(to: "other")
+    #expect(await controller.handle(controllerBoundaryRequest(.operation, contextId: request.id)).outcome == nil)
+}
+
+@MainActor
+@Test func controllerOrchestratorModeCannotCrossAccountChangesBeforeConfirmation() async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let request = controllerModeRequest()
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    effects.sessions.changeAccount(to: "other")
+    let result = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    #expect(result.operation?.state == .failed)
+    #expect(result.operation?.failure == .rejected)
+    #expect(result.outcome == nil)
+    #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test(arguments: 0..<6)
+func controllerOrchestratorModeRejectsBusyRuntimeAndRechecksAtConfirmation(gate: Int) async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    let request = controllerModeRequest()
+    #expect(await controller.handle(request).operation?.state == .accepted)
+    switch gate {
+    case 0: effects.hasPendingWork = true
+    case 1: effects.activationPending = true
+    case 2: effects.snapshotState = controllerBoundaryState(authSettling: true)
+    case 3: effects.snapshotState = controllerBoundaryState(commandInFlight: true)
+    case 4: effects.snapshotState = controllerBoundaryState(tunnelStatus: .connecting)
+    default: effects.snapshotState = controllerBoundaryState(tunnelStatus: .disconnecting)
+    }
+    let result = await controller.handle(controllerBoundaryRequest(.confirmOperation, contextId: request.id))
+    #expect(result.operation?.state == .failed)
+    #expect(result.operation?.failure == .busy)
+    #expect(effects.performed.isEmpty)
+    #expect(await controller.handle(controllerModeRequest()).error == .busy)
+}
+
+@MainActor
+@Test func controllerOrchestratorModeCannotMutateDuringSetupOrBuildReplacement() async throws {
+    let effects = ControllerOrchestratorEffects()
+    effects.sessions.changeAccount(to: "account")
+    effects.authenticated = false
+    let controller = try effects.make()
+    #expect(await controller.handle(controllerModeRequest()).error == .busy)
+    effects.authenticated = true
+    try await effects.ready(controller)
+    effects.installed = controllerBoundaryReplacement
+    await controller.tick()
+    #expect(await controller.handle(controllerModeRequest()).error == .busy)
+    #expect(await controller.handle(controllerBoundaryRequest(.status, build: controllerBoundaryReplacement)).status != nil)
+    let foreign = CloudGatewayMacControllerRequest(action: .setMode, mode: .mesh,
+        appVersion: controllerBoundaryReplacement.version, appBuild: controllerBoundaryReplacement.build,
+        buildIdentity: controllerBoundaryReplacement)
+    #expect(await controller.handle(foreign).error == .incompatibleVersion)
+    #expect(effects.performed.isEmpty)
+}
+
+@MainActor
+@Test func controllerOrchestratorModeRejectsMissingSessionWithoutReportingBusy() async throws {
+    let effects = ControllerOrchestratorEffects()
+    let controller = try effects.make()
+    try await effects.ready(controller)
+    #expect(await controller.handle(controllerModeRequest()).error == .rejected)
+    #expect(effects.performed.isEmpty)
 }

@@ -40,6 +40,7 @@ indirect enum CloudGatewayMacCLIData: Encodable, Sendable {
     case help(CloudGatewayMacCLIHelp)
     case version(CloudGatewayMacCLIVersion)
     case auth(CloudGatewayMacCLIAuthStatus)
+    case mode(CloudGatewayMacCLIModeStatus)
     case status(CloudGatewayMacCLIStatus)
     case inventory(CloudGatewayMacCLIInventory)
     case mutation(CloudGatewayMacCLIMutation)
@@ -51,6 +52,7 @@ indirect enum CloudGatewayMacCLIData: Encodable, Sendable {
         case .help(let value): try value.encode(to: encoder)
         case .version(let value): try value.encode(to: encoder)
         case .auth(let value): try value.encode(to: encoder)
+        case .mode(let value): try value.encode(to: encoder)
         case .status(let value): try value.encode(to: encoder)
         case .inventory(let value): try value.encode(to: encoder)
         case .mutation(let value): try value.encode(to: encoder)
@@ -161,6 +163,23 @@ struct CloudGatewayMacCLIAuthStatus: Encodable {
     }
 }
 
+struct CloudGatewayMacCLIModeStatus: Encodable {
+    @CloudGatewayMacCLINullable var selectedMode: CloudGatewayRoutingMode?
+    @CloudGatewayMacCLINullable var activeMode: CloudGatewayRoutingMode?
+    let tunnelState: CloudGatewayMacCLIStatus.Tunnel.State
+    let observation: CloudGatewayMacCLIStatus.Tunnel.Observation
+    @CloudGatewayMacCLINullable var observedAt: Date?
+
+    init(_ state: CloudGatewayMacControllerState) {
+        selectedMode = state.accountId == nil ? nil : state.selectedMode
+        activeMode = state.activeMode
+        let tunnel = CloudGatewayMacCLIStatus.Tunnel(state)
+        tunnelState = tunnel.state
+        observation = tunnel.observation
+        observedAt = tunnel.observedAt
+    }
+}
+
 struct CloudGatewayMacCLIStatus: Encodable {
     struct Tunnel: Encodable {
         enum State: String, Encodable {
@@ -208,6 +227,8 @@ struct CloudGatewayMacCLIStatus: Encodable {
     let tunnel: Tunnel
     @CloudGatewayMacCLINullable var operation: CloudGatewayMacCLIOperation?
     var update: CloudGatewayMacCLIUpdate? = nil
+    @CloudGatewayMacCLINullable var mode: CloudGatewayMacCLIModeStatus? = nil
+    @CloudGatewayMacCLINullable var auth: CloudGatewayMacCLIAuthStatus? = nil
 }
 
 struct CloudGatewayMacCLIOperation: Encodable {
@@ -416,7 +437,7 @@ struct CloudGatewayMacCLIClientCreation: Encodable {
 }
 
 struct CloudGatewayMacCLIMutation: Encodable {
-    enum Command: String, Encodable { case up, down, logout, update, add, remove }
+    enum Command: String, Encodable { case up, down, logout, update, add, remove, mode }
 
     let command: Command
     let operation: CloudGatewayMacCLIOperation
@@ -424,6 +445,8 @@ struct CloudGatewayMacCLIMutation: Encodable {
     @CloudGatewayMacCLINullable var choices: CloudGatewayMacCLIInventory?
     var update: CloudGatewayMacCLIUpdate? = nil
     var creation: CloudGatewayMacCLIClientCreation? = nil
+    var requestedMode: CloudGatewayRoutingMode? = nil
+    var mode: CloudGatewayMacCLIModeStatus? = nil
 }
 
 struct CloudGatewayMacCLIRefresh: Encodable {

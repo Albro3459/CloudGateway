@@ -33,3 +33,22 @@ import Testing
     }
     try CloudGatewayMacProfileMetadata.validateUnique([])
 }
+
+@Test func legacyProfileModeIsFullAndMalformedModeKeepsStopIdentity() throws {
+    let identifier = "account/region/mac"
+    var metadata: [String: Any] = [
+        CloudGatewayMacProviderKey.configId: identifier,
+        CloudGatewayProviderConfigurationKey.tunnelIdentifier: identifier,
+        CloudGatewayMacProviderKey.secretReference: UUID().uuidString.lowercased()
+    ]
+    #expect(try CloudGatewayMacProfileMetadata.decode(metadata, status: .connected).mode == .full)
+    metadata[CloudGatewayMacProviderKey.routingMode] = "mesh"
+    #expect(try CloudGatewayMacProfileMetadata.decode(metadata, status: .connected).mode == .mesh)
+    for invalid in ["unsupported" as Any, 42, NSNull()] {
+        metadata[CloudGatewayMacProviderKey.routingMode] = invalid
+        let profile = try CloudGatewayMacProfileMetadata.decode(metadata, status: .connected)
+        #expect(profile.mode == nil)
+        #expect(profile.identifier == identifier)
+        #expect(profile.needsConfirmedStop)
+    }
+}

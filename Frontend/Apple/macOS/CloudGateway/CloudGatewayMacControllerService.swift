@@ -67,6 +67,9 @@ final class CloudGatewayMacControllerService {
             hasPendingWork: { runtime.initialized?.controller.hasPendingWork ?? false },
             perform: { request, complete in
                 switch request.action {
+                case .setMode:
+                    guard let mode = request.mode else { return false }
+                    return runtime.require().controller.setMode(mode, onCompletion: complete)
                 case .connect:
                     return runtime.require().controller.connectClient(identifier: request.identifier, onCompletion: complete)
                 case .disconnectClient:

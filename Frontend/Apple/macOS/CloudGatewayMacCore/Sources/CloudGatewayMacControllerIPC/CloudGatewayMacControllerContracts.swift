@@ -12,7 +12,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
         case prepareExtensionUpdate, extensionUpdateStarted, extensionUpdateApproval, extensionUpdateRestart, extensionUpdateFinished, extensionUpdateFailed
         case lifecycle, status, operation, confirmOperation, snapshot, menuWillOpen, userActivity, recordActivity, refresh, awaitRefresh
         case signIn, cancelSignIn, signOut, connect, turnOff, disconnectClient, prepareClient, createClient, removeClient
-        case beginLogin, loginStatus, cancelLogin, diagnostics, update
+        case beginLogin, loginStatus, cancelLogin, diagnostics, update, setMode
     }
 
     public let controlVersion: Int?
@@ -29,6 +29,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
     public let contextId: UUID?
     public let loginOrigin: CloudGatewayMacLoginOrigin?
     public let allowDisconnect: Bool?
+    public let mode: CloudGatewayRoutingMode?
 
     public init(
         action: Action,
@@ -39,6 +40,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
         contextId: UUID? = nil,
         loginOrigin: CloudGatewayMacLoginOrigin? = nil,
         allowDisconnect: Bool? = nil,
+        mode: CloudGatewayRoutingMode? = nil,
         appVersion: String = "",
         appBuild: String = "",
         buildIdentity: CloudGatewayMacBuildIdentity? = nil
@@ -57,6 +59,7 @@ public struct CloudGatewayMacControllerRequest: Codable, Equatable, Sendable {
         self.contextId = contextId
         self.loginOrigin = loginOrigin
         self.allowDisconnect = allowDisconnect
+        self.mode = mode
     }
 }
 
@@ -183,6 +186,9 @@ public enum CloudGatewayMacControllerProtocol {
         guard request.loginOrigin == nil || request.action == .beginLogin else {
             throw CloudGatewayMacControllerFailure.invalidRequest
         }
+        guard (request.mode != nil) == (request.action == .setMode) else {
+            throw CloudGatewayMacControllerFailure.invalidRequest
+        }
         switch request.action {
         case .loginStatus, .cancelLogin, .operation, .confirmOperation, .extensionUpdateStarted, .extensionUpdateApproval, .extensionUpdateRestart, .extensionUpdateFinished, .extensionUpdateFailed:
             guard request.contextId != nil, request.identifier == nil, request.regionId == nil, request.clientName == nil else {
@@ -245,7 +251,7 @@ public enum CloudGatewayMacControllerProtocol {
         }
         let envelope = CloudGatewayMacControllerRequest(
             action: request.action, id: request.id, identifier: request.identifier,
-            regionId: request.regionId, clientName: request.clientName, contextId: request.contextId, loginOrigin: request.loginOrigin, allowDisconnect: request.allowDisconnect,
+            regionId: request.regionId, clientName: request.clientName, contextId: request.contextId, loginOrigin: request.loginOrigin, allowDisconnect: request.allowDisconnect, mode: request.mode,
             appVersion: appVersion, appBuild: appBuild, buildIdentity: buildIdentity ?? request.buildIdentity
         )
         try validate(envelope, appVersion: appVersion, appBuild: appBuild)
@@ -449,12 +455,12 @@ extension CloudGatewayMacControllerRequest.Action {
     }
 
     var hasAccountBoundOutcome: Bool {
-        self == .connect || self == .createClient || self == .disconnectClient || self == .removeClient
+        self == .connect || self == .createClient || self == .disconnectClient || self == .removeClient || self == .setMode
     }
 
     var requiresConfirmation: Bool {
         switch self {
-        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .disconnectClient, .createClient, .removeClient, .update: true
+        case .signIn, .cancelSignIn, .signOut, .connect, .turnOff, .disconnectClient, .createClient, .removeClient, .update, .setMode: true
         default: false
         }
     }
