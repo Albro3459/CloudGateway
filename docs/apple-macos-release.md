@@ -2,24 +2,81 @@
 
 CloudGateway distributes directly as a Developer ID-signed, notarized DMG for
 Apple silicon on macOS 26 or later. Run the release command from the repository
-root after the required validation passes:
+root. Bump the shared version/build, validate, then prepare the release:
 
 ```sh
+python3 scripts/macos-release.py --bump-build
 ./scripts/test.sh macos
-./scripts/macos-release.sh --build 3 --publish
+./scripts/macos-release.sh \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
-Choose a build number higher than the project and every previous distributed
-release. `--build` applies to both the app and extension. The marketing version
-comes from the project unless supplied explicitly:
+Use one version and build for the app, CLI, controller, and VPN extension.
+The CLI and controller are entry points of the app's executable and inherit its
+bundle version. The extension has its own bundle, synchronized by the bump command.
+Keep the marketing version as `major.minor.patch`, and increase the integer build
+for every new local installation or release preparation. Never reset the build
+when changing the marketing version.
+
+This standard also applies to Developer ID builds distributed outside the App
+Store. macOS compares `CFBundleShortVersionString` and `CFBundleVersion` when
+[replacing a system extension](https://developer.apple.com/documentation/systemextensions/ossystemextensionrequestdelegate/request(_:actionforreplacingextension:withextension:)).
+The marketing version can stay the same while the build increases.
+
+`--bump-build` chooses a build higher than both current targets and updates Debug,
+Release, and DeveloperID together. It keeps the higher existing marketing version
+unless `--version` selects a new one. To choose a new release version:
 
 ```sh
-./scripts/macos-release.sh --build 4 --version 1.0.1 --publish
+python3 scripts/macos-release.py --bump-build --version 1.1.1
 ```
 
-Build and version overrides apply to the archive. Project versions and Git
-staging stay unchanged. Release metadata records the source commit and whether
-the working tree had changes. Commit the reviewed release work separately.
+Add `--build <number>` to the bump command when a specific higher build is needed,
+including when an installed or previously distributed build exceeds the checkout.
+The bump command edits only the project file. It does not build, sign, contact
+Apple, stage, or commit anything. Review and commit that source change separately.
+
+New releases default to the synchronized project version/build. Optional release
+`--build` and `--version` overrides apply to both bundles in the archive; they do
+not edit the project. Older builds and marketing versions are rejected. Prefer
+bumping the tracked settings first so the source and release identify the same build.
+Preparation refuses unsynchronized project versions before signing or network calls.
+Every new preparation requires `--previous-distributed-app` pointing to the exact
+signed app from the latest release actually distributed to users. Extract it
+from the retained distributed DMG if needed. The script verifies its Developer
+ID signature, team, profiles, and packaged dependencies before reading its
+extension version, build, and artifact digest. It never selects an untracked
+local archive or export as the baseline automatically. The operator must identify
+the latest distributed app correctly, including a release distributed outside
+GitHub. Local signature checks cannot establish distribution history.
+
+Before signing or contacting Apple, preparation requires the shared build to
+strictly exceed the baseline extension build. Its marketing version must not
+decrease. Run the bump command for every new preparation, including app-only releases.
+Archive/export can change
+the CMS signature even when extension code has not changed. The Mach service
+name includes the extension build, so increasing it also avoids stale endpoint
+registration during replacement.
+
+The script records a SHA-256 manifest of the full exported extension tree,
+including executable signature bytes, resources, file modes, and symlink targets.
+Notarization resumption and publication check that manifest and the baseline
+policy again. A re-signed extension at an unchanged version/build is rejected,
+even if its CodeDirectory remains the same. Existing signer and authenticated
+runtime identity checks remain required.
+
+Exact reuse is supported by resuming the same prepared release. New preparation
+always signs/exports again and therefore requires a fresh extension build. There
+is no command to transplant a previously signed extension into a new app.
+Use `--initial-distribution` instead of `--previous-distributed-app` only when no
+extension has ever been distributed. This explicit first-release declaration is
+recorded in the manifest. It must not be used to bypass an existing baseline.
+
+Archive, notarization, and publication leave project versions and Git staging
+unchanged. Only `--bump-build` updates the project. Release metadata records both
+targets' versions, the source commit, and whether the working tree had changes.
+Resuming an existing prepared release keeps its exact artifacts and does not need
+another bump.
 
 ## Signing prerequisites
 
@@ -61,7 +118,18 @@ The script archives with the DeveloperID configuration, exports with manual
 distribution profiles, and validates both bundles before any software upload.
 Checks cover the signing team and Developer ID Application certificate,
 Hardened Runtime, secure timestamps, release entitlements, embedded profiles,
-matching app/extension versions, architecture, and packaged dependencies.
+each bundle's expected version and build, architecture, and packaged dependencies.
+Current release products also require the bundled CLI executable and controller
+Firebase resource, then pass 58 bounded help/version/invalid-usage checks through
+direct `--cli` and a temporary `cloudgateway` symlink. Each invocation uses a
+temporary home, redirected stdin, and a five-second deadline. JSON checks verify
+schema version 1, line completeness, usage errors, and the bundle's version/build
+through both entry points. No real CLI installation, service registration,
+auth restoration, or VPN operation is part of these static checks. The verified
+previous-distribution baseline accepts the original fixed Mach service name as
+well as the build-specific name, while retaining Developer ID signature and
+identity checks. Older releases that predate the CLI remain valid baselines.
+New release products require the build-specific Mach service name.
 
 It submits an app ZIP to Apple, saves the submission ID and log, and staples the
 accepted ticket to the app. It then builds a signed DMG containing the app and
@@ -78,7 +146,9 @@ metadata, notarization submission records, notary logs, and `SHA256SUMS`.
 To build and inspect artifacts before submitting software:
 
 ```sh
-./scripts/macos-release.sh --prepare-only --build 2
+python3 scripts/macos-release.py --bump-build
+./scripts/macos-release.sh --prepare-only \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app
 ```
 
 Continue with the directory printed by that command:
@@ -91,6 +161,21 @@ Each wait lasts at most 20 minutes. If Apple still reports In Progress, use the
 same `--notarize` command later. Existing submission IDs are reused; changed
 artifacts cannot reuse an earlier submission. Partial work remains available
 for diagnosis and retry.
+
+Preparation saves the app's `version` and `build`, the extension's
+`extensionVersion` and `extensionBuild`, and the `extensionBaseline` and
+`extensionArtifact` manifests in `release.json`. Keep this directory intact for
+resumption and retain the distributed DMG for the next release baseline. Both
+`--notarize` and `--publish-existing` check the exported bundles against those saved versions,
+even if the project versions have since changed. Older metadata without either
+extension version field expects the extension to match the app's version and
+build. Partially present or malformed extension fields stop the release. Releases
+prepared before the artifact policy was added cannot resume or publish through
+this script, because they lack a trustworthy recorded baseline and artifact
+manifest. Prepare a new release against the latest distributed app with fresh
+app and extension builds. Do not add manifests retroactively to old outputs.
+Baseline options apply only to new preparation. Resumed releases use their saved
+policy.
 
 If an upload is interrupted before its submission ID is saved, the script
 refuses to upload it again automatically. Match the artifact and attempt time
@@ -113,6 +198,45 @@ the previous menu app, drag CloudGateway into Applications, and run
 and Setup VPN opens the normal extension/VPN approval flow with SIP enabled.
 Check real VPN connectivity and extension replacement using a later build.
 Automated signing and Gatekeeper checks do not establish those runtime results.
+
+Use **Install Command Line Tool…** while signed out and verify the user-local
+link targets the executable inside `/Applications/CloudGateway.app`. Repeat
+installation, conflict/broken-link handling, and the separate zsh PATH offer.
+Test `~/.local/bin/cloudgateway --version` and `help` from Terminal and
+noninteractive SSH without relying on `.zprofile`. Verify setup recognizes the
+app's existing PATH and common entries in `~/.zshrc` or `~/.zprofile` without
+changing files. Unrecognized custom configuration, linked startup files, and
+unsupported shells must receive manual guidance before any edit. App replacement
+at the same path keeps the link valid; app
+movement/removal leaves it broken without replacing another user's file.
+
+Complete one-time desktop extension/VPN approval, then run the planned signed
+CLI matrix with an isolated account/config and another access path. Cover login
+approval/expiry/cancellation, JSON output/exits, offline access, refresh without
+reconnect, successful start submission versus observed connection, confirmed
+stop, signed-out disconnect, and logout retaining VPN/profiles/secrets/cache.
+Check `status --operation <uuid>` after caller/SSH loss and an unknown result
+after replacement/restart. Never replay uncertain work automatically. Verify
+doctor changes no session, inventory, preferences, or VPN state and reports
+unsupported credential/approval evidence as unknown. Include reboot before
+desktop login, final SSH disconnect, locked credentials, concurrent menu/SSH
+startup, and active-VPN replacement. Repeat these manual release checks for
+future releases. See the [CLI guide](../Frontend/Apple/macOS/README.md#command-line-tool)
+for commands, common options, NDJSON schema/exits, and recovery semantics.
+
+### Runtime acceptance (2026-10-24)
+
+The user confirmed that the signed runtime matrix above passed for the
+controller, CLI, and client-removal stack. This includes live VPN behavior,
+reboot before graphical desktop login, pre-desktop SSH and credential access,
+final SSH disconnect, locked credentials, concurrent menu/SSH startup, command
+recovery, and active-VPN replacement. Manual runtime acceptance for this stack
+is complete. These results are user-reported.
+
+The agent also ran `./scripts/test.sh apple --signed` successfully. Shared tests,
+all 780 macOS host-free tests, all five strict Periphery scans, signed iOS and
+macOS Release builds, macOS signature/entitlement/profile verification, and all
+88 packaged CLI checks passed.
 
 ## GitHub publication
 
@@ -147,6 +271,26 @@ never overwritten. Failed attempts retain local artifacts and any remote draft.
 After creating a draft, the command briefly retries release-list reads while
 GitHub makes it visible. If visibility is still delayed, rerun the same command
 to resume the existing draft.
+
+The app also carries headless controller and CLI entry points. They use the same
+executable, resources, signing identity, and provisioning profile. There is no
+separate controller or CLI binary to sign or copy out of the bundle. Keep the
+signed app unchanged after installation; the installer creates only a user-local
+symlink. The CLI's static help/version/usage paths work without the controller.
+Operational commands retain the ordinary authenticated version/signature checks.
+
+Install at `/Applications/CloudGateway.app`, the controller's fixed launch path.
+For the first controller migration, quit the old menu before launching the new
+app so two Firebase owners cannot overlap. The first installation of the
+synchronized lifecycle also needs a one-time controller restart. Later updates
+verify the fixed installed bundle, drain accepted work, and reconnect to the
+replacement controller automatically. Active VPNs stay connected. Extension
+replacement waits until all owned tunnels are idle and preserves Apple's
+approval or reboot requirement. See the local install command in the macOS
+README and validate the signed live update matrix before distributing it.
+Build/signature checks alone do not prove background launch or pre-desktop SSH
+Keychain access. The [runtime acceptance record](#runtime-acceptance-2026-10-24)
+covers the reviewed stack. Repeat the relevant checks for later releases.
 
 The release directory saves `publication.json` with the release and DMG URLs.
 The command prints both URLs. To make a later build available on the website,

@@ -1,409 +1,183 @@
 import AppKit
-import CloudGatewayAppCore
-import CloudGatewayFirebaseAuthAdapter
-import CloudGatewayKit
+import CloudGatewayMacControllerIPC
 import CloudGatewayMacCore
 import CloudGatewayMacIPC
-import FirebaseCore
-import FirebaseFirestore
+import Darwin
 import ServiceManagement
 
 @MainActor
 final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
-    private let activation = CloudGatewayExtensionActivationCoordinator()
-    private let auth: CloudGatewayFirebaseAuthAdapter
-    private let inventory: CloudGatewayMacInventoryService
-    private let cache: CloudGatewayMacAccountCache
-    private let profiles = CloudGatewayMacVPNProfileAdapter()
-    private let configs: CloudGatewayMacConfigCoordinator
+    private let client: CloudGatewayMacMenuClient
+    private let identity: CloudGatewayMacBuildIdentity
     private let dashboard = URL(string: "https://gocloudlaunch.com")!
-    private var browser: CloudGatewayMacBrowserAuthCoordinator!
-    private var authRegistration: CloudGatewayAuthStateListenerRegistration?
-    private var user: AuthenticatedUser?
-    private var options: [CloudGatewayClientOption] = []
-    private var installed: [CloudGatewayMacInstalledConfig] = []
-    private var profileObservation = CloudGatewayMacProfileObservation()
-    private var isOffline = false
-    private var errorMessage: String?
-    private var sessionEpoch: UInt64 = 0
-    private var sessionFence = CloudGatewayMacSessionFence()
-    private var lastSelectedIdentifier: String?
-    private var cancellationTask: Task<Void, Never>?
-    private var profileEpoch: UInt64 = 0
-    private var profileTask: Task<Void, Never>?
-    private var cancellationEpoch: UInt64 = 0
+    private var browserState = CloudGatewayMacControllerView.BrowserState.signedOut
+    private var loginAttemptId: UUID?
+    private var frontendErrorMessage: String?
+    private var dialogTask: Task<Void, Never>?
+    private var removalDialog: CloudGatewayMacClientRemovalDialog?
+    private var actionTask: Task<Void, Never>?
+    private var menuTask: Task<Void, Never>?
+    private weak var statusMenuItem: NSMenuItem?
+    private weak var updateMenuItem: NSMenuItem?
+    private var isMenuOpen = false
     private var isShuttingDown = false
-    private var inventoryTask: Task<Void, Never>?
-    private var restorationTask: Task<Void, Never>?
-    private var commandTask: Task<Void, Never>?
+    private var isRelaunching = false
+    private var attemptedAutomaticExtensionUpdate = false
 
-    override init() {
-        guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
-              let firebaseOptions = FirebaseOptions(contentsOfFile: path),
-              firebaseOptions.bundleID == "com.gocloudlaunch.gateway.macos" else {
-            preconditionFailure("The macOS Firebase configuration is missing or has the wrong bundle ID")
-        }
-        FirebaseApp.configure(options: firebaseOptions)
-        let database = Firestore.firestore()
-        let settings = FirestoreSettings()
-        settings.cacheSettings = MemoryCacheSettings()
-        database.settings = settings
-        auth = CloudGatewayFirebaseAuthAdapter()
-        inventory = CloudGatewayMacInventoryService(auth: auth, database: database)
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CloudGateway/macOS", isDirectory: true)
-        cache = CloudGatewayMacAccountCache(directory: directory)
-        let teamIdentifier = Bundle.main.object(forInfoDictionaryKey: "CloudGatewayTeamIdentifier") as? String ?? ""
-        let secrets: CloudGatewayMacXPCSecretClient
-        do { secrets = try CloudGatewayMacXPCSecretClient(teamIdentifier: teamIdentifier) }
-        catch { preconditionFailure("The macOS signing team configuration is invalid") }
-        configs = CloudGatewayMacConfigCoordinator(secrets: secrets, profiles: profiles, snapshots: cache)
+    init(identity: CloudGatewayMacBuildIdentity) {
+        self.identity = identity
+        client = CloudGatewayMacMenuClient(identity: identity)
         super.init()
-        browser = CloudGatewayMacBrowserAuthCoordinator(
-            service: CloudGatewayDeviceAuthClient(originHost: "gocloudlaunch.com", dashboardOrigin: dashboard),
-            auth: auth, dashboardOrigin: dashboard,
-            openBrowser: { NSWorkspace.shared.open($0) },
-            checkAccess: { [weak self] candidate in
-                guard let self else { return false }
-                do {
-                    await cancellationTask?.value
-                    try Task.checkCancellation()
-                    let role = try await inventory.checkAccess(for: candidate)
-                    try Task.checkCancellation()
-                    guard auth.currentUser?.uid == candidate.uid else { throw CancellationError() }
-                    try await observeRole(role, accountId: candidate.uid)
-                    try Task.checkCancellation()
-                    return true
-                } catch CloudGatewayMacInventoryService.Failure.accessDenied {
-                    try? await cache.deny(accountId: candidate.uid)
-                    return false
-                }
-            }
-        )
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
-        activation.onStatusChange = { [weak self] _ in self?.render() }
-        profiles.onChange = { [weak self] in self?.refreshProfiles() }
-        browser.onChange = { [weak self] state in self?.browserChanged(state) }
-        authRegistration = auth.addAuthStateListener { [weak self] candidate in
-            self?.authChanged(candidate)
+        client.onChange = { [weak self] in self?.controllerChanged() }
+        client.onReplacement = { [weak self] identity in self?.openReplacement(identity) }
+        render()
+        client.start()
+    }
+
+    private var snapshot: CloudGatewayMacControllerView {
+        client.presentation
+    }
+
+    private func controllerChanged() {
+        guard !isShuttingDown else { return }
+        let state = snapshot
+        if client.isSnapshotFresh, state.browserState != browserState {
+            browserState = state.browserState
+            if state.login?.attemptId == loginAttemptId, state.login?.origin == .menu,
+               case .waitingForApproval(_, let url) = browserState {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        if state.accountId == nil { dialogTask?.cancel() }
+        removalDialog?.update(snapshot: state, isSnapshotFresh: client.isSnapshotFresh,
+                             isCurrentBuild: client.isCurrentBuild && !isRelaunching)
+        if client.isSnapshotFresh, state.setupState == .updateRequired, state.canUpdateExtension,
+           !attemptedAutomaticExtensionUpdate, actionTask == nil {
+            updateExtension(isUserInitiated: false)
         }
         render()
-        activation.refreshReadiness()
-        refreshProfiles()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        render()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        refreshProfiles()
-        if user != nil { refreshInventory() }
-        else if auth.currentUser != nil { restoreSession() }
-        render()
+        isMenuOpen = true
+        menuTask?.cancel()
+        menuTask = Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.userRequest(.menuWillOpen) }
+            catch is CancellationError { }
+            catch { render() }
+        }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        isMenuOpen = false
+        // Rebuild after AppKit finishes closing and dispatching the selected action
+        DispatchQueue.main.async { [weak self] in self?.render() }
     }
 
     func shutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
-        sessionEpoch &+= 1
-        profileEpoch &+= 1
-        profileTask?.cancel()
-        profileTask = nil
-        authRegistration?.cancel()
-        authRegistration = nil
-        activation.onStatusChange = nil
-        profiles.onChange = nil
-        browser.onChange = nil
-        cancelPendingWork()
-        browser.cancel()
+        removalDialog?.update(snapshot: snapshot, isSnapshotFresh: false, isCurrentBuild: false)
+        dialogTask?.cancel()
+        dialogTask = nil
+        actionTask?.cancel()
+        actionTask = nil
+        menuTask?.cancel()
+        menuTask = nil
+        client.shutdown()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     func quit() {
-        shutdown()
         NSApplication.shared.terminate(nil)
     }
 
-    private func authChanged(_ candidate: AuthenticatedUser?) {
-        guard !isShuttingDown else { return }
-        switch browser.state {
-        case .requestingCode, .waitingForApproval, .exchangingToken: return
-        default: break
-        }
-        guard let candidate else {
-            clearAccountPresentation()
-            render()
-            return
-        }
-        if candidate.uid != user?.uid {
-            clearAccountPresentation()
-            restoreSession()
-        } else { render() }
-    }
-
-    private func browserChanged(_ state: CloudGatewayMacBrowserAuthState) {
-        guard !isShuttingDown else { return }
-        switch state {
-        case .signedIn(let authorized):
-            if user?.uid != authorized.uid {
-                clearAccountPresentation()
-                user = authorized
-                sessionFence.changeAccount(to: authorized.uid)
-                errorMessage = nil
-                refreshInventory()
-            }
-        case .signedOut:
-            if user != nil { clearAccountPresentation() }
-        case .failed(let error):
-            errorMessage = error.localizedDescription
-        case .requestingCode, .waitingForApproval, .exchangingToken:
-            errorMessage = nil
-        }
-        render()
-    }
-
-    private func restoreSession() {
-        switch browser.state {
-        case .requestingCode, .waitingForApproval, .exchangingToken: return
-        default: break
-        }
-        guard user == nil, restorationTask == nil, let candidate = auth.currentUser,
-              !auth.isCustomTokenSignInSettling, !isShuttingDown else { return }
-        let epoch = sessionEpoch
-        let pendingCancellation = cancellationTask
-        restorationTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if sessionEpoch == epoch { restorationTask = nil; render() }
-            }
-            do {
-                await pendingCancellation?.value
-                try requireCurrent(epoch)
-                let role = try await inventory.checkAccess(for: candidate)
-                try requireCurrent(epoch)
-                guard auth.currentUser?.uid == candidate.uid else { return }
-                try await observeRole(role, accountId: candidate.uid)
-                try requireCurrent(epoch)
-                guard auth.currentUser?.uid == candidate.uid else { return }
-                user = candidate
-                sessionFence.changeAccount(to: candidate.uid)
-                errorMessage = nil
-                refreshInventory()
-            } catch CloudGatewayMacInventoryService.Failure.offline {
-                guard sessionEpoch == epoch, !Task.isCancelled,
-                      auth.currentUser?.uid == candidate.uid else { return }
-                let saved = try? await cache.load(accountId: candidate.uid)
-                guard sessionEpoch == epoch, !Task.isCancelled,
-                      auth.currentUser?.uid == candidate.uid else { return }
-                if let saved, CloudGatewayMacOfflinePolicy.canUseCache(
-                    after: CloudGatewayMacInventoryService.Failure.offline.cacheFailure, cache: saved
-                ) {
-                    user = candidate
-                    sessionFence.changeAccount(to: candidate.uid)
-                    installed = saved.configs
-                    lastSelectedIdentifier = saved.selectedIdentifier
-                    isOffline = true
-                    errorMessage = nil
-                } else { errorMessage = "Connect to the internet to restore this account" }
-            } catch CloudGatewayMacInventoryService.Failure.accessDenied {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                try? await cache.deny(accountId: candidate.uid)
-                guard sessionEpoch == epoch, !Task.isCancelled,
-                      auth.currentUser?.uid == candidate.uid else { return }
-                try? auth.signOut()
-                errorMessage = "Account access was denied. Sign in again after access is restored"
-            } catch {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                errorMessage = "Unable to restore your session. Refresh to try again"
+    private func openReplacement(_ identity: CloudGatewayMacBuildIdentity) {
+        guard !isRelaunching else { return }
+        let installed = URL(fileURLWithPath: "/Applications/CloudGateway.app")
+        guard let verified = try? CloudGatewayMacSignedBundle.installed(
+            at: installed, teamIdentifier: "CRQWDQ7QQR", bundleIdentifier: "com.gocloudlaunch.gateway.macos"
+        ), verified == identity else { return }
+        isRelaunching = true
+        dialogTask?.cancel()
+        removalDialog?.update(snapshot: snapshot, isSnapshotFresh: false, isCurrentBuild: false)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: installed, configuration: configuration) { [weak self] application, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if application != nil { quit() }
+                else { isRelaunching = false }
             }
         }
-        render()
     }
 
-    private func refreshInventory() {
-        guard let account = user, inventoryTask == nil, commandTask == nil, !isShuttingDown else { return }
-        let epoch = sessionEpoch
-        let token = sessionFence.currentToken
-        let pendingCancellation = cancellationTask
-        inventoryTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if sessionEpoch == epoch { inventoryTask = nil; render() }
-            }
-            do {
-                await pendingCancellation?.value
-                try requireCurrent(epoch, token: token)
-                let role = try await inventory.checkAccess(for: account)
-                try requireCurrent(epoch, token: token)
-                try await observeRole(role, accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                let fetched = try await inventory.fetchOptions(for: account, role: role)
-                try requireCurrent(epoch, token: token)
-                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
-                try requireCurrent(epoch, token: token)
-                let saved = try await cache.load(accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                options = fetched
-                installed = saved.configs
-                lastSelectedIdentifier = saved.selectedIdentifier
-                isOffline = false
-                errorMessage = nil
-            } catch CloudGatewayMacInventoryService.Failure.offline {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                let saved = try? await cache.load(accountId: account.uid)
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                options = []
-                if let saved, CloudGatewayMacOfflinePolicy.canUseCache(
-                    after: CloudGatewayMacInventoryService.Failure.offline.cacheFailure, cache: saved
-                ) {
-                    installed = saved.configs
-                    lastSelectedIdentifier = saved.selectedIdentifier
-                } else {
-                    installed = []
-                    lastSelectedIdentifier = nil
-                }
-                isOffline = true
-                errorMessage = installed.isEmpty ? "Offline. No installed configs are available for this account" : nil
-            } catch CloudGatewayMacInventoryService.Failure.accessDenied {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                options = []
-                installed = []
-                try? await cache.deny(accountId: account.uid)
-                guard sessionEpoch == epoch else { return }
-                signOut()
-                errorMessage = "Account access was denied. Sign in again after access is restored"
-            } catch {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                options = []
-                installed = []
-                errorMessage = "Unable to refresh inventory. Try Refresh again"
-            }
-        }
-        render()
-    }
-
-    private func observeRole(_ role: CloudGatewayMacAccountRole, accountId: String) async throws {
-        try Task.checkCancellation()
-        guard auth.currentUser?.uid == accountId else { throw CancellationError() }
-        do {
-            let invalidated = try await cache.observeRole(accountId: accountId, role: role)
-            guard auth.currentUser?.uid == accountId else { throw CancellationError() }
-            if invalidated { clearInventoryPresentation(for: accountId) }
-        } catch {
-            guard auth.currentUser?.uid == accountId else { throw CancellationError() }
-            clearInventoryPresentation(for: accountId)
-            // Failed invalidation must not restore stale privileges after relaunch
-            try? auth.signOut()
-            throw error
+    private var setupState: CloudGatewayMacSetupState {
+        switch snapshot.setupState {
+        case .required: .required
+        case .updateRequired: .updateRequired
+        case .invalidBundle: .invalidBundle
+        case .activating: .activating
+        case .awaitingApproval: .awaitingApproval
+        case .awaitingRestart: .awaitingRestart
+        case .checkingConnection: .checkingConnection
+        case .ready: .ready
+        case .failed(let code): .failed(code: code)
+        case .unavailable: .unavailable
         }
     }
 
-    private func clearInventoryPresentation(for accountId: String) {
-        guard user?.uid == accountId else { return }
-        options = []
-        installed = []
-        lastSelectedIdentifier = nil
-        render()
-    }
-
-    private func refreshProfiles() {
-        guard !isShuttingDown else { return }
-        profileTask?.cancel()
-        profileEpoch &+= 1
-        let epoch = profileEpoch
-        profileTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if profileEpoch == epoch { profileTask = nil } }
-            do {
-                let snapshot = try await profiles.installedProfiles()
-                guard profileEpoch == epoch, !Task.isCancelled else { return }
-                profileObservation.didRead(snapshot)
-            } catch {
-                guard profileEpoch == epoch, !Task.isCancelled else { return }
-                profileObservation.didFailRead()
-            }
-            render()
+    private var updateTitle: String? {
+        guard let update = client.managedUpdate else { return nil }
+        switch update.phase {
+        case .prepared: return "Preparing VPN extension update…"
+        case .stopping: return "Stopping VPN for extension update…"
+        case .activating: return "Updating VPN extension…"
+        case .approvalRequired: return "Approve CloudGateway in System Settings → Login Items & Extensions"
+        case .restartRequired: return "Restart your Mac to finish the VPN extension update"
+        case .checkingReadiness: return "Checking updated VPN extension…"
+        case .reconnecting: return "Restoring VPN after extension update…"
+        case .completed:
+            return update.warning == .reconnectSuppressed ? "VPN extension updated. Reconnect was cancelled" : nil
+        case .failed: return "VPN extension update failed"
+        case .superseded: return "VPN extension update superseded by the installed app"
         }
-    }
-
-    private func clearAccountPresentation() {
-        sessionEpoch &+= 1
-        sessionFence.changeAccount(to: nil)
-        lastSelectedIdentifier = nil
-        cancelPendingWork()
-        user = nil
-        options = []
-        installed = []
-        isOffline = false
-        errorMessage = nil
-    }
-
-    private func cancelPendingWork() {
-        let pendingCommand = commandTask
-        inventoryTask?.cancel()
-        restorationTask?.cancel()
-        commandTask?.cancel()
-        inventoryTask = nil
-        restorationTask = nil
-        commandTask = nil
-        sessionFence.invalidate()
-        cancellationEpoch &+= 1
-        let epoch = cancellationEpoch
-        let previousCancellation = cancellationTask
-        cancellationTask = Task { [weak self] in
-            await previousCancellation?.value
-            guard let self else { return }
-            await configs.cancelPendingWork()
-            await pendingCommand?.value
-            await configs.waitForPendingWork()
-            guard cancellationEpoch == epoch else { return }
-            cancellationTask = nil
-            render()
-        }
-    }
-
-    private func requireCurrent(_ epoch: UInt64, token: CloudGatewayMacSessionToken? = nil) throws {
-        guard sessionEpoch == epoch, !Task.isCancelled, !isShuttingDown else { throw CancellationError() }
-        if let token {
-            guard sessionFence.isCurrent(token), auth.currentUser?.uid == token.accountId else { throw CancellationError() }
-        }
-    }
-
-    private var presentation: CloudGatewayMacMenuState {
-        CloudGatewayMacMenuState(accountId: user?.uid, setupState: activation.state,
-            onlineOptions: options, cachedConfigs: installed, profiles: profileObservation.profiles,
-            commandInFlight: commandTask != nil || cancellationTask != nil, isOffline: isOffline,
-            inventoryInFlight: inventoryTask != nil,
-            hasRetainedSession: auth.currentUser != nil, lastSelectedIdentifier: lastSelectedIdentifier)
-    }
-
-    private var visibleErrorMessage: String? {
-        (user != nil ? profileObservation.errorMessage : nil) ?? errorMessage
-    }
-
-    private var canStartClientCreation: Bool {
-        user != nil && !isOffline && inventoryTask == nil && commandTask == nil
-            && cancellationTask == nil && !isShuttingDown
     }
 
     private func render() {
         guard !isShuttingDown else { return }
-        let state = presentation
+        let state = snapshot
         statusItem.button?.image = CloudGatewayStatusGlyph.image(isActive: state.hasActiveTunnel)
+        if isMenuOpen { updateOpenMenu(state); return }
         menu.removeAllItems()
-        let status = add(state.statusTitle, #selector(toggleVPN), enabled: state.canToggleVPN)
-        if activation.state == .awaitingApproval, state.statusTitle == activation.state.title {
+        let status = add(state.statusTitle, #selector(toggleVPN),
+                         enabled: state.canToggleVPN && (state.canTurnOff || setupState == .ready))
+        statusMenuItem = status
+        if setupState == .awaitingApproval, state.statusTitle == setupState.title {
             status.action = #selector(openLoginItemsSettings)
             status.isEnabled = true
         }
-        status.state = user != nil && state.hasActiveTunnel ? .on : .off
+        status.state = state.hasActiveTunnel ? .on : .off
         if state.canToggleVPN {
             status.toolTip = state.canTurnOff ? "Disconnect VPN" : "Connect using the last-used client"
         }
-        if let visibleErrorMessage { add(visibleErrorMessage) }
-        if user == nil {
-            switch browser.state {
+        if let message = frontendErrorMessage ?? client.errorMessage ?? state.errorMessage { add(message) }
+        updateMenuItem = nil
+        if let title = updateTitle, title != state.statusTitle {
+            updateMenuItem = add(title, client.managedUpdate?.phase == .approvalRequired ? #selector(openLoginItemsSettings) : nil)
+        }
+        if state.accountId == nil {
+            switch state.browserState {
             case .requestingCode: add("Requesting sign-in code…"); add("Cancel Sign In", #selector(cancelSignIn))
             case .waitingForApproval(let code, _):
                 add("Browser sign-in code: \(code)")
@@ -411,18 +185,17 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 add("Cancel Sign In", #selector(cancelSignIn))
             case .exchangingToken: add("Completing sign-in…"); add("Cancel Sign In", #selector(cancelSignIn))
             default:
-                add(restorationTask == nil ? "Sign In…" : "Restoring session…", #selector(signIn),
-                    enabled: restorationTask == nil && !auth.isCustomTokenSignInSettling)
-                if auth.currentUser != nil { add("Refresh Session", #selector(refresh)) }
+                add(!state.isRestoringSession ? "Sign In…" : "Restoring session…", #selector(signIn),
+                    enabled: !state.isRestoringSession && !state.isAuthSettling)
+                if state.hasRetainedSession { add("Refresh Session", #selector(refresh)) }
                 if state.canSignOut { add("Sign Out", #selector(signOut)) }
-                if auth.isCustomTokenSignInSettling {
+                if state.isAuthSettling {
                     add("Sign-in cleanup is still pending")
                     add("Retry Sign-in Cleanup", #selector(signOut))
                 }
             }
         } else {
-            let visible = Set(state.groups.flatMap(\.rows).map(\.identifier))
-            if profileObservation.profiles.contains(where: { $0.needsConfirmedStop && !visible.contains($0.identifier) }) {
+            if state.hasUnlistedActiveProfile {
                 add("Connecting replaces the current CloudGateway VPN")
             }
             for group in state.groups {
@@ -430,32 +203,38 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 let submenu = NSMenu()
                 submenu.autoenablesItems = false
                 for row in group.rows {
-                    let title = row.identifier == lastSelectedIdentifier ? "\(row.title) (Last used)" : row.title
+                    let title = row.identifier == state.lastSelectedIdentifier ? "\(row.title) (Last used)" : row.title
                     let clientItem = NSMenuItem(title: title, action: #selector(selectClient(_:)), keyEquivalent: "")
                     clientItem.target = self
                     clientItem.representedObject = row.identifier
-                    clientItem.isEnabled = row.isEnabled
+                    clientItem.isEnabled = row.isEnabled && actionTask == nil && setupState == .ready
                     clientItem.state = row.status == .connected || row.status == .reasserting ? .on : .off
                     submenu.addItem(clientItem)
                 }
                 item.submenu = submenu
                 menu.addItem(item)
             }
-            add("Add Client…", #selector(addClient), enabled: canStartClientCreation)
-            add("Refresh", #selector(refresh), enabled: state.canRefresh && inventoryTask == nil)
-            add("Sign Out", #selector(signOut), enabled: state.canSignOut)
+            add("Add Client…", #selector(addClient), enabled: state.canCreateClient && dialogTask == nil && actionTask == nil)
+            add("Remove Client…", #selector(removeClient),
+                enabled: client.isSnapshotFresh && state.canRemoveClient && dialogTask == nil && actionTask == nil)
+            add(state.inventoryInFlight ? "Refreshing clients…" : "Refresh", #selector(refresh),
+                enabled: state.canRefresh && !state.inventoryInFlight && actionTask == nil)
+            add("Sign Out", #selector(signOut), enabled: state.canSignOut && actionTask == nil)
         }
-        if activation.state != .ready {
-            if state.statusTitle != activation.state.title {
-                add(activation.state.title,
-                    activation.state == .awaitingApproval ? #selector(openLoginItemsSettings) : nil)
+        if setupState != .ready {
+            let setupTitle = setupState == .updateRequired && state.hasActiveTunnel
+                ? "Disconnect VPN to update" : setupState.title
+            if state.statusTitle != setupTitle, updateTitle != setupTitle {
+                add(setupTitle,
+                    setupState == .awaitingApproval ? #selector(openLoginItemsSettings) : nil)
             }
-            if activation.state.canActivate {
-                add(activation.state == .updateRequired ? "Update VPN Extension…" : "Set Up VPN…",
-                    #selector(setUp))
+            if setupState.canActivate {
+                add(setupState == .updateRequired ? "Update VPN Extension…" : "Set Up VPN…",
+                    #selector(setUp), enabled: state.canUpdateExtension && client.isCurrentBuild)
             }
         }
         menu.addItem(.separator())
+        add("Install Command Line Tool…", #selector(installCommandLineTool))
         add("Open Website", #selector(openWebsite))
         let loginStatus = SMAppService.mainApp.status
         let login = add(loginStatus == .requiresApproval ? "Launch at Login: Approval Required…" : "Launch at Login",
@@ -464,211 +243,318 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
         add("Quit CloudGateway", #selector(quitApp), keyEquivalent: "q")
     }
 
+    private func updateOpenMenu(_ state: CloudGatewayMacControllerView) {
+        let current = client.isSnapshotFresh && client.isCurrentBuild
+        CloudGatewayMacMenuUpdates.updateClients(in: menu, from: state, isSnapshotFresh: current,
+            canConnect: actionTask == nil && setupState == .ready)
+        for item in menu.items {
+            switch item.action {
+            case #selector(toggleVPN):
+                item.isEnabled = state.canToggleVPN && (state.canTurnOff || setupState == .ready)
+                    && (client.isCurrentBuild || state.canTurnOff) && actionTask == nil
+            case #selector(signIn):
+                item.isEnabled = current && state.accountId == nil && !state.isRestoringSession && !state.isAuthSettling
+            case #selector(cancelSignIn), #selector(openSignInBrowser):
+                item.isEnabled = current && state.login != nil && state.accountId == nil
+            case #selector(signOut): item.isEnabled = current && state.canSignOut && actionTask == nil
+            case #selector(refresh):
+                item.isEnabled = current && (state.canRefresh || state.hasRetainedSession)
+                    && !state.inventoryInFlight && actionTask == nil
+            case #selector(addClient):
+                item.isEnabled = current && state.canCreateClient && dialogTask == nil && actionTask == nil
+            case #selector(removeClient):
+                item.isEnabled = current && state.canRemoveClient && dialogTask == nil && actionTask == nil
+            case #selector(setUp):
+                item.isEnabled = current && state.canUpdateExtension && setupState.canActivate && actionTask == nil
+            default: break
+            }
+        }
+        if let updateMenuItem {
+            if current { updateMenuItem.title = updateTitle ?? "VPN extension update finished" }
+            updateMenuItem.action = current && client.managedUpdate?.phase == .approvalRequired
+                ? #selector(openLoginItemsSettings) : nil
+            updateMenuItem.isEnabled = updateMenuItem.action != nil
+        }
+        if current, let statusMenuItem, statusMenuItem.action == #selector(toggleVPN) {
+            statusMenuItem.title = state.statusTitle
+            statusMenuItem.state = state.hasActiveTunnel ? .on : .off
+        }
+    }
+
     @discardableResult
     private func add(_ title: String, _ action: Selector? = nil, enabled: Bool = true,
                      keyEquivalent: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = action == nil ? nil : self
         item.isEnabled = action != nil && enabled
+        let controllerActions = [#selector(toggleVPN), #selector(signIn), #selector(cancelSignIn),
+                                 #selector(signOut), #selector(refresh), #selector(addClient), #selector(removeClient), #selector(setUp)]
+        if let action, controllerActions.contains(action) {
+            item.isEnabled = item.isEnabled && (client.isCurrentBuild || (action == #selector(toggleVPN) && snapshot.canTurnOff))
+                && (action == #selector(signIn) || action == #selector(cancelSignIn) || actionTask == nil)
+        }
         menu.addItem(item)
         return item
     }
 
     @objc private func selectClient(_ item: NSMenuItem) {
         guard let identifier = item.representedObject as? String else { return }
-        connectClient(identifier: identifier)
+        send(.connect, identifier: identifier)
     }
 
     @objc private func toggleVPN() {
-        let state = presentation
+        let state = snapshot
         guard state.canToggleVPN else { return }
-        if state.canTurnOff { turnOff() }
-        else if let identifier = state.reconnectIdentifier { connectClient(identifier: identifier) }
-    }
-
-    private func connectClient(identifier: String) {
-        guard let account = user,
-              presentation.groups.flatMap(\.rows).contains(where: { $0.identifier == identifier && $0.isEnabled }),
-              commandTask == nil, inventoryTask == nil, auth.currentUser?.uid == account.uid else { return }
-        let epoch = sessionEpoch
-        let token = sessionFence.currentToken
-        let option = options.first { "\(account.uid)/\($0.client.regionId)/\($0.client.clientId)" == identifier }
-        let saved = installed.first { $0.identifier == identifier && $0.accountId == account.uid }
-        commandTask = Task { [weak self] in
-            guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); render() } }
-            do {
-                try requireCurrent(epoch, token: token)
-                let latestProfiles = try await profiles.installedProfiles()
-                try requireCurrent(epoch, token: token)
-                let savedProfileExists = saved.map { config in
-                    latestProfiles.contains { $0.identifier == config.identifier && $0.reference == (try? config.reference) }
-                } ?? false
-                var config: CloudGatewayMacInstalledConfig
-                if let saved, savedProfileExists, isOffline || option.map({ CloudGatewayConfigSelection.configMatches(saved.snapshot, option: $0) }) == true {
-                    config = saved
-                } else if let option, !isOffline {
-                    config = try await configs.install(option: option, accountId: account.uid)
-                } else { throw CloudGatewayMacConfigError.unavailable }
-                try requireCurrent(epoch, token: token)
-                do {
-                    try await configs.connect(config)
-                } catch CloudGatewayMacConfigError.unavailable {
-                    try requireCurrent(epoch, token: token)
-                    guard config == saved, let option, !isOffline else { throw CloudGatewayMacConfigError.unavailable }
-                    config = try await configs.install(option: option, accountId: account.uid)
-                    try requireCurrent(epoch, token: token)
-                    try await configs.connect(config)
-                }
-                try requireCurrent(epoch, token: token)
-                try await cache.select(identifier: config.identifier, accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                let savedMetadata = try await cache.load(accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                installed = savedMetadata.configs
-                lastSelectedIdentifier = savedMetadata.selectedIdentifier
-                try requireCurrent(epoch, token: token)
-                errorMessage = nil
-            } catch {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                switch error as? CloudGatewayMacConfigError {
-                case .profileInstallationFailed:
-                    errorMessage = "Unable to save the VPN profile. Refresh before trying again"
-                case .secretCommitFailed:
-                    errorMessage = "The VPN profile was saved, but secure storage did not finish. Refresh before retrying"
-                case .snapshotPersistenceFailed:
-                    errorMessage = "The VPN profile was saved, but offline metadata could not be saved. Refresh before retrying"
-                default:
-                    errorMessage = "VPN command could not finish. Refresh preferences before trying again"
-                }
-            }
+        if state.canTurnOff { send(.turnOff) }
+        else if setupState == .ready, let identifier = state.reconnectIdentifier {
+            send(.connect, identifier: identifier)
         }
-        render()
     }
 
     @objc private func addClient() {
-        guard canStartClientCreation, let account = user else { return }
-        let epoch = sessionEpoch
-        let token = sessionFence.currentToken
-        commandTask = Task { [weak self] in
+        guard dialogTask == nil, snapshot.canCreateClient else { return }
+        frontendErrorMessage = nil
+        dialogTask = Task { [weak self] in
             guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; render() } }
-            var createdClientName: String?
-            var creationAttempted = false
+            defer { dialogTask = nil; render() }
             do {
-                try requireCurrent(epoch, token: token)
+                var contextId: UUID?
                 let dialog = CloudGatewayMacClientCreationDialog()
-                guard let request = try await dialog.prompt(loadRegions: {
-                    try self.requireCurrent(epoch, token: token)
-                    let regions = try await self.inventory.fetchCreateRegions(for: account)
-                    try self.requireCurrent(epoch, token: token)
-                    return regions
-                }) else { return }
-                try requireCurrent(epoch, token: token)
-                let role = try await inventory.checkAccess(for: account)
-                try requireCurrent(epoch, token: token)
-                try await observeRole(role, accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                creationAttempted = true
-                let created = try await inventory.createClient(
-                    regionId: request.regionId, clientName: request.clientName, for: account
-                )
-                try requireCurrent(epoch, token: token)
-                createdClientName = created
-
-                let fetched = try await inventory.fetchOptions(for: account, role: role)
-                try requireCurrent(epoch, token: token)
-                try await cache.authorize(accountId: account.uid, role: role, options: fetched)
-                try requireCurrent(epoch, token: token)
-                let saved = try await cache.load(accountId: account.uid)
-                try requireCurrent(epoch, token: token)
-                options = fetched
-                installed = saved.configs
-                lastSelectedIdentifier = saved.selectedIdentifier
-                errorMessage = nil
-            } catch CloudGatewayMacInventoryService.Failure.accessDenied, CloudGatewayAppError.apiAccessDenied(_) {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                clearInventoryPresentation(for: account.uid)
-                try? await cache.deny(accountId: account.uid)
-                guard sessionEpoch == epoch, !Task.isCancelled, auth.currentUser?.uid == account.uid else { return }
-                signOut()
-                errorMessage = "Account access was denied. Sign in again after access is restored"
-            } catch CloudGatewayAppError.accessDenied(let message) {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                errorMessage = message
-            } catch {
-                guard sessionEpoch == epoch, !Task.isCancelled else { return }
-                if let createdClientName {
-                    errorMessage = "\(createdClientName) was created, but the client list could not refresh. Choose Refresh before trying again"
-                } else if creationAttempted {
-                    errorMessage = "Could not confirm whether the client was created. Refresh the client list before trying again"
-                } else {
-                    errorMessage = "Unable to load available regions. Refresh and try again"
+                guard let request = try await dialog.prompt(loadRegions: { [client] in
+                    let reply = try await client.userRequest(.prepareClient)
+                    guard let creation = reply.creation else { throw CloudGatewayMacControllerFailure.invalidRequest }
+                    contextId = creation.id
+                    return creation.regions
+                }), let contextId else { return }
+                try Task.checkCancellation()
+                let reply = try await client.userRequest(.createClient, regionId: request.regionId,
+                                                     clientName: request.clientName, contextId: contextId)
+                if reply.accepted != true {
+                    frontendErrorMessage = "Account or client list changed. Open Add Client again"
                 }
+            } catch is CancellationError {
+            } catch {
+                frontendErrorMessage = client.message(for: error)
             }
         }
         render()
     }
 
-    @objc private func turnOff() {
-        guard presentation.canTurnOff, commandTask == nil else { return }
-        let epoch = sessionEpoch
-        let token = sessionFence.currentToken
-        commandTask = Task { [weak self] in
+    @objc private func removeClient() {
+        let state = snapshot
+        guard dialogTask == nil, actionTask == nil, !isShuttingDown, client.isCurrentBuild,
+              client.isSnapshotFresh, state.canRemoveClient, let accountId = state.accountId else { return }
+        frontendErrorMessage = nil
+        actionTask = Task { [weak self] in
             guard let self else { return }
-            defer { if sessionEpoch == epoch { commandTask = nil; refreshProfiles(); render() } }
+            defer { removalDialog = nil; actionTask = nil; render() }
             do {
-                try requireCurrent(epoch, token: token)
-                try await configs.turnOff()
-                try requireCurrent(epoch, token: token)
-                errorMessage = nil
+                guard !isShuttingDown, !isRelaunching, client.isCurrentBuild, client.isSnapshotFresh,
+                      snapshot.accountId == accountId, snapshot.canRemoveClient else { return }
+                let dialog = CloudGatewayMacClientRemovalDialog(snapshot: snapshot)
+                removalDialog = dialog
+                guard let identifier = try await dialog.prompt() else { return }
+                removalDialog = nil
+                try Task.checkCancellation()
+                guard !isShuttingDown, !isRelaunching, client.isCurrentBuild, client.isSnapshotFresh,
+                      snapshot.accountId == accountId, snapshot.canRemoveClient,
+                      snapshot.groups.flatMap(\.rows).contains(where: {
+                          $0.identifier == identifier && $0.removalPermission == .inactive
+                      }) else { return }
+                let outcome = try await client.removeClient(identifier: identifier, accountId: accountId)
+                frontendErrorMessage = client.message(forRemoval: outcome)
+            } catch is CancellationError {
             } catch {
-                if sessionEpoch == epoch, !Task.isCancelled {
-                    errorMessage = "VPN has not confirmed stop. Try again after checking System Settings"
-                }
+                frontendErrorMessage = client.message(for: error)
             }
         }
         render()
+    }
+
+    private func send(_ action: CloudGatewayMacControllerRequest.Action, identifier: String? = nil) {
+        guard actionTask == nil, !isShuttingDown else { return }
+        frontendErrorMessage = nil
+        actionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { actionTask = nil; render() }
+            let id = UUID()
+            do { _ = try await client.userRequest(action, id: id, identifier: identifier) }
+            catch is CancellationError { }
+            catch {
+                frontendErrorMessage = client.message(for: error)
+                if error as? CloudGatewayMacControllerFailure == .outcomeUnknown { await resolveUncertainOperation(id) }
+            }
+        }
+        render()
+    }
+
+    // Keep actions disabled while the same operation resolves, so the user cannot replay it
+    private func resolveUncertainOperation(_ id: UUID) async {
+        render()
+        guard let operation = try? await client.awaitOutcome(of: id, timeout: .seconds(30)).operation else { return }
+        switch operation.state {
+        case .completed: frontendErrorMessage = nil
+        case .failed: frontendErrorMessage = client.message(for: operation.failure ?? CloudGatewayMacControllerFailure.commandFailed)
+        default: break
+        }
     }
 
     @objc private func signIn() {
-        guard restorationTask == nil, !isShuttingDown else { return }
-        errorMessage = nil
-        if auth.currentUser != nil { restoreSession() }
-        else { _ = browser.begin() }
+        guard client.isCurrentBuild, !isShuttingDown else { return }
+        let id = UUID()
+        loginAttemptId = id
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.userRequest(.beginLogin, id: id, loginOrigin: .menu) }
+            catch { frontendErrorMessage = client.message(for: error); render() }
+        }
+    }
+    @objc private func cancelSignIn() {
+        guard let id = snapshot.login?.attemptId else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await client.userRequest(.cancelLogin, contextId: id) }
+            catch { frontendErrorMessage = client.message(for: error); render() }
+        }
+    }
+    @objc private func openSignInBrowser() {
+        guard case .waitingForApproval(_, let url) = snapshot.browserState else { return }
+        recordUserActivity()
+        NSWorkspace.shared.open(url)
+    }
+    @objc private func openLoginItemsSettings() {
+        recordUserActivity()
+        SMAppService.openSystemSettingsLoginItems()
+    }
+    @objc private func setUp() {
+        updateExtension(isUserInitiated: true)
+    }
+
+    private func updateExtension(isUserInitiated: Bool) {
+        guard actionTask == nil, !isShuttingDown, client.snapshot != nil, client.isCurrentBuild,
+              setupState.canActivate, snapshot.canUpdateExtension else { return }
+        frontendErrorMessage = nil
+        actionTask = Task { [weak self] in
+            guard let self else { return }
+            defer { actionTask = nil; render() }
+            let id = UUID()
+            do {
+                let action: CloudGatewayMacControllerRequest.Action = setupState == .required
+                    ? .prepareExtensionUpdate : .update
+                let reply: CloudGatewayMacControllerReply
+                if isUserInitiated {
+                    reply = try await client.userRequest(action, id: id, allowDisconnect: action == .update ? false : nil)
+                } else {
+                    reply = try await client.request(action, id: id, allowDisconnect: action == .update ? false : nil)
+                }
+                guard reply.accepted == true else {
+                    frontendErrorMessage = "VPN extension update is waiting for all tunnels to disconnect"
+                    return
+                }
+                attemptedAutomaticExtensionUpdate = true
+            } catch is CancellationError {
+            } catch {
+                frontendErrorMessage = client.message(for: error)
+                if error as? CloudGatewayMacControllerFailure == .outcomeUnknown { await resolveUncertainOperation(id) }
+            }
+        }
         render()
     }
 
-    @objc private func cancelSignIn() {
-        clearAccountPresentation()
-        browser.cancel()
-        render()
+    private func recordUserActivity() {
+        Task { [weak self] in
+            guard let self, !isShuttingDown else { return }
+            _ = try? await client.userRequest(.userActivity)
+        }
     }
-    @objc private func openSignInBrowser() { browser.openBrowser() }
-    @objc private func openLoginItemsSettings() { SMAppService.openSystemSettingsLoginItems() }
-    @objc private func setUp() { activation.activate() }
-    @objc private func openWebsite() { NSWorkspace.shared.open(dashboard) }
+
+    @objc private func openWebsite() {
+        recordUserActivity()
+        NSWorkspace.shared.open(dashboard)
+    }
     @objc private func quitApp() { quit() }
 
+    @objc private func installCommandLineTool() {
+        recordUserActivity()
+        let installer = CloudGatewayMacCLIInstaller(homeURL: FileManager.default.homeDirectoryForCurrentUser)
+        let explicitPath = installer.executableURL.path
+        let explicitCommand = "'" + explicitPath.replacingOccurrences(of: "'", with: "'\\''") + "' status"
+        let confirm = NSAlert()
+        confirm.messageText = "Install Command Line Tool"
+        confirm.informativeText = "Create \(explicitPath) as a link to the signed app in /Applications. No administrator access is needed. Shell configuration is a separate step."
+        confirm.addButton(withTitle: "Install")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            let installResult = try installer.install(runningBundleURL: Bundle.main.bundleURL) { [identity] in
+                let installed = try CloudGatewayMacSignedBundle.installed(
+                    at: URL(fileURLWithPath: "/Applications/CloudGateway.app"),
+                    teamIdentifier: "CRQWDQ7QQR", bundleIdentifier: "com.gocloudlaunch.gateway.macos"
+                )
+                guard installed == identity else { throw CloudGatewayMacCLIInstallError.invalidInstalledApp }
+            }
+            let path = NSAlert()
+            path.messageText = installResult == .installed ? "Command Line Tool Installed" : "Command Line Tool Already Installed"
+            path.informativeText = "Run \(explicitCommand), including over noninteractive SSH.\n\nOptionally append export PATH=\"$HOME/.local/bin:$PATH\" to an ordinary ~/.zprofile for new zsh login shells. Custom shell configuration needs a manual edit. This does not set PATH for every SSH session."
+            path.addButton(withTitle: "Done")
+            path.addButton(withTitle: "Add to Zsh PATH…")
+            guard path.runModal() == .alertSecondButtonReturn else { return }
+            let environment = ProcessInfo.processInfo.environment
+            let shell = getpwuid(getuid()).flatMap { $0.pointee.pw_shell }.map { String(cString: $0) }
+            let pathResult = try installer.addToZshPath(shell: shell, environment: environment)
+            let notice = NSAlert()
+            switch pathResult {
+            case .added:
+                notice.messageText = "Zsh PATH Updated"
+                notice.informativeText = "Open a new zsh login shell to use cloudgateway."
+            case .alreadyOnPath:
+                notice.messageText = "Command Line Tool Is on PATH"
+                notice.informativeText = "Your local bin directory is already on this app's PATH. No shell files were changed. Terminal and SSH can use a different PATH."
+            case .alreadyConfigured(let file):
+                notice.messageText = "Existing Zsh PATH Setup Found"
+                notice.informativeText = "Found your local bin directory in ~/\(file). No shell files were changed. Open a new zsh shell and run which cloudgateway to check."
+            }
+            notice.informativeText += "\n\nFor noninteractive SSH, use \(explicitCommand)."
+            notice.runModal()
+        } catch {
+            let notice = NSAlert()
+            notice.messageText = "Command Line Tool Setup"
+            let message: String
+            switch error as? CloudGatewayMacCLIInstallError {
+            case .installationRequired:
+                message = "Open CloudGateway from /Applications/CloudGateway.app and try again. Mounted disk images, translocated apps, and development locations cannot be permanent targets."
+            case .invalidInstalledApp:
+                message = "The installed app is missing, changed, or could not be verified. Open the current signed app in /Applications and try again."
+            case .conflictingFile:
+                message = "A file or directory already exists at \(explicitPath). Move it yourself if it is no longer needed, then try again."
+            case .conflictingLink:
+                message = "Another symbolic link exists at \(explicitPath). Review and move it yourself before trying again."
+            case .brokenLink:
+                message = "A broken symbolic link exists at \(explicitPath). Restore its target or move the link yourself before trying again."
+            case .manualShellConfiguration, .unsafeStartupFile:
+                message = "Shell configuration needs a manual edit. Review your shell's startup files and add ~/.local/bin to PATH if needed. Automatic editing supports /bin/zsh with a ~/.zprofile containing only comments and simple exports, no ZDOTDIR or ~/.zshenv, and no existing PATH customizations. Later PATH assignments in ~/.zshrc must preserve or explicitly restore ~/.local/bin. Symlinked or shared startup files are left alone."
+            case .unsafeDirectory:
+                message = "The home, ~/.local, or ~/.local/bin directory is linked, shared, or not owned by this user. Review its ownership and permissions before trying again."
+            case .filesystemFailure, nil:
+                message = "The filesystem change could not be completed. Check permissions and free space, then inspect the installation before retrying."
+            }
+            notice.informativeText = message + "\n\nExplicit command path for noninteractive SSH: \(explicitCommand)"
+            notice.runModal()
+        }
+    }
+
     @objc private func signOut() {
-        clearAccountPresentation()
-        browser.signOut()
-        render()
+        dialogTask?.cancel()
+        send(.signOut)
     }
 
     @objc private func refresh() {
-        refreshProfiles()
-        activation.refreshReadiness()
-        if user != nil { refreshInventory() }
-        else { restoreSession() }
-        render()
-    }
-
-    deinit {
-        authRegistration?.cancel()
+        guard actionTask == nil, !isShuttingDown else { return }
+        send(.refresh)
     }
 
     @objc private func toggleLaunchAtLogin() {
+        recordUserActivity()
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -676,9 +562,9 @@ final class CloudGatewayMacAppController: NSObject, NSMenuDelegate {
                 case .enabled: try await SMAppService.mainApp.unregister()
                 case .requiresApproval: SMAppService.openSystemSettingsLoginItems()
                 case .notRegistered, .notFound: try SMAppService.mainApp.register()
-                @unknown default: errorMessage = "Launch at Login needs attention in System Settings"
+                @unknown default: frontendErrorMessage = "Launch at Login needs attention in System Settings"
                 }
-            } catch { errorMessage = "Unable to change Launch at Login. Check System Settings" }
+            } catch { frontendErrorMessage = "Unable to change Launch at Login. Check System Settings" }
             render()
         }
     }

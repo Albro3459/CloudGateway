@@ -54,11 +54,15 @@ See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 ## Build and publish notarized macOS DMG
 
 ```sh
-./scripts/macos-release.sh --build 3 --publish
+python3 scripts/macos-release.py --bump-build
+./scripts/macos-release.sh \
+  --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
-Use a build number higher than every previous release. Add `--version 1.0.1`
-to override the marketing version. This archives and exports the Developer ID
+The bump synchronizes the app, CLI, controller, and extension in all configurations.
+Add `--version 1.1.1` to the bump command to change the marketing version. Build
+numbers increase across marketing versions and must exceed every previous release.
+Release preparation uses those tracked values. This archives and exports the Developer ID
 app, verifies signing and packaging, notarizes and staples the app, creates a
 signed DMG, then notarizes, staples, and checks that DMG with Gatekeeper. The
 script keeps artifacts and SHA-256 checksums under

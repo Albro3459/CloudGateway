@@ -49,7 +49,22 @@ public protocol CloudGatewayMacProfileAdapter: Sendable {
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile]
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws
     func start(identifier: String, grant: String) async throws
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws
     func stopAndWait(identifier: String) async throws
+    func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
+    func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws
+}
+
+public extension CloudGatewayMacProfileAdapter {
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws {
+        if !displacingOtherProfiles {
+            let current = try await installedProfiles()
+            guard !current.contains(where: { $0.needsConfirmedStop && $0.identifier != identifier }) else {
+                throw CloudGatewayMacConfigError.busy
+            }
+        }
+        try await start(identifier: identifier, grant: grant)
+    }
 }
 
 public protocol CloudGatewayMacSnapshotPersisting: Sendable {
@@ -58,11 +73,13 @@ public protocol CloudGatewayMacSnapshotPersisting: Sendable {
 
 public enum CloudGatewayMacConfigError: Error, Equatable, Sendable {
     case busy
+    case clientActive
     case cancelled
     case invalidConfig
     case profileInstallationFailed
     case secretCommitFailed
     case snapshotPersistenceFailed
+    case stopTimedOut
     case unavailable
 }
 
@@ -192,17 +209,34 @@ public actor CloudGatewayMacConfigCoordinator {
         }
     }
 
-    public func connect(_ config: CloudGatewayMacInstalledConfig) async throws {
+    public func restore(_ config: CloudGatewayMacInstalledConfig) async throws {
         try await runCommand { command in
-            try await self.performConnect(config, command: command)
+            let reference = try config.reference
+            guard config.snapshot.status == .active else {
+                throw CloudGatewayMacConfigError.unavailable
+            }
+            try await self.requireAvailableSecret(reference: reference, identifier: config.identifier)
+            try await self.requireCurrent(command)
+            do { try await self.profiles.saveAndReload(config) }
+            catch {
+                try await self.requireCurrent(command)
+                throw CloudGatewayMacConfigError.profileInstallationFailed
+            }
+            try await self.requireCurrent(command)
         }
     }
 
-    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64) async throws {
-        let reference = try config.reference
-        guard try await secrets.isAvailable(reference: reference, configId: config.identifier) else {
-            throw CloudGatewayMacConfigError.unavailable
+    // False means the matching profile was already active, so no start was submitted
+    @discardableResult
+    public func connect(_ config: CloudGatewayMacInstalledConfig, displacingOtherProfiles: Bool = true) async throws -> Bool {
+        try await runCommand { command in
+            try await self.performConnect(config, command: command, displacingOtherProfiles: displacingOtherProfiles)
         }
+    }
+
+    private func performConnect(_ config: CloudGatewayMacInstalledConfig, command: UInt64, displacingOtherProfiles: Bool) async throws -> Bool {
+        let reference = try config.reference
+        try await requireAvailableSecret(reference: reference, identifier: config.identifier)
         try requireCurrent(command)
         let installedProfiles = try await profiles.installedProfiles()
         try requireCurrent(command)
@@ -212,8 +246,11 @@ public actor CloudGatewayMacConfigCoordinator {
             throw CloudGatewayMacConfigError.unavailable
         }
         let activeProfiles = installedProfiles.filter(\.needsConfirmedStop)
+        guard displacingOtherProfiles || !activeProfiles.contains(where: { $0.identifier != config.identifier }) else {
+            throw CloudGatewayMacConfigError.busy
+        }
         if selected.status == .connected || selected.status == .reasserting || selected.status == .connecting {
-            return
+            return false
         }
         for active in activeProfiles {
             try requireCurrent(command)
@@ -222,13 +259,81 @@ public actor CloudGatewayMacConfigCoordinator {
         try requireCurrent(command)
         let grant = try await secrets.authorizeStart(reference: reference, configId: config.identifier)
         try requireCurrent(command)
-        try await profiles.start(identifier: config.identifier, grant: grant)
+        try await profiles.start(identifier: config.identifier, grant: grant, displacingOtherProfiles: displacingOtherProfiles)
+        return true
     }
 
     public func turnOff() async throws {
         try await runCommand { command in
             try await self.performTurnOff(command: command)
         }
+    }
+
+    public func disconnectClient(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await authorize()
+            let installed = try await self.profiles.installedProfiles()
+            try await authorize()
+            try await self.requireCurrent(command)
+            let targets = installed.filter { $0.identifier == identifier }
+            guard targets.count <= 1 else { throw CloudGatewayMacConfigError.unavailable }
+            if targets.first?.needsConfirmedStop == true {
+                try await self.profiles.stopAndWait(identifier: identifier, authorize: authorize)
+                try await authorize()
+            }
+        }
+    }
+
+    public func validateInactiveClient(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await self.requireInactiveProfile(identifier: identifier, command: command, authorize: authorize)
+        }
+    }
+
+    public func removeClientProfile(
+        identifier: String,
+        authorize: @escaping @MainActor @Sendable () throws -> Void
+    ) async throws {
+        try await runCommand { command in
+            try await self.requireInactiveProfile(identifier: identifier, command: command, authorize: authorize)
+            try await self.profiles.remove(identifier: identifier, authorize: authorize)
+            try await authorize()
+            try await self.requireCurrent(command)
+        }
+    }
+
+    private func requireInactiveProfile(
+        identifier: String,
+        command: UInt64,
+        authorize: @MainActor @Sendable () throws -> Void
+    ) async throws {
+        guard CloudGatewayMacProfileMetadata.validIdentifier(identifier) else {
+            throw CloudGatewayMacConfigError.invalidConfig
+        }
+        try requireCurrent(command)
+        try await authorize()
+        try requireCurrent(command)
+        let installed = try await profiles.installedProfiles()
+        try await authorize()
+        try requireCurrent(command)
+        _ = try CloudGatewayMacProfileMetadata.inactiveTarget(identifier: identifier, profiles: installed)
+    }
+
+    private func requireAvailableSecret(reference: CloudGatewayMacSecretReference, identifier: String) async throws {
+        let available: Bool
+        do {
+            available = try await secrets.isAvailable(reference: reference, configId: identifier)
+        } catch CloudGatewayMacSecretError.storageFailure, CloudGatewayMacSecretError.unavailable {
+            // A saved reference can outlive the extension's Keychain access
+            throw CloudGatewayMacConfigError.unavailable
+        }
+        guard available else { throw CloudGatewayMacConfigError.unavailable }
     }
 
     private func performTurnOff(command: UInt64) async throws {

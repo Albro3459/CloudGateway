@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import plistlib
 import subprocess
 import tempfile
@@ -8,6 +9,174 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from scripts import verify_macos_build as verifier
+
+
+class MacOSCLIVerificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.app = Path(self.temporary.name) / "CloudGateway.app"
+        self.binary = self.app / "Contents/MacOS/CloudGateway"
+        self.binary.parent.mkdir(parents=True)
+        self.binary.touch(mode=0o755)
+        (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "CloudGateway", "CFBundleShortVersionString": "1.2.0", "CFBundleVersion": "7",
+        }))
+        resources = self.app / "Contents/Resources"
+        resources.mkdir()
+        (resources / "GoogleService-Info.plist").write_bytes(plistlib.dumps({"fixture": True}))
+        self.homes = set()
+
+    def static_result(self, arguments: list[str], **options) -> subprocess.CompletedProcess:
+        self.assertEqual(options["timeout"], 5)
+        self.assertEqual(options["stdin"], subprocess.DEVNULL)
+        self.assertFalse(options["check"])
+        self.assertTrue(options["capture_output"])
+        home = Path(options["env"]["HOME"])
+        self.homes.add(home)
+        self.assertTrue(home.is_dir())
+        self.assertEqual(options["env"]["CFFIXED_USER_HOME"], str(home))
+        self.assertEqual(options["env"]["TERM"], "dumb")
+        invocation = Path(arguments[0])
+        if invocation.name == "cloudgateway":
+            self.assertTrue(invocation.is_symlink())
+            self.assertEqual(invocation.resolve(), self.binary.resolve())
+            flags = arguments[1:]
+        else:
+            self.assertEqual(invocation.resolve(), self.binary.resolve())
+            self.assertEqual(arguments[1], "--cli")
+            flags = arguments[2:]
+        self.assertNotIn("--controller", flags)
+        self.assertFalse(any(flag in flags for flag in ["up", "down", "refresh", "logout"]))
+        if "update" in flags:
+            self.assertTrue(any(flag in flags for flag in ["help", "--help", "--unexpected", "0"]))
+        invalid_add = flags[:2] == ["add", "sanjose"] or flags[:3] == ["add", "us-sanjose-1", ""]
+        if "add" in flags:
+            self.assertTrue(any(flag in flags for flag in ["help", "--help"]) or invalid_add)
+        is_help = any(flag in flags for flag in ["help", "--help"])
+        invalid_remove = "remove" in flags and not is_help
+        if "remove" in flags:
+            self.assertTrue(is_help or "--yes" not in flags or flags[:2] == ["remove", "--yes"]
+                            or any(flag in flags for flag in ["not-a-uuid", "0", "extra", "--unexpected"]))
+        invalid = invalid_add or invalid_remove or flags == ["status", "--yes", "--json"] or any(
+            flag in flags for flag in ["--unknown-option", "--unexpected", "0"]
+        )
+        if flags[:2] == ["auth", "login"]:
+            command = "auth login"
+        elif flags[:1] == ["status"]:
+            command = "status"
+        elif flags[:1] == ["ls"] and invalid:
+            command = "list"
+        elif flags[:1] == ["update"] and invalid:
+            command = "update"
+        elif flags[:1] == ["add"] and invalid:
+            command = "add"
+        elif invalid_remove:
+            command = "remove"
+        elif any(flag in flags for flag in ["version", "--version", "-v"]) and not any(
+            flag in flags for flag in ["help", "--help"]
+        ):
+            command = "version"
+        else:
+            command = "help"
+        if "--json" in flags:
+            data = {"version": "1.2.0", "build": "7"} if command == "version" else {"usage": "cloudgateway help"}
+            if "remove" in flags and is_help:
+                data = {"topic": "remove", "usage": "cloudgateway remove <client-uuid> --yes [options]"}
+            record = {"schemaVersion": 1, "type": "error" if invalid else "result", "command": command,
+                      "operationId": None, "data": None if invalid else data,
+                      "error": {"code": "usage"} if invalid else None}
+            output, diagnostics = json.dumps(record).encode() + b"\n", b""
+        else:
+            output, diagnostics = (b"", b"Usage error\n") if invalid else (b"CloudGateway help/version\n", b"")
+            if command == "version" and not invalid:
+                output = b"CloudGateway 1.2.0 (7)\n"
+            elif "remove" in flags and is_help:
+                output = b"cloudgateway remove <client-uuid> --yes [options]\n"
+        return subprocess.CompletedProcess(arguments, 2 if invalid else 0, stdout=output, stderr=diagnostics)
+
+    def test_static_direct_and_symlink_commands_use_temporary_homes_and_bounded_calls(self) -> None:
+        with patch.object(verifier.subprocess, "run", side_effect=self.static_result) as run:
+            verifier.verify_cli(self.app)
+        self.assertEqual(run.call_count, 88)
+        symlink = next(entry.args[0][0] for entry in run.call_args_list
+                       if Path(entry.args[0][0]).name == "cloudgateway")
+        for prefix in ([str(self.binary.absolute()), "--cli"], [symlink]):
+            for flags in (["version"], ["-v"], ["--version"], ["version", "--json"], ["-v", "--json"],
+                          ["--version", "--json"], ["ls", "-l", "--help", "--json"],
+                          ["update", "--allow-disconnect", "--help", "--json"],
+                          ["update", "--unexpected", "--json"], ["add", "--help"], ["help", "add", "--json"],
+                          ["add", "sanjose"], ["add", "us-sanjose-1", "", "--json"],
+                          ["remove", "--help"], ["help", "remove", "--json"],
+                          ["remove", "sanjose", "1", "--yes", "--help", "--json"],
+                          ["remove"], ["remove", "--yes", "--json"],
+                          ["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                          ["remove", "sanjose", "1", "--json", "--non-interactive"],
+                          ["remove", "sanjose", "1", "--yes=false", "--json"]):
+                self.assertTrue(any(entry.args[0] == prefix + flags for entry in run.call_args_list))
+        self.assertEqual(len(self.homes), 1)
+        self.assertTrue(all(not home.exists() for home in self.homes))
+
+    def test_resources_and_executable_are_required_before_launching(self) -> None:
+        resource = self.app / "Contents/Resources/GoogleService-Info.plist"
+        resource.rename(resource.with_suffix(".missing"))
+        with patch.object(verifier.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "resource missing"):
+            verifier.verify_cli(self.app)
+        run.assert_not_called()
+        self.binary.chmod(0o644)
+        with patch.object(verifier.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "not executable"):
+            verifier.verify_cli(self.app)
+        run.assert_not_called()
+
+    def test_timeout_is_reported_without_command_output(self) -> None:
+        error = subprocess.TimeoutExpired("private subprocess details", 5, output=b"private output")
+        with patch.object(verifier.subprocess, "run", side_effect=error), self.assertRaisesRegex(ValueError, "five-second deadline") as raised:
+            verifier.verify_cli(self.app)
+        self.assertNotIn("private", str(raised.exception))
+
+    def test_invalid_json_version_and_terminal_output_are_rejected(self) -> None:
+        for failure in ("json", "version", "version_text", "escape", "newline", "usage", "operation"):
+            def result(arguments: list[str], **options) -> subprocess.CompletedProcess:
+                response = self.static_result(arguments, **options)
+                if failure == "escape":
+                    response.stdout += b"\x1b[31m"
+                elif failure == "version_text" and response.stdout.startswith(b"CloudGateway 1.2.0"):
+                    response.stdout = b"CloudGateway 1.2.0 (8)\n"
+                elif "--json" in arguments:
+                    record = json.loads(response.stdout)
+                    if failure == "json":
+                        response.stdout = b"invalid\n"
+                    elif failure == "newline":
+                        response.stdout = response.stdout.rstrip(b"\n")
+                    elif failure == "version" and record["command"] == "version":
+                        record["data"]["build"] = "8"
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                    elif failure == "usage" and response.returncode == 2:
+                        record["error"] = None
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                    elif failure == "operation":
+                        record["operationId"] = "unexpected"
+                        response.stdout = json.dumps(record).encode() + b"\n"
+                return response
+
+            with self.subTest(failure=failure), patch.object(verifier.subprocess, "run", side_effect=result), self.assertRaises(ValueError):
+                verifier.verify_cli(self.app)
+
+    def test_static_command_must_not_write_user_state(self) -> None:
+        def result(arguments: list[str], **options) -> subprocess.CompletedProcess:
+            response = self.static_result(arguments, **options)
+            (Path(options["env"]["HOME"]) / "unexpected-state").touch()
+            return response
+
+        with patch.object(verifier.subprocess, "run", side_effect=result), self.assertRaisesRegex(ValueError, "user state"):
+            verifier.verify_cli(self.app)
+
+    def test_cli_flag_runs_static_checks_after_bundle_verification(self) -> None:
+        with patch("sys.argv", ["verify_macos_build.py", str(self.app), "--cli-smoke"]), \
+                patch.object(verifier, "verify_bundle") as bundle, patch.object(verifier, "verify_cli") as cli:
+            verifier.main()
+        bundle.assert_called_once_with(self.app, False, False)
+        cli.assert_called_once_with(self.app)
 
 
 class MacOSBuildVerificationTests(unittest.TestCase):
@@ -250,6 +419,20 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             verifier.main()
         verify_bundle.assert_called_once_with(self.bundle, False, True)
 
+    def test_historical_baseline_flag_requires_developer_id_and_excludes_current_cli(self) -> None:
+        for options in (["--historical-baseline"], ["--historical-baseline", "--developer-id", "--cli-smoke"]):
+            with self.subTest(options=options), \
+                    patch("sys.argv", ["verify_macos_build.py", str(self.bundle), *options]), \
+                    patch.object(verifier, "verify_bundle") as verify_bundle:
+                with self.assertRaises(SystemExit) as error:
+                    verifier.main()
+                self.assertEqual(error.exception.code, 2)
+                verify_bundle.assert_not_called()
+        with patch("sys.argv", ["verify_macos_build.py", str(self.bundle), "--developer-id", "--historical-baseline"]), \
+                patch.object(verifier, "verify_bundle") as verify_bundle:
+            verifier.main()
+        verify_bundle.assert_called_once_with(self.bundle, False, True, historical_baseline=True)
+
     def test_packaged_fixture_rejects_invalid_description_and_duplicate_embedding(self) -> None:
         app = Path(self.temporary.name) / "CloudGateway.app"
         extension = app / "Contents" / "Library" / "SystemExtensions" / f"{verifier.EXTENSION_ID}.systemextension"
@@ -257,9 +440,9 @@ class MacOSBuildVerificationTests(unittest.TestCase):
                   "CFBundleExecutable": "Executable"}
         for bundle, info in [
             (app, dict(common, CFBundleIdentifier=verifier.APP_ID, LSUIElement=True)),
-            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID,
+            (extension, dict(common, CFBundleIdentifier=verifier.EXTENSION_ID, CFBundleVersion="4",
                              NSSystemExtensionUsageDescription="Connect to your configured networks", NetworkExtension={
-                "NEMachServiceName": f"{verifier.APP_GROUP}.tunnel",
+                "NEMachServiceName": f"{verifier.APP_GROUP}.tunnel.4",
                 "NEProviderClasses": {"com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"},
             })),
         ]:
@@ -286,6 +469,33 @@ class MacOSBuildVerificationTests(unittest.TestCase):
             ])
             info_path = extension / "Contents" / "Info.plist"
             valid_info = verifier.read_plist(info_path)
+            for service in (f"{verifier.APP_GROUP}.tunnel", f"{verifier.APP_GROUP}.tunnel.3", "other.tunnel.4"):
+                invalid_info = dict(valid_info, NetworkExtension=dict(valid_info["NetworkExtension"], NEMachServiceName=service))
+                info_path.write_bytes(plistlib.dumps(invalid_info))
+                with self.subTest(service=service), self.assertRaisesRegex(ValueError, "Mach service mismatch"):
+                    verifier.verify_bundle(app, False)
+            for service in (f"{verifier.APP_GROUP}.tunnel", f"{verifier.APP_GROUP}.tunnel.4"):
+                info_path.write_bytes(plistlib.dumps(dict(valid_info, NetworkExtension=dict(
+                    valid_info["NetworkExtension"], NEMachServiceName=service))))
+                with self.subTest(historical_service=service), \
+                        patch.object(verifier, "verify_signature") as verify_signature:
+                    verifier.verify_bundle(app, False, developer_id=True, historical_baseline=True)
+                self.assertEqual(verify_signature.call_args_list, [
+                    call(app, verifier.APP_ID, False, True),
+                    call(extension, verifier.EXTENSION_ID, True, True),
+                ])
+            for service in (f"{verifier.APP_GROUP}.tunnel.3", "other.tunnel.4"):
+                info_path.write_bytes(plistlib.dumps(dict(valid_info, NetworkExtension=dict(
+                    valid_info["NetworkExtension"], NEMachServiceName=service))))
+                with self.subTest(historical_service=service), self.assertRaisesRegex(ValueError, "Mach service mismatch"):
+                    verifier.verify_bundle(app, False, developer_id=True, historical_baseline=True)
+            for build in (None, 4, "", "4..1", "4/1", "4\n", "4" * 65):
+                invalid_info = dict(valid_info, CFBundleVersion=build)
+                if build is None:
+                    invalid_info.pop("CFBundleVersion")
+                info_path.write_bytes(plistlib.dumps(invalid_info))
+                with self.subTest(build=build), self.assertRaisesRegex(ValueError, "Extension build"):
+                    verifier.verify_bundle(app, False)
             for description in (None, "", "   ", 17):
                 invalid_info = dict(valid_info)
                 if description is None:

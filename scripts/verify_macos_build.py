@@ -2,9 +2,12 @@
 
 import argparse
 import datetime
+import json
+import os
 import plistlib
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 APP_ID = "com.gocloudlaunch.gateway.macos"
@@ -190,7 +193,7 @@ def verify_signature(bundle: Path, bundle_id: str, is_extension: bool, developer
     verify_profile(profile, bundle_id, is_extension, datetime.datetime.now(datetime.timezone.utc), developer_id)
 
 
-def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
+def verify_bundle(app: Path, signed: bool, developer_id: bool = False, *, historical_baseline: bool = False) -> None:
     signed = signed or developer_id
     extension = app / "Contents" / "Library" / "SystemExtensions" / f"{EXTENSION_ID}.systemextension"
     require(list(app.glob("**/*.systemextension")) == [extension], "Unexpected or duplicate system extension embedding")
@@ -204,7 +207,12 @@ def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
     require(isinstance(usage_description, str) and bool(usage_description.strip()),
             "System extension usage description missing or invalid")
     network = extension_info.get("NetworkExtension", {})
-    require(network.get("NEMachServiceName") == f"{APP_GROUP}.tunnel", "Mach service mismatch")
+    build = extension_info.get("CFBundleVersion")
+    require(isinstance(build, str) and len(build) <= 64 and re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", build),
+            "Extension build missing or invalid")
+    service = network.get("NEMachServiceName")
+    require(service == f"{APP_GROUP}.tunnel.{build}"
+            or (historical_baseline and service == f"{APP_GROUP}.tunnel"), "Mach service mismatch")
     require(network.get("NEProviderClasses") == {
         "com.apple.networkextension.packet-tunnel": "CloudGatewayTunnel.PacketTunnelProvider"
     }, "Packet provider class mapping mismatch")
@@ -223,14 +231,137 @@ def verify_bundle(app: Path, signed: bool, developer_id: bool = False) -> None:
         print("Signed entitlements, profiles, and Hardened Runtime verified")
 
 
+def verify_cli(app: Path) -> None:
+    info = read_plist(app / "Contents/Info.plist")
+    require(info.get("CFBundleExecutable") == "CloudGateway", "CLI requires the bundled CloudGateway executable")
+    executable = (app / "Contents/MacOS/CloudGateway").absolute()
+    require(executable.is_file() and os.access(executable, os.X_OK), "CLI executable missing or not executable")
+    resources = app / "Contents/Resources"
+    require((resources / "GoogleService-Info.plist").is_file(), "Controller Firebase resource missing")
+    require(isinstance(read_plist(resources / "GoogleService-Info.plist"), dict), "Controller Firebase resource invalid")
+    cases = [
+        ([], 0, "help", False),
+        (["--help"], 0, "help", False),
+        (["help", "auth", "login"], 0, "help", False),
+        (["--version"], 0, "version", False),
+        (["version"], 0, "version", False),
+        (["-v"], 0, "version", False),
+        (["--json"], 0, "help", True),
+        (["help", "doctor", "--json"], 0, "help", True),
+        (["--version", "--json"], 0, "version", True),
+        (["version", "--json"], 0, "version", True),
+        (["-v", "--json"], 0, "version", True),
+        (["help", "version"], 0, "help", False),
+        (["version", "--help"], 0, "help", False),
+        (["ls", "--help"], 0, "help", False),
+        (["ls", "-l", "--help", "--json"], 0, "help", True),
+        (["help", "ls", "--json"], 0, "help", True),
+        (["add", "--help"], 0, "help", False),
+        (["help", "add", "--json"], 0, "help", True),
+        (["add", "sanjose"], 2, "add", False),
+        (["add", "us-sanjose-1", "", "--json"], 2, "add", True),
+        (["remove", "--help"], 0, "help", False),
+        (["help", "remove", "--json"], 0, "help", True),
+        (["remove", "sanjose", "1", "--yes", "--help", "--json"], 0, "help", True),
+        (["remove"], 2, "remove", False),
+        (["remove", "--yes", "--json"], 2, "remove", True),
+        (["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"], 2, "remove", False),
+        (["remove", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1"], 2, "remove", False),
+        (["remove", "sanjose", "1", "--json", "--non-interactive"], 2, "remove", True),
+        (["remove", "not-a-uuid", "--yes"], 2, "remove", False),
+        (["remove", "sanjose", "0", "--yes", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1", "extra", "--yes"], 2, "remove", False),
+        (["remove", "sanjose", "1", "--yes=false", "--json"], 2, "remove", True),
+        (["remove", "sanjose", "1", "--yes", "--unexpected", "--json"], 2, "remove", True),
+        (["status", "--yes", "--json"], 2, "status", True),
+        (["update", "--help"], 0, "help", False),
+        (["help", "update", "--json"], 0, "help", True),
+        (["update", "--allow-disconnect", "--help", "--json"], 0, "help", True),
+        (["--unknown-option"], 2, None, False),
+        (["auth", "login", "--timeout", "0", "--json"], 2, "auth login", True),
+        (["status", "--unexpected", "--json"], 2, "status", True),
+        (["ls", "--unexpected", "--json"], 2, "list", True),
+        (["update", "--unexpected", "--json"], 2, "update", True),
+        (["update", "--allow-disconnect", "--timeout", "0", "--json"], 2, "update", True),
+    ]
+    with tempfile.TemporaryDirectory(prefix="cloudgateway-cli-smoke-") as directory:
+        root = Path(directory)
+        home = root / "home"
+        home.mkdir()
+        link = root / "cloudgateway"
+        link.symlink_to(executable)
+        environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+                       "CFFIXED_USER_HOME": str(home), "TMPDIR": str(root), "TERM": "dumb", "NO_COLOR": "1"}
+        for invocation in ([str(executable), "--cli"], [str(link)]):
+            for arguments, expected_exit, expected_command, is_json in cases:
+                try:
+                    result = subprocess.run(invocation + arguments, capture_output=True, check=False,
+                                            timeout=5, env=environment, cwd=root, stdin=subprocess.DEVNULL)
+                except subprocess.TimeoutExpired:
+                    raise ValueError("Packaged CLI static command exceeded its five-second deadline") from None
+                require(result.returncode == expected_exit, "Packaged CLI static command returned an unexpected exit")
+                require(b"\x1b" not in result.stdout + result.stderr, "Redirected CLI output contains terminal escapes")
+                if is_json:
+                    require(result.stderr == b"", "Packaged CLI JSON command wrote unexpected diagnostics")
+                    require(result.stdout.endswith(b"\n") and len(result.stdout.splitlines()) == 1,
+                            "Packaged CLI JSON must be one complete newline-terminated record")
+                    try:
+                        record = json.loads(result.stdout)
+                    except (ValueError, UnicodeDecodeError):
+                        raise ValueError("Packaged CLI JSON is invalid") from None
+                    require(isinstance(record, dict) and record.get("schemaVersion") == 1,
+                            "Packaged CLI JSON schema mismatch")
+                    require(record.get("command") == expected_command, "Packaged CLI command mismatch")
+                    require(record.get("type") == ("result" if expected_exit == 0 else "error"),
+                            "Packaged CLI result type mismatch")
+                    require(record.get("operationId") is None, "Static CLI output must not accept an operation")
+                    if expected_exit:
+                        require(isinstance(record.get("error"), dict) and record["error"].get("code") == "usage",
+                                "Packaged CLI usage code mismatch")
+                    elif expected_command == "version":
+                        require(record.get("data") == {"version": info.get("CFBundleShortVersionString"),
+                                                      "build": info.get("CFBundleVersion")},
+                                "CLI version does not match its bundle, including through a symlink")
+                    else:
+                        require(isinstance(record.get("data"), dict) and "usage" in record["data"],
+                                "Packaged CLI help is missing")
+                        if "remove" in arguments:
+                            require(record["data"].get("topic") == "remove"
+                                    and "--yes" in record["data"]["usage"],
+                                    "Packaged CLI removal help is missing consent usage")
+                elif expected_exit == 0:
+                    require(bool(result.stdout) and result.stderr == b"", "Packaged CLI static output missing")
+                    if expected_command == "version":
+                        expected = f"CloudGateway {info.get('CFBundleShortVersionString')} ({info.get('CFBundleVersion')})\n"
+                        require(result.stdout == expected.encode(), "CLI version text does not match its bundle")
+                    elif "remove" in arguments:
+                        require(b"cloudgateway remove" in result.stdout and b"--yes" in result.stdout,
+                                "Packaged CLI removal help is missing consent usage")
+                else:
+                    require(result.stdout == b"" and bool(result.stderr), "CLI usage diagnostics must use stderr")
+        require(not list(home.iterdir()), "Static CLI commands wrote user state")
+    print(f"{len(cases) * 2} bounded packaged CLI direct/symlink help, version, and usage checks passed")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     parser.add_argument("--signed", action="store_true")
     parser.add_argument("--developer-id", action="store_true", help="Verify Developer ID release signing (implies --signed)")
+    parser.add_argument("--cli-smoke", action="store_true", help="Check current CLI resources and run bounded static commands")
+    parser.add_argument("--historical-baseline", action="store_true",
+                        help="Allow the original fixed Mach service in a previous Developer ID release")
     args = parser.parse_args()
+    if args.historical_baseline and (not args.developer_id or args.cli_smoke):
+        parser.error("--historical-baseline requires --developer-id and cannot check a current CLI release")
     try:
-        verify_bundle(args.app, args.signed, args.developer_id)
+        if args.historical_baseline:
+            verify_bundle(args.app, args.signed, args.developer_id, historical_baseline=True)
+        else:
+            verify_bundle(args.app, args.signed, args.developer_id)
+        if args.cli_smoke:
+            verify_cli(args.app)
     except (ValueError, OSError, plistlib.InvalidFileException) as error:
         raise SystemExit(f"macOS verification failed: {error}") from None
 

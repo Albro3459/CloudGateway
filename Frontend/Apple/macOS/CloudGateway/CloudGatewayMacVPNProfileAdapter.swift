@@ -9,8 +9,8 @@ enum CloudGatewayMacVPNProfileError: Error {
     case duplicateProfile
     case missingProfile
     case missingSession
-    case stopTimedOut
     case invalidGrant
+    case anotherProfileIsActive
 }
 
 @MainActor
@@ -47,10 +47,12 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
     func installedProfiles() async throws -> [CloudGatewayMacInstalledProfile] {
         let loaded = try await loadManagers()
         let profiles = try loaded.filter(Self.isOwned).map(Self.profile)
-        guard Set(profiles.map(\.identifier)).count == profiles.count else {
-            throw CloudGatewayMacVPNProfileError.duplicateProfile
-        }
+        try CloudGatewayMacProfileMetadata.validateUnique(profiles)
         return profiles
+    }
+
+    func hasAnyActiveTunnel() async throws -> Bool {
+        try await loadManagers().contains { Self.isOwned($0) && Self.needsConfirmedStop($0.connection.status) }
     }
 
     func saveAndReload(_ config: CloudGatewayMacInstalledConfig) async throws {
@@ -91,9 +93,14 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
     }
 
     func start(identifier: String, grant: String) async throws {
+        try await start(identifier: identifier, grant: grant, displacingOtherProfiles: true)
+    }
+
+    func start(identifier: String, grant: String, displacingOtherProfiles: Bool) async throws {
         guard Data(base64Encoded: grant)?.count == 32 else { throw CloudGatewayMacVPNProfileError.invalidGrant }
         let manager = try await installedManager(identifier: identifier)
         try Task.checkCancellation()
+        if !displacingOtherProfiles { try await requireNoOtherActiveProfile(identifier: identifier) }
         if !manager.isEnabled {
             manager.isEnabled = true
             try await manager.saveToPreferences()
@@ -106,12 +113,44 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
             throw CloudGatewayMacVPNProfileError.missingSession
         }
         try Task.checkCancellation()
+        if !displacingOtherProfiles { try await requireNoOtherActiveProfile(identifier: identifier) }
+        try Task.checkCancellation()
         try session.startTunnel(options: [CloudGatewayMacProviderKey.startGrant: grant as NSString])
     }
 
+    private func requireNoOtherActiveProfile(identifier: String) async throws {
+        let loaded = try await loadManagers()
+        for manager in loaded where Self.needsConfirmedStop(manager.connection.status) {
+            guard Self.isOwned(manager), try Self.profile(manager).identifier == identifier else {
+                throw CloudGatewayMacVPNProfileError.anotherProfileIsActive
+            }
+        }
+    }
+
     func stopAndWait(identifier: String) async throws {
+        try await stopAndWait(identifier: identifier, authorize: {})
+    }
+
+    func stopAndWait(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
         let manager = try await installedManager(identifier: identifier)
-        try await MacVPNStopWaiter(connection: manager.connection, timeout: stopTimeout).stopAndWait()
+        try await MacVPNStopWaiter(connection: manager.connection, timeout: stopTimeout).stopAndWait(authorize: authorize)
+    }
+
+    func remove(identifier: String, authorize: @escaping @MainActor @Sendable () throws -> Void) async throws {
+        try await CloudGatewayMacProfileRemoval.perform(identifier: identifier, authorize: authorize, load: {
+            try await self.loadManagers().filter(Self.isOwned)
+        }, profile: { manager in
+            let profile = try Self.profile(manager)
+            // Fail closed when a future NE status maps to invalid
+            guard profile.needsConfirmedStop == Self.needsConfirmedStop(manager.connection.status) else {
+                throw CloudGatewayMacConfigError.unavailable
+            }
+            return profile
+        }, reload: { manager in
+            try await manager.loadFromPreferences()
+        }, remove: { manager in
+            try await manager.removeFromPreferences()
+        })
     }
 
     private func installedManager(identifier: String) async throws -> NETunnelProviderManager {
@@ -138,19 +177,10 @@ final class CloudGatewayMacVPNProfileAdapter: CloudGatewayMacProfileAdapter {
 
     private static func profile(_ manager: NETunnelProviderManager) throws -> CloudGatewayMacInstalledProfile {
         guard isOwned(manager),
-              let metadata = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration,
-              let identifier = metadata[CloudGatewayMacProviderKey.configId] as? String,
-              !identifier.isEmpty,
-              metadata[CloudGatewayProviderConfigurationKey.tunnelIdentifier] as? String == identifier,
-              let value = metadata[CloudGatewayMacProviderKey.secretReference] as? String,
-              let reference = try? CloudGatewayMacSecretReference(value: value) else {
+              let metadata = (manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration else {
             throw CloudGatewayMacVPNProfileError.invalidProfile
         }
-        return CloudGatewayMacInstalledProfile(
-            identifier: identifier,
-            reference: reference,
-            status: CloudGatewayTunnelStatus(manager.connection.status)
-        )
+        return try CloudGatewayMacProfileMetadata.decode(metadata, status: CloudGatewayTunnelStatus(manager.connection.status))
     }
 
     private static func needsConfirmedStop(_ status: NEVPNStatus) -> Bool {
@@ -179,8 +209,9 @@ private final class MacVPNStopWaiter {
         self.timeout = timeout
     }
 
-    func stopAndWait() async throws {
+    func stopAndWait(authorize: @escaping @MainActor @Sendable () throws -> Void = {}) async throws {
         try Task.checkCancellation()
+        try authorize()
         if connection.status == .disconnected || connection.status == .invalid { return }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -199,8 +230,13 @@ private final class MacVPNStopWaiter {
                 timeoutTask = Task { @MainActor [weak self, timeout] in
                     do {
                         try await Task.sleep(for: .seconds(timeout))
-                        self?.finish(.failure(CloudGatewayMacVPNProfileError.stopTimedOut))
+                        self?.finish(.failure(CloudGatewayMacConfigError.stopTimedOut))
                     } catch {}
+                }
+                do { try authorize() }
+                catch {
+                    finish(.failure(error))
+                    return
                 }
                 connection.stopVPNTunnel()
                 checkStatus()
