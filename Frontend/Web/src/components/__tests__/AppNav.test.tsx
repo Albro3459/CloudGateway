@@ -16,7 +16,7 @@ describe("Mac app download", () => {
         const dialog = screen.getByRole("dialog", { name: "Download CloudGateway for Mac" });
         expect(within(dialog).getByText("Requires macOS 26 or later and an Apple silicon Mac.")).toBeTruthy();
         const link = within(dialog).getByRole("link", { name: "Download for Mac" });
-        expect(link.getAttribute("href")).toBe("https://github.com/Albro3459/CloudGateway/releases/download/macos-v1.0.0-build.2/CloudGateway-1.0.0-2-arm64.dmg");
+        expect(link.getAttribute("href")).toBe("https://github.com/Albro3459/CloudGateway/releases/download/macos-v1.0.0-build.18/CloudGateway-1.0.0-18-arm64.dmg");
         expect(dialog.closest("nav")).toBeNull();
 
         fireEvent.click(link);
