@@ -154,9 +154,9 @@ This must be rejected. If it returns a healthy response, the origin is reachable
 
 ## 7. Verify WireGuard Connects
 
-1. Create a client and load its config in the WireGuard app (QR or download).
+1. Create a client, then sign in to the CloudGateway macOS or iOS app and select that client. On Mac, you can also use the CLI after [CLI setup](../Frontend/Apple/macOS/README.md#command-line-tool).
 2. Confirm the config endpoint is `wg.<regionId>.<origin>:51820` and that the name resolves to the server public IPv4 (grey cloud, not proxied).
-3. Activate the tunnel and confirm a handshake on the host:
+3. Connect from the app, or run `cloudgateway up '<client-uuid>'` on Mac, and confirm a handshake on the host:
 
 ```sh
 sudo wg show wg0 latest-handshakes

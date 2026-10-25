@@ -144,7 +144,7 @@ DELETE https://<regionId>.gocloudlaunch.com/api/clients/{clientId}
 POST   https://<regionId>.gocloudlaunch.com/api/admin/sync
 ```
 
-The app never asks normal users to paste WireGuard configs, import QR codes, use the external WireGuard app, or manage config files manually. Firestore and the regional API are the source of truth. Local Apple state is only an install/offline cache.
+Users select a config from their account's inventory, and the app handles VPN profile installation and connection controls. Firestore and the regional API are the source of truth. Local Apple state is only an install/offline cache.
 
 ## Packet Tunnel Extension
 

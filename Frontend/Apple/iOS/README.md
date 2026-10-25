@@ -37,7 +37,7 @@ POST https://api.gocloudlaunch.com/api/auth/check-access
 DELETE https://api.gocloudlaunch.com/api/account
 ```
 
-The signed-in user can browse enabled regions, see region capacity, filter owned configs by region, create a config in the selected region, delete a selected config, refresh Firestore/API state, and install/start/stop a chosen WireGuard config internally. The app does not auto-select a VPN config, and it does not use pasted configs, QR codes, the WireGuard app, or manual config files.
+The signed-in user can browse enabled regions, see region capacity, filter owned configs by region, create a config in the selected region, delete a selected config, refresh Firestore/API state, and install/start/stop a chosen WireGuard config internally. The user explicitly selects a VPN config, and the app loads and installs it from the account's inventory.
 
 Regional API calls use the selected region endpoint:
 

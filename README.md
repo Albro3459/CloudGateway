@@ -8,7 +8,9 @@
 
 * Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
 
-* View, copy, download, or QR-code your client config straight from the dashboard. The native iOS app can sign in, list active Firebase-backed configs, and install a selected config without the separate WireGuard app.
+* Connect through the CloudGateway macOS app, `cloudgateway` CLI, or iOS app. The native apps handle sign-in, client inventory, VPN profile installation, and connection controls. The CLI uses the macOS app's shared background controller.
+
+* View, copy, download, or QR-code your client config straight from the dashboard.
 
 * Admins can also sync region clients, if needed, and grant users accounts.
 
@@ -61,7 +63,8 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
 * <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and macOS.
 * <b>iOS app</b> (`Frontend/Apple/iOS/`): CloudGateway app and packet tunnel extension. It uses Firebase Auth/Firestore to list owned configs and installs the user-selected config internally.
-* <b>macOS app</b> (`Frontend/Apple/macOS/`): menu bar VPN client with browser sign-in, client inventory, client creation, and local VPN controls.
+* <b>macOS app</b> (`Frontend/Apple/macOS/`): menu bar VPN client with browser sign-in, client inventory, client creation and removal, and VPN controls.
+* <b>macOS CLI</b> ([command line setup and reference](Frontend/Apple/macOS/README.md#command-line-tool)): `cloudgateway` provides sign-in, client listing, creation and removal, VPN controls, and diagnostics through the same background controller as the menu bar app. It supports Terminal and SSH after one-time desktop VPN setup.
 * <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
 * <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
 * <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
@@ -106,8 +109,8 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
-* Desktop clients still use the WireGuard app or `wg-quick`.
-* The native iOS app is replacing the iPhone QR/config-file flow by installing the selected config through its packet tunnel extension.
+* Use the CloudGateway macOS app or `cloudgateway` CLI on Mac, and the CloudGateway iOS app on iPhone or iPad.
+* The native apps install the selected VPN profile and manage the tunnel through their packet tunnel extensions.
 
 #### On Phone
 
@@ -118,29 +121,32 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 
 #### On Mac
 
-* It's much easier to use the WireGuard Desktop app, but you can follow these steps instead:
+* Download the CloudGateway macOS app from [gocloudlaunch.com](https://www.gocloudlaunch.com/) and install it at `/Applications/CloudGateway.app`.
+* Open the menu bar app and sign in through the browser.
+* Complete the one-time VPN extension and profile approvals.
+* Choose a client by name and region, then connect or disconnect from the menu. Use **Add Client** or **Remove Client** to manage clients.
 
-* Start WireGuard manually:
-  ```sh
-  wg-quick up wg-client
-  ```
+#### macOS CLI
 
-* Check status:
-  ```sh
-  sudo wg
-  ```
+* Choose **Install Command Line Tool…** from the macOS app menu to install `cloudgateway` at `~/.local/bin/cloudgateway`.
+* Add `~/.local/bin` to your shell's PATH. The menu offers **Add to Zsh PATH…** for supported zsh setups; open a new login shell after setup.
+* Use the same macOS user that completed desktop VPN setup. The CLI shares sign-in, inventory, and VPN state with the menu bar app.
 
-* To stop it:
-  ```sh
-  wg-quick down wg-client
-  ```
+```sh
+cloudgateway auth login
+cloudgateway list
+cloudgateway up '<client-uuid>'
+cloudgateway status
+cloudgateway down
+```
+
+The CLI also supports client creation and removal, JSON output, diagnostics, and SSH use. See the [CLI setup and command reference](Frontend/Apple/macOS/README.md#command-line-tool).
 
 ## More Docs
 
 * Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
-* Apple known issues and workarounds: [docs/apple-known-issues.md](docs/apple-known-issues.md)
-* macOS release deployment: [docs/apple-macos-release.md](docs/apple-macos-release.md)
-* macOS menu screenshot: [docs/apple-macos-screenshots.md](docs/apple-macos-screenshots.md)
+* iOS app: [Frontend/Apple/iOS/README.md](Frontend/Apple/iOS/README.md)
+* macOS app and CLI: [Frontend/Apple/macOS/README.md](Frontend/Apple/macOS/README.md)
 * Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
 * Regional API: [Backend/API/README.md](Backend/API/README.md)
 * Regional API contract: [docs/api-contract.md](docs/api-contract.md)

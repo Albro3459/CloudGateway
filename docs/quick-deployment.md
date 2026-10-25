@@ -51,6 +51,43 @@ recreate them.
 
 See [apple-ios-app.md](apple-ios-app.md#app-store-archive) for the full docs.
 
+## Install macOS app for local testing
+
+Run from the repository root. This bumps the shared app, CLI, controller, and
+extension build number, builds and verifies the signed Release bundle with Apple
+Development signing, and replaces `/Applications/CloudGateway.app`. It skips tests
+and dead-code scans. The build bump edits the tracked project file without staging
+or committing it.
+
+```sh
+(
+  set -e
+  python3 scripts/macos-release.py --bump-build
+  xcodebuild -project Frontend/Apple/macOS/CloudGateway.xcodeproj \
+    -scheme CloudGateway -configuration Release \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath Frontend/Apple/macOS/.build/Xcode \
+    ARCHS=arm64 -allowProvisioningUpdates build
+  python3 scripts/verify_macos_build.py \
+    Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app --signed --cli-smoke
+  if [ -e /Applications/CloudGateway.app ]; then
+    trash /Applications/CloudGateway.app
+    echo "Trashed previous app"
+  fi
+  ditto Frontend/Apple/macOS/.build/Xcode/Build/Products/Release/CloudGateway.app \
+    /Applications/CloudGateway.app
+)
+```
+
+After installation, run `cloudgateway update` to reconcile the running VPN
+extension with the installed bundle. If a VPN is active and replacement is needed,
+use `cloudgateway update --allow-disconnect` to authorize stop/update/reconnect.
+Initial setup and Apple approvals still require the GUI. Keep the printed operation
+ID for lookup if SSH disconnects.
+
+See the [macOS validation and local install notes](../Frontend/Apple/macOS/README.md#implementation-and-validation)
+for signing, versioning, and controller handoff details.
+
 ## Build and publish notarized macOS DMG
 
 ```sh
