@@ -1,55 +1,47 @@
-# Tool Versions
+# Tool versions
 
-Expected local and deployment tooling for this repo.
+Use repository manifests for requirements and Terraform inputs for deployed
+versions. These are development baselines, not a record of workstation patches.
 
-## Local Development
+## Local tools
 
-* macOS on ARM is the primary local development environment.
-* Python `3.12` or newer for `Backend/API/`.
-  * `Backend/API/pyproject.toml` declares `requires-python = ">=3.12"`.
-  * Use `python3 -m venv .venv` from `Backend/API/` unless you intentionally need a different interpreter.
-* Node.js `20` LTS or newer for `Frontend/Web/`.
-  * The frontend lockfile is npm lockfile version `3`.
-  * Current Firebase and build dependencies require at least Node `18`; use Node `20` LTS as the repo baseline.
-* npm `10` or newer for `Frontend/Web/`.
-  * Use `npm install` from `Frontend/Web/` to refresh `package-lock.json`.
-* Java `21` or newer for `Backend/Firebase/` Firestore emulator rules tests.
-  * `firebase-tools` no longer supports Java versions before `21`; use Homebrew `openjdk@21` on local ARM macOS.
-* Go `1.26.4` for the iOS `WireGuardGoBridgeiOS` external build target.
-  * WireGuard's `Sources/WireGuardKitGo/go.mod` declares a floor of `go 1.17`; use Homebrew `go` on local ARM macOS so Xcode can find it at `/opt/homebrew/bin/go`.
-* Terraform `1.6` or newer for `Infrastructure/OCI/terraform`.
-  * The Terraform code uses standard provider and template features and does not pin a CLI patch version.
-  * Run Terraform from `Infrastructure/OCI/terraform`, not the repo root.
+* ARM macOS is the primary environment.
+* Python 3.12 or newer: [API metadata](../Backend/API/pyproject.toml).
+  Create the API environment with `python3 -m venv .venv` in `Backend/API/`.
+* Node.js 24 or newer: [web engines](../Frontend/Web/package.json).
+  Use the same Node installation for Firebase tooling.
+* npm 10 or newer: web/Firebase development baseline. The web lockfile uses
+  format 3; run `npm install` in the relevant package directory.
+* Java 21 or newer: Firebase emulator tooling. ARM Homebrew uses `openjdk@21`.
+* Xcode with Swift 6.3 or newer: [shared package manifest](../Frontend/Apple/CloudGatewayKit/Package.swift).
+  The shared package targets iOS 17/macOS 14; the Mac app targets macOS 26/arm64.
+* Go available to Xcode: both Apple projects build the checked-in WireGuard
+  submodule and Go bridge. Its module declares Go 1.17 as a floor, not a pinned
+  build toolchain. Homebrew Go is found at `/opt/homebrew/bin/go` on ARM macOS.
+* Periphery: strict Apple dead-code scans. Install with `brew install periphery`;
+  see the platform configs under `Frontend/Apple/`.
+* Terraform 1.6 or newer: repo development baseline. Use the
+  [regional wrapper](../Infrastructure/OCI/README.md), which isolates state per
+  region; manual commands run in `Infrastructure/OCI/terraform/`.
 
-## Deployed OCI Hosts
+## Regional hosts
 
-The regional host bootstrap expects an Ubuntu-like apt-based OCI image with systemd and cloud-init.
+Bootstrap expects an Ubuntu-like apt image with systemd/cloud-init. It installs
+WireGuard, iptables, nftables, fail2ban, Unbound, DNS root data, Python venv/pip,
+CA certificates, curl, and gettext. API dependencies run in
+`/opt/cloudgateway/api/.venv`.
 
-The bootstrap installs these packages from the OS package repositories:
+Terraform-controlled tools:
 
-* `wireguard`
-* `iptables`
-* `fail2ban`
-* `unbound`
-* `dns-root-data`
-* `python3-venv`
-* `python3-pip`
-* `ca-certificates`
-* `curl`
-* `gettext-base`
+* AdGuard Home defaults to `v0.107.77` via `adguard_home_version`.
+* Caddy comes from a prebuilt Linux arm64 release pinned by `caddy_binary_tag`
+  and verified by `caddy_binary_sha256`.
+* The [Caddy build](../Infrastructure/OCI/caddy/Dockerfile) defaults to `v2.8.4`
+  with `github.com/mholt/caddy-ratelimit`; `scripts/caddy-release.sh` publishes it.
 
-Pinned or Terraform-controlled host tool versions:
-
-* AdGuard Home: `v0.107.77` by default, controlled by `adguard_home_version`.
-* Caddy: prebuilt CloudGateway Linux ARM64 binary, controlled by `caddy_binary_tag` and verified with `caddy_binary_sha256`.
-* Caddy build inputs: `Infrastructure/OCI/caddy/Dockerfile` builds Caddy `v2.8.4` with `github.com/mholt/caddy-ratelimit`; releases are published with `scripts/caddy-release.sh`.
-
-The deployed API runs in a host-created Python virtual environment at `/opt/cloudgateway/api/.venv`.
-
-## Version Sources
-
-* Python package floor: [Backend/API/pyproject.toml](../Backend/API/pyproject.toml)
-* Frontend dependencies and lockfile: [Frontend/Web/package.json](../Frontend/Web/package.json), [Frontend/Web/package-lock.json](../Frontend/Web/package-lock.json)
-* Firebase rules-test dependencies: [Backend/Firebase/package.json](../Backend/Firebase/package.json)
-* iOS WireGuard bridge Go floor: `Sources/WireGuardKitGo/go.mod` in the pinned `wireguard-apple` SwiftPM checkout.
-* OCI host package and pinned runtime inputs: [Infrastructure/OCI/host/bootstrap.sh](../Infrastructure/OCI/host/bootstrap.sh), [Infrastructure/OCI/terraform/cloudgateway.tf](../Infrastructure/OCI/terraform/cloudgateway.tf), [Infrastructure/OCI/terraform/terraform.tfvars.example](../Infrastructure/OCI/terraform/terraform.tfvars.example)
+See [bootstrap](../Infrastructure/OCI/host/bootstrap.sh),
+[Terraform variables](../Infrastructure/OCI/terraform/cloudgateway.tf), and
+[example tfvars](../Infrastructure/OCI/terraform/terraform.tfvars.example) for
+host inputs. Dependency ranges and resolved versions live in each package's
+manifest/lockfile. Do not replace documented floors with whichever patch happens
+to be installed locally.

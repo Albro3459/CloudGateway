@@ -44,10 +44,8 @@ export type FirebaseRegionDoc = {
     meshEnabled?: boolean;
     displayOrder?: number;
     healthStatus?: string;
-    // Per-region monotonic index into the tunnel network, advanced on every
-    // allocation. Replaces lowest-free-address reuse; paired so a client's v4
-    // and v6 addresses share an index. v4 wraps at the top of the host range,
-    // v6 never does.
+    // Paired v4/v6 allocation cursors advance together, wrap at the v4 host
+    // limit, and skip indices held by allocated clients
     tunnelIndexV4?: number;
     tunnelIndexV6?: number;
     updatedAt: FirestoreTimestamp;

@@ -1,16 +1,22 @@
 # Service Operations: Restart and Log Inspection
 
-Host-level notes for the services on each regional server. All commands run as root (or with `sudo`) on the regional host.
+Run host commands as root or with `sudo`. Use [regional deployment](regional-deployment.md)
+for host builds and [VM recovery](vm-loss-recovery.md) for replacements.
 
-Logging boundaries apply to operations too:
+Logging rules apply during investigation:
 
-* API logs are structured JSON and may include request IDs, routes, and user emails. That is expected.
-* No service may keep VPN traffic logs: no DNS queries, no destination IPs or domains, no browsing/app metadata, no per-user connection history. If you find such logging enabled, treat it as an incident and disable it.
-* Never paste private keys, full WireGuard configs, Firebase credentials, auth tokens, or the contents of `/etc/cloudgateway/api.env` into logs or tickets.
+* API logs are structured JSON and can include request IDs, routes, UIDs/emails,
+  client IDs, durations, and redacted exception details.
+* Never keep VPN traffic logs: DNS queries, destinations, packet metadata,
+  browsing/app metadata, or per-user connection history. Treat such logging as
+  an incident and disable it.
+* Never share private keys, full configs, Firebase credentials, auth tokens,
+  `api.env`, or `bootstrap.env` contents. Report leaked key material immediately.
 
 ## cloudgateway-api.service (regional FastAPI)
 
-* Runs as root, working directory `/opt/cloudgateway/api`, bound only to `127.0.0.1`. Config comes from `/etc/cloudgateway/api.env` (mode `0600`, root-owned).
+Runs as root from `/opt/cloudgateway/api`, bound only to `127.0.0.1`. Systemd reads
+`/etc/cloudgateway/api.env`, which must stay root-owned and mode `0600`.
 
 ```sh
 systemctl status cloudgateway-api.service
@@ -19,28 +25,30 @@ journalctl -u cloudgateway-api.service -f
 journalctl -u cloudgateway-api.service --since "1 hour ago"
 ```
 
-* Logs are structured JSON: request ID, event, region, route, status, UID/email, client ID, duration, exception type/message. If you see key material or full configs in API logs, that is a bug - report it immediately.
-* After editing `/etc/cloudgateway/api.env`, restart the service. Verify the file stays `0600` root-owned.
-* Restarting the API does not touch `wg0`; existing tunnels keep working.
-* To roll the API to a new version, run `sudo cloudgateway-install-api <ref>` with a pushed tag/SHA (no argument re-fetches the deployed ref). It downloads `Backend/API/` from GitHub, reinstalls into the venv, and restarts the service - see [docs/github-deployment-setup.md](github-deployment-setup.md).
+Restart after environment changes. Restarting the API leaves `wg0` and existing
+tunnels running. For an API-only update, use `sudo cloudgateway-install-api <ref>`
+with a published tag/SHA. With no argument it fetches the original bootstrap ref.
+The helper reinstalls the API and restarts it, but does not update host configuration.
+See [GitHub deployment setup](github-deployment-setup.md).
 
 ## Caddy
 
 ```sh
 systemctl status caddy
-journalctl -u caddy -f
 journalctl -u caddy --since "1 hour ago"
-```
-
-* Validate config before restarting:
-
-```sh
 caddy validate --config /etc/caddy/Caddyfile
-systemctl reload caddy   # prefer reload over restart for config changes
+systemctl reload caddy
 ```
 
-* The binary is the prebuilt CloudGateway release with `github.com/mholt/caddy-ratelimit`. A stock `caddy` binary will fail on the rate-limit directives - confirm the installed binary with `caddy list-modules | grep rate` if validation errors mention unknown directives.
-* Caddy logs HTTP API requests only. While Caddy is down, the dashboard cannot reach the regional API, but VPN tunnels are unaffected.
+Validate before reloading config. The custom binary must include
+`http.handlers.rate_limit`. Check with `caddy list-modules | grep rate` if validation
+reports unknown directives. Caddy logs API HTTP requests only. An outage prevents
+API access while existing VPN tunnels keep running.
+
+The `cloudgateway-origin-firewall.service` restricts HTTP/HTTPS to configured
+Cloudflare ranges. Check its status alongside Caddy when edge health fails.
+Caddy also requires Authenticated Origin Pulls and the allowed regional/global
+API hostname. Keep the API loopback-only and direct-origin access blocked.
 
 ## wg-quick@wg0 (WireGuard)
 
@@ -50,24 +58,55 @@ wg show wg0
 wg show wg0 latest-handshakes
 ```
 
-* Avoid `systemctl restart wg-quick@wg0` during normal operations: it tears down and re-creates the interface, briefly dropping every client and re-running the firewall `PostUp`/`PostDown` rules. Peer changes are applied live by the API with `wg set`.
-* A restart is acceptable when the interface itself is wedged or after host-level interface config changes. `/etc/wireguard/wg0.conf` is interface-only (never contains peers), so after any `wg-quick` restart the peer set is empty until the sync restores it - run `sudo cloudgateway-sync-peers` immediately afterward rather than waiting for the next boot.
-* WireGuard exposes runtime handshake/transfer counters via `wg show`; reading them live is fine, persisting them per user is not.
+Peer changes use live `wg set` calls. Restarting `wg-quick@wg0` tears down the
+interface, interrupts every client, and reruns firewall `PostDown`/`PostUp` rules.
+Reserve it for a wedged interface or planned interface changes.
+
+`/etc/wireguard/wg0.conf` must remain interface-only, without `[Peer]` blocks.
+After an interface restart, restore peers, mesh routes, and policy immediately:
+
+```sh
+sudo systemctl start cloudgateway-sync-peers.service
+sudo systemctl status cloudgateway-sync-peers.service
+```
+
+Reading live handshake/transfer counters is allowed. Do not persist them per user.
 
 ## cloudgateway-sync-peers.service (Firebase peer sync)
 
-* Rebuilds the live `wg0` peer set from the region's `active` client docs. Firebase is the single source of truth for peers; nothing on the host persists them. Runs at boot (with on-failure retries every 30s until Firebase is reachable) and on demand.
+The oneshot unit restores peers, mesh routes, and account policy from Firestore
+at boot. Start it through systemd so it gets the venv executable and `api.env`:
 
 ```sh
-sudo cloudgateway-sync-peers
-systemctl status cloudgateway-sync-peers
-journalctl -u cloudgateway-sync-peers --since "1 hour ago"
+sudo systemctl start cloudgateway-sync-peers.service
+systemctl status cloudgateway-sync-peers.service
+journalctl -u cloudgateway-sync-peers.service --since "1 hour ago"
 ```
 
-* Logs structured JSON with added/updated/removed counts. Semantics and drift cases are documented in [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
-* It shares the API's mutation lock, so running it during live create/delete traffic is safe.
-* This unit also runs the account-scoped ACL policy reconcile (`reconcile_policy()`) after the peer/mesh pass completes - see [Account-Scoped ACL](#account-scoped-acl-client-to-client-isolation) below. A peer-sync failure short-circuits before policy is attempted at all and exits 1; a policy-only failure (peer sync succeeded) exits 2. Diagnose which happened with `systemctl status cloudgateway-sync-peers` and `journalctl -u cloudgateway-sync-peers`: a `peer_sync_completed` line followed by `policy_refresh_failed` (rather than `policy_refresh_completed`) means peers converged but the policy map did not. Either exit code is `Restart=on-failure` with `RestartSec=30` and `StartLimitIntervalSec=0`, so the unit retries the whole idempotent peer-plus-policy pass indefinitely without operator action - no manual restart is required unless you want the retry to happen immediately. **Sync All Regions** in the admin dashboard, and the equivalent fan-out on the iOS app's Server Health page, is the manual repair path for either failure and now reports `policyApplied` in its response so a stuck region is visible without reading host logs.
-* Two consequences of that indefinite retry are worth knowing before you read a bootstrap log or a Firestore bill. First, a fresh deploy runs this unit twice (once at the end of `bootstrap.sh` and once after region registration) and prints its `systemctl status` as the deploy's closing output; if only the policy leg is failing, that closing line reports the unit as failed or auto-restarting even though peers converged normally, so check for `peer_sync_completed` before concluding the region did not deploy. Second, every retry re-pulls the fleet-wide client/account snapshot from Firestore, so a region left looping on a persistent policy failure keeps reading Firestore every 30s indefinitely - the loop is the correct fail-closed behaviour (the region is not enforcing the ACL until it succeeds), but it is a signal to investigate, not a steady state to leave running.
+The CLI is installed at `/opt/cloudgateway/api/.venv/bin/cloudgateway-sync-peers`.
+It requires the same environment as the unit, so a bare `sudo cloudgateway-sync-peers`
+is not the standard host repair command.
+
+Peer mutation shares the API's WireGuard lock. Policy uses a separate flock.
+See [drift repair](wireguard-drift-repair.md) for convergence and partial failures.
+
+* Exit `1`: peer/mesh sync failed. Policy was not attempted.
+* Exit `2`: peers converged, then policy failed. Look for `peer_sync_completed`
+  followed by `policy_refresh_failed`.
+* Exit `0`: peers and policy applied. Best-effort status writes can still fail,
+  leaving the dashboard snapshot behind the live state.
+
+`Restart=on-failure`, `RestartSec=30`, and `StartLimitIntervalSec=0` retry the whole
+pass indefinitely. Successful passes have no periodic timer. Investigate a
+persistent retry loop: each retry reads Firestore again. Initial bootstrap starts
+the unit before registration, then starts it again only if registration reports
+edge readiness. On a rebuild, the first pass can already restore mesh if the
+existing region document allows it.
+
+**Sync All Regions** in Server Health runs the API repair path across enabled
+regions. Check peer/mesh results, `policyApplied`, `meshStatusWritten`,
+`policyStatusWritten`, and `clientPeersDegraded`, rather than treating HTTP success
+as proof that every part converged.
 
 ## AdGuard Home (VPN DNS filter)
 
@@ -76,13 +115,10 @@ systemctl status adguardhome
 journalctl -u adguardhome -f
 ```
 
-* AdGuard Home serves DNS to VPN clients on the tunnel DNS IPs.
-* The admin UI is local-only at `127.0.0.1:3000`; do not expose it through Caddy.
-* UI auth is disabled by default because the UI is localhost-only. Treat SSH access as the admin boundary.
-* Only the AdGuard DNS filter should be enabled unless an operator intentionally changes it.
-* Query logging and statistics must stay off. DNS query logs are forbidden VPN traffic logs.
-* AdGuard Home forwards upstream queries to local Unbound on `127.0.0.1:5335`.
-* If clients connect (handshake present) but cannot resolve names, check AdGuard Home first, then Unbound, before suspecting WireGuard.
+DNS listens on the tunnel DNS IPs and forwards to Unbound on `127.0.0.1:5335`.
+The admin UI is localhost-only at `127.0.0.1:3000`, with authentication disabled.
+SSH access is its admin boundary. Keep query logging/statistics off and the
+AdGuard DNS filter enabled. See [AdGuard configuration](../Infrastructure/OCI/adguard-home.md).
 
 ## Unbound (forward-only DoT resolver with DNSSEC validation)
 
@@ -92,153 +128,105 @@ systemctl restart unbound
 journalctl -u unbound -f
 ```
 
-* Unbound serves only AdGuard Home on localhost port `5335`.
-* It forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB (pinned by IP as `IP@853#certname`) and validates DNSSEC locally against the root trust anchor. It is forward-only, never recursive, so it never talks plaintext to authoritative servers.
-* Query logging must stay off (`verbosity` low, no `log-queries`). DNS query logs are forbidden VPN traffic logs.
-* If resolution fails, verify the host can reach the DoT upstreams on port 853 and that `/var/lib/unbound/root.key` exists for validation.
+Unbound serves AdGuard Home on localhost port `5335`. It forwards over DoT to
+Quad9, Mullvad, and DNS.SB, pinned by IP and TLS certificate name, and validates
+DNSSEC locally. It has no plaintext recursion fallback.
+
+Keep query logging off. If resolution fails, check outbound TCP `853` and the
+root trust anchor at `/var/lib/unbound/root.key`. A resolver restart can briefly
+interrupt client DNS while WireGuard stays connected.
 
 ## Cross-Region Mesh: Enable / Verify / Rollback
 
-The mesh bridges regional servers together over `wg0` so a peer on one region can reach a peer on
-another region by tunnel IP. Membership lives only in Firestore (`meshEnabled` on each region doc,
-operator-toggled from the admin dashboard); there is no tfvars var or env var for it. No SSH and no
-redeploy are needed to enable, verify, or roll back mesh membership - only a dashboard sync.
+Mesh membership is the `meshEnabled` field in each Firestore region document.
+Changing membership needs a dashboard save and sync, with compatible host/API
+code already deployed. It has no tfvars or environment toggle.
 
 **Enable:**
 
-1. Deploy (or confirm already deployed) every region that should join the mesh, with each region's
-   tunnel subnet inside the shared aggregates and non-overlapping with every other region's -
-   `scripts/terraform-preflight.py` enforces this at deploy time (see
-   [regional-deployment.md](regional-deployment.md)).
-2. Wait for each region's deployment-ready email (bootstrap self-registers the region doc with its
-   tunnel CIDRs at the end of bootstrap).
-3. In the admin dashboard, flip `meshEnabled` on for each region that should join.
-4. Click "Sync All Regions". This is the only sync action - there is no per-region selection,
-   because a partial sync can leave the mesh half-applied on the regions left out. The button is
-   disabled while a `meshEnabled` change is still saving: the checkbox shows the new value
-   immediately, but each host reads the Firestore document, so a sync started before the write
-   lands would reconcile the old membership. If a membership write fails, the confirmed sync is
-   dropped with a banner rather than run against the state that did not save.
+1. Confirm each region is deployed and registered, with unique `/24` IPv4 and
+   `/64` IPv6 tunnel subnets matching the tracked subnet registry.
+2. Enable `meshEnabled` for the intended regions in the admin dashboard.
+3. Wait for membership saves to finish, then run **Sync All Regions**. Sync is
+   disabled during saves, and a failed save cancels a pending confirmed sync.
+   Sync every enabled region so membership converges across the fleet.
 
-**Verify (per host, over SSH):**
+**Verify:**
 
-* `wg show wg0` lists the other mesh region's server public key with subnet-width `allowed-ips`
-  (`10.0.N.0/24, fd42:42:42:N::/64`) and a recent handshake.
-* `ip route` shows the remote region's subnets routed `dev wg0`.
-* Two test clients in different regions can ping each other's tunnel IPs.
-* The `Mesh/{regionId}` Firestore docs show `status: "applied"` for each peer, with a recent
-  `updatedAt`.
-* `skipped-incomplete` and `skipped-overlap` are configuration failures, not pending work. Correct
-  the Region metadata or overlap, then run Sync All Regions again; runtime overlap defense remains
-  active while the condition persists.
+* On each host, `wg show wg0` should list sibling server public keys with subnet
+  AllowedIPs and recent handshakes. Use `ip -4 route show dev wg0` and
+  `ip -6 route show dev wg0` to confirm remote tunnel routes.
+* Two clients owned by the same account in different mesh regions should reach
+  each other's tunnel IPs, subject to their local firewalls.
+* `Mesh/{regionId}` should show `applied` entries and a successful status write.
+  This is a reconciliation snapshot, not proof of a handshake.
+* `skipped-incomplete` and `skipped-overlap` require metadata/subnet repair and
+  another Sync All. They are configuration failures, not queued work.
 
-**Rollback:** flip `meshEnabled` off - for one region to remove just that region from the mesh, or
-for every region to tear the mesh down entirely - then "Sync All Regions" again. Every host
-converges to peers-and-routes-removed for the disabled region(s) on that one sync pass; no SSH,
-redeploy, or timer is required.
+**Rollback:** clear `meshEnabled` for one region or all regions, wait for saves,
+then run **Sync All Regions**. Successful hosts remove the disabled regions'
+mesh peers and routes. Investigate any host whose pass fails or cannot be reached.
 
 ## Account-Scoped ACL (Client-to-Client Isolation)
 
-A stateless nftables filter (`inet cloudgateway` table, `cg_forward` chain, installed empty by
-`PostUp` and populated by a policy reconcile pass) restricts client-to-client traffic on the
-tunnel to clients owned by the same CloudGateway account. See
-[docs/wireguard-drift-repair.md](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile) for
-how the reconcile pass works and [access-control-list.md](access-control-list.md) for
-the design. This is a host-level change with a mandatory full-region rollout gate - it ships only
-by rebuilding every region through `./scripts/terraform.sh` from one deploy tag, and the fleet is
-only partially enforced until the last region finishes; see
-[docs/regional-deployment.md](regional-deployment.md) and
-[docs/deployment-handoff.md](deployment-handoff.md) for the gate itself.
+The `inet cloudgateway` nftables table restricts forwarded tunnel traffic to
+clients owned by the same account. Admin-owned clients can also reach regional
+servers and be reached by them. Other accounts' clients remain isolated.
+Client internet egress, local client-to-server `INPUT`, and server mesh links
+have separate rules. See [ACL design](access-control-list.md) and
+[policy reconciliation](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 
-**What it guarantees:** a client can reach another client over the tunnel only when both belong to
-the same account. An admin-owned client can additionally reach, and be reached by, any regional
-server (SSH proxy jump support), but not other accounts' clients.
+The table loads at interface `PostUp` with empty dynamic policy. Before the first
+successful policy pull, forwarded client-to-client traffic is denied while
+client-to-server traffic remains available. A later failure leaves the last
+applied policy in place. An API-only update cannot install a missing table.
+The initial ACL rollout required rebuilding every region from one deploy tag,
+with only partial enforcement until the final region completed.
 
-**What it deliberately does not cover** - all unchanged by this feature:
+Every account needs `Users/{uid}.accountSlot`. The one-time backfill is complete
+and its release files are in git history. If `Counters/accountSlots.nextSlot` is
+lost or lowered, restore the allocation watermark from a trusted backup. It is
+the only record of slots issued to hard-deleted accounts. Never derive it from
+live `Users` or rerun migration seeding. Allocation fails closed until the counter
+is valid. Any manual correction must exceed every slot that could ever have been
+issued. Client reservation exposes
+`ACCOUNT_SLOT_UNAVAILABLE`; user provisioning wraps the failure as `FIREBASE_WRITE_FAILED`.
 
-* Client to internet egress.
-* A client reaching its own region's server (DNS, API) - that traffic is `INPUT`, not `FORWARD`.
-* Mesh server-to-server links between regions.
+Server Health compares comprehensive IPv4/IPv6 policy hashes across enabled
+regions. Hashes cover `cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, and
+`cg_pairs4/6`. Disabled regions are excluded. Missing/unreadable policy documents
+are failures. "Last applied" is the last successful apply/read-back timestamp,
+and age alone is not drift. A failed apply leaves the previous document intact,
+so a healthy-looking card can coexist with a failed reconcile. Check host logs
+and Sync All results. A status-write failure also leaves stale display data.
 
-**Legacy account-slot migration (completed, one-time):** every provisioned account needs
-`Users/{uid}.accountSlot` before any region enforces the ACL - an account with no slot is absent
-from every policy map and loses same-account connectivity the moment enforcement is on. The
-release-scoped backfill ran against a fresh Firestore backup before the fleet was rebuilt with
-enforcement on, and seeded `Counters/accountSlots` in the same pass. Provisioning has allocated a
-slot per account since, so there is nothing to run here; the script and its runbook are in git
-history at `releases/access-control-lists/`.
+After trusted out-of-band `UserRoles` changes, run **Sync All Regions** immediately.
+There is no role-change API, timer, or automatic propagation. Until sync, hosts
+keep the previous admin allow-set. Client create/delete policy pokes target
+individual regions and do not replace fleet-wide verification.
 
-**If the account-slot counter is ever lost or lowered:** `Counters/accountSlots.nextSlot` is the
-authoritative allocation watermark and the only record that a hard-deleted account ever held a
-slot. Provisioning and lazy slot allocation fail closed (`ACCOUNT_SLOT_UNAVAILABLE`, HTTP 500)
-until it is restored from a Firestore backup - never re-derive it from the live `Users`
-collection, and never re-run the migration's seeding flag to "repair" it, since either would
-re-issue a deleted account's slot. A counter that has moved *backward* - at or below a slot a live
-account already holds - is the same class of failure and is not overridable: restore it, or set it
-above every slot that could ever have been issued, using whatever record of past allocation exists.
-See "Account slot allocation" in [access-control-list.md](access-control-list.md).
+Account deletion marks its clients non-active fleet-wide before removing account
+documents. An unreachable host can retain a live peer and stale policy until its
+next boot or manual sync. During that gap, the deleted account's old config can
+still use that region's egress and reach its own clients there. Account slots
+are never reused, so this does not grant access to another account. Sync the host
+as soon as it is reachable.
 
-**Reading the Server Health policy display (Web and iOS):** per enabled region, row count, comprehensive IPv4/
-IPv6 policy hashes (`mapHashV4`/`mapHashV6`, covering every authorization-bearing live object -
-`cg_tunnel4/6`, `cg_infra4/6`, `cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map),
-and `updatedAt` shown as "Last applied," the server timestamp of that region's last successful
-live apply and read-back. Timestamp age alone is never drift and never staleness - the staleness
-concept from earlier waves is gone entirely. Drift is comprehensive hash disagreement among
-enabled regions only; a disabled region renders as excluded from the comparison, keeps showing
-whatever its document holds, and can never be drifted or drift anyone else. For an enabled region,
-a missing, malformed, or unreadable `Policy/{regionId}` is an explicit per-region failure state
-("Never synced" / "Unreadable"), and a failure to read the `Policy` collection at all gets its own
-card rather than reporting every region as never synced; none of these ever takes down the
-independent Mesh status. Status writes remain best effort and a status write
-failure never fails a sync pass. iOS Server Health reads the same `Policy/*`
-documents and applies the same derivation as Web, so the two surfaces agree by
-construction.
-
-Because reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, an admin allow-set
-change is visible in the comprehensive hash as soon as the next reconcile runs. There is no
-role-mutation API, UI, timer, or automatic role propagation in this release: a trusted operator who
-edits `UserRoles` out of band must run Sync All Regions immediately, and until they do, the fleet
-keeps enforcing the previous allow-set.
-
-**Repair path:** the same as peer/mesh drift - **Sync All Regions** in the admin dashboard, or its equivalent on the iOS app's Server Health page. A
-region-scoped pass (`POST /api/sync/refresh`, fired automatically by client create/delete) reaches
-only one region and returns no detail, so use Sync All when you need to confirm or force a repair
-across the fleet.
-
-**Failure mode:** the policy table is installed empty at boot, before any pull, and stays empty
-until the first successful reconcile. So an unreachable Firestore means "peer-to-peer is down,"
-never "VPN is down" - client-to-server tunnel connectivity is unaffected.
-
-**Account deletion:** `DELETE /account` marks every one of the account's client documents
-non-active fleet-wide, in every region's `Instances` subcollection, before it hard-deletes
-anything - including a region whose host was unreachable when its peer/client cleanup ran. That
-fence means no later policy pull, on that region or any other, can ever restore a deleted
-account's connectivity, so the deleting account's rows are already non-active for the entire
-window an unreachable region stays stale. An unreachable region is not repaired automatically: it
-keeps an orphaned WireGuard peer and a stale policy row until its next boot or a manual
-`cloudgateway-sync-peers` run (see
-[docs/wireguard-drift-repair.md](wireguard-drift-repair.md)). This is an accepted, documented
-risk with a bounded consequence: until that region syncs, a deleted account's existing
-configuration can still bring up a tunnel to *that one region* and use it for egress, and its own
-clients on that region can still reach each other through the stale policy row. It cannot reach
-any other account's clients - account slots are never reused, so no live account holds the stale
-row's slot - and every other region already refuses it. Run `cloudgateway-sync-peers` on the
-region once it is reachable, rather than leaving it stale indefinitely.
-
-**Inspecting live state on a host:**
+Inspect policy locally with:
 
 ```sh
 sudo nft list table inet cloudgateway
 ```
 
-Shows the installed sets/maps/chain and their current elements: `cg_slot4`/`cg_slot6` (address to
-account slot), `cg_pairs4`/`cg_pairs6` (allowed source-slot/destination pairs), `cg_admin4`/
-`cg_admin6`, and `cg_infra4`/`cg_infra6`. Never print or paste this output outside the operator's
-own investigation - it maps tunnel addresses to opaque account slots, not to uids or emails, but
-still treat it like the rest of the logging boundary above.
+The output maps tunnel addresses to account slots. Keep it within the operator's
+investigation and do not paste it into tickets or logs.
 
 ## Quick Triage Order
 
-1. `GET https://<regionId>.<origin>/api/health` fails: check Caddy, then `cloudgateway-api.service`, then Cloudflare DNS/proxy.
-2. Client create/delete fails with `WIREGUARD_APPLY_FAILED`: check API journal, then `wg show wg0`, then [docs/wireguard-drift-repair.md](wireguard-drift-repair.md).
-3. Tunnel connects but no traffic/DNS: check AdGuard Home, then Unbound and DoT upstream reachability on port 853, then IP forwarding and the NAT/firewall rules from the server config `PostUp` block.
+1. Edge `/api/health` fails: check Caddy, the API service, origin firewall, and
+   Cloudflare DNS/proxy/AOP settings.
+2. Client mutation returns `WIREGUARD_APPLY_FAILED`: check the API journal,
+   `wg show wg0`, and [drift repair](wireguard-drift-repair.md).
+3. A handshake exists but DNS fails: check AdGuard Home, Unbound, and DoT egress.
+   For other traffic failures, check forwarding, NAT/firewall rules, and policy
+   when client-to-client traffic is affected.

@@ -1,37 +1,30 @@
 # CloudGateway
 
-## About
+CloudGateway is a shared regional WireGuard VPN platform, live at
+[gocloudlaunch.com](https://www.gocloudlaunch.com/). Each OCI region runs one
+long-lived server. Use the macOS app, `cloudgateway` CLI, or iOS app to manage
+clients and connections. The web dashboard also provides config export and admin
+tools. Firebase owns product state and stored configs.
 
-* Live at: [gocloudlaunch.com](https://www.gocloudlaunch.com/)
-
-* Shared regional <b>WireGuard VPN</b> platform. Each OCI region runs one long-lived WireGuard server.
-
-* Users can use the dashboard to add and remove WireGuard clients on the deployed regional servers and view stored configs from Firebase.
-
-* Connect through the CloudGateway macOS app, `cloudgateway` CLI, or iOS app. The native apps handle sign-in, client inventory, VPN profile installation, and connection controls. The CLI uses the macOS app's shared background controller.
-
-* View, copy, download, or QR-code your client config straight from the dashboard.
-
-* Admins can also sync region clients, if needed, and grant users accounts.
-
-* Built from [CloudLaunch](https://github.com/Albro3459/CloudLaunch), a multi-region cloud deployment platform for deploying servers on AWS. CloudLaunch used mini VPN servers as its proof-of-concept project. CloudGateway builds that idea into a full shared regional WireGuard VPN platform using the same deployment-focused architecture.
+Built from [CloudLaunch](https://github.com/Albro3459/CloudLaunch), extending its
+VPN proof of concept into a shared regional service.
 
 ## Screenshots
 
-#### iOS App
+### iOS app
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
   <img src="https://github.com/user-attachments/assets/fe33a1c2-7c88-4047-8647-7a8fb5b721ac" alt="Dashboard" height="400"/>
   <img src="https://github.com/user-attachments/assets/e8fe3bf2-fe29-4c92-857e-0b30b449dbc2" alt="Login" height="400"/>
 </div>
 
-#### macOS App
+### macOS app
 
 <div style="display: flex; justify-content: center; align-items: center;">
-  <img src="https://github.com/user-attachments/assets/8023a276-da32-4822-87b0-621578094f08" alt="MacOS Menu Bar App" height="400"/>
+  <img src="https://github.com/user-attachments/assets/8023a276-da32-4822-87b0-621578094f08" alt="macOS menu bar app" height="400"/>
 </div>
 
-#### Website
+### Website
 
 <div style="display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 80px;">
   <img src="https://github.com/user-attachments/assets/82ceba8e-bb29-45bd-87c3-3fe118f929ec" alt="Dashboard" height="400"/>
@@ -60,50 +53,43 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 
 ### Components
 
-* <b>React dashboard</b> (`Frontend/Web/`): region tabs, client create/remove, config display with QR/download/copy. Reads regions and client docs from Firebase.
-* <b>CloudGatewayKit</b> (`Frontend/Apple/CloudGatewayKit/`): shared Apple VPN wrapper around WireGuardKit for iOS and macOS.
-* <b>iOS app</b> (`Frontend/Apple/iOS/`): CloudGateway app and packet tunnel extension. It uses Firebase Auth/Firestore to list owned configs and installs the user-selected config internally.
-* <b>macOS app</b> (`Frontend/Apple/macOS/`): menu bar VPN client with browser sign-in, client inventory, client creation and removal, and VPN controls.
-* <b>macOS CLI</b> ([command line setup and reference](Frontend/Apple/macOS/README.md#command-line-tool)): `cloudgateway` provides sign-in, client listing, creation and removal, VPN controls, and diagnostics through the same background controller as the menu bar app. It supports Terminal and SSH after one-time desktop VPN setup.
-* <b>Firebase</b>: Auth plus Firestore. Product source of truth for users, regions, clients, roles, limits, and stored WireGuard configs.
-* <b>Regional API</b> (`Backend/API/`): FastAPI control plane on each regional server. Runs as root via `cloudgateway-api.service`, binds only to `127.0.0.1`, verifies Firebase ID tokens, writes product state through the Firebase Admin SDK, and mutates host WireGuard under a local lock.
-* <b>Caddy</b>: prebuilt CloudGateway binary with `github.com/mholt/caddy-ratelimit`. Automatic HTTPS, Cloudflare Authenticated Origin Pulls, exact regional Host/SNI allowlist, rate limiting (including `/api/health`), strips `/api/*`, and proxies only to `127.0.0.1:<fastapi_port>`. Host firewall accepts public `80`/`443` only from Cloudflare IP ranges.
-* <b>WireGuard</b>: bare metal on the regional host. `/etc/wireguard/wg0.conf` is interface-only; peers live in Firebase and on the live interface, applied by the API with `wg set` and rebuilt at boot by `cloudgateway-sync-peers`.
-* <b>DNS filtering</b>: AdGuard Home listens only on the WireGuard tunnel DNS IPs and forwards allowed VPN client queries to local Unbound, a forward-only resolver that forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally. The cloud provider sees only encrypted DNS and never the domains clients resolve. Only the AdGuard DNS filter is enabled, and DNS query logs/statistics are disabled.
-* <b>AWS</b>: SES email only. Lambda, DynamoDB, Secrets Manager VPN configs, and the Cloudflare Worker are not part of the platform.
+* [Web dashboard](Frontend/Web/README.md): React/TypeScript and Tailwind,
+  Firebase sign-in, region/client inventory, config export, and admin tools.
+* [Apple clients](Frontend/Apple/README.md): iOS app, macOS menu app, and CLI.
+  Kit/AppCore share VPN/config APIs and app contracts; platform targets own UI
+  and runtime adapters. The Mac app and CLI share a background controller.
+* [Regional API](Backend/API/README.md): FastAPI with Firebase Admin SDK and
+  locked WireGuard/policy mutations. It runs as root on loopback behind Caddy.
+* [Firebase](Backend/Firebase/README.md): Auth and Firestore, the source of truth
+  for accounts, roles, regions, limits, clients, stored configs, and desired peers.
+* [OCI hosts](Infrastructure/OCI/README.md): Terraform-managed WireGuard,
+  Caddy, account isolation, and DNS filtering. AWS is used only for SES email.
 
-## Regional API URLs
+### API routing and peer state
 
-* Each region serves its API at `https://<regionId>.<origin>/api/*`, where `<origin>` is the frontend origin host, for example `gocloudlaunch.com`.
-* In production the frontend derives the URL from the selected region's `regionId` plus the current `window.location.origin`. There is no global API router and no base-domain config.
-* `REACT_APP_API_ORIGIN` is a local/dev override only. When set, API helpers call `${REACT_APP_API_ORIGIN}/api/*`. Production builds leave it unset.
+The apex API serves discovery/access at `https://api.<origin>/api/*`; regional
+operations use `https://<regionId>.<origin>/api/*`. The web app derives these
+hosts from its hostname. Local development uses the CRA proxy; see the
+[web guide](Frontend/Web/README.md#api-origin-behavior) for overrides.
 
-## Source of Truth
+`wg0.conf` stays interface-only. Firebase owns desired peers; API mutations apply
+live changes under a host lock, and boot/on-demand sync rebuilds peers from
+Firebase. [Account-scoped ACLs](docs/access-control-list.md) isolate users;
+[regional mesh](docs/shared-subnet-mesh.md) connects authorized clients across
+regions. Never persist peers to host configuration files.
 
-* Firebase is the single source of truth: users, regions, clients, roles, limits, stored configs, and the WireGuard peer set.
-* Peers are never saved to `wg0.conf` or any other host state file. Client create/delete updates Firebase and applies the live `wg0` change in one locked operation.
-* On reboot, `wg-quick` brings up the interface from the static config and `cloudgateway-sync-peers` rebuilds the peer set from Firebase. The same command repairs drift on demand; see [docs/wireguard-drift-repair.md](docs/wireguard-drift-repair.md).
+### DNS and privacy
 
-## Privacy and Logging
+AdGuard Home listens only on tunnel DNS addresses and sends allowed queries to
+local Unbound. Unbound forwards over DNS-over-TLS to Quad9, Mullvad, and DNS.SB,
+with local DNSSEC validation. DNS query logs and statistics are disabled.
+See the [DNS guide](Infrastructure/OCI/adguard-home.md).
 
-* API logs are required and are structured JSON. They may include request IDs, routes, operation status, and user emails, because those are needed to operate the control plane.
-* VPN traffic logs are forbidden. Never log DNS queries, domains or destination IPs requested by VPN users, browsing/app traffic metadata, packet metadata, or per-user connection history.
-* Never log WireGuard private keys, full WireGuard configs, Firebase service account secrets, or auth tokens.
-* Account-scoped ACL policy logs are aggregate-only: row counts, skipped-row counts, booleans, and region IDs. Never a uid, email, tunnel address, account slot, client name, or key.
-* The `Policy/{regionId}` status document is deliberately opaque: a region ID, two hashes, a row count, and a timestamp. The hashes are non-reversible digests of live nftables objects, not a client list, and reveal nothing about who is on the map.
-
-## Languages and Frameworks
-
-* React with TypeScript and TailwindCSS for the frontend
-* Python with FastAPI for the regional control plane
-* Firebase for Authentication and Database
-* Caddy (prebuilt CloudGateway binary with rate limiting) for the regional API edge
-* OCI Compute and Terraform for regional servers
-* AWS SES for email
-
-## Tool Versions
-
-See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deployed tooling versions, including Python, Node.js, npm, Terraform, Caddy, and AdGuard Home.
+Control-plane JSON logs may contain request IDs, routes, outcomes, and user
+emails. Never log VPN traffic, DNS queries, destination/packet metadata,
+connection history, private keys, full configs, Firebase credentials, or auth tokens.
+ACL logs/status expose aggregate counts, hashes, booleans, region IDs, and update
+time only, with no account/client identifiers or tunnel addresses.
 
 ## Usage
 
@@ -112,21 +98,21 @@ See [docs/tool-versions.md](docs/tool-versions.md) for expected local and deploy
 * Use the CloudGateway macOS app or `cloudgateway` CLI on Mac, and the CloudGateway iOS app on iPhone or iPad.
 * The native apps install the selected VPN profile and manage the tunnel through their packet tunnel extensions.
 
-#### On Phone
+### iOS
 
 * Build and install the CloudGateway iOS app from Xcode.
 * Sign in with your Firebase email/password account.
 * Choose one active config by client display name and region.
 * Install the VPN profile, then start or stop the tunnel from the app.
 
-#### On Mac
+### macOS
 
 * Download the CloudGateway macOS app from [gocloudlaunch.com](https://www.gocloudlaunch.com/) and install it at `/Applications/CloudGateway.app`.
 * Open the menu bar app and sign in through the browser.
 * Complete the one-time VPN extension and profile approvals.
 * Choose a client by name and region, then connect or disconnect from the menu. Use **Add Client** or **Remove Client** to manage clients.
 
-#### macOS CLI
+### macOS CLI
 
 * Choose **Install Command Line Tool…** from the macOS app menu to install `cloudgateway` at `~/.local/bin/cloudgateway`.
 * Add `~/.local/bin` to your shell's PATH. The menu offers **Add to Zsh PATH…** for supported zsh setups; open a new login shell after setup.
@@ -142,18 +128,10 @@ cloudgateway down
 
 The CLI also supports client creation and removal, JSON output, diagnostics, and SSH use. See the [CLI setup and command reference](Frontend/Apple/macOS/README.md#command-line-tool).
 
-## More Docs
+## Documentation
 
-* Quick Deployment: [docs/quick-deployment.md](docs/quick-deployment.md)
-* iOS app: [Frontend/Apple/iOS/README.md](Frontend/Apple/iOS/README.md)
-* macOS app and CLI: [Frontend/Apple/macOS/README.md](Frontend/Apple/macOS/README.md)
-* Frontend: [Frontend/Web/README.md](Frontend/Web/README.md)
-* Regional API: [Backend/API/README.md](Backend/API/README.md)
-* Regional API contract: [docs/api-contract.md](docs/api-contract.md)
-* API deployment handoff: [docs/deployment-handoff.md](docs/deployment-handoff.md)
-* Regional server / Terraform: [Infrastructure/OCI/README.md](Infrastructure/OCI/README.md)
-* Caddy binary build: [Infrastructure/OCI/caddy/README.md](Infrastructure/OCI/caddy/README.md)
-* Firebase / Firestore: [Backend/Firebase/README.md](Backend/Firebase/README.md)
-* Cloudflare: [Infrastructure/CloudFlare/README.md](Infrastructure/CloudFlare/README.md)
-* Tool versions: [docs/tool-versions.md](docs/tool-versions.md)
-* Operations runbooks: [docs/](docs/)
+* [All guides and runbooks](docs/README.md)
+* [Quick deployment](docs/quick-deployment.md)
+* [Apple apps and CLI](Frontend/Apple/README.md)
+* [Web development](Frontend/Web/README.md)
+* [Tool versions](docs/tool-versions.md)

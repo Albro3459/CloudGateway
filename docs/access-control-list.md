@@ -1,9 +1,9 @@
 # Account-Scoped ACL: Client-to-Client Isolation
 
-A client may reach another client over the tunnel only when both are owned by the same
-CloudGateway account. Enforcement is a stateless nftables filter on every regional host, driven
-by an address-to-account map each host pulls from Firestore. Addressing, subnets, and the mesh
-design are unchanged by this feature; no VPN client configuration changed.
+New client-to-client flows over the tunnel require both clients to belong to the same
+CloudGateway account. Every regional host enforces this with an nftables filter driven by an
+address-to-account map pulled from Firestore. Established and related conntrack traffic is
+accepted before the account lookup. The ACL requires no VPN client configuration change.
 
 This is the durable design and operations record. For the live-host verification procedure see
 [acl-live-verification.md](acl-live-verification.md); for the reconcile pass in the context of
@@ -12,64 +12,37 @@ for the external HTTP contract see [api-contract.md](api-contract.md).
 
 ## Problem
 
-Client-to-client traffic was previously unrestricted fleet-wide. Server-side `AllowedIPs` is
-exactly the client's `/32` and `/128`, and forwarding was a blanket accept. Since the shared
-subnet mesh landed, mesh peers carry subnet-width `AllowedIPs` plus routes for the remote `/24`
-and `/64`, so any client could reach any other client's tunnel IP in any region. Nothing about
-the account boundary was expressed on the wire.
-
-`AllowedIPs` cannot fix this. It is cryptokey routing: it pins the source address a peer may use
-and does not constrain destinations. Client-side `AllowedIPs` is not enforcement at all, since
-the client owns its own config and CloudGateway configs are full-tunnel. The boundary has to be a
-packet filter on the servers.
-
-Because `AllowedIPs` already pins source addresses, a filter keyed on source address is
-trustworthy: a client cannot present another client's tunnel IP.
+WireGuard server-side `AllowedIPs` pins each client's source to its `/32` and `/128`. It does
+not restrict destinations. Mesh peers carry each remote region's `/24` and `/64`, so the packet
+filter must enforce account boundaries on both same-region and cross-region forwarding.
+Client-side `AllowedIPs` is routing chosen by the client and cannot enforce this boundary.
 
 ## Architectural Decisions
 
-* **The boundary is the account (`ownerUid`), not a group.** No group, team, or family concept
-  exists. If sharing across accounts is ever wanted it is a separate feature; the map design
-  accommodates it, and nothing here hard-codes the assumption that an account is the only
-  possible unit.
-* **Accounts are identified on hosts by an opaque slot, never by uid.** A monotonically allocated
-  32-bit integer stored on `Users/{uid}.accountSlot`, never reused. Hosts hold `address -> slot`
-  and nothing else: no uid, no email, no client name. A compromised host learns which addresses
-  are equivalent, not who owns them. Slots are allocated, not hashed from the uid, so two
-  accounts can never collide into one tenant.
-* **Admins are ordinary tenants on the wire.** Admin powers are the dashboard and the API. An
-  admin has no network reach into another account's devices. The one exception is infrastructure
-  reach, below.
-* **Servers may reach admin-owned clients, in both directions.** An admin can SSH into a regional
-  host and connect onward to their own devices inside the tunnel, including cross-region, and
-  those devices can reach the hosts. This is scoped to admin-owned clients rather than granted
-  blanket, because admins have SSH on the hosts: a blanket infra exemption would let any admin
-  reach every customer device with one extra hop, which is exactly the property this feature
-  exists to remove.
-* **Maps are identical fleet-wide.** Every host holds every client's row. Scoping each region to
-  accounts with a local client is a valid optimization and is explicitly rejected: at
-  `region_capacity_limit` of 20 the whole fleet map is a few dozen rows, and identical maps are
-  what make the cross-region status hash comparable.
-* **Propagation is event-driven only. No timer, no version document.** A client create or delete
-  pokes the other regions; each poked region pulls a full snapshot from Firestore. Boot and admin
-  Sync All also pull. A dropped poke leaves a region stale until the next fleet-wide client event
-  or an admin sync, and that is accepted.
-* **Addresses are allocated by incrementing, not first-unused.** This replaces a time-based reuse
-  TTL with a distance-based one and needs no `releasedAt` bookkeeping.
-* **Firestore stays the source of truth.** The refresh pulls desired state; it never writes
-  desired state back. Status writes are best effort and never make a pass fail, matching the
-  existing rule for `Mesh/{regionId}`.
+* The tenant is `ownerUid`. Admins have ordinary account-scoped client-to-client access.
+* Hosts map addresses to opaque 32-bit account slots, never uids, emails, or client names.
+  Slots are allocated once and never reused or hashed from a uid.
+* Forwarded infrastructure-to-admin-client traffic is allowed in both directions. This supports
+  cross-region admin proxy jumps without granting every account remote infrastructure access.
+  Local server access has a separate boundary, described below.
+* Every host pulls the same fleet-wide map, keeping policy hashes comparable across regions.
+* Propagation is event-driven: client create/delete, boot, and admin Sync All. There is no timer,
+  version document, durable queue, or poke retry. A dropped poke waits for the next event or sync.
+* Firestore owns desired state. Host status writes are best effort and never change desired state.
 
 ## Threat Model
 
 In scope: one account's client reaching another account's client over the tunnel, in the same
 region or across the mesh.
 
-Out of scope and unchanged: client to internet egress, client to its own region's server (DNS,
-API), server to its own local clients, mesh server-to-server links, and any traffic that never
-traverses `wg0` on both sides. A client that has been removed as a WireGuard peer cannot put
-packets on the tunnel at all; the ACL is a second boundary behind cryptokey routing, not a
-replacement for peer removal.
+The filter only drops traffic that both enters and leaves `wg0` and targets a fleet tunnel
+aggregate. Internet egress, the client's own regional server (`INPUT`), that server's traffic to
+its local clients (`OUTPUT`), and server-to-server mesh traffic are outside this boundary.
+A local server can therefore reach any of its own peers, including through an SSH proxy jump.
+Server key custody controls that access. A remote server reaches a client through the target
+host's forward chain, where only admin-owned destinations receive the infrastructure exemption.
+Removing a client's WireGuard peer prevents it from sending tunnel packets at all. Peer removal
+remains necessary alongside the ACL.
 
 ## Filter Design
 
@@ -77,13 +50,13 @@ One `inet` table named `cloudgateway`, installed by `wg0`'s `PostUp` from
 `/etc/cloudgateway/cloudgateway.nft`. It replaces nothing in the existing `iptables`/`ip6tables`
 rules: a `drop` verdict is terminal across tables, so the existing `FORWARD` accepts did not need
 reordering or renumbering. The base chain runs at `priority -10`, ahead of the iptables-nft
-forward chains at priority 0, so it evaluates first. Verdict precedence and priority were proved
-by packet on live hosts, not by inspection (see [Verification](#verification)).
+forward chains at priority 0, so it evaluates first. The release verification exercised the drop
+path on live hosts (see [Verification](#verification)).
 
 ### Objects
 
-Every logical object is mirrored per address family. The API never creates or deletes the table
-or chain and never writes `cg_tunnel4/6`; it only replaces element contents.
+Every logical object is mirrored per address family. The API owns dynamic elements only. It
+never creates, deletes, or reorders the table or chain and never writes `cg_tunnel4/6`.
 
 | Object | Kind | Owner | Contents |
 | --- | --- | --- | --- |
@@ -93,9 +66,8 @@ or chain and never writes `cg_tunnel4/6`; it only replaces element contents.
 | `cg_slot4` / `cg_slot6` | map `addr : mark` | reconcile pass | Client address to account slot |
 | `cg_pairs4` / `cg_pairs6` | set `typeof <ip> daddr . meta mark` | reconcile pass | One `address . mark` concatenation per client |
 
-`cg_pairs` is a concatenated set rather than a set of allowed source-destination pairs: one
-lookup and O(n) elements instead of O(n squared). The concatenated formulation was also chosen
-over comparing two map lookups because it is unambiguously supported by nft.
+`cg_pairs` uses one destination-and-slot lookup with O(n) elements, avoiding a set of every
+allowed source-destination pair.
 
 ### Chain
 
@@ -130,13 +102,14 @@ table inet cloudgateway {
 
 Rule order is load-bearing:
 
-1. `ct state established,related accept` - return traffic for any flow already permitted. Without
-   this the infra rules are one-way and SSH hangs on connect.
+1. `ct state established,related accept` accepts existing conntrack traffic before any policy
+   lookup. Map refreshes and role changes do not revoke those flows while conntrack still
+   classifies them as established or related.
 2. Four infra/admin accepts (server to admin-owned client and the reverse, per family), scoped to
    traffic both entering and leaving `wg0`.
 3. Two `meta mark set ... map @cg_slot` rules. The mark carries the source's account slot; an
-   unknown source leaves the mark cleared at 0. These rules are unconditional, not interface
-   scoped - the mark is only ever consumed by the drop rules below, which are interface scoped.
+   unknown source does not assign a slot and relies on the packet mark already being 0. These
+   assignments are unconditional; only the drop rules that consume the mark are interface scoped.
 4. Two terminal drops: if the destination is inside the tunnel aggregate and
    `destination . mark` is not in `cg_pairs`, drop.
 
@@ -145,11 +118,10 @@ both entering and leaving `wg0`.
 
 ### Consequences worth stating
 
-* **An empty map means no client-to-client traffic.** That is the correct boot state. The rules
-  are installed by `PostUp` and populated only by the first pull, so the failure mode of an
-  unreachable Firestore is "peer-to-peer is down", never "VPN is down". `cg_tunnel4/6` is what
-  makes the empty state fail closed - without it an unknown destination would fall through to
-  accept.
+* **An empty map denies new client-to-client flows.** That is the correct boot state. The rules
+  are installed by `PostUp` and populated by the first pull. A policy-only failure leaves
+  internet egress outside the ACL, although peer restoration still depends on a successful
+  Firestore sync. The static `cg_tunnel4/6` sets make unknown in-aggregate destinations drop.
 * **Slot 0 is reserved and never assignable.** An unmarked packet's mark defaults to 0, meaning
   "unknown source". `policy.MIN_SLOT` / `MAX_SLOT` and
   `repository.MIN_ACCOUNT_SLOT` / `MAX_ACCOUNT_SLOT` are the 32-bit mark range and must always
@@ -157,9 +129,10 @@ both entering and leaving `wg0`.
 * **A non-admin client reaching another region's server interface address is dropped**, because
   infra addresses are inside `cg_tunnel` and are not in `cg_pairs`. This is intentional. Local
   server access is unaffected because it is `INPUT`, not `FORWARD`.
-* **The chain assumes no other subsystem uses the packet mark** and that no `ip rule fwmark`
-  exists. If that ever changes, switch to a masked mark. Live verification confirmed neither is
-  present on the fleet.
+* **The chain assumes packet marks arrive as 0, no other subsystem uses them, and no
+  `ip rule fwmark` exists.** The source-map rules do not explicitly clear marks. Revisit mark
+  ownership and masking before adding another mark consumer. The release verification found
+  no other mark use.
 * **`PostDown` runs `nft delete table inet cloudgateway || true`.** The table may already be
   absent, and interface teardown must not fail on it.
 
@@ -188,7 +161,8 @@ both entering and leaving `wg0`.
   so two regions holding identical policy can never publish different hashes because nft happened
   to list elements in a different order. The object-name label on each line is load-bearing: it
   is what makes `cg_admin4 10.0.0.2` and `cg_infra4 10.0.0.2` hash differently, and what keeps v4
-  and v6 independent.
+  and v6 independent. Chain rules and counters are outside the hash, so agreement does not
+  replace inspecting the base ruleset.
 
 ## Firestore Model
 
@@ -201,7 +175,7 @@ Counters/accountSlots
   updatedAt
 
 Regions/{regionId}
-  tunnelIndexV4        number, per-region monotonic client-address allocator index
+  tunnelIndexV4        number, per-region client-address allocation cursor with wrap
   tunnelIndexV6
 
 Policy/{regionId}
@@ -217,15 +191,13 @@ client, written by each region's host through the Admin SDK, mirroring the exist
 `Mesh/{regionId}` rules block. `Counters/{counterId}` is `read, write: if false` - Admin SDK
 only, denied to admins too, stated explicitly rather than left to default-deny.
 
-Status must describe what is actually on the wire, read back from the live map, not what the
-region intended to apply; a status derived from the pulled snapshot would always look healthy and
-would report nothing. The hashes cover every nftables object that affects the IPv4 or IPv6
-decision, not only the address-to-slot maps, so a role promotion or demotion changes the
-published hash as soon as the next reconcile runs.
+Status comes from live nftables read-back. Hashing the desired snapshot would hide apply drift.
+The hashes cover all five named policy sets/maps per family, so changes to admin membership
+affect the hashes on the next successful apply, read-back, and status write.
 
-The fleet-wide pull is an unfiltered `collection_group("Instances")` read with status filtering
-done in the API, which needs no new composite index. A client with no live public key cannot
-source traffic and is excluded. Admin slots come from a `UserRoles` read joined in the API.
+The fleet pull uses an unfiltered `collection_group("Instances")` read, with active-status and
+non-empty-public-key filtering in the API, so it needs no new composite index. Admin membership
+comes from a `UserRoles` read joined in the API.
 
 ### Account slot allocation
 
@@ -236,6 +208,10 @@ counter allocates, and only when it is strictly above every valid assigned slot.
 malformed, regressed (at or below a live slot), and exhausted counters all raise
 `AccountSlotUnavailableError` (`ACCOUNT_SLOT_UNAVAILABLE`, HTTP 500) rather than being
 re-derived.
+
+Client reservation exposes that error directly. The Firestore-backed `POST /users`
+provisioning path wraps allocation failures as `FIREBASE_WRITE_FAILED` and attempts Auth
+rollback. Both paths require recovery of the authoritative counter before retrying.
 
 The allocating transaction reads the whole `Users` collection, but only to disprove a regressed
 counter - never to reconstruct one. Account deletion hard-deletes `Users/{uid}` along with its
@@ -279,16 +255,15 @@ its own network, inside the aggregate, and possibly a real client's address.
 
 ## Address Allocation
 
-Lowest-free-address allocation is gone. Each region document carries a monotonic index
-(`tunnelIndexV4`/`tunnelIndexV6`) advanced in the same transaction as `reserve_client`:
+Each region document carries paired allocation cursors (`tunnelIndexV4`/`tunnelIndexV6`),
+advanced in the same transaction as `reserve_client`:
 
 * Take the next index, wrap at the top of the host range, and skip any index currently in use.
 * The host range is `2 .. num_addresses - 2` of the region's v4 network, 253 indices for a `/24`,
   so the wrap is a real event after roughly 253 lifetime allocations, not a theoretical one. The
   in-use check on wrap is load-bearing and must not be treated as dead code.
-* Only the v4 network bounds the range. IPv6 is a `/64` and never wraps. The v4 and v6 indices
-  are written from the same value so a client's two addresses always share an index; pairing to
-  the smaller v4 range is what makes the wrap possible at all.
+* The v4 network bounds the shared index. Both families use that index and wrap together,
+  even though the IPv6 `/64` has room for more addresses.
 * Index-to-address recovery is best effort in both directions: either of a client's two addresses
   alone reserves its index, and a malformed or out-of-network stored address is skipped rather
   than raised, so one bad row cannot block every future allocation.
@@ -296,8 +271,9 @@ Lowest-free-address allocation is gone. Each region document carries a monotonic
   gives roughly 230 allocations of distance before an address returns, and every one of those
   allocations is itself a poke that would have corrected a stale row.
 
-`Regions/{regionId}.tunnelIndexV4/V6` are monotonic allocator indices. They must never roll back,
-and deletion never touches them.
+`Regions/{regionId}.tunnelIndexV4/V6` are allocation cursors that advance with wrap. Deletion
+never resets them. Do not lower them manually or restore an older cursor independently of client
+state.
 
 ## Refresh Model
 
@@ -338,11 +314,11 @@ same flock.
   work. Conversely `reconcile_policy()` raises before it ever reaches the status write if the
   apply or read-back fails, so a failed apply leaves the last successful `Policy/{regionId}`
   document byte-identical and writes no failure status.
-* **`PolicyCoordinator.request()` never blocks and never raises.** It runs from a background task
-  with nothing able to observe a failure, so every exception is logged and swallowed.
-  `run_blocking()` is the synchronous variant used by admin Sync All; it coalesces the same way,
-  then waits for the coordinator to quiesce and returns the last completed outcome, which is
-  always from a pass whose pull started after the call.
+* **`PolicyCoordinator.request()` runs in a response background task.** A request during an
+  active pass sets the pending bit and returns; otherwise that worker drains the passes. Pass
+  failures are logged and swallowed. `run_blocking()` is the admin variant: it waits for the
+  coordinator to quiesce and returns an outcome from a pull started after the call. Sustained
+  pokes can extend that wait, because coalescing bounds backlog rather than total work.
 
 The poke reconciles the policy map only. A region's peer set is its own local active clients plus
 mesh regions and cannot be changed by another region's client, so a full sync on the poke path
@@ -366,13 +342,14 @@ reapply routes, any of which can hang.
 
 Admin only, full peer/mesh pass plus a synchronous policy leg, detailed response, used by Server
 Health's Sync All on Web and iOS. `meshEnabled` toggling and detailed logs stay admin. The policy
-leg is blocking so the admin sees a fresh `Policy/{regionId}` immediately after the call returns;
+leg is blocking so the admin gets a completed policy outcome when the peer/mesh pass succeeds;
 a policy failure is logged and flips `policyApplied` to false but never fails the endpoint and
 never affects the peer/mesh fields.
 
-The response carries `policyApplied`, `policyRowCount`, and `policyStatusWritten`, with the two
-optionals omitted on failure. A region predating this release omits all three; dashboards treat
-that as unknown, not as failure. No pre-existing field changed meaning.
+A successful apply can still leave the status document stale if its best-effort write fails.
+A peer/mesh failure returns before the policy leg. The response carries `policyApplied`,
+`policyRowCount`, and `policyStatusWritten`, with the two optionals omitted on policy failure.
+Older regions can omit all three; dashboards treat that as unknown.
 
 ### Poke sites
 
@@ -392,6 +369,10 @@ affecting the request result, logging region id only - never the token, uid, or 
 * `DELETE /clients/{clientId}`, except in account-cleanup mode. There is no inline removal, so
   the local map is corrected by a real reconcile rather than a single-row edit.
 
+A trusted out-of-band edit to `UserRoles/{uid}` needs an immediate Sync All Regions. There is
+no role-change API or automatic role propagation. Until sync, hosts retain the previous admin
+allow-set; existing conntrack flows can also outlive a map change.
+
 ## Account Deletion
 
 `DELETE /account` uses a dedicated cleanup sequence and owns propagation for the whole account,
@@ -401,8 +382,8 @@ so no per-client delete fans out its own poke:
    removal runs in account-cleanup mode.
 2. Fence every one of the account's client documents non-active fleet-wide by `ownerUid`, in one
    trusted repository operation, including clients whose regional host was unreachable in step 1.
-   From this point any policy pull in any region excludes the account, because the fence is keyed
-   by owner, not by which region answered. `CREATING` documents are fenced too, so a concurrent
+   Any policy pull started after this fence excludes the account, because it is keyed by owner,
+   not by which region answered. `CREATING` documents are fenced too, so a concurrent
    `mark_client_active` cannot re-activate a client afterwards; already-removed documents are
    skipped with no write, so a retry converges and never resurrects anything; a document whose
    data cannot be parsed is fenced anyway, fail-closed.
@@ -428,7 +409,7 @@ non-active fence prevents any new pull from restoring the deleting account.
 
 ## Dashboard Status
 
-Server Health on Web and iOS alike shows each region's policy row count, comprehensive IPv4 and
+Server Health on Web and iOS shows each region's policy row count, comprehensive IPv4 and
 IPv6 policy hashes, and `updatedAt` as "Last applied". Derivation is a single algorithm, written
 once in `Frontend/Web/src/helpers/policyHelper.ts` and ported verbatim to
 `CloudGatewayAppCore/CloudGatewayPolicyStatus.swift`; the two must stay in lockstep.
@@ -470,7 +451,8 @@ Semantics that are settled:
 * `cg_tunnel4/6` is static and comes from the same allocation source the mesh uses. Adding a
   region adds its interface address to `cg_infra` fleet-wide, automatically, on the next
   reconcile - infra membership is data, not a bootstrap edit.
-* Map contents are applied atomically as a single `nft -f -` load, never incrementally.
+* Full refreshes replace dynamic contents atomically with one `nft -f -` load. Client create
+  also has the additive local-row fast path described above.
 * Firestore rules carry a `Policy/{regionId}` block mirroring `Mesh/{regionId}` (admin read,
   Admin SDK write) and a `Counters/{counterId}` block denying all client access.
 * No Terraform subnet, tfvars, registry, MTU, or OCI ingress change. No VPN client configuration
@@ -490,10 +472,10 @@ presence of `Backend/API/src/policy.py`, then refuses to install unless the live
 `inet cloudgateway` containing the `cg_forward` chain and both `cg_slot4` and `cg_slot6` maps.
 `CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1` overrides it for a genuine emergency and warns loudly.
 
-The only supported rollout is destroying and rebuilding every region through
-`./scripts/terraform.sh` from one deploy tag. The sequential interval between regions is a
-rollout window with partial fleet enforcement; the ACL is not active until the last region
-finishes.
+For a fleet predating the ACL, the supported activation sequence is to destroy and rebuild every
+region through `./scripts/terraform.sh` from one deploy tag. This is a destructive rollout,
+not routine API maintenance. Sequential rebuilds leave a partial-enforcement window. Treat
+fleet activation as complete only after the last region finishes.
 
 ### Legacy account migration (completed)
 
@@ -518,154 +500,54 @@ history rather than re-deriving the counter from live users.
 * Account deletion sends one deliberate best-effort refresh wave. An unreachable region can
   retain an orphaned peer and stale policy until its next boot or manual sync.
 * A user racing their own account deletion from a second device can orphan a peer if a client is
-  created between the step 1 snapshot and step 4. Its document is caught anyway (both the fence
-  and the hard delete re-query), so no policy row survives; `cloudgateway-sync-peers` removes the
-  peer on its next run. Creation after step 4 fails outright.
+  created between the step 1 snapshot and step 4. Both the fence and hard delete re-query,
+  excluding its document from future policy pulls. Existing host state can remain until sync;
+  `cloudgateway-sync-peers` removes the peer on its next run. Creation after step 4 fails outright.
 * Any regional host can reach admin-owned clients fleet-wide. Locally this was already true via
   `OUTPUT`; this extends it across the mesh, knowingly, to support admin proxy jumps.
-* A region looping on a persistent policy failure re-pulls the fleet snapshot from Firestore
-  every 30s indefinitely. The loop is the correct fail-closed behaviour - the region is not
-  enforcing until it succeeds - but it is a signal to investigate, not a steady state.
+* The boot unit re-pulls every 30s while policy keeps failing. Empty boot maps deny new
+  peer-to-peer flows. Atomic apply failure retains the prior map; read-back failure can follow
+  a successful apply and still leave status unchanged. Investigate persistent retries.
 * Per-region map scoping, group or family sharing, and a periodic reconcile timer are out of
   scope. The version-document poll considered during design is rejected as unnecessary given
   event-driven propagation.
 
 ## Settled Decisions: Do Not Reintroduce
 
-These exist to stop future changes silently undoing settled decisions. Each was considered and
-closed deliberately.
-
-### Rollout and enforcement
-
-* **No existing-host nftables migration.** This feature deploys by destroying and rebuilding
-  every region through `./scripts/terraform.sh` from one deploy tag. Bootstrap installs nftables,
-  writes the base ruleset, and loads it through WireGuard `PostUp`. Never deploy an ACL-aware ref
-  with `cloudgateway-install-api`, and never mix an API-only upgrade into a rollout. The gate
-  described above enforces this; the emergency override is not a migration path.
-* **The API never owns the table or chain.** It replaces element contents only, and never touches
-  `cg_tunnel4/6`. Creating, deleting, or reordering the chain from the API would put the boundary
-  under the control of the process the boundary is meant to survive.
-
-### Refresh and propagation
-
-* **The depth-1 coordinator model stays.** There may be one running pass and one pending pass.
-  Repeated pokes while the pending bit is set coalesce. A poke arriving after the follow-up has
-  started may set the bit again, deliberately, because its Firestore mutation may postdate that
-  follow-up's snapshot and dropping it would lose the event. This bounds the *pending backlog* to
-  one queued pass - it is not a bound on the total work a caller can trigger over time, and
-  documentation must not claim otherwise. Do not turn `_drain` into a real queue. No durable
-  queue, no rate limit, no refresh-cadence feature.
-* **`POST /api/admin/sync`'s policy leg is synchronous and therefore waits for the coordinator to
-  quiesce**, which sustained pokes can extend. That is accepted; the outcome it reports always
-  comes from a pass whose pull started after the request.
-* **The pull stays inside the policy lock, and there is no process-local sequence guard.** The
-  flock is the ordering mechanism. A sequence number was removed rather than extended because it
-  cannot order two processes.
-* **Role mutation is not a product feature.** There is no role-change API, UI, timer, or
-  automatic propagation. A trusted operator who edits `UserRoles/{uid}` out of band must run Sync
-  All Regions immediately; the fleet keeps enforcing the previous allow-set until they do.
-  Reconcile still re-reads current roles, applies `cg_admin4/6`, and includes them in read-back
-  and status hashes, so partial fleet application is visible.
-
-### Data integrity
-
-* **`Counters/accountSlots.nextSlot` is the sole allocation authority.** Never re-derive it from
-  live `Users` - deletion hard-deletes `Users/{uid}` with its slot, so a live scan would re-issue
-  a deleted account's slot and merge two accounts onto one nftables tenant. Missing, malformed,
-  regressed, and exhausted counters must keep failing closed. Recovery is a deliberate operator
-  repair from backup, never a runtime inference.
-* **Collision handling excludes every participant.** Both sides of a duplicate address, and every
-  uid sharing a slot, are dropped from the map. Occurrences are counted before any exclusion, so
-  collection order can never elect a winner. Do not restore first-wins resolution.
-* **`bare_tunnel_address()` reuses `wireguard.is_valid_tunnel_ip`.** The policy map and peer
-  validation must not be able to drift apart on the family/host-prefix rule.
-* **The inline create-path row can never fail a create.** It runs after the WireGuard critical
-  section, takes the policy lock non-blocking, and keeps slot lookup, role lookup, address
-  normalization, lock acquisition, and apply inside one exception boundary. Shedding on a busy
-  lock is correct, not a bug.
-* **Rejected rows are counted, never described.** No uid, address, slot, name, email, key, or
-  configuration may enter a policy log line.
-* **`updatedAt` stays out of the policy input path.** A malformed timestamp must never be able to
-  abort a pass.
-* **`_first_unused_tunnel_ip` and any `releasedAt`/TTL scheme stay gone.** The monotonic index
-  with wrap and in-use skip is the allocator; the wrap and its in-use check are live code, not
-  dead defensive branches.
-
-### Status and dashboard
-
-* **`dataVintage` and `appliedSequence` are removed and must not come back.** The maximum
-  `updatedAt` among active rows is not monotonic: deleting the newest row moves a freshly
-  reconciled region backward while a stale region keeps the deleted row's later timestamp, so a
-  vintage-based dashboard marks the wrong regions stale. A successful empty snapshot also
-  rendered as "No applied snapshot yet".
-* **Hashes must stay comprehensive.** Every authorization-bearing object per family is hashed,
-  `cg_admin4/6` included. Hashing only the slot maps made a demotion change no published hash
-  while Server Health still reported agreement.
-* **A failed apply or read-back writes no failure status.** `reconcile_policy()` raises before it
-  reaches the status write, so the last successful `Policy/{regionId}` document is left
-  byte-identical. Documentation must not claim a failed apply surfaces in the status document.
-* **No majority tie-break** on either surface. Every comparable region is flagged when no hash
-  clears a strict majority.
-* **Parsers require every field.** A document missing any of `mapHashV4`, `mapHashV6`,
-  `rowCount`, `updatedAt` is `unreadable`, not partially usable.
+The contracts above are the reference: preserve rebuild-only activation on pre-ACL hosts,
+API ownership of dynamic elements only, full fleet snapshots inside the policy flock, depth-1
+coalescing, never-reused account slots, all-participant collision exclusion, and comprehensive
+live-policy hashes. Timestamp age, `dataVintage`, and process-local `appliedSequence` values
+cannot establish fleet agreement and must not replace hashes.
 
 ### Apple client surface
 
-Web and iOS are the two admin surfaces this product has, and a security boundary whose status
-appears on only one of them is a real gap - hence parity, not observability polish. iOS was never
-broken by the ACL work: the sync parser already ignored unknown response fields,
-`DeleteClientRequest.account_cleanup` is server-to-server only, and the `firestore.rules` change
-was purely additive.
+Web and iOS provide Server Health. The macOS menu app and CLI use the shared account/client
+core, but account and admin management remain on the site or mobile app. There is no native macOS
+Server Health page.
 
-* **Shared-first.** Models, mapping, and derivation live in `CloudGatewayAppCore` so macOS reuses
-  them; SwiftUI and the Firebase SDK repository stay in `Frontend/Apple/iOS/CloudGateway/`. A
-  future macOS target supplies its own UI and Firestore adapter against the same AppCore
-  contracts.
-* **`CloudGatewayMeshRegion` is the region input.** It already carries `regionId`, `displayName`,
-  and `enabled`, which is all the derivation needs. A second region model would duplicate the
-  Firestore mapper for no gain.
-* **Policy is observability-only and counts-and-hashes-only.** iOS reads `Policy/*` and never
-  writes it - the collection is Admin-SDK-write in `firestore.rules`. No uid, email, client name,
-  address, or key reaches this surface.
-* **Failure isolation is one-directional.** Policy is the isolated feed: its failure clears the
-  policy rows and shows the collection-level failure card while fresh Regions/Mesh state still
-  applies. A Regions or Mesh failure keeps the existing page-level error behavior and does not
-  apply a separately completed policy result. Do not add the inverse isolation, which Web does
-  not have.
-* **A failed Policy read renders its own card, never a grid of "Never synced,"** which would
-  assert a fleet state we do not know. An absent entry means never-synced only when the read
-  itself succeeded.
-* **No policy-only sign-out reset and no standalone policy refresh control.** The view model's
-  uid and load-generation guards plus the existing Server Health dismissal cover identity
-  changes; pull-to-refresh covers reload.
-* **`rowCount` is `Int?` on iOS.** TypeScript `numberOrNull` accepts any finite number, so a
-  fractional `rowCount` is "usable" on Web and `unreadable` on iOS; the host only ever writes an
-  integer. Coerce with `Int(exactly:)` and never a hand-rolled range check: `Double(Int.max)`
-  rounds up to 2^63, so a `value <= Double(Int.max)` guard admits exactly 2^63 and the following
-  `Int(value)` traps on it. `updatedAt` likewise accepts only `Date`, because the repository
-  converts every `Timestamp` before the mapper runs.
-* **Swift status semantics are the final Web semantics** - comprehensive hash agreement among
-  enabled regions plus "Last applied" - not the superseded `dataVintage` model. Swift
-  `Dictionary` iteration order is unspecified but cannot change the outcome, because a strict
-  majority is unique.
+Models, mapping, status derivation, and the Server Health view model live in `CloudGatewayAppCore`.
+SwiftUI stays in the iOS target. Keep the Swift policy derivation in sync with
+`Frontend/Web/src/helpers/policyHelper.ts` and reuse `CloudGatewayMeshRegion` as its region input.
+
+* `Policy/*` is read-only observability: counts, hashes, and timestamps, with no client identity,
+  address, or key. A collection read failure clears policy rows and shows its own failure card.
+  It must not fabricate a grid of never-synced rows or prevent fresh Regions/Mesh state applying.
+  Regions/Mesh failures keep the page-level error behavior and do not apply a separately
+  completed policy result.
+* The shared view model clears all account-scoped state on an auth identity change and when the
+  iOS view reports loss of the admin role. Session and load-generation guards reject stale work.
+  Policy uses the page's existing refresh controls.
+* Swift `rowCount` is `Int?`, mapped with `Int(exactly:)`. Web accepts any finite number, so a
+  fractional value is usable there but unreadable in Swift. Hosts write integers. The Swift
+  mapper accepts `Date` after the repository converts Firestore timestamps.
 
 ## Verification
 
-Two independent layers, and they check different things.
-
-**Offline contract.** `Backend/API/tests/test_bootstrap_contract.py` parses the
-`table inet cloudgateway` heredoc in `bootstrap.sh` as text - no `nft` binary, no network, no
-host - and ties it to `src/policy.py` in both directions. It enforces the table and chain names,
-every object name and kind (set vs map) and declaration text, both address families for every
-logical object, the `cg_tunnel4/6` aggregates against `MESH_AGGREGATE_V4/V6`, the chain hook line
-`type filter hook forward priority -10; policy accept;`, `ct state established,related accept` as
-the first rule, the infra/admin accepts in both directions per family, the mark assignments, the
-terminal drops, rule *ordering* (mark assignment and accepts before the drops), that every
-`@cg_*` reference names a declared object, that `render_policy_script` flushes every set and map
-it owns and never touches `cg_tunnel4/6`, that `render_client_row_script` touches neither
-`cg_tunnel4/6` nor `cg_infra4/6`, the `PostUp`/`PostDown` lines, and the `cloudgateway-install-api`
-gate strings. Negative tests mutate the heredoc in memory and prove a rename or reorder on either
-side fails. It does **not** verify runtime nftables behaviour.
+`Backend/API/tests/test_bootstrap_contract.py` checks the bootstrap heredoc against the API's
+nftables contract without running `nft`: names and object kinds, aggregates, rule order, renderer
+ownership, `PostUp`/`PostDown`, and the installer gate. Negative cases mutate the text to catch
+renames and reordered rules. This does not verify kernel behavior.
 
 Run it with the API target:
 

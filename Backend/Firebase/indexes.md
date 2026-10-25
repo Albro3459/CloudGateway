@@ -1,75 +1,49 @@
 # Firebase Indexes
 
-Required Firestore index reference for the shared regional VPN platform.
+[firestore.indexes.json](firestore.indexes.json) is the deployable index and TTL
+configuration. Its `indexes` array is empty: current queries need no composite indexes.
 
 ## `Instances` Documents
 
-Client documents live under the region that owns them:
+The regional API reads the direct `Regions/{regionId}/Instances` subcollection for
+capacity and sync. The dashboard and account cleanup use collection-group reads:
 
 ```ts
-collection(db, "Regions", regionId, "Instances")
-```
-
-The regional API counts allocated clients and lists sync input from that direct subcollection.
-Normal dashboard users list their own clients with a collection-group query filtered by owner:
-
-```ts
+// Normal user: own clients across regions
 query(collectionGroup(db, "Instances"), where("ownerUid", "==", uid))
+
+// Admin: all clients across regions
+collectionGroup(db, "Instances")
 ```
 
-Admins list all clients with an unfiltered collection-group query.
+Normal-user queries need the owner filter to satisfy Firestore rules. Admins may
+use the unfiltered query. Add filters/orderings only with their required indexes.
 
 ## Collection-Group Field Indexes
 
-The `Instances` collection group uses these single-field indexes:
+The configuration declares these single-field `COLLECTION_GROUP` indexes:
 
-| Field path | Ascending | Descending | Arrays |
-| --- | --- | --- | --- |
-| `regionId` | Enabled | Disabled | Disabled |
-| `ownerUid` | Enabled | Disabled | Disabled |
+| Collection group | Field | Order |
+| --- | --- | --- |
+| `Instances` | `ownerUid` | Ascending |
+| `Instances` | `regionId` | Ascending |
 
-These indexes are captured in the Firebase directory [firestore.indexes.json](./firestore.indexes.json).
+`ownerUid` supports owner queries and account deletion. `regionId` remains available
+for operational collection-group region queries, although regional API reads use
+the direct subcollection. No descending or array indexes are declared for these fields.
 
-To create them in the Firebase Console:
-
-1. Open Firestore.
-2. Go to Indexes.
-3. Open Automatic.
-4. Click Add exemption.
-5. Set Collection ID to `Instances`.
-6. Set Query scope to Collection group.
-7. Set Field path to `ownerUid`.
-8. Enable Ascending only.
-9. Save, then repeat for `regionId`.
-
-`ownerUid` supports the normal-user dashboard query:
-
-```ts
-query(collectionGroup(db, "Instances"), where("ownerUid", "==", uid))
-```
-
-`regionId` supports older or operational collection-group queries scoped to one region:
-
-```ts
-query(collectionGroup(db, "Instances"), where("regionId", "==", regionId))
-```
-
-If a cross-region admin screen later queries all instances with `collectionGroup("Instances")`,
-an unfiltered read uses Firestore's automatically maintained collection-group index. Add a
-specific collection-group index only when the query adds more filters or ordering that
-Firestore explicitly requires.
-
-At the moment there are no required composite indexes for the current Firestore schema.
+Deploy the checked-in configuration with the Firebase release workflow. For a manual
+Console repair, create matching field overrides for collection ID `Instances`,
+collection-group scope, and Ascending order. Keep the checked-in configuration in sync.
 
 ## Device Authorization TTL
 
-`DeviceAuthRequests.expiresAt` and `DeviceAuthLimits.expiresAt` have TTL policies defined in
-[firestore.indexes.json](./firestore.indexes.json). Their field overrides set `indexes` to an
-empty array, which exempts these cleanup timestamps from single-field indexing. No request or
-limit query needs an index on `expiresAt`; the API reads each record by document ID.
+`DeviceAuthRequests.expiresAt` and `DeviceAuthLimits.expiresAt` each have `ttl: true`
+and `indexes: []`. Their timestamps need no query index because the API reads each
+record by document ID.
 
-TTL deletion is asynchronous and typically occurs within 24 hours after expiry. The API must
-enforce `expiresAt` on every operation and must not rely on TTL for authorization. After
-deploying the index configuration, verify both collection-group TTL policies show as enabled
-in Firestore before enabling device authorization. See the [Firebase reference](./README.md#device-authorization-records)
-for the temporary-record retention and backup handling rules.
+After deployment, verify both TTL policies are enabled. Cleanup is asynchronous:
+the API enforces expiry itself and never relies on deletion for authorization.
+See the [Firebase reference](README.md#device-authorization-records) for retention
+and backup rules, and the [device authorization runbook](../../docs/device-auth.md#deployment-and-release)
+for release checks.

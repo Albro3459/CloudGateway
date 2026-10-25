@@ -1,164 +1,155 @@
 # Firebase Reference
 
-Operational reference for the Firestore layout used by the shared regional VPN platform. The code, [firestore.rules](firestore.rules), and [schema.ts](schema.ts) are the source of truth; if this file disagrees with them, they win.
-
-All JSON and Firestore field naming is camelCase. The client identifier field is `clientId`, never `client_id`.
+Firestore stores product state for the regional VPN platform. The API implementation
+and [firestore.rules](firestore.rules) define behavior. [schema.ts](schema.ts) describes
+document shapes for reference and does not validate runtime data. Fields use camelCase,
+including `clientId`.
 
 ## Files
 
-* [schema.ts](schema.ts) documents the Firestore collection paths and document shapes as TypeScript types for quick visualization.
-* [firestore.rules](firestore.rules) contains the frontend Firestore security rules. Update the rules alongside the API and app code when Firestore access patterns change.
-* [indexes.md](indexes.md) documents the required Firestore indexes; [./firestore.indexes.json](./firestore.indexes.json) captures the deployable index configuration.
-* [../../scripts/backup_firestore.py](../../scripts/backup_firestore.py) creates a recursive JSON backup of every Firestore document.
+* [firestore.rules](firestore.rules): client SDK permissions. The Admin SDK bypasses them.
+* [schema.ts](schema.ts): collection paths and TypeScript document types.
+* [indexes.md](indexes.md), [firestore.indexes.json](firestore.indexes.json): query indexes
+  and device-authorization TTL configuration.
+* [Backup script](../../scripts/backup_firestore.py): recursive Firestore JSON export.
 
 ## Paths
 
-* Region documents: `Regions/{regionId}`
-* Client documents: `Regions/{regionId}/Instances/{clientId}`
-* User documents: `Users/{uid}`
-* Role default documents: `Roles/{roleId}` (`Roles/user`, `Roles/admin`)
-* User role assignment documents: `UserRoles/{uid}`
-* Account-scoped ACL policy status documents: `Policy/{regionId}`
-* Account slot counter document: `Counters/accountSlots`
-* Temporary device authorization requests: `DeviceAuthRequests/{deviceRequestId}`
-* Temporary device authorization limits: `DeviceAuthLimits/{scopeId}`
+* `Regions/{regionId}`: regional endpoint, keys, capacity, mesh setting, and tunnel allocators.
+* `Regions/{regionId}/Instances/{clientId}`: clients linked by `ownerUid` and `ownerEmail`.
+* `Users/{uid}`: email, disabled status, and account ACL slot.
+* `Roles/{roleId}`: defaults for `user` and `admin`.
+* `UserRoles/{uid}`: assigned `roleId` and optional `perRegionClientLimit`.
+* `Mesh/{regionId}`: host-reported mesh snapshot.
+* `Policy/{regionId}`: host-reported account ACL snapshot.
+* `Counters/accountSlots`: authoritative account-slot allocation watermark.
+* `DeviceAuthRequests/{deviceRequestId}`, `DeviceAuthLimits/{scopeId}`: temporary login state.
 
-Region documents are **self-seeded by each host** at the end of bootstrap
-(`cloudgateway-register-region`): it upserts `Regions/{regionId}` with the live IP, server
-public key, and endpoint config, sets `enabled: true` only once the full Cloudflare path
-validates (health checked through the edge, not just loopback), and updates only the
-region metadata document. It must not delete or overwrite `Regions/{regionId}/Instances`.
-You normally don't create region docs by hand; `Users`, `UserRoles`, and role defaults
-are still provisioned manually or via the admin UI.
+Each host upserts its region metadata through `cloudgateway-register-region`. A successful
+Cloudflare edge health check sets `enabled: true`. Failed readiness preserves the stored
+value, with new regions disabled. Registration preserves `Instances`, tunnel counters,
+and an existing `meshEnabled` setting. Terraform manages DNS.
 
-Client documents live under the region they belong to and include `ownerUid`/`ownerEmail`
-links back to the owning user. They never contain the server private key. The stored
-`wireguardConfig` contains the client private key, which is why client docs are readable
-only by their owner and admins.
+Client documents never contain the server private key. Their `wireguardConfig` contains
+the client private key, so reads are restricted to the owner and admins. Account and
+client creation use the API. Trusted operators seed role defaults and the account-slot
+counter, and maintain roles through the Admin SDK or Firebase Console.
 
-User documents own each user's profile data, such as email and disabled status. `accountSlot` is
-the opaque account-scoped ACL identifier: a monotonically allocated integer, never reused, that
-hosts key the client-to-client isolation filter on instead of the uid - see
-[docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
-It is allocated once, in a transaction, from `Counters/accountSlots`, the sole allocator document
-(document id always `accountSlots`); no client, including admins, may read or write it directly.
-`nextSlot` is the authoritative allocation watermark: always strictly above every slot ever issued,
-Admin-SDK-only, and never lowered or deleted. Deleting a user hard-deletes `Users/{uid}` and its
-slot with it, so the counter is the only remaining record that the slot was issued - a lost or
-lowered counter fails allocation closed (`ACCOUNT_SLOT_UNAVAILABLE`) and must be restored from a
-backup rather than recomputed from live users. See
-[docs/access-control-list.md](../../docs/access-control-list.md), "Account slot allocation".
+`accountSlot` is an opaque integer from 1 through `2^32 - 1`, allocated transactionally
+once per account and never reused. `Counters/accountSlots.nextSlot` must remain above
+every slot ever issued. Hard-deleted users leave no slot history in `Users`, so a lost
+or lowered counter cannot be rebuilt from live users. Allocation fails closed until
+an operator restores an authoritative watermark. Never lower or delete the counter.
+See [account slot allocation](../../docs/access-control-list.md#account-slot-allocation)
+and [counter recovery](../../docs/service-operations.md).
 
-Policy documents (`Policy/{regionId}`) mirror the existing `Mesh/{regionId}` pattern: observability
-only, written by each region's host via the Admin SDK after a policy reconcile pass, describing
-what the live account-scoped ACL map on that host actually contains, not what the region intended
-to apply. `mapHashV4`/`mapHashV6` are one composite hash per address family over every
-authorization-bearing live object read back from the host - `cg_tunnel4/6`, `cg_infra4/6`,
-`cg_admin4/6`, `cg_slot4/6`, `cg_pairs4/6` - not just the slot map, so an admin allow-set change is
-visible in the hash as soon as the next reconcile runs. `rowCount` is the `cg_slot4` row count.
-`updatedAt` is a server timestamp meaning the last successful live apply and read-back; Server
-Health renders it as "Last applied." A failed apply or read-back never writes this document at
-all - the write happens only after both succeed, so a failure leaves the previous successful
-document untouched rather than recording a failure state; the failure is visible only in host logs
-and, for Sync All, in that call's response. Timestamp age alone is never drift or staleness - drift is
-comprehensive hash disagreement among enabled regions only, and disabled regions never participate
-in the comparison. There is no role-mutation API, UI, timer, or automatic role propagation in this
-release: reconcile re-reads `UserRoles` and applies `cg_admin4/6` on every pass, so a trusted
-operator who edits `UserRoles` out of band must run Sync All Regions immediately, and the fleet
-keeps enforcing the previous allow-set until they do. Policy documents deliberately never contain a
-uid, email, address, or key.
+`Mesh` and `Policy` are observability records, separate from desired state. Hosts write
+them after live reconciliation. `Policy` holds composite live authorization hashes
+`mapHashV4`/`mapHashV6`, `rowCount` (the `cg_slot4` count), and server timestamp
+`updatedAt`. It contains no UID, email, address, or key. An apply/read-back failure
+leaves the previous successful record untouched. A status-write failure can leave a
+correct live map with an old snapshot. Hash disagreement across enabled regions indicates drift. Timestamp age alone does
+not indicate drift. Trusted role changes require Sync All Regions to update host allow-sets.
+See [ACL policy reconciliation](../../docs/wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 
-Account deletion (`DELETE /account`) performs the one fleet-wide client-document write the API
-ever makes: an Admin-SDK-only, cross-region write across every region's `Instances`
-subcollection (`Regions/*/Instances`) that marks every one of the deleting account's client
-documents non-active, regardless of whether that region's host is reachable. It is the only place
-any regional API writes into another region's `Instances` path, and it is reachable only from a
-recently authenticated self-delete - see [docs/api-contract.md](../../docs/api-contract.md) and
-[docs/access-control-list.md](../../docs/access-control-list.md).
-
-Role documents are defaults keyed by role name:
-
-* `Roles/user.defaultPerRegionClientLimit`: default per-region client limit for normal users.
-* `Roles/admin.defaultPerRegionClientLimit`: default per-region client limit for admins. A
-  `null` value means no per-user limit; regional `capacityLimit` still applies.
-
-User role assignment documents provide role and entitlement data for provisioned
-users. Each `UserRoles/{uid}` document has `roleId: "user" | "admin"` and optional
-`perRegionClientLimit`. The override uses the same semantics as role defaults: `null`
-and missing mean "use the role default," while `0` is a real override that allows zero
-clients per region. Firestore rules require both this role assignment and a matching
-`Users/{uid}` document whose `disabled` field is not `true`. `UserRoles` is writable
-only by admins or the API.
+Account deletion is the API's cross-region client mutation: it fences all of the
+account's clients non-active, including clients on unreachable hosts, before policy
+refresh and hard deletion. See the [account deletion contract](../../docs/api-contract.md#delete-account)
+for ordering and recovery semantics.
 
 ## Enums
 
-* Roles: `user`, `admin`
-* Client statuses: `creating`, `active`, `failed`, `removed`
-* Operation results: `success`, `failed`, `noop`
+* Roles: `user`, `admin`.
+* Client statuses: `creating`, `active`, `failed`, `removed`.
+* Operation results: `success`, `failed`, `noop`.
 
 ## Rules Summary (frontend permissions)
 
-Enforced by [firestore.rules](firestore.rules):
+[firestore.rules](firestore.rules) requires a signed-in user, a `UserRoles/{uid}` record,
+and a matching `Users/{uid}` whose `disabled` field is not `true`. Admin access additionally
+requires `roleId: "admin"`.
 
-* Provisioned users can read enabled region docs.
-* Normal users can read their own user document and their own client documents.
-* Users can read their own role assignment. Role defaults are admin-only.
-* Admins can read all user, role default, role assignment, and client documents.
-* Admins can read `Policy/{regionId}` status documents. Write is Admin-SDK only.
-* No client, including admins, may read or write `Counters/{counterId}` documents.
-* No client, including admins, may read or write `DeviceAuthRequests/{deviceRequestId}` or `DeviceAuthLimits/{scopeId}`. The regional API uses the Admin SDK for these records.
-* Frontend clients cannot create, update, or delete VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK.
-* Frontend clients cannot write `Regions`, `Users`, `UserRoles`, `Roles`, or client documents directly. Admin and operational mutation goes through trusted backend/Admin SDK paths.
+* Provisioned users read enabled regions. Admins also read disabled regions.
+* Users read their own user, role assignment, and client documents. Admins read all
+  users, role defaults, role assignments, and clients.
+* Admins read `Mesh` and `Policy`. Only the Admin SDK writes these snapshots.
+* No client, including admins, reads or writes `Counters`, `DeviceAuthRequests`, or
+  `DeviceAuthLimits`.
+* Client SDK writes to `Users`, `UserRoles`, `Roles`, and `Instances` are denied.
+* Admins may update only the boolean `Regions/{regionId}.meshEnabled`. All other
+  region writes use trusted backend/Admin SDK paths.
+
+Rules restrict client reads independently of API authorization. Normal users must
+filter collection-group client queries by `ownerUid`; rules do not filter results
+for an unrestricted query. See [indexes](indexes.md).
 
 ## Device Authorization Records
 
-The regional API lazily creates `DeviceAuthRequests` documents with a 32-character lowercase hexadecimal ID (128 random bits). A request stores lowercase SHA-256 hex verifiers in `deviceSecretHash` and `userCodeHash`, a sanitized `deviceName` capped at 80 characters, and Firestore timestamps `createdAt`, `expiresAt`, and `nextPollAt`. The six-digit user code may repeat because requests are found by their random document ID.
+Requests use a random 32-character lowercase hexadecimal document ID. Each stores
+SHA-256 hex `deviceSecretHash`/`userCodeHash`, sanitized `deviceName` (up to 80
+characters, empty when omitted), and `createdAt`, `expiresAt`, and `nextPollAt` timestamps.
+The six-digit code can repeat because lookups require the random request ID too.
 
-`state` is `pending`, `approved`, `denied`, or `consumed`. Pending requests have no decision fields. Approved and denied requests have `decidedUid` and `decidedAt`; approved requests also have `approvedUid`, which matches `decidedUid`. Consumed requests retain those approval fields and add `consumedAt`. The API does not expose stored identities in verification responses.
+`state` is `pending`, `approved`, `denied`, or `consumed`. Decisions add `decidedUid`
+and `decidedAt`; approval adds matching `approvedUid`. Consumption retains approval
+fields and adds `consumedAt`. Verification responses never expose these identities.
 
-`DeviceAuthLimits/{scopeId}` stores a `scope` of `creation` or `guesses`, a bounded array of Firestore timestamps in `attempts`, and an `expiresAt` timestamp. Both collections are API-only. Direct client access stays denied for anonymous users, normal users, approving users, and admins; trusted server access uses the Admin SDK.
+Limit documents store `scope` (`creation` or `guesses`), a bounded `attempts` timestamp
+array, and `expiresAt`. The API accesses requests and limits by document ID and shares
+budgets across hosts through transactions.
 
-Firestore TTL policies use `expiresAt` in both collections. TTL deletion is asynchronous and typically happens within 24 hours, so API authorization always checks the request expiry itself. Retain temporary request and limit records only through their TTL cleanup window. The recursive backup may include these documents; do not restore expired device authorization requests or rate-limit budgets as live state. A restored request must never become redeemable again.
+Both collections use TTL on `expiresAt`, exempted from single-field indexing. TTL
+cleanup is asynchronous. The API checks expiry on every operation. Deploy and verify
+both TTL policies before the API rollout. Exclude both collections from recovery:
+expired or consumed requests must never become redeemable again. See
+[device authorization](../../docs/device-auth.md) for protocol, retention, and release checks.
 
 ## Limits
 
-Enforced server-side by the regional FastAPI inside Firestore transactions (not by [firestore.rules](firestore.rules)):
+The API enforces these in Firestore transactions:
 
-* Region capacity: `Regions/{regionId}.capacityLimit` caps the total allocated clients in the region.
-* Allocated clients are `creating` plus `active` client docs under `Regions/{regionId}/Instances`.
-* Per-user limits resolve from `UserRoles/{uid}.perRegionClientLimit` when it is a number. If it is `null` or missing, the API falls back to `Roles/{roleId}.defaultPerRegionClientLimit` using `UserRoles/{uid}.roleId`.
-* `0` is a valid per-user override and does not fall back to the role default.
-* Admins may use a `null` role default to mean no per-user limit, while still being capped by regional `capacityLimit`.
-* Reservations and client status transitions are done in Firestore transactions by the API.
-* Tunnel addresses are allocated from a per-region monotonic index, `Regions/{regionId}.tunnelIndexV4`/`.tunnelIndexV6`, advanced in the same transaction as the client reservation and paired so a client's v4/v6 addresses share an index. This replaces lowest-free-address reuse; v4 wraps at the top of the host range with an in-use check, v6 never wraps. No `releasedAt` field and no time-based TTL.
+* `Regions/{regionId}.capacityLimit` caps allocated clients (`creating` plus `active`).
+* A numeric `UserRoles/{uid}.perRegionClientLimit` overrides the role default.
+  `0` allows zero clients. Missing or `null` falls back to
+  `Roles/{roleId}.defaultPerRegionClientLimit`. A `null` default means no per-user cap;
+  regional capacity still applies. Missing/malformed role-default documents fail creation.
+* Client IDs, account slots when needed, paired tunnel addresses, and reservations
+  commit together. Client status transitions are transactional too.
+* Address allocation advances from `tunnelIndexV4`, wraps at the IPv4 host limit,
+  and skips indices held by allocated clients. It writes the same chosen index to
+  `tunnelIndexV4` and `tunnelIndexV6`, deriving both addresses from it. Both addresses
+  therefore reuse the paired index after wrap. There is no release-time TTL.
 
 ## Backup Script
 
-Run this script from the repo root with the API virtualenv activated. It uses the
-hardcoded Admin SDK credential path `Backend/Firebase/Secrets/firebase-credentials.json`.
+From the repo root, use the API virtualenv interpreter. No activation is needed.
+The script reads `Backend/Firebase/Secrets/firebase-credentials.json` and writes
+`Backend/Firebase/backups/backup-<timestamp>.json` by default:
 
 ```sh
 Backend/API/.venv/bin/python3 scripts/backup_firestore.py
 ls -lh Backend/Firebase/backups
 ```
 
-Backups are written to `Backend/Firebase/backups/backup-<timestamp>.json`. Treat these files as
-secret material because client documents can contain full WireGuard configs and client
-private keys. `Backend/Firebase/backups/` is intentionally ignored by git. Backups can also
-contain temporary device authorization records. Exclude `DeviceAuthRequests` and
-`DeviceAuthLimits` when restoring; expired requests must never become valid again, and abuse
-budgets are short-lived operational state rather than recovery data.
+`--output <path>` selects a different destination. The export walks subcollections,
+including orphaned `Instances` documents. It exports Firestore, not Firebase Auth,
+and is a recursive read rather than an atomic database snapshot.
+
+Backups contain full WireGuard configs, client private keys, and possibly temporary
+login records. Restrict access and keep them outside git (`backups/` is ignored).
+Exclude `DeviceAuthRequests` and `DeviceAuthLimits` from restoration. Preserve the
+account-slot watermark and use the [recovery runbook](../../docs/vm-loss-recovery.md)
+for host recovery.
 
 ## Local validation
 
 Run `./scripts/test.sh firebase` from the repo root. It checks schema/test types,
-runs the test-client checks, and starts Auth and Firestore emulators together
-for client rules tests and API exchange/concurrency tests. Both suites use
-`demo-cloudgateway`, with no real credentials. API dev dependencies are synced
-when this target runs alone.
+runs the device test-client checks, and starts Auth and Firestore emulators for
+client rules and API integration/concurrency tests. Both suites use
+`demo-cloudgateway`, with no real credentials. The target prepares API dev dependencies
+when run alone.
 
-The `api` target excludes tests marked `emulator`. The Firebase target selects
-those tests and fails if either local emulator is unavailable. Auth emulator
-checks cannot prove production token signing, and Firestore emulator checks
-cannot prove TTL deletion or deployed indexes. Follow the
-[device authorization runbook](../../docs/device-auth.md) for the release checks.
+`./scripts/test.sh api` excludes tests marked `emulator`; the Firebase target selects
+them and fails if either local emulator is unavailable. Emulators do not prove
+production custom-token signing, deployed indexes, or TTL cleanup. Follow the
+[device authorization release checks](../../docs/device-auth.md#deployment-and-release).

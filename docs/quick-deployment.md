@@ -1,12 +1,20 @@
-# Deployment
+# Quick deployment
+
+Run from the repository root. These commands can publish artifacts, commit
+version changes, or replace servers as described below. Keep the working tree
+clean before release wrappers. See the [docs index](README.md) for setup and
+recovery guides.
 
 ## Test
 
-Run the full suite; everything must pass before deploying:
+Run the full suite before deploying:
 
 ```sh
 ./scripts/test.sh
 ```
+
+Use `web`, `api`, `firebase`, `infra`, `ios`, `macos`, or `apple` for targeted
+checks during development.
 
 ## Deploy the frontend
 
@@ -14,42 +22,23 @@ Run the full suite; everything must pass before deploying:
 ./scripts/deploy-react.sh
 ```
 
-## Build iOS App Store archive
+Builds the local checkout, bumps the npm patch version, publishes to `gh-pages`,
+and commits the version change locally. It does not push the source commit.
+See [web deployment](../Frontend/Web/README.md#validation-and-deployment).
 
-The release script always increments the iOS build number. It keeps the
-marketing version unchanged unless a version flag is supplied. It validates the
-individual App Store Connect API key, archives with source Firestore, exports an
-IPA, uploads it with Transporter, and commits the project-file bump. It does not
-push the commit.
+## Build iOS App Store archive
 
 ```sh
 ./scripts/ios-release.sh
-./scripts/ios-release.sh --version patch
-./scripts/ios-release.sh --version minor
-./scripts/ios-release.sh --version major
 ```
 
-The script expects the team API key at
-`$HOME/.ssh/Apple_API_KEY/AuthKey_YDM2P5LSK8.p8` with mode `600`.
-The key ID and issuer ID are identifiers, not secrets; the `.p8` file must
-never be committed or logged.
-
-Code signing uses your login keychain. If it is locked, the release script
-unlocks it and macOS prompts for the password. To unlock it beforehand, run the
-command without a password so macOS prompts for it:
-
-```sh
-security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"
-```
-
-Export signs manually against two installed App Store profiles,
-`CloudGateway AppStore` and `CloudGateway Tunnel AppStore`, built on the team's
-Apple Distribution certificate. Both expire 2027-07-19; when they lapse export
-fails with a "profile doesn't include signing certificate" error. See
-[iOS signing profiles](../Frontend/Apple/iOS/README.md#distribution-signing-profiles)
-for how to recreate them.
-
-See [iOS release guide](../Frontend/Apple/iOS/README.md#app-store-release) for the full docs.
+Add `--version patch`, `minor`, or `major` to change the marketing version.
+Every run bumps the build. The script archives with source Firestore, exports,
+uploads through Transporter, and commits the version change without pushing.
+It requires the configured API key, distribution identity/profiles, and access
+to the login Keychain. See the
+[iOS release guide](../Frontend/Apple/iOS/README.md#app-store-release) for setup,
+profile renewal, and manual archives.
 
 ## Install macOS app for local testing
 
@@ -97,108 +86,74 @@ python3 scripts/macos-release.py --bump-build
   --previous-distributed-app /absolute/path/to/latest-distributed/CloudGateway.app --publish
 ```
 
-The bump synchronizes the app, CLI, controller, and extension in all configurations.
-Add `--version 1.1.1` to the bump command to change the marketing version. Build
-numbers increase across marketing versions and must exceed every previous release.
-Release preparation uses those tracked values. This archives and exports the Developer ID
-app, verifies signing and packaging, notarizes and staples the app, creates a
-signed DMG, then notarizes, staples, and checks that DMG with Gatekeeper. The
-script keeps artifacts and SHA-256 checksums under
-`Frontend/Apple/macOS/.build/releases/`, then publishes the DMG and `SHA256SUMS`
-to GitHub and prints the release and download URLs. Omit `--publish` to keep the
-finished release local for installation checks.
+The baseline must be the exact signed app last distributed to users. Every new
+preparation needs a higher synchronized build, including app-only releases.
+Omit `--publish` to retain local artifacts for installation checks.
 
-Publish an existing finished release without building or notarizing again:
+Publish an existing finished release:
 
 ```sh
 ./scripts/macos-release.sh --publish-existing '/absolute/path/to/finished-release'
 ```
 
-Publishing verifies signatures, accepted notarization records, stapled tickets,
-Gatekeeper, and existing checksums before any GitHub mutation. It requires an
-authenticated GitHub CLI, a public repository, and the recorded source commit
-already on GitHub. It creates `macos-v<version>-build.<build>` with
-`--latest=true` when publishing the completed draft. Caddy releases use
-`--latest=false` to leave the Latest selection unchanged. Retries retain drafts,
-reuse matching assets, and stop on conflicts. It never pushes or overwrites
-assets. Update `Frontend/Web/src/helpers/macAppRelease.ts` with each published
-Mac release's version, build, and exact DMG URL before deploying the website.
-
-Prerequisites: the team's Developer ID Application identity, the two installed
-Developer ID profiles `CloudGateway MacOS` and `CloudGateway-Tunnel MacOS`, and
-saved Keychain credentials `CloudGateway-notary`. See
-[macOS release deployment](apple-macos-release.md) for setup, preparation-only
-builds, resuming pending submissions, installation checks, and distribution.
+Requires Developer ID profiles/identity, saved notarization credentials, and
+GitHub release access with the recorded source commit already online. Publication
+verifies the existing artifacts/checksums and never pushes source or overwrites
+assets. Update `Frontend/Web/src/helpers/macAppRelease.ts` with the exact new
+DMG version/build/URL, then deploy the site. See the
+[macOS release guide](apple-macos-release.md) for preparation, retries, and checks.
 
 ## Deploy regional servers
 
-1. Commit and push all your changes.
-2. Back up Firestore before replacing any regional server:
+1. Review/commit source and make the intended ref available remotely.
+2. Back up Firestore and confirm a new backup exists:
 
    ```sh
    Backend/API/.venv/bin/python3 scripts/backup_firestore.py
    ls -lh Backend/Firebase/backups
    ```
 
-   Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists before continuing.
-
-3. Optional: build and publish a new prebuilt Caddy binary if the Caddy build inputs changed:
-
-   ```sh
-   ./scripts/caddy-release.sh
-   ```
-
-   This creates a `caddy-v<x>` GitHub Release and writes `caddy_binary_tag` / `caddy_binary_sha256` into the configured gitignored regional tfvars. Skip this when the existing pinned Caddy binary is still correct.
-
-4. Deploy one or more regions:
+   Backups can contain full VPN configs/private keys. Keep them outside Git/logs.
+3. If Caddy build inputs changed, run `./scripts/caddy-release.sh`. It can bump
+   `Infrastructure/OCI/caddy/VERSION`, commit it, and push the current branch.
+   It publishes a `caddy-v<x>` release and updates the configured gitignored
+   regional tfvars pins/checksums. Otherwise keep the verified existing binary.
+4. Review plans, then deploy the intended regions:
 
    ```sh
-   ./scripts/terraform.sh <region> [<region> ...]
+   ./scripts/terraform.sh chicago sanjose plan
+   ./scripts/terraform.sh chicago sanjose
    ```
 
-`<region>` is a short name (`chicago`, `sanjose`) or a full region id (`us-chicago-1`).
-Each region must have a matching gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`.
+The wrapper accepts short names or full IDs and requires each region's
+gitignored `Infrastructure/OCI/terraform/<regionId>.terraform.tfvars`. Plan does
+not create a deploy tag or change infrastructure. Apply creates a version commit,
+pushes the source branch and deploy tag, updates the selected tfvars, and applies
+saved plans sequentially from that same tag.
 
-**This destroys and replaces the existing VPN server in each listed region.** Every
-wrapper apply writes a fresh `source_ref` into user_data, and OCI does not allow
-changing `user_data` on a launched instance, so apply always destroys and recreates
-the OCI instance and changes its public IPv4. It validates the listed tfvars files,
-creates a deploy ref, and applies each region in sequence. The host downloads the
-pinned Caddy binary release and verifies it during bootstrap. A normal rebuild keeps
-the existing WireGuard key, tunnel subnets, and endpoint hostname; boot sync restores
-peers and clients only need to re-resolve the endpoint after the public IP changes.
-If a multi-region apply fails partway through, the script stops; regions already
-applied stay deployed.
+**Apply replaces each selected VPN server and changes its public IPv4.** A fresh
+`source_ref` changes immutable OCI user data. Keep the server private key,
+subnets, and endpoint hostname unchanged; boot sync restores Firebase peers,
+and clients must re-resolve the updated endpoint. A partial failure stops later
+regions while retaining already-applied regions.
 
-The account-scoped ACL release is a host-level change and can only be deployed by
-rebuilding every region through `./scripts/terraform.sh` from one deploy tag;
-`cloudgateway-install-api` is not a supported path for it and refuses an ACL-aware
-ref on a host without a live ACL table. During a sequential multi-region rebuild
-the fleet is only partially enforced - the ACL is not active until the last region
-finishes.
+Host-level ACL/mesh changes require rebuilding every affected region from the
+same deploy tag. API-only installation cannot install the host policy; fleet-wide
+account isolation is incomplete until every region is ready. After deployment,
+run **Sync All Regions** in Server Health. See the
+[rollout runbook](service-operations.md) and [regional deployment guide](regional-deployment.md).
 
-Useful forms:
+`./scripts/terraform.sh chicago destroy` tears down that region using Terraform's
+confirmation. Keep its subnet registry allocation reserved.
+
+### SSH host keys after replacement
+
+A rebuilt host has a new SSH key. Verify its fingerprint through a trusted OCI
+console/access path before removing the old hostname entry from `~/.ssh/known_hosts`:
 
 ```sh
-./scripts/terraform.sh chicago plan
-./scripts/terraform.sh chicago sanjose plan
-./scripts/terraform.sh chicago sanjose
-./scripts/terraform.sh chicago destroy
+ssh-keygen -F wg.us-sanjose-1.gocloudlaunch.com
+ssh-keygen -R wg.us-sanjose-1.gocloudlaunch.com
 ```
 
-After the Terraform regions are deployed and ready, open the admin dashboard and run **Sync All Regions**.
-
-For the manual, by-hand fallback, see [regional-deployment.md](regional-deployment.md).
-
-5. Optional: Clear [~/.ssh/known_hosts](~/.ssh/known_hosts) after the new server deployment
-
-`ssh` will yell at you that the IP of your host changed when you try to ssh into the new server, so run this to clear them from `known_hosts` to avoid that:
-```sh
-# Check first:
-ssh-keygen -F wg.us-sanjose-1.gocloudlaunch.com 
-ssh-keygen -F wg.us-chicago-1.gocloudlaunch.com
-
-# Clear:
-ssh-keygen -R wg.us-sanjose-1.gocloudlaunch.com 
-ssh-keygen -R wg.us-chicago-1.gocloudlaunch.com
-```
+Repeat for each replaced hostname. Remove only the verified stale entry.

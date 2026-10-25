@@ -1,94 +1,102 @@
 # GitHub Deployment Setup
 
-How the repository on GitHub must be set up for regional deployments to work. At boot, the cloud-init stub baked by Terraform downloads this repo from GitHub at a pinned ref and runs the versioned bootstrap from it. If GitHub does not have the ref, or the ref does not contain the expected paths, the deployment fails.
+Regional hosts fetch bootstrap and API source from GitHub. The selected ref must
+be published and contain the paths below before a host can boot successfully.
 
 ## Repository Requirements
 
-* The repo must be **public**. The stub downloads tarballs unauthenticated; there is no token support by design. If the repo ever goes private, the stub needs a fine-grained read-only PAT passed via a new Terraform variable and an auth header on the download - that is intentionally out of scope today.
-* GitHub's unauthenticated rate limit (60 requests/hour/IP) is irrelevant for rare manual deploys; each deploy makes one tarball request.
+The repo must be public. The cloud-init stub and API installer download tarballs
+without authentication and have no private-repository token support.
 
 ## Fetched-Path Contract
 
-Any ref used for deployment must contain these paths:
+Every deployable ref must contain:
 
-* `Infrastructure/OCI/host/bootstrap.sh` - the full host bootstrap run by the stub.
-* `Infrastructure/OCI/host/Caddyfile.template` - rendered on the host with `envsubst`.
-* `Backend/API/` - `pyproject.toml` plus the `src/` package, installed into the host venv.
+* `Infrastructure/OCI/host/bootstrap.sh`: host bootstrap.
+* `Infrastructure/OCI/host/Caddyfile.template`: Caddy config rendered with `envsubst`.
+* `Backend/API/`: `pyproject.toml` and the `src/` package installed into the host venv.
 
-The stub baked into an instance's user-data expects these exact paths. Renaming or moving them is a breaking change: older tfvars pinned to newer refs (or the reverse) will fail the stub's path check. If the layout must change, update `Infrastructure/OCI/terraform/stub-cloud-init.sh.tftpl` in the same commit and only deploy refs at or after that commit.
+The [stub](../Infrastructure/OCI/terraform/stub-cloud-init.sh.tftpl) expects this
+layout. Update it alongside any path changes and use compatible source refs.
 
 ## How the Stub Fetches
-
-The stub builds the download URL from two Terraform variables:
 
 ```text
 https://codeload.github.com/<source_repo>/tar.gz/<source_ref>
 ```
 
-* `source_repo`: GitHub `owner/repo`, default `Albro3459/CloudGateway`.
-* `source_ref`: required, no default. Accepts a tag name, a full commit SHA, or a branch name.
-
-It extracts only `Backend/API/` and `Infrastructure/OCI/host/` into `/opt/cloudgateway/src`, verifies `bootstrap.sh` exists, and runs it. Secrets never come from GitHub - the WireGuard server key, Firebase credentials, and all per-region config are written by the stub from Terraform variables before the fetch.
+`source_repo` defaults to `Albro3459/CloudGateway`. `source_ref` is required and
+accepts a tag, full commit SHA, or branch. The stub extracts `Backend/API/` and
+`Infrastructure/OCI/host/` into `/opt/cloudgateway/src`, checks for `bootstrap.sh`,
+and runs it. Terraform supplies regional configuration and secrets separately
+through user-data. Keep tfvars, Terraform state, and user-data private.
 
 ## Release Workflow
 
-The normal operator path is [`./scripts/terraform.sh`](../scripts/terraform.sh), which bumps
-`Backend/API/src/version.py`, creates and pushes one `Deploy vX.Y.Z` commit plus matching
-`deploy-vX.Y.Z` tag, and writes that tag to every listed region's
-`<regionId>.terraform.tfvars` before applying.
+The normal host deployment uses [`./scripts/terraform.sh`](../scripts/terraform.sh):
 
-For a manual fallback:
+1. Require a clean working tree and prepare plans for all selected regions using
+   the next deploy tag.
+2. After confirmation, bump `Backend/API/src/version.py`, commit `Deploy vX.Y.Z`,
+   push the current branch, and create/push the matching `deploy-vX.Y.Z` tag.
+3. Write that tag to each selected region's gitignored tfvars and apply the saved
+   plans sequentially.
 
-1. Merge the deployable state to `main`.
-2. Create an annotated tag, convention `deploy-vX.Y.Z`:
+This wrapper publishes a fresh release. It does not deploy an existing
+`source_ref` unchanged. `plan` alone uses the current tfvars and publishes nothing.
+See [regional deployment](regional-deployment.md) for backups and host validation.
 
-```sh
-git tag -a deploy-v1.0.0 -m "deploy-v1.0.0"
-git push origin deploy-v1.0.0
-```
-
-3. Set `source_ref = "deploy-v1.0.0"` in each region's `<regionId>.terraform.tfvars` and deploy per [docs/regional-deployment.md](regional-deployment.md).
-
-**The commit/tag must be pushed to GitHub before deploying.** codeload serves only what GitHub has - local-only commits cannot be deployed.
-
-Ref choice trade-offs:
-
-* **Tag** (recommended): readable, auditable in `terraform plan` diffs. Git tags are technically mutable; do not move published `deploy-*` tags.
-* **Full 40-character commit SHA**: strictly immutable. Use when you want a deploy that can never silently change.
-* **Branch**: convenient for dev spins; two deploys from the same tfvars can differ. Do not use for real regions.
+For an API-only release, publish a tag or full SHA through the normal authorized
+release process, then use the installer below. Published tags must stay fixed.
+A full commit SHA identifies immutable source. Branch refs can change between
+fetches and should be avoided for production.
 
 ## Updating a Live Region's API
 
-The host keeps `SOURCE_REPO` and `SOURCE_REF` in `/etc/cloudgateway/bootstrap.env`. To roll the API to a new ref without redeploying:
+On a host with the required host configuration already installed:
 
 ```sh
-git tag -a deploy-v1.1.0 -m "deploy-v1.1.0" && git push origin deploy-v1.1.0
-ssh ubuntu@<server-public-ipv4>
-sudo cloudgateway-install-api deploy-v1.1.0
+sudo cloudgateway-install-api <published-tag-or-sha>
 ```
 
-With no argument, `cloudgateway-install-api` re-fetches the ref the host was deployed with. The helper only updates `Backend/API/`. Update `source_ref` in that region's `<regionId>.terraform.tfvars` afterward so any future host build uses the same code.
+The helper fetches only `Backend/API/`, copies it into `/opt/cloudgateway/api`,
+reinstalls the package, and restarts the API. Existing WireGuard tunnels keep
+running. Without an argument, it uses `SOURCE_REF` from
+`/etc/cloudgateway/bootstrap.env`, which still identifies the host's bootstrap
+ref, even after an API-only update.
 
-**Updating `source_ref` in tfvars is bookkeeping only - never run `terraform apply` just to sync it.** OCI does not allow changing `user_data` on a launched instance, so once `source_ref` (or anything else baked into user-data) changes, the next wrapper deploy plans to destroy and recreate the regional server. A normal rebuild keeps the WireGuard key, tunnel subnets, and endpoint hostname. The recovery checklist in [docs/vm-loss-recovery.md](vm-loss-recovery.md) applies: Terraform updates the API/WireGuard `A` records, registration refreshes the Firebase region metadata, and DNS is touched manually only when preflight reports unmanaged state to reconcile/import before rerunning. Boot peer sync restores peers from Firebase and users just toggle their tunnels so the endpoint is re-resolved. Treat a rebuild as a planned event, not a variable refresh.
+Record the intended API ref in the region's tfvars for future recovery. **Do not
+apply Terraform just to update that record:** changing `source_ref` or other
+user-data inputs plans a host replacement. The wrapper's next apply also creates
+and selects a fresh deploy tag.
 
-The operating rule for a live region:
-
-* API change: `sudo cloudgateway-install-api <ref>`. Running tunnels are unaffected.
-* Host-level change (bootstrap, Caddyfile template, firewall, systemd): plan a rebuild via `./scripts/terraform.sh <region> apply` and walk the VM-loss recovery checklist, or for smaller changes re-run the fetched bootstrap and re-sync peers (see Troubleshooting below).
-* Tiny one-off tweak: hand-edit the specific file on the host (for example `/etc/caddy/Caddyfile`, then `systemctl reload caddy`) and fold the real change into the next tagged ref so the next rebuild matches.
+Host changes to bootstrap, Caddy, firewall, systemd, or Uvicorn options need a
+[planned rebuild](vm-loss-recovery.md). The installer does not update those files.
+It rejects ACL-aware API source when the live host lacks the `inet cloudgateway`
+table, `cg_forward` chain, or `cg_slot4/6` maps. Re-running bootstrap on an already
+active interface does not run `PostUp` and cannot migrate such a host. Rebuild all
+affected regions from one deploy tag before treating fleet ACL enforcement as complete.
 
 ## Troubleshooting Fetch Failures
 
-Boot-time fetch failures land in `/var/log/wireguard-bootstrap.log` (`journalctl -t wireguard-bootstrap`).
+Read `/var/log/wireguard-bootstrap.log` or `journalctl -t wireguard-bootstrap`.
 
-* `Failed to download <repo>@<ref>`: the ref is not on GitHub (not pushed), the repo went private, or the host has no egress. Fix the cause, then either re-run the stub's fetch manually or terminate and re-apply Terraform.
-* `does not contain Infrastructure/OCI/host/bootstrap.sh`: the ref predates the fetched-path contract. Pin a ref that satisfies the contract.
-* If the tarball extracted but the bootstrap failed partway during initial deployment, it is safe to re-run after fixing the cause:
+* `Failed to download <repo>@<ref>`: confirm the ref is published, the repo is public,
+  and the host has egress. Fix the cause before retrying the fetch or rebuilding.
+* Missing `Infrastructure/OCI/host/bootstrap.sh`: use a ref satisfying the path contract.
+* If initial bootstrap failed after extraction, fix the cause and rerun the fetched script:
 
 ```sh
 sudo bash /opt/cloudgateway/src/Infrastructure/OCI/host/bootstrap.sh
+sudo systemctl start cloudgateway-sync-peers.service
+sudo systemctl status cloudgateway-sync-peers.service
 ```
 
-Re-running the bootstrap on a live host is largely safe under the Firebase-master peer model: `/etc/wireguard/wg0.conf` is interface-only (peers are never persisted anywhere on the host), `wg-quick` is not restarted by a re-run, and `cloudgateway-sync-peers` re-converges the live peer set from Firebase afterward. It does overwrite host config files and restart the Backend/API/Caddy/AdGuard Home, so prefer a planned rebuild for substantive host-level changes and run `sudo cloudgateway-sync-peers` after any re-run.
+A bootstrap rerun overwrites host configuration and restarts Unbound, AdGuard
+Home, the API, the origin firewall, and Caddy. It starts `wg-quick` if needed but
+does not restart an active interface. Use it to resume an interrupted bootstrap,
+and plan substantive host upgrades as rebuilds. A small emergency manual edit
+must also reach the versioned bootstrap/template so the next rebuild preserves it.
 
-Never paste the contents of `/etc/cloudgateway/bootstrap.env` secrets, `/etc/cloudgateway/wireguard-server.key`, or the Firebase credential file into logs or tickets.
+Never paste `bootstrap.env`, `api.env`, the WireGuard server key, full configs,
+Firebase credentials, or auth tokens into logs or tickets.

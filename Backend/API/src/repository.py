@@ -38,7 +38,7 @@ class RegionDoc:
     tunnel_network_v4: str = ""
     tunnel_network_v6: str = ""
     mesh_enabled: bool = False
-    # Per-region monotonic client-address allocator index; see next_tunnel_index.
+    # Paired client-address allocation cursors; see next_tunnel_index
     tunnel_index_v4: int | None = None
     tunnel_index_v6: int | None = None
 
@@ -247,12 +247,10 @@ MAX_ACCOUNT_SLOT = 2**32 - 1
 
 
 def region_tunnel_index_bounds(ipv4_cidr: str) -> tuple[int, int]:
-    """Client host index range for a region's v4 network: 2..top of host range.
+    """Client host index range for the paired IPv4/IPv6 allocator
 
-    Only the v4 network bounds the range. v6 is a /64 that never wraps; the
-    two indices are kept paired by always deriving both addresses from the
-    same index (see tunnel_addresses_for_index), so pairing to the smaller v4
-    range is what makes the wrap possible at all.
+    IPv4 bounds the shared index. Both addresses use it, so both families
+    reuse freed indices after the IPv4 host range wraps
     """
     network = ip_network(ipv4_cidr, strict=False)
     max_index = network.num_addresses - 2  # exclude network and broadcast addresses
@@ -293,13 +291,10 @@ def used_tunnel_indices(clients: Sequence[ClientDoc], *, ipv4_cidr: str, ipv6_ci
 
 
 def next_tunnel_index(*, stored_index: int | None, used_indices: set[int], ipv4_cidr: str) -> int:
-    """Advance the per-region monotonic index by one, wrapping and skipping in-use.
+    """Advance the shared index, wrapping and skipping allocated addresses
 
-    NOT dead code: the wrap (index above the top of the host range resets to
-    MIN_TUNNEL_INDEX) is a real event, not a theoretical edge case - a /24
-    region wraps after roughly 253 lifetime allocations. The in-use skip after
-    a wrap is what stops a still-live client's address from being handed out
-    twice. Both are exercised by test_next_tunnel_index_wraps_and_skips_in_use.
+    A /24 wraps after roughly 253 allocations. Skipping in-use indices keeps
+    wraparound from assigning a live client's addresses to another client
     """
     min_index, max_index = region_tunnel_index_bounds(ipv4_cidr)
     if stored_index is None or stored_index < min_index or stored_index > max_index:

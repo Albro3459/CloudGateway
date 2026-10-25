@@ -23,9 +23,9 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 - FastAPI internal routes do not include `/api`. Caddy strips `/api/*` before proxying to FastAPI.
 - `REACT_APP_API_ORIGIN` is only a local/dev override. When set, frontend API helpers send API
   calls to `${REACT_APP_API_ORIGIN}/api/*`. In production it is unset and API URLs are derived
-  from `window.location.origin`.
+  from `window.location.hostname`.
 - The apex API host serves global/account traffic: `GET /regions`, `POST /auth/check-access`,
-  and `DELETE /account`.
+  `DELETE /account`, and device authorization (`POST /device/*`).
 - Native Apple clients use the same production regional hostname shape with origin
   `gocloudlaunch.com`, and use `api.gocloudlaunch.com` for apex calls. Capacity, create,
   delete, and sync calls use the selected or target config region.
@@ -73,7 +73,7 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 
 - Apex. Requires Firebase bearer auth.
 - Verifies that the authenticated user is provisioned and returns their role. Unprovisioned
-  users are denied and disabled as before.
+  users are denied, disabled in Firebase Auth, and have refresh tokens revoked.
 - Response `200`:
 
 ```json
@@ -84,13 +84,20 @@ paths, document shapes, security rules, and limits, see [Backend/Firebase/README
 }
 ```
 
+`email` may be `null`. Invalid, expired, revoked, disabled, or deleted identities
+return `401 AUTH_REQUIRED`. Token-verification dependency failures return
+`503 AUTH_UNAVAILABLE`. Clients retain their session and retry, with access
+unconfirmed until a check succeeds.
+
 ### Device authorization
 
 Device authorization runs on the apex API. FastAPI routes are `/device/*`; Caddy strips the public
 `/api` prefix from `POST /api/device/code`, `POST /api/device/verify`,
 `POST /api/device/approve`, and `POST /api/device/token`. Every response from these routes, including
-validation failures and dependency errors, carries `Cache-Control: no-store`.
-Device authorization is available when this API version is deployed. Approval links use the
+validation failures and dependency errors, carries `Cache-Control: no-store`. Device request
+bodies reject unknown fields.
+
+Approval links use the
 configured HTTPS dashboard origin. HTTP is allowed only for `localhost` or literal loopback IPs
 for development. Binding a dev server to `0.0.0.0` does not make it a valid HTTP dashboard origin.
 
@@ -111,8 +118,9 @@ Unauthenticated. Request:
 }
 ```
 
-`deviceName` is optional, trimmed, has control characters removed, and is limited to 80 characters
-after sanitization. It describes the requesting device and is unverified. The API returns `201`:
+`deviceName` is optional (or `null`), accepts at most 512 input characters, is trimmed,
+and has control characters removed. A sanitized name longer than 80 characters is rejected.
+An empty sanitized name becomes `null` in verification responses. The name is unverified. The API returns `201`:
 
 ```json
 {
@@ -212,7 +220,8 @@ are `409 DEVICE_AUTH_CONSUMED`, and first-decision conflicts are `409 DEVICE_AUT
 Persistent rate limits return `429 DEVICE_AUTH_THROTTLED` with an integer `Retry-After`. Invalid
 configuration, Firestore failure, Auth lookup failure, or custom-token signing failure return
 `503 DEVICE_AUTH_UNAVAILABLE`. Browser bearer authentication keeps the existing `401 AUTH_REQUIRED`
-and `403 USER_NOT_PROVISIONED` responses.
+and `403 USER_NOT_PROVISIONED` responses. Token-verification outages return
+`503 AUTH_UNAVAILABLE`, before the device service runs.
 
 The API stores device requests in `DeviceAuthRequests/{deviceRequestId}` and shared limit windows in
 `DeviceAuthLimits/{scopeId}`. Browser code/request mismatches are limited to three attempts per UID
@@ -238,7 +247,11 @@ exception text.
 }
 ```
 
-- `clientName` is required and must be non-blank.
+- `regionId` must match this API server and refer to an enabled region.
+- `clientName` is required, limited to 80 input characters, trimmed, and must be non-blank.
+- Creation transactionally reserves capacity, the user limit, a client ID, paired tunnel
+  addresses, and an account slot if needed. The server generates the client keypair.
+- The response includes a private-key-bearing config. Treat it as secret material.
 - Response `200`:
 
 ```json
@@ -310,20 +323,23 @@ exception text.
 
 ### `DELETE /account`
 
-- Apex. Requires Firebase bearer auth from a recent sign-in, restricted to `user`-role accounts.
-- Real ordering: snapshot the caller's client docs; remove their WireGuard peers (local directly,
-  remote via `DELETE /clients/{clientId}` in `accountCleanup` mode - see above); mark every one of
+- Apex. Requires Firebase bearer auth with `auth_time` no more than five minutes old
+  and no more than one minute in the future. Missing/stale auth returns `401 AUTH_REQUIRED`.
+- Available to `user`-role accounts. A Firebase identity with neither a recognized
+  role nor a user document may also delete itself. Admins and other partial
+  provisioning states receive `400 INVALID_REQUEST`.
+- The API snapshots the caller's client docs, removes their WireGuard peers (local directly,
+  remote via `DELETE /clients/{clientId}` in `accountCleanup` mode), then marks every one of
   the account's client documents non-active fleet-wide in one trusted repository operation (the
-  fence), including clients on a region whose host was unreachable during peer removal; send
+  fence), including clients on a region whose host was unreachable during peer removal. It sends
   exactly one best-effort policy refresh wave to every other enabled region while
-  `UserRoles/{uid}` and the caller's recent authentication still exist; queue the local policy
-  reconcile separately; only then hard-delete the account's client docs, account doc, role doc,
+  `UserRoles/{uid}` and the caller's recent authentication still exist, queues the local policy
+  reconcile separately, then hard-deletes the account's client docs, account doc, role doc,
   and Firebase Auth user.
 - The hard delete does not start until every other enabled region has accepted the refresh
   (`202` from `POST /sync/refresh`) or been recorded as unreachable. An accepted refresh no
   longer depends on the caller's token once its `202` returns. The fence commits before the
-  refresh wave goes out, so from that point no policy pull anywhere - on any region, including one
-  that races ahead of the refresh - can restore the deleting account's connectivity.
+  refresh wave goes out, so any policy pull started after the fence excludes the account.
 - Request body: none.
 - Response `200`:
 
@@ -336,19 +352,23 @@ exception text.
 
 - `deletedClientCount` is the count reported by the fence's own authoritative read of the
   account's client documents (grouped by region from each document's path), not the
-  pre-removal snapshot. For a fleet in a consistent state the two counts agree, so this is not an
-  observable contract change.
-- An unreachable region is an accepted risk, not a retry loop: it keeps an orphaned WireGuard peer
-  and a stale policy row until its next boot or a manual `cloudgateway-sync-peers` run (see
+  pre-removal snapshot.
+- An unreachable region keeps an orphaned WireGuard peer and a stale policy row
+  until its next boot or a manual `cloudgateway-sync-peers` run (see
   [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)). Its Firestore client rows
-  are already non-active by the time the account documents are hard-deleted, so the orphaned peer
-  cannot be used to reach a live account.
+  are already non-active before hard deletion, so future policy pulls exclude the account.
+  A Firestore fence does not itself remove stale state from an unreachable host.
 
 ### `POST /users`
 
 - Requires Firebase bearer auth with admin role.
 - Logically global and hosted by every regional API. It does not accept `regionId` and does not
   mutate regional state.
+- Accepts only `email`, trimmed and limited to 320 input characters. Unknown fields are rejected.
+- Creates a normal-user role assignment and account slot. An existing Auth account without
+  a role assignment can be provisioned (`alreadyExisted: true`), including re-enabling an
+  Auth account disabled by the unprovisioned-user access check. An already-provisioned
+  account returns `DUPLICATE_EMAIL`, or `ACCOUNT_DISABLED` if its Auth user is disabled.
 - After access is granted, the API sends a best-effort SES email telling the user they can sign in.
   Email failures are logged but do not change the `200` response or roll back access.
 - Request:
@@ -433,134 +453,81 @@ exception text.
 }
 ```
 
-- `syncedAt` is UTC, serialized with a `Z` suffix and (when non-zero) fractional seconds - parse it
-  as ISO 8601 rather than matching the example literally.
-- `added`/`updated`/`removed` count **client** peer changes only. `meshApplied` counts every
-  desired mesh peer applied this pass (re-applies included, so it is not just newly-added peers);
-  `meshAdded`/`meshUpdated`/`meshRemoved` count mesh peers that newly appeared, had endpoint/port/
-  allowed-IPs/keepalive drift repaired, or disappeared on the interface this pass; `meshSkipped`
-  counts candidate regions skipped for overlap or incomplete mesh fields;
-  `meshRoutesAdded`/`meshRoutesRemoved` count the `wg0` mesh route changes from the route sweep.
-  `meshEnabled` is true only when this region's doc exists, is `enabled: true`, **and** carries
-  `meshEnabled: true` as observed this pass - it is not the raw `Regions/{regionId}.meshEnabled`
-  flag. `Mesh/{regionId}.meshEnabled` persists this same combined value, so a disabled region
-  publishes `false` there even while its Region doc says `true`.
-  `noChanges` means no live mutation: no client add/update/remove, mesh add/update/remove, or
-  route add/remove. It deliberately excludes `meshApplied` and `meshSkipped`, so a stable pass
-  can report `meshApplied > 0`, `meshUpdated == 0`, and `noChanges == true`; skipped-only passes
-  are also `noChanges == true`.
-- `meshStatusWritten` is false when the pass reconciled the interface but failed to persist its
-  `Mesh/{regionId}` snapshot. The live peer set is still correct; only the durable snapshot the
-  dashboard renders mesh link status from is stale, until the next successful pass overwrites it.
-  A status-write failure never fails the sync, so this is the only machine-readable signal of it.
-  The field is **optional for consumers**: regions are installed independently
-  (`sudo cloudgateway-install-api <ref>`), so a dashboard build that ships before every region is
-  reinstalled will see responses without it. Treat absent as unknown and render nothing - do not
-  treat it as a missing required field, or every not-yet-upgraded region reports
-  `INCOMPATIBLE_RESPONSE` during a rollout.
-- `clientPeersDegraded` counts active client documents this pass refused to build a peer from
-  because their public key or tunnel IP was missing or malformed. Such a record is skipped rather
-  than fatal: it is excluded from the desired set, mesh reconciliation and the route sweep still
-  run to completion, and - when its public key is at least syntactically valid - its already-live
-  peer is protected from the unknown-peer removal sweep so a malformed document never disconnects
-  a connected user. Protection follows status, not shape: a degraded record that is also revoked
-  or no longer active is not protected, and its peer is removed normally. A non-zero count means
-  an `Instances/*` document needs repair; the response, the audit log, and the
-  `client_peer_degraded` log event all report the count and the region only - never the public
-  key, owner email, client name, or tunnel IP. Like `meshStatusWritten`, the field is required on
-  the server and **optional for consumers**, for the same staggered-rollout reason.
-- `meshPeers` lists every mesh candidate this pass considered (not just applied ones), with
-  `status` one of `applied` / `skipped-overlap` / `skipped-incomplete`. `skipped-overlap` and
-  `skipped-incomplete` are persistent configuration failures, not pending work; runtime overlap
-  defense remains active. `applied` and `skipped-overlap` entries carry the complete current
-  snapshot, including `endpointPort`; incomplete entries retain their reason code and may omit
-  invalid fields. It deliberately omits the peer's WireGuard public key - the durable
-  `Mesh/{regionId}` Firestore doc carries it. The current response shape is strict: missing
-  `meshUpdated` or other required fields is incompatible.
-- `appliedAt` on each `Mesh/{regionId}.peers.*` entry is a Firestore server timestamp: the instant
-  Firestore **recorded** the host's applied-state snapshot, not the instant WireGuard actually
-  changed. It is slightly later than the real application, and deliberately so - a trustworthy
-  source beats a precise one read off an untrusted host clock. Because `write_mesh_status` persists
-  the snapshot in a single write, every peer's `appliedAt` shares its instant with the document's
-  `updatedAt`. Staleness is derived from `updatedAt`, so nothing in the 24h logic depends on
-  `appliedAt`; it is an operator-facing "last recorded" label only.
-- `log` is an admin audit artifact. It can include user emails, client names,
-  client IDs, public keys, tunnel IPs, statuses, and removed-peer details.
-
-- `log` is a plaintext audit report (no ANSI/color) listing each added/updated/removed peer:
-  added/updated peers include the owning `clientId`/`email`, removed peers (host peers with no
-  matching active client) are listed by public key only. It never contains private keys, full
-  configs, or tokens. Its mesh section is server metadata only (region IDs, CIDRs, endpoint
-  hostnames, route changes) and never includes a mesh peer's public key or any per-user data.
-- This pass also reconciles the account-scoped ACL policy map (`reconcile_policy()`), the same
-  full pull-apply-read back-status pass `POST /api/sync/refresh` enqueues - see
-  [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md). So Sync All is also the
-  repair path for a dropped or lost policy poke, not just for peer/mesh drift.
-- The policy leg is synchronous: unlike `POST /api/sync/refresh`, this endpoint waits for the
-  policy pass before responding. It coalesces with any pass already in flight and then waits for
-  the coordinator to quiesce, so sustained pokes on the un-rate-limited `POST /api/sync/refresh`
-  can hold this response open for longer than one pass. That is accepted (depth-1 bounds the
-  pending backlog, never the total work callers can trigger); the outcome reported always comes
-  from a pass whose Firestore pull started after the Sync All request, so a longer wait only
-  returns a fresher result.
-- `policyApplied` is `true` only when this pass's `reconcile_policy()` call completed without
-  raising. It stays `true`/`false` for the entire response even though everything above it
-  (`added`, `meshApplied`, ...) is about the independent peer/mesh pass - the two legs share a
-  request but not a failure mode: a policy failure never fails this endpoint or touches the
-  peer/mesh fields, and the response is still `200`. On failure the response carries exactly
-  `"policyApplied": false` with `policyRowCount` and `policyStatusWritten` both omitted
-  (`response_model_exclude_none=True` drops null fields rather than serializing them), so a caller
-  should treat their absence as "policy leg failed," not as zero. On success `policyRowCount` is
-  the row count read back from the live map (mirrors `Policy/{regionId}.rowCount`) and
-  `policyStatusWritten` mirrors `meshStatusWritten`'s meaning for the policy status doc: `false`
-  means the map applied correctly but the best-effort `Policy/{regionId}` write failed, so the
-  dashboard should warn mildly rather than treat the pass as failed. All three fields are
-  **optional for consumers** for the same staggered-rollout reason as `meshStatusWritten`: a region
-  that predates this release omits all three, and a dashboard build must treat their absence as
-  unknown, not as `policyApplied: false`.
-- The Firestore pull that feeds `reconcile_policy()` is fail-closed per row, not per pass: a
-  malformed entry (wrong type, a host prefix other than `/32`/`/128`, an address outside the tunnel
-  aggregate, or an invalid/out-of-range account slot) is skipped and counted in an aggregate
-  skipped-row total, never logged with its uid, address, or slot, and never aborts the pass. Every
-  participant in a duplicate address or duplicate account-slot collision is excluded, not just the
-  later row in collection order - a collision removes connectivity for the colliding rows rather
-  than granting it to whichever happened to win.
+- `syncedAt` is UTC ISO 8601, with `Z` and optional fractional seconds.
+- `added`, `updated`, and `removed` count client peer changes. `meshApplied` counts
+  every desired mesh peer applied, including re-applies. `meshAdded`, `meshUpdated`,
+  and `meshRemoved` count new peers, repaired endpoint/port/allowed-IP/keepalive drift,
+  and removed peers. `meshSkipped` counts candidates with overlapping or incomplete
+  configuration.
+  `meshRoutesAdded` and `meshRoutesRemoved` count `wg0` route changes.
+- `meshEnabled` requires this region's document to exist with both `enabled: true`
+  and `meshEnabled: true`. `Mesh/{regionId}.meshEnabled` records the same combined value.
+- `noChanges` covers client, mesh peer, and mesh route changes only. Re-applies,
+  skipped candidates, policy changes, and status writes do not make it false.
+- `meshStatusWritten: false` means live reconciliation succeeded but the best-effort
+  `Mesh/{regionId}` write failed. The dashboard snapshot remains old until a later
+  successful pass. This does not fail the request.
+- `clientPeersDegraded` counts active documents skipped for missing/malformed public
+  keys or tunnel addresses. Mesh and route repair still run. A syntactically valid key
+  on a degraded active document is protected from unknown-peer removal. Removed or
+  otherwise non-active documents receive no such protection. The count, audit note,
+  and `client_peer_degraded` event reveal only the count and region, without client
+  identities, keys, or addresses.
+- `meshPeers` includes all considered candidates. `status` is `applied`,
+  `skipped-overlap`, or `skipped-incomplete`. Skipped entries describe configuration
+  failures. Applied and overlap entries include complete metadata and `endpointPort`.
+  Incomplete entries carry `reasonCode` and may omit invalid fields. Public keys
+  appear only in the durable `Mesh` snapshot, not these response entries.
+- `Mesh/{regionId}.peers.*.appliedAt` and document `updatedAt` share a Firestore server
+  timestamp from the snapshot write. This records when Firestore stored the result,
+  slightly after live application. Mesh staleness uses `updatedAt`, not `appliedAt`.
+- `log` is a plain-text admin audit report. Client changes may include emails, names,
+  IDs, public keys, tunnel IPs, and statuses. Removed peers without a matching active
+  client appear by public key. Join details are best-effort because enrichment runs
+  after the WireGuard lock is released. Mesh entries contain server metadata only,
+  with no mesh public keys or user data. Never log or share private keys, full configs,
+  or tokens.
+- The policy pass is synchronous and independent of peer/mesh results. It waits for
+  coalesced work to finish and uses a pull started after this request. Sustained
+  refresh requests can extend that wait: coalescing bounds the pending backlog,
+  not the total number of passes.
+- `policyApplied: true` means policy apply and live read-back succeeded.
+  `policyRowCount` is the live `cg_slot4` count. `policyStatusWritten: false` means
+  live application succeeded but its best-effort `Policy/{regionId}` write failed.
+  A failed policy apply/read-back still returns `200`, with `policyApplied: false`
+  and both other policy fields omitted, without changing peer/mesh fields.
+- Consumers must accept absent `meshStatusWritten`, `clientPeersDegraded`, and all
+  three policy fields during regional rollouts. Absence means unknown. Other fields,
+  including `meshUpdated`, remain required. Present optional fields must have the
+  documented types.
+- Policy input is validated per row. Invalid types, prefixes other than `/32` or
+  `/128`, out-of-aggregate addresses, and invalid account slots are excluded.
+  Every participant in duplicate-address or duplicate-account-slot collisions is
+  excluded. Logs report only an aggregate skipped count. See
+  [ACL policy reconciliation](wireguard-drift-repair.md#account-scoped-acl-policy-reconcile).
 
 ### `POST /sync/refresh`
 
-- Requires Firebase bearer auth for any provisioned user (`require_provisioned_user`). Not
-  admin-only - any client's own token is enough.
-- Regional: reconciles this API server's local region's account-scoped ACL policy map only. It
-  never touches WireGuard peers.
-- Request body: none.
-- Response `202`: deliberately carries no detail - no region health, no row counts, and no error
-  information. A caller learns nothing from the response beyond "the request was accepted."
-- The reconcile is enqueued and the request returns immediately, so the caller's timeout never
-  matters and each request costs approximately nothing.
-- No dedicated secret and no rate limit. The caller's own Firebase token is replayed, matching the
-  existing cross-region pattern in `_delete_remote_client` (`Backend/API/src/routes.py:722`).
-  Depth-1 coalescing in `reconcile_policy()` bounds the *pending backlog* to one queued follow-up
-  pass at a time - it does not bound the total number of sequential refreshes a caller can trigger
-  over time, and there is no rate limit (see
-  [docs/wireguard-drift-repair.md](../docs/wireguard-drift-repair.md)).
-- Failure behaviour: because the pass is detached from the response, a failed apply is never
-  reported in this endpoint's response, and it does not surface in `Policy/{regionId}` either -
-  `reconcile_policy()` raises before it ever calls the status write, so a failed apply or a failed
-  read-back leaves the previous successful `Policy/{regionId}` document exactly as it was, and no
-  failure status is ever written there. The failure is visible only in host logs
-  (`policy_refresh_failed`); a stale-but-valid `Policy` doc can sit next to a region that is
-  actively failing to apply. Use `POST /api/admin/sync` (Sync All) as the repair path for a dropped
-  or failed poke - its response now distinguishes a policy failure via `policyApplied` (see
-  `POST /admin/sync` above).
-- Poke sites: `POST /clients` and `DELETE /clients/{clientId}` (ordinary, non-cleanup deletes) call
-  this on every other region, fire-and-forget after the response, so a dropped poke never blocks or
-  fails the caller's request. A dropped poke leaves the un-poked region's policy map stale until the
-  next fleet-wide client event or an admin Sync All - this is an accepted risk, not a bug (see
-  [access-control-list.md](access-control-list.md)). `DELETE /account` is different: it
-  calls this endpoint synchronously, inside the request, exactly once per other enabled region, as
-  the deliberate last propagation step before its hard delete (see `DELETE /account` above); it
-  does not also fire the fire-and-forget poke, and the per-client deletes it issues in
-  `accountCleanup` mode suppress their own poke so the account delete is never fanned out twice.
+- Requires Firebase bearer auth for any provisioned user, including non-admins.
+- Regional. Refreshes only this host's account ACL policy, with no WireGuard changes.
+- Request body: none. Response: empty `202`, confirming acceptance only. The response
+  contains no health, counts, or reconcile outcome.
+- Reconciliation runs in the background. Failure is visible in host logs as
+  `policy_refresh_failed`. Apply/read-back failures leave the previous successful
+  `Policy/{regionId}` snapshot untouched. Use `POST /admin/sync` to repair and obtain
+  a synchronous policy outcome.
+- Uses the caller's Firebase token for cross-region calls. There is no dedicated
+  secret or endpoint-specific rate limit. Coalescing allows one pending follow-up
+  pass per host, without limiting total sequential refreshes. Caddy's outer API
+  limits still apply.
+- Client creation and ordinary client deletion queue a local reconcile and a
+  best-effort refresh to every other enabled region after the response. A dropped
+  refresh leaves that host's policy unchanged until another fleet client event,
+  boot, or manual Sync All. The client request still succeeds.
+- Account deletion sends exactly one synchronous refresh wave per other enabled
+  region before hard deletion and queues its local reconcile separately. Its remote
+  `accountCleanup` deletes suppress their own refreshes. See `DELETE /account` above
+  and the [ACL guide](access-control-list.md).
 
 ## Error Responses
 
@@ -576,38 +543,35 @@ All controlled failures return this shape:
 }
 ```
 
-- Error codes are uppercase snake case.
-- Required codes: `AUTH_REQUIRED`, `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `INVALID_REQUEST`,
-  `REGION_DISABLED`, `REGION_MISMATCH`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `CLIENT_NOT_FOUND`,
-  `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `SYNC_IN_PROGRESS`, `WIREGUARD_APPLY_FAILED`,
-  `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`,
-  `DEVICE_AUTH_INVALID`, `DEVICE_AUTH_EXPIRED`, `DEVICE_AUTH_DENIED`, `DEVICE_AUTH_CONSUMED`,
-  `DEVICE_AUTH_CONFLICT`, `DEVICE_AUTH_THROTTLED`, `DEVICE_AUTH_UNAVAILABLE`, `INTERNAL_ERROR`.
-- HTTP status mapping:
-  - `401`: auth failures (`AUTH_REQUIRED`).
-  - `403`: permission failures (`ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `DEVICE_AUTH_DENIED`).
-  - `400`: invalid request and region errors (`INVALID_REQUEST`, `REGION_DISABLED`,
-    `REGION_MISMATCH`, `DEVICE_AUTH_INVALID`).
-  - `404`: missing clients (`CLIENT_NOT_FOUND`).
-  - `409`: duplicate email, disabled account, capacity/limit failures, and a sync already running
-    on the region, or a consumed/conflicting device authorization (`DUPLICATE_EMAIL`,
-    `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `SYNC_IN_PROGRESS`,
-    `DEVICE_AUTH_CONSUMED`, `DEVICE_AUTH_CONFLICT`).
-  - `410`: expired device authorization (`DEVICE_AUTH_EXPIRED`).
-  - `429`: device authorization rate limits (`DEVICE_AUTH_THROTTLED`), with integer `Retry-After`.
-  - `503`: unavailable device authorization dependencies (`DEVICE_AUTH_UNAVAILABLE`).
-  - `500`: host mutation failures, missing/malformed role defaults, an unusable account-slot
-    counter, and unexpected failures (`WIREGUARD_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`,
-    `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR`).
-- `ACCOUNT_SLOT_UNAVAILABLE` is returned by `POST /users` and `POST /clients` when an account
-  needs a new account slot and `Counters/accountSlots.nextSlot` cannot supply one: the counter
-  document is missing, malformed, exhausted, or has regressed to at or below a slot a live account
-  already holds. Allocation fails closed rather than deriving a slot from the live `Users`
-  collection, which would re-issue a hard-deleted account's slot. Nothing is written when it is
-  raised - no user, slot, client, tunnel index, or counter - so the request is safe to retry once
-  an operator restores the counter. It is an operational condition, not a client error: see
-  "Account slot allocation" in [access-control-list.md](access-control-list.md) and the
-  counter-loss runbook in [docs/service-operations.md](service-operations.md).
+Error codes are uppercase snake case. Request validation uses `400 INVALID_REQUEST`,
+or `400 DEVICE_AUTH_INVALID` on device routes. Responses carry `X-Request-Id` for
+correlation. The status mapping is:
+
+| HTTP status | Codes |
+| --- | --- |
+| `400` | `INVALID_REQUEST`, `REGION_DISABLED`, `REGION_MISMATCH`, `DEVICE_AUTH_INVALID` |
+| `401` | `AUTH_REQUIRED` |
+| `403` | `ADMIN_REQUIRED`, `USER_NOT_PROVISIONED`, `DEVICE_AUTH_DENIED` |
+| `404` | `CLIENT_NOT_FOUND` |
+| `409` | `DUPLICATE_EMAIL`, `ACCOUNT_DISABLED`, `LIMIT_REACHED`, `CAPACITY_REACHED`, `SYNC_IN_PROGRESS`, `DEVICE_AUTH_CONSUMED`, `DEVICE_AUTH_CONFLICT` |
+| `410` | `DEVICE_AUTH_EXPIRED` |
+| `429` | `DEVICE_AUTH_THROTTLED` (integer `Retry-After`) |
+| `503` | `AUTH_UNAVAILABLE`, `DEVICE_AUTH_UNAVAILABLE` |
+| `500` | `WIREGUARD_APPLY_FAILED`, `POLICY_APPLY_FAILED`, `FIREBASE_WRITE_FAILED`, `ROLE_DEFAULT_MISSING`, `ACCOUNT_SLOT_UNAVAILABLE`, `INTERNAL_ERROR` |
+
+`POLICY_APPLY_FAILED` is a registered host error. The policy leg of `POST /admin/sync`
+reports failure through `policyApplied: false` with HTTP `200`; background refresh
+failures are logged after acceptance.
+
+`ACCOUNT_SLOT_UNAVAILABLE` means a new account slot cannot be allocated because
+`Counters/accountSlots.nextSlot` is missing, malformed, exhausted, or at/below a
+live account's slot. The transaction writes no user, slot, client, tunnel index,
+or counter. `POST /clients` exposes this code directly. The Firestore-backed
+`POST /users` provisioning path currently wraps allocation failures as
+`FIREBASE_WRITE_FAILED`, with best-effort Auth rollback. Do not rebuild the counter
+from live users: hard-deleted accounts' slots must never be reissued. Restore an
+authoritative watermark before retrying. See [account slot allocation](access-control-list.md#account-slot-allocation)
+and [counter recovery](service-operations.md).
 
 ## Enums
 

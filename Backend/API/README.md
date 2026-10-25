@@ -1,213 +1,146 @@
 # CloudGateway Regional API
 
-FastAPI control plane for one shared regional WireGuard host. Each deployed OCI region runs its own copy of this API on the VM that owns the region's `wg0` interface.
-
-Each region runs the same API. Regional hostnames serve region-scoped traffic, and
-`api.gocloudlaunch.com` points at the display-order-1 region for global/read traffic:
-
-```text
-Dashboard
-  -> https://api.<origin>/api/*
-      -> Cloudflare proxied DNS
-      -> Caddy on the display-order-1 regional OCI host
-      -> FastAPI on 127.0.0.1
-      -> Firebase Admin SDK
-  -> https://<regionId>.<origin>/api/*
-      -> Cloudflare proxied DNS
-      -> Caddy on the regional OCI host
-      -> FastAPI on 127.0.0.1
-      -> Firebase Admin SDK
-      -> local WireGuard commands
-```
-
-Caddy strips `/api/*` before proxying to FastAPI, so the application routes are plain `/health`, `/regions`, `/capacity`, `/clients`, `/clients/{clientId}`, `/account`, `/users`, `/auth/check-access`, and `/device/*`.
+FastAPI control plane for one regional WireGuard host. Every region runs the same API
+beside its local `wg0` interface. Firebase is the product source of truth for users,
+roles, regions, limits, stored configs, and desired peers.
 
 ## Runtime Model
 
-The API is installed by the OCI host bootstrap from a pushed GitHub ref. It runs as `cloudgateway-api.service`, as root, bound only to `127.0.0.1`. Public HTTPS, Cloudflare Authenticated Origin Pulls, Host/SNI checks, and rate limiting are handled by Caddy and the host firewall.
+Public requests use `https://api.<origin>/api/*` for global/account traffic and
+`https://<regionId>.<origin>/api/*` for regional traffic. The apex API hostname points
+at the display-order-1 region. Cloudflare proxies HTTPS to Caddy, which strips `/api`
+and forwards to FastAPI on loopback. WireGuard uses unproxied `wg.<regionId>.<origin>`
+records.
 
-The API runs as root because it owns the privileged mutation path for the live WireGuard interface. It still keeps the exposed surface small: no built-in OpenAPI/docs routes are enabled, and external browser traffic reaches it only through the regional Caddy `/api/*` proxy.
+The OCI bootstrap installs a pushed GitHub ref and runs `cloudgateway-api.service`
+as root on `127.0.0.1`, with Uvicorn proxy headers disabled. Root access is needed
+for live WireGuard and ACL changes. Caddy and the host firewall enforce HTTPS,
+Authenticated Origin Pulls, Host/SNI checks, and outer rate limits. Built-in
+OpenAPI and docs routes are disabled.
 
-See [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md) for Terraform and host bootstrap details, and [docs/service-operations.md](../../docs/service-operations.md) for service restart and log inspection notes.
+`/etc/wireguard/wg0.conf` stays interface-only. Client and mesh peers are applied
+at runtime. Sync reads desired product state from Firebase and removes unknown
+peers. It also writes best-effort `Mesh/{regionId}` and `Policy/{regionId}` status
+snapshots, without changing desired client state.
+
+`cloudgateway-register-region` discovers the host's public IPv4 and upserts region
+metadata. A successful Cloudflare edge health check enables the region. A failed
+check preserves the existing enabled state, so a new region stays disabled and an
+already-serving region stays enabled. Registration preserves client subcollections
+and allocator fields. Terraform owns DNS records.
 
 ## Core Responsibilities
 
-* Verify Firebase bearer tokens on protected requests.
-* Enforce provisioned-user and admin-only access rules.
-* Read users, roles, regions, and client documents from Firestore, including unauthenticated display-safe region discovery through the apex host.
-* Run short-lived device authorization with transactional Firestore state and limits, then issue a Firebase custom token for the approved existing account.
-* Reserve client IDs, tunnel IPs, and regional capacity in Firestore transactions.
-* Generate per-client WireGuard keypairs and client config text.
-* Apply live `wg0` peer changes with `wg set` under a local lock.
-* Store dashboard-visible client state and WireGuard configs in Firebase.
-* Rebuild the live WireGuard peer set from Firebase through `cloudgateway-sync-peers`.
-* Self-seed the Firestore region doc at boot through `cloudgateway-register-region`: discover the public IPv4, write IP/public-key/endpoint, and enable the region only once the full Cloudflare path validates (health checked through the edge, not just loopback). DNS records are managed by Terraform, not the host.
-
-Firebase is the product source of truth for users, regions, roles, limits, stored configs, and the desired WireGuard peer set. The host's `/etc/wireguard/wg0.conf` stays interface-only and never stores client peers.
+The API verifies Firebase identities, enforces access and capacity limits, provisions
+users, and issues device sign-in tokens. Client creation reserves Firestore state
+before applying a live peer. Account deletion coordinates peer removal, a fleet-wide
+non-active fence, policy refresh, and hard deletion. Boot/manual sync repairs live
+peer, mesh, and policy state from Firebase.
 
 ## Architecture
 
-[src/main.py](src/main.py)
-
-* Uvicorn entry point. Exposes `app = create_app()`.
-
-[src/app.py](src/app.py)
-
-* Builds the FastAPI app.
-* Wires settings, token verification, repository, and WireGuard manager dependencies.
-* Adds request IDs, structured request logging, and common error handlers.
-
-[src/routes.py](src/routes.py)
-
-* Defines API routes and request workflows.
-* Holds the create/delete coordination between Firebase state and live WireGuard mutation.
-
-[src/auth.py](src/auth.py)
-
-* Extracts Firebase bearer tokens.
-* Requires provisioned users or admins depending on the route.
-* Disables unprovisioned Firebase accounts during access checks.
-
-[src/firebase.py](src/firebase.py)
-
-* Firebase Admin SDK adapter.
-* Verifies ID tokens, creates Auth users, and implements Firestore-backed repository operations.
-
-[src/device_auth.py](src/device_auth.py), [src/device_auth_firebase.py](src/device_auth_firebase.py)
-
-* Own the device authorization protocol, transactional Firestore request and rate-limit records, Auth enabled checks, and custom-token signing.
-* Device authorization never changes WireGuard state. Requests and limits are in private Firestore collections and are accessible only through the Admin SDK.
-
-[src/repository.py](src/repository.py)
-
-* Domain model and repository interface.
-* Region/user/client dataclasses, limits, tunnel IP assignment, and access checks.
-
-[src/wireguard.py](src/wireguard.py)
-
-* Local WireGuard adapter.
-* Generates keys, renders client configs, validates inputs, applies/removes peers, reads current peers, and syncs drift.
-* Uses `subprocess.run([...], shell=False)` and an exclusive flock at `/run/cloudgateway-wireguard.lock`.
-
-[src/sync.py](src/sync.py)
-
-* `cloudgateway-sync-peers` command.
-* Reads active clients for the local region from Firebase and makes the live `wg0` peer set match exactly.
-* Sync is one-way: Firebase wins, unknown server peers are removed, and sync never writes to Firebase.
-
-[src/logs.py](src/logs.py), [src/errors.py](src/errors.py), [src/enums.py](src/enums.py), [src/models.py](src/models.py), [src/settings.py](src/settings.py)
-
-* Shared logging, typed errors, enums, Pydantic request/response models, and `CLOUDGATEWAY_*` settings.
+* [src/app.py](src/app.py), [src/main.py](src/main.py): app setup, injected dependencies,
+  request IDs, logs, errors, and Uvicorn entry point.
+* [src/routes.py](src/routes.py): HTTP workflows coordinating Firebase, WireGuard,
+  account cleanup, and policy propagation.
+* [src/models.py](src/models.py), [src/enums.py](src/enums.py), [src/errors.py](src/errors.py):
+  camelCase HTTP models, enums, and error status mapping.
+* [src/auth.py](src/auth.py), [src/firebase.py](src/firebase.py): Firebase bearer
+  verification, access checks, provisioning, transactions, and Firestore queries.
+* [src/device_auth.py](src/device_auth.py), [src/device_auth_firebase.py](src/device_auth_firebase.py):
+  temporary device authorization, shared rate limits, and custom-token signing.
+* [src/repository.py](src/repository.py): domain models, limits, account slots, and
+  paired tunnel-address allocation.
+* [src/wireguard.py](src/wireguard.py): key/config generation, peer and route changes,
+  and the exclusive `/run/cloudgateway-wireguard.lock`. Commands use argument lists
+  with `shell=False`.
+* [src/policy.py](src/policy.py), [src/policy_sync.py](src/policy_sync.py): account ACL
+  apply/read-back and coalesced policy reconciliation, using a separate policy lock.
+* [src/sync.py](src/sync.py), [src/register.py](src/register.py): peer/mesh/policy
+  repair and region registration commands.
+* [src/settings.py](src/settings.py), [src/logs.py](src/logs.py): environment settings
+  and structured logs.
 
 ## Routes
 
-All request/response JSON uses camelCase.
+Internal routes omit `/api`. All JSON fields use camelCase.
 
-* `GET /health`: unauthenticated health check for the regional API.
-* `GET /regions`: unauthenticated apex route returning enabled region names and display order only.
-* `POST /auth/check-access`: apex route that verifies the Firebase token, confirms the user is provisioned, and returns the user's role.
-* `POST /device/code`, `/device/verify`, `/device/approve`, and `/device/token`: apex device authorization flow. All responses use `Cache-Control: no-store`; polling and abuse budgets are shared across API instances.
-* `GET /capacity`: returns local regional capacity, counting `creating` plus `active` client docs.
-* `POST /clients`: creates one WireGuard client for the authenticated user in this region.
-* `DELETE /clients/{clientId}`: removes one WireGuard client. Normal users can remove their own clients; admins can remove clients for any user.
-* `DELETE /account`: deletes the authenticated user's account and associated client documents after removing any live regional peers.
+* `GET /health`: unauthenticated regional health.
+* `GET /regions`: unauthenticated enabled region names and display order.
+* `POST /auth/check-access`: provisioned-user access check and role.
+* `POST /device/code`, `/device/verify`, `/device/approve`, `/device/token`: device
+  authorization, with shared limits and `Cache-Control: no-store`.
+* `GET /capacity`: authenticated local capacity, counting `creating` and `active` clients.
+* `POST /clients`: provisioned users create their own regional WireGuard client.
+* `DELETE /clients/{clientId}`: users remove their own clients, admins may remove any.
+* `DELETE /account`: recent self-sign-in, account-wide peer removal and data deletion.
+* `POST /users`: admin provisioning with best-effort SES access email.
+* `POST /admin/sync`: admin peer, mesh, and policy repair for this region.
+* `POST /sync/refresh`: provisioned-user policy refresh, accepted asynchronously.
 
-Firebase certificate or verification-backend failures return a retryable 503,
-so clients can retain their session and retry. Invalid, expired, revoked,
-disabled, or deleted identities return 401. A service outage does not confirm
-product access and must not be treated as a successful authorization check.
-* `POST /users`: admin-only user provisioning route. It creates or completes Firebase Auth, `Users/{uid}`, and `UserRoles/{uid}` state, then sends a best-effort SES access email to the user.
-
-For the full route, URL, and error contract, see [docs/api-contract.md](../../docs/api-contract.md). For Firestore paths, security rules, and indexes, see [Backend/Firebase/README.md](../Firebase/README.md).
+See the [API contract](../../docs/api-contract.md) for payloads, permissions, and
+errors, and the [Firebase reference](../Firebase/README.md) for data and rules.
+Invalid identities return `401 AUTH_REQUIRED`. Firebase token-verification outages
+return retryable `503 AUTH_UNAVAILABLE`: retain the session, retry, and keep access
+unconfirmed until verification succeeds.
 
 ## Settings
 
-Runtime config is read from environment variables with the `CLOUDGATEWAY_` prefix:
+[src/settings.py](src/settings.py) defines the defaults. All settings use the
+`CLOUDGATEWAY_` prefix:
 
-* `CLOUDGATEWAY_REGION_ID`
-* `CLOUDGATEWAY_API_PORT`
-* `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` (HTTPS dashboard origin; HTTP is allowed only for `localhost` or literal loopback IPs)
-* `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
-* `CLOUDGATEWAY_WG_INTERFACE`
-* `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
-* `CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME`
-* `CLOUDGATEWAY_WG_PORT`
-* `CLOUDGATEWAY_WG_DNS_IPV4`
-* `CLOUDGATEWAY_WG_DNS_IPV6`
-* `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`
-* `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`
-* `CLOUDGATEWAY_SES_REGION`
-* `CLOUDGATEWAY_SES_SENDER`
-* `CLOUDGATEWAY_AWS_ACCESS_KEY_ID`
-* `CLOUDGATEWAY_AWS_SECRET_ACCESS_KEY`
+* API: `REGION_ID`, `API_PORT`, `API_HOSTNAME`, `DASHBOARD_CORS_ORIGIN`,
+  `FIREBASE_CREDENTIALS_FILE`.
+* WireGuard: `WG_INTERFACE`, `WG_SERVER_PUBLIC_KEY`, `WG_ENDPOINT_HOSTNAME`,
+  `WG_PORT`, `WG_DNS_IPV4`, `WG_DNS_IPV6`, `WG_TUNNEL_IPV4_CIDR`, `WG_TUNNEL_IPV6_CIDR`.
+* Registration: `REGION_DISPLAY_NAME`, `REGION_DISPLAY_ORDER`, `REGION_CAPACITY_LIMIT`.
+* SES: `SES_REGION`, `SES_SENDER`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
 
-On deployed hosts these values are written by the OCI bootstrap to `/etc/cloudgateway/api.env`, which is root-owned and mode `0600`.
+The dashboard origin must be HTTPS. HTTP is allowed only for `localhost` or literal
+loopback IPs. Deployed settings live in root-owned, mode-`0600`
+`/etc/cloudgateway/api.env`. Keep credential values out of source control. Production
+services must not set `FIREBASE_AUTH_EMULATOR_HOST` or `FIRESTORE_EMULATOR_HOST`.
 
 ## Local Development
 
-Use Python `3.12` or newer. See [docs/tool-versions.md](../../docs/tool-versions.md) for the repo's expected tooling versions.
-
-Install the package in editable mode with development dependencies:
+Use Python 3.12 or newer. See [tool versions](../../docs/tool-versions.md).
+From the repo root:
 
 ```sh
 cd Backend/API
-python -m venv .venv
+python3 -m venv .venv
 ./.venv/bin/python -m pip install -e ".[dev]"
-```
-
-Run the API locally:
-
-```sh
-cd Backend/API
 CLOUDGATEWAY_REGION_ID=local-region \
 CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
-./.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8000
+./.venv/bin/uvicorn src.main:app --host 127.0.0.1 --no-proxy-headers --port 8000
 ```
 
-Useful local checks:
+The placeholder key is for startup/health checks. Live WireGuard operations require
+a real interface and keys. Route/domain tests use fakes instead of host WireGuard.
 
-```sh
-cd Backend/API
-./.venv/bin/python -m pyright src tests
-./.venv/bin/vulture
-./.venv/bin/python -m pytest
-```
-
-The default API suite excludes tests marked `emulator`. The root `./scripts/test.sh firebase` target
-runs those API integration tests alongside the Firestore rules tests with Auth and Firestore
-emulators active. Device authorization API tests do not need Firebase credentials or emulators.
-
-The placeholder `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY` above is only for local startup/health checks. Local WireGuard operations need a real WireGuard interface and real keys. Most route and domain checks should use the test fakes instead of touching host WireGuard.
+Run `./scripts/test.sh api` from the repo root for API validation. The separate
+`./scripts/test.sh firebase` target runs API tests marked `emulator` alongside
+Firestore rules tests, with local Auth and Firestore emulators. Other API tests
+need no Firebase credentials or emulators.
 
 ## Deployment And Operations
 
-The host bootstrap installs this API from GitHub and creates:
+The bootstrap creates `/opt/cloudgateway/api`, its `.venv`, `/etc/cloudgateway/api.env`,
+`cloudgateway-api.service`, `cloudgateway-sync-peers.service`,
+`cloudgateway-install-api [ref]`, and `cloudgateway-register-region`.
 
-* `/opt/cloudgateway/api`
-* `/opt/cloudgateway/api/.venv`
-* `/etc/cloudgateway/api.env`
-* `cloudgateway-api.service`
-* `cloudgateway-sync-peers.service`
-* `cloudgateway-install-api [ref]`
-* `cloudgateway-register-region` (run once at end of bootstrap to self-seed the region doc)
-
-Related docs:
-
-* [Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md): regional host and Terraform package.
-* [docs/github-deployment-setup.md](../../docs/github-deployment-setup.md): pushed-ref deployment contract and API rollout helper.
-* [docs/service-operations.md](../../docs/service-operations.md): service restarts, logs, and triage.
-* [docs/wireguard-drift-repair.md](../../docs/wireguard-drift-repair.md): peer sync behavior and repair flow.
-* [docs/regional-deployment.md](../../docs/regional-deployment.md): new-region deployment runbook.
+* [OCI reference](../../Infrastructure/OCI/README.md): Terraform and bootstrap.
+* [Deployment setup](../../docs/github-deployment-setup.md): pushed-ref rollout.
+* [Service operations](../../docs/service-operations.md): restarts, logs, and triage.
+* [Drift repair](../../docs/wireguard-drift-repair.md): peer, mesh, and policy repair.
+* [Regional deployment](../../docs/regional-deployment.md): new-region runbook.
 
 ## Secrets And Logging
 
-Structured API logs are required for operating the control plane. They may include request IDs, route names, operation status, region IDs, user IDs, and emails.
+Control-plane logs may include request IDs, operations, region IDs, user IDs, and
+emails. Device authorization logs must omit codes, proofs, approval identities,
+auth/custom tokens, and request bodies.
 
-Never log or paste:
-
-* WireGuard private keys
-* full WireGuard configs
-* Firebase service account credentials
-* Firebase auth tokens
-* `/etc/cloudgateway/api.env`
-* VPN traffic details, DNS queries, destination IPs, packet metadata, or per-user browsing history
+Never log or paste WireGuard private keys, full configs, Firebase credentials,
+auth tokens, or `/etc/cloudgateway/api.env`. Never log VPN traffic, DNS queries,
+destination or packet metadata, or per-user connection history.

@@ -1,103 +1,74 @@
-# API Deployment Handoff
+# API deployment handoff
 
-The contract the host bootstrap (Terraform / `Infrastructure/OCI/host/bootstrap.sh`) must satisfy to install
-and run the regional API. The runtime request/response surface is in
-[api-contract.md](api-contract.md).
+The contract between [host bootstrap](../Infrastructure/OCI/host/bootstrap.sh)
+and the [regional API](../Backend/API/README.md). Request/response details live in
+[API contracts](api-contract.md); operator commands live in
+[service operations](service-operations.md).
 
 ## Install layout
 
-- Host install directory: `/opt/cloudgateway/api`.
-- Python virtualenv: `/opt/cloudgateway/api/.venv`.
-- App import path: `src.main:app`.
-- Dependency metadata: `Backend/API/pyproject.toml`. Infrastructure installs the package into the venv
-  from `/opt/cloudgateway/api`.
-
-## systemd service
-
-- Service name: `cloudgateway-api.service`.
-- Runs as `root`, working directory `/opt/cloudgateway/api`, binding only to `127.0.0.1`.
+* API: `/opt/cloudgateway/api`, installed from `Backend/API/pyproject.toml`.
+* Virtualenv: `/opt/cloudgateway/api/.venv`.
+* Service: `cloudgateway-api.service`, running as root from that directory.
+* ASGI app: `src.main:app`, bound only to `127.0.0.1` on the configured port.
+* Environment: `/etc/cloudgateway/api.env`, root-owned mode `0600`.
 
 ## Environment
 
-- Environment file path: `/etc/cloudgateway/api.env`, mode `0600`, owned by `root`.
-- Required environment variables:
-  - `CLOUDGATEWAY_REGION_ID`
-  - `CLOUDGATEWAY_API_PORT`
-  - `CLOUDGATEWAY_FIREBASE_CREDENTIALS_FILE`
-  - `CLOUDGATEWAY_WG_INTERFACE`
-  - `CLOUDGATEWAY_WG_SERVER_PUBLIC_KEY`
-  - `CLOUDGATEWAY_WG_ENDPOINT_HOSTNAME`
-  - `CLOUDGATEWAY_WG_PORT`
-  - `CLOUDGATEWAY_WG_DNS_IPV4`
-  - `CLOUDGATEWAY_WG_DNS_IPV6`
-  - `CLOUDGATEWAY_WG_TUNNEL_IPV4_CIDR`
-  - `CLOUDGATEWAY_WG_TUNNEL_IPV6_CIDR`
-- Default values: `CLOUDGATEWAY_API_PORT=8000`, `CLOUDGATEWAY_WG_INTERFACE=wg0`,
-  `CLOUDGATEWAY_WG_PORT=51820`.
+Bootstrap writes these `CLOUDGATEWAY_`-prefixed settings. Local development
+defaults in [settings.py](../Backend/API/src/settings.py) are not production
+configuration.
 
-## Regional subnet allocation
+* Routing: `REGION_ID`, `API_PORT` (default `8000`), `API_HOSTNAME`, and
+  `DASHBOARD_CORS_ORIGIN`.
+* Credentials: `FIREBASE_CREDENTIALS_FILE` points to the server-only credential file.
+* WireGuard: `WG_INTERFACE` (default `wg0`), `WG_SERVER_PUBLIC_KEY`,
+  `WG_ENDPOINT_HOSTNAME`, `WG_PORT` (default `51820`), `WG_DNS_IPV4`, `WG_DNS_IPV6`,
+  `WG_TUNNEL_IPV4_CIDR`, and `WG_TUNNEL_IPV6_CIDR`.
+* Registration: `REGION_DISPLAY_NAME`, `REGION_DISPLAY_ORDER`, and
+  `REGION_CAPACITY_LIMIT`.
+* SES email: `SES_REGION`, `SES_SENDER`, `AWS_ACCESS_KEY_ID`, and
+  `AWS_SECRET_ACCESS_KEY`.
 
-`Infrastructure/OCI/terraform/subnet-registry.json` is the authoritative list of regional
-WireGuard allocations and shared aggregate boundaries. The selected region's local gitignored
-tfvars must copy its registry `wg_network_v4`/`wg_network_v6` values exactly. Keep removed
-allocations in the registry with `status: "reserved"`; a missing local tfvars file does not remove
-that inventory entry.
-
-If Firebase was unavailable during bootstrap, rerun registration with systemd's environment-file
-parser rather than shell-sourcing `/etc/cloudgateway/api.env`:
+Treat the environment file as secret. Parse it with systemd, never shell-source
+it. To retry registration after Firebase was unavailable during bootstrap:
 
 ```sh
-sudo systemd-run --quiet --pipe --wait --collect --property=WorkingDirectory=/opt/cloudgateway/api --property=EnvironmentFile=/etc/cloudgateway/api.env /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region
+sudo systemd-run --quiet --pipe --wait --collect \
+  --property=WorkingDirectory=/opt/cloudgateway/api \
+  --property=EnvironmentFile=/etc/cloudgateway/api.env \
+  /opt/cloudgateway/api/.venv/bin/cloudgateway-register-region
 ```
 
-## Peer state
+## Subnets and peer state
 
-- Firebase is the single source of truth for WireGuard peers. Peers are never written to
-  `/etc/wireguard/wg0.conf` or any other host state file; the file is written once by bootstrap
-  with interface settings only.
-- The `cloudgateway-sync-peers` entry point (systemd `cloudgateway-sync-peers.service`) rebuilds
-  the live peer set from Firebase on every boot and on demand, one-directionally (Firebase wins;
-  unknown server peers are removed). After reconciliation it best-effort writes the server-only
-  `Mesh/{regionId}` status snapshot while holding the WireGuard lock; a status write failure does
-  not fail an otherwise successful sync.
-- API routes hold the `/run/cloudgateway-wireguard.lock` flock across each WireGuard mutation plus
-  its matching Firebase write.
+`Infrastructure/OCI/terraform/subnet-registry.json` owns regional allocations
+and shared aggregates. Local tfvars must match the selected registry subnets.
+Keep retired entries as `status: "reserved"`; missing tfvars do not release them.
 
-## Replacement handoff
+Firebase owns desired peers. Bootstrap writes interface-only `wg0.conf` once;
+never persist peers there or in another host file. `cloudgateway-sync-peers`
+rebuilds the live interface at boot/on demand and removes unknown server peers.
+API mutations and matching Firebase writes hold `/run/cloudgateway-wireguard.lock`.
+Sync best-effort writes server-only `Mesh/{regionId}` status under that lock;
+a status-write failure does not fail an otherwise successful sync.
 
-A normal rebuild is self-healing. Keep the region's WireGuard private key, tunnel
-subnets, and endpoint hostname unchanged; boot sync rebuilds peers from Firebase
-and WireGuard endpoint roaming handles a new public IP. Check `wg show` on the
-rebuilt host and validate the API before leaving the region enabled.
+## Replacement and host policy
 
-## Account-scoped ACL rollout
+Before replacement, take a [Firestore backup](../Backend/Firebase/README.md#backup-script)
+and confirm the new timestamped file. Backups can contain configs/private keys.
+Keep the server key, subnets, and endpoint hostname unchanged. Validate the rebuilt
+API, live peer state, and updated DNS before leaving the region enabled. Clients
+may need to re-resolve the endpoint after its public IP changes.
 
-The account-scoped ACL is host-level: the `inet cloudgateway` nftables table is
-loaded by `PostUp`, which only runs when `wg0` transitions from down to up, not
-on an API restart. `cloudgateway-install-api` checks the incoming ref for
-`Backend/API/src/policy.py` and, if present, requires `nft list table inet
-cloudgateway` to show the `cg_forward` chain and the `cg_slot4`/`cg_slot6` maps
-before it copies the new API or restarts the service; otherwise it exits 1
-without touching the host. This release therefore ships only by rebuilding
-every region through `./scripts/terraform.sh` from one deploy tag, never by
-`cloudgateway-install-api` alone. The check has a documented, unsupported
-escape hatch (`CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1`) that leaves the
-account boundary unenforced and is for genuine emergencies only. During a
-sequential multi-region rebuild the fleet is only partially enforced; the ACL
-is not active until the last region finishes.
+Account isolation uses `inet cloudgateway` nftables policy loaded by WireGuard
+`PostUp`; restarting the API does not install it. `cloudgateway-install-api`
+checks ACL-aware refs for a live `cg_forward` chain and `cg_slot4`/`cg_slot6` maps
+before copying source or restarting. Missing policy stops the upgrade untouched.
+The unsupported `CLOUDGATEWAY_ALLOW_UNSAFE_API_UPGRADE=1` bypass leaves the account
+boundary unenforced and is an emergency-only escape hatch.
 
-For mesh changes, follow [service-operations.md](service-operations.md). After
-all Terraform regions are deployed and ready, run **Sync All Regions** from the
-admin dashboard.
-
-## Firestore backup
-
-- Before a regional deploy or host replacement, back up Firestore from the repo root:
-
-  ```sh
-  Backend/API/.venv/bin/python3 scripts/backup_firestore.py
-  ls -lh Backend/Firebase/backups
-  ```
-
-- Confirm a new `Backend/Firebase/backups/backup-<timestamp>.json` file exists. Treat backup files as
-  secret material because they can contain full WireGuard configs and client private keys.
+Deploy host-level policy changes by rebuilding every region from one deploy tag,
+then run **Sync All Regions** after all are ready. Sequential rollout provides
+only partial fleet enforcement until the last region is ready. See
+[service operations](service-operations.md) for ACL/mesh sequencing and recovery.

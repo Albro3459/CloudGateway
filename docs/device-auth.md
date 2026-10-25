@@ -4,7 +4,7 @@ Device authorization lets a client sign into an existing CloudGateway account
 through the web dashboard. The API stores temporary requests in Firestore.
 The browser explicitly approves or denies a request, and the device exchanges
 its proof for a Firebase custom token. This flow does not create accounts or
-change VPN clients, WireGuard peers, or iOS behavior.
+change VPN clients or WireGuard peers.
 
 ## Protocol
 
@@ -85,8 +85,8 @@ login. Let them expire or exclude them from a selective recovery.
 
 ## Local validation
 
-Run `./scripts/test.sh api web firebase infra` for the changed components.
-Run `./scripts/test.sh` for the final regression gate, including Apple.
+Run `./scripts/test.sh api web firebase infra` when changing this flow.
+Use `./scripts/test.sh` for the full regression gate, including Apple.
 The Firebase target runs schema checking, client rules tests, and API integration
 under Auth and Firestore emulators using `demo-cloudgateway`. It initializes API
 dev dependencies even when run alone. Integration tests require local emulator
@@ -110,16 +110,15 @@ expires normally. Use a staging origin and its matching public Firebase API key.
 
 ## Deployment and release
 
-Local implementation does not authorize deployment. Deployment wrappers can
-push commits or tags and publish the dashboard, so use them only for a separately
-authorized release.
+Follow the [deployment guide](quick-deployment.md) for an authorized release.
+Deployment wrappers can push commits or tags and publish the dashboard.
 
 1. Run the local validation gates and review the final API/UI contract. Back up
    Firestore before deployment.
 2. Deploy Firebase rules and indexes. Verify both TTL policies are active and
    direct client get/list/writes are denied. Keep existing product rules intact.
 3. Deploy the API and updated Caddy/systemd configuration. Device authorization
-   is available immediately, with no feature flag or legacy compatibility path.
+   is available immediately, with no feature flag.
 4. Confirm `CLOUDGATEWAY_DASHBOARD_CORS_ORIGIN` is the exact HTTPS dashboard origin.
    Keep the existing Firebase service-account file outside git, root-owned,
    readable by the API, and capable of signing Firebase custom tokens. No new
@@ -137,15 +136,16 @@ authorized release.
    `Retry-After`, exact-origin CORS, and the trusted source boundary through the
    actual Cloudflare/Caddy path. Do not enable a Cloudflare cache rule for these
    endpoints. Check logs without printing secrets or tokens.
-8. Record staging evidence before production deployment. Only after the deployed
-   flow works should macOS development resume.
+8. Record staging evidence before production deployment.
 
 ## Recovery and rollback
 
 If a request expires, is denied, is consumed, or loses its redemption response,
 start a new attempt with a new secret. If the store or signing credentials fail,
-fix the dependency and start a fresh attempt. Do not fall back to in-memory
-limits, persist custom tokens, or reopen the old request.
+fix the dependency and start a fresh attempt. A bearer-verification outage returns
+`503 AUTH_UNAVAILABLE`; retain the browser session and retry without treating it as
+confirmed product access. Do not fall back to in-memory limits, persist custom
+tokens, or reopen the old request.
 
 Rollback restores the prior site/API versions. Temporary requests expire without
 a migration. Already established Firebase sessions follow existing session policy. Do not

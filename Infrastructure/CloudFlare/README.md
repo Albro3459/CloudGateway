@@ -1,76 +1,69 @@
-# CloudFlare
+# Cloudflare
 
-Cloudflare-side artifacts for the platform: the **Origin CA certificate** each regional
-Caddy serves, and the **DNS zone records** for the domain.
-
-Real files are gitignored; the committed `example.*` files are templates. Never commit the
-real certificate, private key, or zone export.
+This directory holds Origin CA certificate templates and example DNS records.
+Real certificates, private keys, and zone exports are gitignored. Never commit
+or share the real private key, Terraform state, or secret tfvars.
 
 ## Why Cloudflare needs these
 
-Each region's API is proxied (orange-cloud) at `https://<regionId>.gocloudlaunch.com`, so
-Cloudflare terminates TLS at the edge and opens a second TLS hop to the origin. The zone is
-set to **Full (strict)**, so the origin must present a certificate Cloudflare trusts.
+Cloudflare proxies the regional API at `https://<regionId>.gocloudlaunch.com`.
+It terminates edge TLS and connects to Caddy over a second TLS connection.
+**Full (strict)** requires a trusted origin certificate. This deployment uses a
+Cloudflare Origin CA certificate installed explicitly in Caddy, with no ACME flow.
 
-A proxied hostname resolves to Cloudflare, not the host, so the origin can **never** obtain a
-public cert via ACME (HTTP-01/TLS-ALPN-01 challenges never reach it). The fix is a Cloudflare
-**Origin CA** certificate: Cloudflare issues it directly with no inbound challenge, and its
-edge trusts it in Full (strict). The origin stays locked to Cloudflare (firewall + AOP), so
-none of the edge protections (DDoS, rate limiting, WAF) are bypassed.
+Keep origins restricted to Cloudflare IPs and require Authenticated Origin Pulls
+(AOP). The Origin CA certificate authenticates the server to Cloudflare. The
+separate origin-pull CA lets Caddy authenticate Cloudflare's client certificate.
 
 ## Files
 
-* `cloud-gateway.pem` (gitignored) - Cloudflare **Origin CA certificate**. The server
-  cert each regional Caddy presents to Cloudflare on the origin TLS hop.
-* `cloud-gateway.key` (gitignored) - the Origin CA **private key**. Secret.
-* `gocloudlaunch.com.txt` (gitignored) - export/backup of the Cloudflare DNS zone records
-  (BIND format).
-* `example.cloud-gateway.pem` / `example.cloud-gateway.key` - committed
-  placeholder cert/key.
-* `example.gocloudlaunch.com.txt` - committed example of the full DNS record set (frontend
-  GitHub Pages, apex API, per-region API + WireGuard records, email DKIM/SPF/DMARC).
+* `cloud-gateway.pem`: gitignored Origin CA server certificate.
+* `cloud-gateway.key`: gitignored private key. Treat it as a secret.
+* `gocloudlaunch.com.txt`: gitignored BIND-format zone export/backup.
+* `example.cloud-gateway.pem` / `example.cloud-gateway.key`: committed placeholders.
+* `example.gocloudlaunch.com.txt`: example frontend, API, WireGuard, and email records.
 
 ## Generating the Origin CA certificate
 
-Cloudflare dashboard -> **SSL/TLS -> Origin Server -> Create Certificate**:
+In Cloudflare **SSL/TLS -> Origin Server**, create an Origin CA certificate:
 
-* Hostnames: `gocloudlaunch.com, *.gocloudlaunch.com` (the wildcard covers the apex API
-  host and every regional API host, e.g. `api.gocloudlaunch.com` and
-  `us-chicago-1.gocloudlaunch.com`).
-* Validity: 15 years.
+* Hostnames: `gocloudlaunch.com` and `*.gocloudlaunch.com`. The wildcard covers
+  `api.gocloudlaunch.com` and single-label regional API hostnames.
 * Format: PEM.
+* Validity: the deployment convention is 15 years. Track expiry for renewal.
 
-Save the certificate to `cloud-gateway.pem` and the private key (shown only once) to
-`cloud-gateway.key`. One cert covers all regions.
+Save the certificate and private key as the gitignored files above. The private
+key is shown only once. One certificate can cover all current regional API hosts.
 
 ## How it reaches the hosts
 
-The cert and key are baked into each regional deploy through the gitignored
-`<regionId>.terraform.tfvars` (`origin_cert` / `origin_key`). The host bootstrap writes them to
-`origin_cert_path` / `origin_key_path`, and the Caddyfile `tls` directive serves them instead
-of using ACME. Replacing the cert means updating the tfvars and rebuilding (or hand-placing the
-files and reloading Caddy).
+Each regional tfvars supplies `origin_cert`/`origin_key`. The cloud-init stub writes
+`origin_cert_path`/`origin_key_path`, and Caddy serves them with its `tls` directive.
+
+For rotation, update every region's private tfvars. Either plan a rebuild or
+replace the files securely on each host, preserve private-key permissions,
+validate the Caddy config, and reload Caddy. A live file replacement alone does
+not update recovery inputs. Do not run Terraform merely to refresh user-data
+values, since those changes replace the host.
 
 ## Required Cloudflare zone settings
 
-1. **SSL/TLS -> Overview -> encryption mode = `Full (strict)`.**
-2. **SSL/TLS -> Origin Server -> Origin Certificates -> Create Certificate** for
-   `gocloudlaunch.com, *.gocloudlaunch.com` (PEM, 15 years). This is the server cert the host
-   serves (installed via the `origin_cert` / `origin_key` tfvars) - it is **not** an AOP cert.
-3. **SSL/TLS -> Origin Server -> Authenticated Origin Pulls -> turn on both Global and Zone-level.
-   Do NOT upload any certificate to Zone-level.** The host trusts Cloudflare's shared client
-   cert via the origin-pull CA the bootstrap installs at
-   `/etc/caddy/cloudflare-origin-pull-ca.pem`.
+1. Set TLS encryption mode to **Full (strict)**.
+2. Create and install the Origin CA server certificate above.
+3. Enable Authenticated Origin Pulls for the zone using Cloudflare's shared client
+   certificate, without uploading a custom zone certificate. Bootstrap installs
+   its trusted CA at `/etc/caddy/cloudflare-origin-pull-ca.pem` by default.
+4. Keep OCI and host HTTP/HTTPS ingress restricted to configured Cloudflare ranges.
+
+Validate health through Cloudflare and confirm direct-origin access is rejected
+per [regional deployment](../../docs/regional-deployment.md#5-validate-apihealth-through-cloudflare).
 
 ## Dashboard anti-framing rule
 
-The React dashboard is served by GitHub Pages through Cloudflare. Before
-releasing device authorization, add a **Response Header Transform Rule** for the
-dashboard hostname. In **Rules -> Overview -> Create rule**, choose
-**Response Header Transform Rule** and name it `Block dashboard framing`.
-
-Use this custom filter expression for the production dashboard. Use the matching
-hostname for staging:
+The dashboard is served by GitHub Pages through Cloudflare. Device authorization
+requires a **Response Header Transform Rule** on its whole hostname. Create a
+rule named `Block dashboard framing`, using this production expression or the
+matching staging hostname:
 
 ```text
 http.host eq "gocloudlaunch.com"
@@ -79,41 +72,37 @@ http.host eq "gocloudlaunch.com"
 Add these response header operations:
 
 | Operation | Header | Value |
-|---|---|---|
+| --- | --- | --- |
 | Add static | `Content-Security-Policy` | `frame-ancestors 'none'` |
 | Set static | `X-Frame-Options` | `DENY` |
 
-Add static appends the CSP header and preserves any existing CSP headers.
-Set static adds `X-Frame-Options` if absent and replaces its existing value.
-Use a **Response Header Transform Rule** so the browser receives these headers.
-Enable the rule and confirm its status is **Enabled** before checking the
-headers. This requires no Worker. Follow the [Cloudflare rule instructions](https://developers.cloudflare.com/rules/transform/response-header-modification/create-dashboard/).
+Append the CSP header to preserve any existing CSP headers. Set
+`X-Frame-Options` to replace an existing value or add it if absent. Enable the
+rule, then check the dashboard HTML response in browser DevTools and confirm an
+iframe is blocked. See the [Cloudflare rule instructions](https://developers.cloudflare.com/rules/transform/response-header-modification/create-dashboard/).
 
-Match the entire dashboard hostname. The `/#/auth/code` fragment is never sent
-in an HTTP request, so a path filter for `/auth/code` will not cover this page.
-The API's Caddy headers do not affect the GitHub Pages HTML response. A CSP meta
-tag cannot enforce `frame-ancestors`.
-
-After deploying the rule, inspect the dashboard HTML response in browser
-DevTools and confirm both enforced headers are present. Verify the browser
-blocks the dashboard in an iframe. The React approval page also refuses frames
-before mounting its auth flow, including when served directly without Cloudflare.
+The `/#/auth/code` fragment never reaches the server, so a `/auth/code` path rule
+does not cover it. API Caddy headers do not affect dashboard HTML, and CSP meta
+tags cannot enforce `frame-ancestors`. The approval page also refuses frames
+before mounting its auth flow.
 
 ## DNS records
 
-See `example.gocloudlaunch.com.txt` for the full set. Summary:
+The [example zone](example.gocloudlaunch.com.txt) includes:
 
-* `gocloudlaunch.com` (apex) -> GitHub Pages IPs, **proxied** - hosts the React frontend.
-* `api.gocloudlaunch.com` -> `us-sanjose-1.gocloudlaunch.com` as a **proxied** (orange)
-  CNAME - manually managed global API host for `GET /regions` and
-  `POST /auth/check-access`.
-* `<regionId>.gocloudlaunch.com` -> server public IPv4, **proxied** (orange) - regional API.
-  **Terraform-managed** (`cloudflare_record.api`).
-* `wg.<regionId>.gocloudlaunch.com` -> server public IPv4, **DNS-only** (grey) - WireGuard
-  endpoint; never proxied (Cloudflare does not proxy WireGuard UDP). **Terraform-managed**
-  (`cloudflare_record.wg`).
-* Apply a rate limit rule for API requests:
-```
+* Apex `gocloudlaunch.com`: proxied GitHub Pages IPs for the dashboard.
+* `api.gocloudlaunch.com`: manually managed proxied CNAME to
+  `us-sanjose-1.gocloudlaunch.com` for the global API, including `/api/regions`
+  and `/api/auth/check-access`.
+* `<regionId>.gocloudlaunch.com`: proxied regional API `A` record, Terraform-managed
+  as `cloudflare_record.api`.
+* `wg.<regionId>.gocloudlaunch.com`: DNS-only WireGuard `A` record, Terraform-managed
+  as `cloudflare_record.wg`. Never proxy WireGuard UDP through Cloudflare.
+* SES/Firebase email DKIM, SPF, and DMARC records: manually managed.
+
+Apply an API rate-limit rule to the deployed API hostnames, for example:
+
+```text
 (
   http.host eq "api.gocloudlaunch.com"
   or http.host eq "us-sanjose-1.gocloudlaunch.com"
@@ -121,20 +110,16 @@ See `example.gocloudlaunch.com.txt` for the full set. Summary:
 )
 and starts_with(http.request.uri.path, "/api/")
 ```
-* Email DKIM/SPF/DMARC CNAME/TXT records for AWS SES and Firebase - managed by hand.
 
-The two per-region `A` records are created/updated by `./scripts/terraform.sh <region> apply`
-from the instance's public IP (they self-heal on rebuild), using a Cloudflare API token
-with **Zone: gocloudlaunch.com -> DNS: Edit**. The token lives only on the operator
-machine (`cloudflare_api_token` tfvar), never on a host. The apex/www/email records stay
-manual, including `api.gocloudlaunch.com`. Before the first apply for a region, delete any pre-existing manual `<regionId>` /
-`wg.<regionId>` record or import the canonical record; the wrapper preflight stops on
-unmanaged or duplicate regional records before Terraform can create more DNS state.
+`./scripts/terraform.sh <region> apply` updates regional records to the instance
+IP. The zone-scoped DNS-edit token stays on the operator machine in
+`cloudflare_api_token`, not on the regional host. Before first apply, import a
+canonical pre-existing record or deliberately reconcile it. Preflight blocks
+unmanaged or duplicate records.
 
-If you enable **Client IP Address Filtering** on the token, allowlist **both** the operator
-machine's public **IPv4 and IPv6** addresses. Terraform's provider connects over IPv6 when the
-machine has working IPv6 (often preferred over IPv4), so a v4-only allowlist fails with
-`Authentication error (10000)` even though the token and DNS permissions are correct. Get the
-addresses with `curl -4 https://ifconfig.me` and `curl -6 https://ifconfig.me`; residential IPv6
-is usually a rotating /64, so prefer allowlisting the `/64` prefix, or leave IP filtering off
-(the token is already scoped to DNS: Edit on one zone).
+If token client-IP filtering is enabled, allow the operator's actual IPv4 and
+IPv6 source addresses as applicable. A provider connection over IPv6 is not
+covered by an IPv4 allowlist and can return `Authentication error (10000)` despite
+valid DNS permissions. Account for changing source addresses when maintaining
+the allowlist. A zone lookup during plan/refresh checks token access before
+instance creation or replacement.

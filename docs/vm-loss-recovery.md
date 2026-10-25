@@ -1,52 +1,68 @@
 # VM / Boot Volume Loss Recovery
 
-A lost regional VM or boot volume is recoverable without users recreating clients, because nothing client-critical lives only on the host:
+A regional VM or boot volume can be rebuilt without users recreating clients when
+you retain the server WireGuard key, tunnel subnets, endpoint hostname, and Firebase data.
+Client configs use the DNS-only `wg.<regionId>.<origin>` endpoint. The host keeps
+interface configuration only, and boot sync restores live peers and policy from Firestore.
 
-* The server WireGuard private key comes from the region's `<regionId>.terraform.tfvars`, so a rebuilt host has the same public key.
-* Client configs point at the non-proxied DNS endpoint `wg.<regionId>.<origin>`, not a raw IP.
-* Peers are never stored on the host; Firebase is the single source of truth and `cloudgateway-sync-peers` rebuilds the live peer set at boot.
+Keep secure backups of regional tfvars, Terraform state, and Firestore. Tfvars and
+state contain deployment secrets. Firestore backups can contain client private
+keys and full configs. Never publish them or attach them to tickets.
 
-Existing client configs therefore keep working after a rebuild - users just toggle their tunnel off/on so WireGuard re-resolves the DNS name.
-
-If Terraform state is missing, do not apply first. Run `./scripts/terraform.sh <region>
-plan`; the regional preflight reports existing Cloudflare records or
-`CloudGatewayManaged=true` OCI instances that must be imported or deduplicated
-before Terraform can safely manage the region again.
+If Terraform state is missing, do not apply first. Run
+`./scripts/terraform.sh <region> plan` to identify unmanaged Cloudflare records or
+`CloudGatewayManaged=true` OCI instances. Import the canonical resources and
+reconcile duplicates before applying.
 
 ## Standard Recovery (server key retained)
 
-A lost host is self-healing when rebuilt with the same
-`wg_server_private_key`, tunnel subnets, and endpoint hostname. The normal
-self-healing sequence is:
+1. Recover the region's tfvars and state. Preserve `wg_server_private_key`, both
+   tunnel subnets, and `wg_endpoint_hostname`. Follow the backup and preflight
+   steps in [regional deployment](regional-deployment.md).
+2. Rebuild with `./scripts/terraform.sh <region> apply`. This command creates and
+   pushes a fresh deploy commit/tag, updates `source_ref`, and applies the saved
+   plan. Review the source and replacement plan before confirming.
+3. Let Terraform update the DNS-only WireGuard `A` record and proxied API `A`
+   record to the new public IPv4. Manual DNS changes are only for reconciling or
+   importing resources before rerunning Terraform.
+4. Confirm registration refreshed `Regions/{regionId}` with current endpoint
+   metadata and successful edge health. The server public key, endpoint hostname,
+   and client documents should be unchanged.
+5. Confirm peer and policy sync succeeded:
 
-1. Rebuild the host with `./scripts/terraform.sh <region> apply` per
-   [docs/regional-deployment.md](regional-deployment.md), using a `source_ref`
-   matching what should run.
-2. Let Terraform update the **grey-cloud** `wg.<regionId>.<origin>` A record to
-   the new public IPv4, and the proxied API record if the IP changed. Touch
-   Cloudflare manually only when reconciling/importing resources before rerunning
-   Terraform.
-3. Registration updates `Regions/{regionId}` with the current endpoint metadata;
-   `wireguardPublicKey`, `wireguardEndpointHostname`, and client docs remain
-   unchanged.
-4. Confirm boot peer sync succeeded with `systemctl status
-   cloudgateway-sync-peers` (or run `sudo cloudgateway-sync-peers`). Firebase is
-   the source of truth and the live peer set is rebuilt from it.
-5. Validate `/api/health` through Cloudflare and inspect `wg show wg0` for peers
-   and handshakes. WireGuard endpoint roaming updates remote mesh peers after
-   the rebuilt host connects.
-6. Tell affected users to toggle their WireGuard tunnel off and on so clients
-   re-resolve the endpoint DNS. No config changes are needed.
+```sh
+sudo systemctl start cloudgateway-sync-peers.service
+sudo systemctl status cloudgateway-sync-peers.service
+sudo journalctl -u cloudgateway-sync-peers.service --since "1 hour ago"
+```
 
-A Mesh status document records the last reconciliation snapshot and does not prove
-a live WireGuard handshake; use `wg show wg0` on the host for that check.
+6. Validate `/api/health` through Cloudflare and inspect `wg show wg0` for peers
+   and live handshakes. For mesh regions, run **Sync All Regions** and verify
+   remote routes and handshakes. Endpoint roaming can update a remote peer after
+   the rebuilt host sends authenticated traffic.
+7. Ask affected users to toggle their tunnel off and on so it re-resolves DNS.
+   Existing configs need no changes.
+
+`Mesh/{regionId}` records a reconciliation snapshot and does not prove a live
+handshake. See [service operations](service-operations.md) for diagnosis.
 
 ## Key-Loss Recovery (server key rotated or compromised)
 
-Only if the server private key must change (compromise, or the tfvars secret is lost): existing client configs embed the old server public key and are permanently dead.
+Rotate only when the key is compromised or no secure copy can be recovered.
+Existing client configs embed the old server public key and must be replaced.
 
 1. Disable the region (`enabled: false`).
-2. Generate a new server keypair, update `wg_server_private_key` in tfvars, and rebuild.
-3. Update the region doc: `wireguardPublicKey` to the new public key and endpoint IP as above.
-4. Mark each previously `active` client doc under `Regions/{regionId}/Instances` as `removed` with `removedAt` (admin/Admin SDK, not the frontend).
-5. Re-enable the region after validation and notify users to delete old tunnels and create new clients.
+2. Back up Firestore, generate a new server keypair, and update
+   `wg_server_private_key` in the private regional tfvars.
+3. Before rebuilding, mark previously `active` clients under
+   `Regions/{regionId}/Instances` as `removed` with `removedAt`, using trusted
+   Admin SDK access. Retain the documents for history. This prevents boot sync
+   from restoring those clients after registration enables the region.
+4. Rebuild. Registration writes the new server public key and current endpoint
+   metadata and enables the region when edge health passes. Do not assume the
+   earlier `enabled: false` survives successful registration.
+5. Validate host services, edge health, and peer/policy sync. For mesh regions,
+   run **Sync All Regions** to replace the old server key across the fleet.
+6. Confirm the region is enabled and ask users to delete old tunnels and create
+   new clients. Treat client keys/configs as compromised too if the incident
+   exposed Firebase or downloaded configs.

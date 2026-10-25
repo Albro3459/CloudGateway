@@ -1,173 +1,101 @@
-# CloudGateway Frontend
+# Web dashboard
 
-React + TypeScript dashboard for the shared regional VPN platform. Users pick a region, add/remove WireGuard clients, and view stored configs (QR, download, copy) from Firebase.
+React/TypeScript and Tailwind dashboard, deployed as a static GitHub Pages app.
+Firebase Auth owns sign-in; Firestore supplies authorized dashboard reads;
+FastAPI owns client/user mutations and host state.
 
-The frontend is a static GitHub Pages app. It does not own VPN server state directly; it authenticates users with Firebase, reads display-safe region discovery from the apex API, reads dashboard data from Firestore, and sends client/user mutations to FastAPI.
+## Features and data
 
-```text
-React dashboard
-  -> Firebase Auth
-  -> https://api.<origin>/api/* for regions and access checks
-  -> Firestore reads for users, client docs, and stored configs
-  -> https://<regionId>.<origin>/api/*
-      -> regional FastAPI
-      -> Firebase Admin SDK
-      -> live WireGuard host mutation
-```
+* Email/password, Google, and Apple sign-in, with an API product-access check.
+* Enabled region discovery from the apex API and authenticated regional capacity.
+* Client creation/removal, region filtering, and stored config QR/copy/download.
+* Admin user creation, authorized cross-user clients, and Server Health.
+* Browser approval for native device sign-in, plus a public macOS download link.
 
-## Core Responsibilities
+The dashboard never writes VPN client documents. Server Health reads
+`Regions/*`, `Mesh/*`, and aggregate `Policy/*` status, and can change only
+`Regions/{regionId}.meshEnabled` directly. Policy read failures stay separate
+from mesh state. See [Firestore rules/schema](../../Backend/Firebase/README.md),
+[API contracts](../../docs/api-contract.md), and [ACL observability](../../docs/access-control-list.md).
 
-* Sign users in with Firebase email/password or Google sign-in.
-* Confirm account access through the apex API before entering the dashboard.
-* Read enabled regions from the apex API and cache them in the client.
-* Show region tabs, capacity hints, client status, tunnel addresses, and server endpoints.
-* Create and remove WireGuard clients by calling the regional API with a Firebase bearer token.
-* Show stored WireGuard configs from Firebase with QR, copy, and download actions.
-* Provide admin-only user creation and cross-user client visibility/removal where the Firebase role allows it.
-* Offer the Mac app download from the navbar before and after sign-in, with platform requirements and installation steps in a confirmation dialog.
+## Source map
 
-The frontend never creates, updates, or deletes VPN client documents directly. All client mutation goes through the regional FastAPI using the Firebase Admin SDK. See [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md) for Firestore paths, rules, and indexes, and [../../Backend/API/README.md](../../Backend/API/README.md) for the API control plane.
+* [App.tsx](src/App.tsx): HashRouter routes for dashboard, auth, device approval,
+  account/admin pages, and Server Health.
+* [firebase.ts](src/firebase.ts): Firebase Auth and provider helpers, configured
+  by [firebaseConfig.ts](src/Secrets/firebaseConfig.ts).
+* [Home.tsx](src/pages/Home.tsx) and [VPNTable.tsx](src/components/VPNTable.tsx):
+  inventory, mutations, selection, and config export.
+* [APIHelper.ts](src/helpers/APIHelper.ts) and [apiEndpoints.ts](src/helpers/apiEndpoints.ts):
+  typed requests, bearer tokens, error handling, and apex/regional routing.
+* [firebaseDbHelper.ts](src/helpers/firebaseDbHelper.ts): Firestore reads and
+  the admin mesh toggle. [ociRegionsStore.ts](src/stores/ociRegionsStore.ts)
+  caches discovery and fans out capacity reads.
+* [ServerHealth.tsx](src/pages/ServerHealth.tsx): mesh/ACL status and region sync.
+* [DeviceApproval.tsx](src/pages/DeviceApproval.tsx) and
+  [deviceAuthHelper.ts](src/helpers/deviceAuthHelper.ts): approval/denial flow.
 
-## Architecture
+Device approval uses `/#/auth/code?deviceRequestId=<32 lowercase hex>&userCode=<6 digits>`.
+It requires an authorized signed-in user, labels the device description unverified,
+and asks the user to match codes. Framed pages stop before contacting the API.
+Login accepts only a validated internal approval return route and skips regional
+inventory on that path. Configure the
+[Cloudflare anti-framing rule](../../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule).
 
-[src/App.tsx](src/App.tsx)
+## Local development
 
-* HashRouter route map for GitHub Pages.
-* Routes login, home/dashboard, about, password reset, device approval, and admin user creation pages.
+Use Node.js 24 or newer and npm 10 or newer; see [tool versions](../../docs/tool-versions.md).
 
-[src/firebase.ts](src/firebase.ts)
-
-* Initializes Firebase Auth from [src/Secrets/firebaseConfig.ts](src/Secrets/firebaseConfig.ts).
-* Exports Auth helpers used by login, dashboard, and admin pages.
-
-[src/pages/Home.tsx](src/pages/Home.tsx)
-
-* Main dashboard.
-* Watches auth state, loads role/region/client data, creates/removes clients, renders QR codes, and keeps the table fresh while mutations are running.
-
-[src/components/VPNTable.tsx](src/components/VPNTable.tsx)
-
-* Client table with sorting, selection, status badges, QR/download/copy controls, and admin columns.
-
-[src/helpers/APIHelper.ts](src/helpers/APIHelper.ts)
-
-* Typed fetch wrapper for apex and regional FastAPI calls.
-* Adds Firebase bearer auth where required, sends JSON, and normalizes FastAPI error responses.
-
-[src/pages/DeviceApproval.tsx](src/pages/DeviceApproval.tsx) and [src/helpers/deviceAuthHelper.ts](src/helpers/deviceAuthHelper.ts)
-
-* `/#/auth/code?deviceRequestId=<32 lowercase hex>&userCode=<6 digits>` verifies and approves or denies an existing device request through the apex API.
-* Approval requires a signed-in account with access, shows the device description as unverified, and asks the user to match the code on their device before sending a decision.
-* Framed pages stop before mounting the approval flow or contacting the API. Configure the dashboard response headers using the [Cloudflare anti-framing rule](../../Infrastructure/CloudFlare/README.md#dashboard-anti-framing-rule).
-* Login accepts only that validated internal return route and skips regional inventory checks on the approval path. Ordinary login and password reset keep their existing routes.
-
-[src/helpers/apiEndpoints.ts](src/helpers/apiEndpoints.ts)
-
-* Builds apex and regional API URLs.
-* Uses `REACT_APP_API_ORIGIN` for local/dev overrides and derived `https://api.<origin>/api/*` / `https://<regionId>.<origin>/api/*` URLs for production.
-
-[src/helpers/firebaseDbHelper.ts](src/helpers/firebaseDbHelper.ts)
-
-* Reads user/admin-visible client documents and stored WireGuard configs from Firestore.
-
-[src/stores/ociRegionsStore.ts](src/stores/ociRegionsStore.ts)
-
-* Zustand store for enabled region documents.
-* Reads the display-safe region list from `GET /regions`, then fans out authenticated capacity requests per region.
-
-[src/helpers/regionsHelper.ts](src/helpers/regionsHelper.ts), [src/helpers/usersHelper.ts](src/helpers/usersHelper.ts), [src/helpers/vpnStatus.ts](src/helpers/vpnStatus.ts)
-
-* Region parsing/sorting/capacity labels, role helpers, and normalized VPN status display.
-
-## Data Flow
-
-* Firebase Auth owns browser sign-in state and ID tokens.
-* Firestore provides dashboard reads for users, roles, client documents, and stored WireGuard configs.
-* The apex FastAPI host owns global/read API calls:
-  * `GET /api/regions`
-  * `POST /api/auth/check-access`
-  * `POST /api/device/verify`
-  * `POST /api/device/approve`
-* Regional FastAPI hosts own protected regional calls:
-  * `GET /api/capacity`
-  * `POST /api/clients`
-  * `DELETE /api/clients/{clientId}`
-  * `POST /api/users`
-* The API writes final product state through the Firebase Admin SDK and applies live WireGuard changes on the regional host.
-
-## API Origin Behavior
-
-* Production builds derive apex API URLs from the current frontend origin: `https://api.<origin>/api/*`.
-* Production builds derive each regional API URL from the selected region and the current frontend origin: `https://<regionId>.<origin>/api/*`, where `<origin>` comes from `window.location.host`. For a frontend loaded from `https://gocloudlaunch.com`, region `us-sanjose-1` calls `https://us-sanjose-1.gocloudlaunch.com/api/*`.
-* `REACT_APP_API_ORIGIN` is a local/dev override only. When set, API helpers send all API calls to `${REACT_APP_API_ORIGIN}/api/*` instead of deriving a regional hostname. Use it to point at a locally running regional API.
-* Production builds leave `REACT_APP_API_ORIGIN` unset. There is no Cloudflare Worker dev proxy.
-
-## Running the React Site
-
-Use Node.js `20` LTS or newer with npm `10` or newer. See [../../docs/tool-versions.md](../../docs/tool-versions.md) for the repo's expected tooling versions.
-
-Update dependencies:
 ```sh
 cd Frontend/Web
 npm install
+npm run start
 ```
 
-Run the React app:
-```sh
-cd Frontend/Web
-npm start
-```
+Start runs CRA without opening a browser and watches Tailwind automatically.
+`src/input.css` generates `src/output.css`; production builds minify it before
+CRA optimization. No separate watcher command is needed.
 
-The `start` script starts React without opening a browser automatically and runs the Tailwind watcher at the same time. During local development, the CRA proxy routes apex `/api/*` requests to `https://api.gocloudlaunch.com`. Local regional paths include the region ID, such as `/api/regions/us-sanjose-1/capacity`, and the proxy forwards them to `https://us-sanjose-1.gocloudlaunch.com/api/capacity`. The proxy runs only with `npm start`; production builds keep using direct deployed API URLs.
+## API Origin Behavior
 
-For this setup, run exactly:
-```sh
-cd Frontend/Web
-npm start
-```
+Production URLs use `window.location.hostname`:
 
-Do not set `REACT_APP_API_ORIGIN`; setting it to `https://api.gocloudlaunch.com` would bypass the multi-origin local proxy and incorrectly route regional requests through the apex API.
+* Apex: `https://api.<hostname>/api/*`.
+* Regional: `https://<regionId>.<hostname>/api/*`.
 
-Set `REACT_APP_API_ORIGIN` yourself only when you have a different local Caddy-style `/api/*` proxy or another regional API-compatible endpoint running. Restart `npm start` after changing the variable.
+On localhost/local hostnames without an override, helpers use the CRA proxy:
+`/api/*` goes to `https://api.gocloudlaunch.com`; paths such as
+`/api/regions/us-sanjose-1/capacity` go to
+`https://us-sanjose-1.gocloudlaunch.com/api/capacity`. The proxy runs only during
+`npm run start`.
 
-## Tailwind
+Leave `REACT_APP_API_ORIGIN` unset for normal local and production builds.
+Setting it sends every API call to `<override>/api/*`, bypassing regional routing.
+Use it only with a compatible local/regional endpoint; restart CRA after changes.
+Setting it to the deployed apex API incorrectly routes regional requests there.
 
-Keep tailwind css updated while making changes:
-```sh
-cd Frontend/Web
-npx @tailwindcss/cli -i ./src/input.css -o ./src/output.css --watch
-```
+## Validation and deployment
 
-The generated stylesheet is [src/output.css](src/output.css), built from [src/input.css](src/input.css). Production builds generate this stylesheet with Tailwind's `--minify` option so responsive utilities remain intact through the CRA production optimizer.
+Run `./scripts/test.sh web` from the repository root for Jest, TypeScript,
+Knip, and the CRA production build. See [Quick Deployment](../../docs/quick-deployment.md)
+for the full release sequence.
 
-## Deploy GitHub Page
-
-* [CNAME](./public/CNAME) specifies the host name. This must match DNS records.
-* NOTE: This uses your local build code to deploy. It does NOT pull from any remote branch. It compiles your code to the build folder and deploys that.
-  * Pro: Can be run from any branch.
-  * Con: Must be run locally and it can be confusing.
+Publish from a clean working tree:
 
 ```sh
-cd Frontend/Web
-npm run deploy # deploys to gh-pages branch
+./scripts/deploy-react.sh
 ```
 
-## Mac app download
+The wrapper runs `npm run deploy` in the web directory, bumps the npm patch
+version, builds the local checkout, publishes `build/` to `gh-pages`, and commits
+the package-version change locally. It does not fetch a remote source branch or
+push the source commit. [public/CNAME](public/CNAME) must match the DNS hostname.
+Direct `npm run deploy` publishes too, but leaves the version change uncommitted.
 
-The shared navbar links directly to a public, notarized macOS DMG on GitHub
-Releases. [src/helpers/macAppRelease.ts](src/helpers/macAppRelease.ts) pins the
-version, build, and asset URL. Update it after publishing a new macOS release,
-then deploy the website. The exact asset URL keeps each website deployment
-linked to its selected build. New macOS releases receive GitHub's Latest badge;
-Caddy releases leave that selection unchanged.
+## macOS download
 
-See [macOS release deployment](../../docs/apple-macos-release.md) for publishing
-a new build or the existing notarized DMG.
-
-## Related Docs
-
-* [../../README.md](../../README.md): product and system overview.
-* [../../Backend/API/README.md](../../Backend/API/README.md): regional FastAPI control plane.
-* [../../Backend/Firebase/README.md](../../Backend/Firebase/README.md): Firestore schema, rules, indexes, roles, and limits.
-* [../../Infrastructure/OCI/README.md](../../Infrastructure/OCI/README.md): regional host, Terraform, Caddy, WireGuard, and bootstrap.
-* [../../docs/regional-deployment.md](../../docs/regional-deployment.md): new-region deployment flow.
+The shared navbar offers a notarized DMG before/after sign-in, with requirements
+and install steps. [macAppRelease.ts](src/helpers/macAppRelease.ts) pins version,
+build, and exact public GitHub asset URL. Update it after publishing a Mac release,
+then deploy the site. macOS releases receive GitHub's Latest badge; Caddy releases
+preserve that selection. See the [macOS release guide](../../docs/apple-macos-release.md).

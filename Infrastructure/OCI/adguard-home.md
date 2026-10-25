@@ -1,54 +1,59 @@
 # AdGuard Home Configuration
 
-The regional bootstrap configures AdGuard Home automatically. No manual UI setup is required for the default deployment.
+The [regional bootstrap](host/bootstrap.sh) installs the pinned `adguard_home_version`
+and writes its configuration. Default deployments need no manual UI setup.
 
 ## Default Configuration
 
 * DNS listens only on the WireGuard tunnel DNS IPs.
-* Upstream DNS is local Unbound on `127.0.0.1:5335`, which forwards over DNS-over-TLS (DoT) to Quad9, Mullvad, and DNS.SB and validates DNSSEC locally.
-* DNSSEC is also enabled in AdGuard Home (it sets the DNSSEC OK bit and passes the validated answers through), but Unbound is the actual validator.
+* Upstream DNS is Unbound on `127.0.0.1:5335`.
+* Unbound forwards over DNS-over-TLS (DoT) to Quad9, Mullvad, and DNS.SB and validates
+  DNSSEC locally against the root trust anchor.
+* AdGuard Home enables DNSSEC support, but Unbound performs validation.
 * Only the AdGuard DNS filter is enabled.
-* Query logging is disabled.
-* Statistics are disabled.
-* The admin UI listens only on `127.0.0.1:3000`.
+* Query logging and statistics are disabled.
+* The admin UI listens only on `127.0.0.1:3000`, with UI authentication disabled.
 
 ## Why DNS-over-TLS and local validation
 
-Forwarding over DoT means the only DNS leaving the region is encrypted traffic to known, certificate-authenticated resolvers. The cloud provider and any on-path observer cannot see the domains clients look up, only that encrypted DNS is occurring.
+Unbound uses certificate-authenticated DoT upstreams pinned as `IP@853#name`.
+This encrypts forwarded DNS between the region and those resolvers. Upstream
+resolvers still receive the queries, and DNSSEC authenticates answers only for
+signed zones.
 
-Unbound performs DNSSEC validation locally against the root trust anchor, so answer integrity rests on the DNSSEC chain itself rather than on trusting the upstream resolvers - a coerced or compromised resolver cannot feed forged data for a signed zone.
-
-The region runs Unbound as a forward-only resolver, not a recursive one. Recursion would have to query the root, TLD, and authoritative servers over plaintext port 53 (encrypted authoritative DNS is effectively undeployed), which would expose every lookup to the provider in clear. So Unbound forwards over DoT to three independent no-log providers instead, spreading the stream so no single upstream sees all of it. Upstreams are pinned by IP with their TLS certificate name (`IP@853#name`) because Unbound has no bootstrap resolver of its own.
+The resolver is forward-only (`forward-first: no`), so it does not fall back to
+plaintext recursive queries to root, TLD, or authoritative servers. Local DNSSEC
+validation checks signed answers independently of the upstream resolver.
 
 ## Optional UI Access
 
-Use an SSH tunnel if you need to inspect the local admin UI:
+Open an SSH tunnel:
 
 ```sh
 ssh -L 3000:127.0.0.1:3000 <regional-host>
 ```
 
-Then open `http://127.0.0.1:3000` locally.
-
-The bootstrap leaves AdGuard Home UI auth disabled because the UI is localhost-only. Treat SSH access as the admin boundary.
-
-Do not expose the AdGuard Home UI through Caddy or public firewall rules.
+Then open `http://127.0.0.1:3000` locally. SSH access is the admin boundary because
+the UI has no login. Keep it bound to localhost and never expose it through Caddy
+or public firewall rules.
 
 ## Operator Rules
 
 * Keep query logging and statistics off.
-* Keep filtering to DNS filters only unless there is a specific reason to expand scope.
-* Keep the admin UI bound to localhost.
-* Keep the AdGuard DNS filter enabled.
-* Add allowlist rules only when a real user workflow breaks.
+* Keep the AdGuard DNS filter enabled and filtering limited to DNS filters unless
+  an operator deliberately changes the scope.
+* Use small allowlist entries when a real user workflow breaks.
+* Record lasting configuration changes in bootstrap so a rebuild preserves them.
 
 ## Filter Changes
 
-Prefer small allowlist entries over disabling the filter. After changing filters or rules, verify:
+After changing filters or rules, check service health:
 
 ```sh
 systemctl status adguardhome
 journalctl -u adguardhome --since "15 minutes ago"
 ```
 
-Do not paste DNS queries, requested domains, or user-specific browsing details into tickets.
+If clients have a handshake but DNS fails, check AdGuard Home, Unbound, and outbound
+TCP `853` per [service operations](../../docs/service-operations.md).
+Never paste DNS queries, requested domains, or user browsing details into tickets.
