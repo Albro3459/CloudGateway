@@ -134,10 +134,13 @@ type BuildIdentity struct {
 	CodeHash string `json:"codeHash"`
 }
 
+// Lifecycle answers every handshake, whatever the caller's IPC version. Keep its
+// shape stable so a mismatched CLI can still report the tunnel and the version error
 type Lifecycle struct {
 	Running   BuildIdentity  `json:"running"`
 	Installed *BuildIdentity `json:"installed,omitempty"`
 	State     LifecycleState `json:"state"`
+	Tunnel    Tunnel         `json:"tunnel"`
 }
 
 type AccessState string
