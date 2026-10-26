@@ -112,8 +112,10 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
   account authorization, including permitted offline authorization.
 * Normal list waits for settled access/inventory. Unavailable inventory takes
   precedence over resolving the region filter. `list --refresh` and refresh
-  await their own online result without reconnecting. Failed refresh may return
-  stale inventory. `--long` changes human output only.
+  await their own online result without reconnecting. On Linux, when the
+  connected server isn't responding, they first update its endpoint if its IP
+  changed, with no JSON change. See research. Failed refresh may return stale
+  inventory. `--long` changes human output only.
 * Add uses enabled creation regions and verified capacity, including empty
   regions. It leaves the VPN and selection unchanged. Result creation data
   carries requested name/region, not a new UUID. Inventory failure after verified
@@ -131,12 +133,14 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
   operation. Explicit operation lookup returns the operation's mapped failure
   together with current observed state, which can differ from its original target.
   The observation read is bounded at five seconds within the caller deadline.
-* Update activates the already-installed runtime. Matching runtime is a no-op;
-  active replacement needs `--allow-disconnect`. Capture the same config/mode,
-  stop, activate, check readiness, and request authorized reconnect. Initially
-  off stays off. Use Linux platform wording and the activation design in research.
+* Update activates the already-installed runtime. Matching runtime is a no-op.
+  On Linux, services restart onto the installed version and keep the tunnel up.
+  Only an update that must stop the tunnel needs `--allow-disconnect`. It then
+  reconnects the same authorized config/mode, and initially off stays off.
+  See the update design in research.
 * Doctor reads supported setup/permission/auth/network evidence without login,
   refresh, install, repair, or tunnel changes. Optional unknown/warning succeeds.
+  Linux adds a server-reachability warning that suggests `cloudgateway refresh`.
   Cancellation/deadline takes precedence, then first required setup failure,
   then required online failure. Setup probes can supply a specific mapped code.
 
@@ -313,9 +317,8 @@ Starting fixtures:
 * [Mode behavior](../Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCLITests/CloudGatewayMacCLIModeTests.swift)
 * [Removal and redaction](../Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewayMacCLITests/CloudGatewayMacCLIRemoveTests.swift)
 
-Two source/document discrepancies are explicit: code uses a 60-second stale
-threshold, and generic macOS commands lack login's dedicated signal handler,
-so a final interrupted JSON record is not guaranteed there. Linux should
+Generic macOS commands lack login's dedicated signal handler, so a final
+interrupted JSON record is not guaranteed there. Linux should
 install a consistent signal-to-detach handler and emit a safe interrupted result
 when stdout remains available. That is an intentional lifecycle improvement,
 with command, schema, and exit compatibility retained.

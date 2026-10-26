@@ -135,7 +135,9 @@ Verify native-client API restrictions against staging before release.
 
 1. Generate a fresh 32-byte random login secret. Create a request with
    `POST https://api.<origin>/api/device/code`, sending its lowercase SHA-256
-   digest. Keep the original secret in memory for that attempt only.
+   digest and `deviceName: "CloudGateway for Linux"`. The approval page shows
+   that name, matching macOS's `CloudGateway for macOS`. Keep the original
+   secret in memory for that attempt only.
 2. Display the returned approval URL and six-digit code promptly. Preserve
    leading zeroes and macOS QR/terminal/JSON behavior. Browser approval uses the
    existing site. The CLI does not automatically open a browser.
@@ -170,8 +172,8 @@ per-device remote logout/revocation API.
 Send a Firebase user ID token as bearer authentication so
 [Firestore Security Rules apply](https://firebase.google.com/docs/firestore/use-rest-api).
 Use `documents:runQuery` for enabled `Regions` and the `Instances` collection
-group. Ordinary-user instance queries must include `ownerUid == authenticatedUID`
-on every page. Only a verified admin may omit that filter. Rules are
+group. Ordinary-user instance queries must filter `ownerUid == authenticatedUID`.
+Only a verified admin may omit that filter. Rules are
 [not post-query filters](https://firebase.google.com/docs/firestore/security/rules-query).
 
 Fetch selected configs with a document GET at
@@ -192,18 +194,13 @@ validation within the same snapshot before publishing renewed authorization.
 Selected-config GETs alone cannot establish that unchanged-looking inventory
 still authorizes the bytes in a retained secret record.
 
-Use bounded pages with explicit `__name__` ordering and an exclusive full-document
-reference cursor. `runQuery` uses
-[StructuredQuery cursors](https://firebase.google.com/docs/firestore/reference/rest/v1/StructuredQuery),
-not `documents.list` page tokens. Handle response entries without a document.
-Start a bounded read-only transaction for a paged inventory read, reuse its
-transaction ID across pages/queries, and release it on completion/cancellation.
-The [runQuery contract](https://firebase.google.com/docs/firestore/reference/rest/v1/projects.databases.documents/runQuery)
-supports this consistency selector and reports the transaction in a separate
-first response. An expired transaction fails the refresh. Replace the authorized
-cache only after every page and a final current access/role check succeeds.
-Keep the owner filter and query snapshot across pages, and filter statuses
-locally to avoid unnecessary new composite indexes.
+Match macOS: one unpaged region query and one unpaged client query, run
+together. Inventory is small, so there is no paging, cursor, or transaction.
+[`runQuery`](https://firebase.google.com/docs/firestore/reference/rest/v1/projects.databases.documents/runQuery)
+streams every result in one response. Handle response entries without a
+document. Replace the authorized cache only after both queries and a final
+current access/role check succeed. Filter statuses locally to avoid new
+composite indexes.
 
 Mirror account-generation fences, role-downgrade invalidation, authorized config
 hashes, and classified offline fallback from the macOS controller. Only a
@@ -212,8 +209,8 @@ Denial, malformed replies, and incomplete reads do not grant offline access.
 An old role-less cache requires fresh authorization. No new cache age TTL is
 introduced as an accidental Linux policy difference.
 
-The code's inventory stale threshold is 60 seconds, despite older Apple prose
-mentioning 30. Port the scheduler from source: active polling, idle backoff,
+The inventory stale threshold is 60 seconds. Port the scheduler from
+[source](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacInventorySchedule.swift): active polling, idle backoff,
 suspension, and explicit refresh have different rules. Do not turn the VM daemon
 into an unbounded high-frequency Firestore poller. Close idle HTTP connections
 after route changes so Firebase/control-plane traffic can use the new path.
@@ -302,12 +299,23 @@ fwmark policy and the usual preservation of nondefault main-table routes.
 Porting that pattern without reviewing its exceptions would not establish the
 requested full-route behavior.
 
+Ubuntu Server manages its network with netplan and systemd-networkd. By default,
+networkd [removes routing rules and routes](https://www.freedesktop.org/software/systemd/man/latest/networkd.conf.html)
+it didn't configure, such as after `netplan apply` or a networkd restart. It
+ignores links it doesn't manage, so tunnel interface routes are likely safe.
+Policy rules and exception routes on the physical link are exposed. `wg-quick`
+doesn't handle this. If those rules vanish, Full traffic quietly falls back to
+the underlay. Netd watches its owned rules and routes over netlink and reapplies
+any that disappear, reporting `connecting` until they match again.
+
 Preflight must inspect actual routes, local addresses, other VPNs, and resolver
 paths. A cloud VPC overlapping `10.0.0.0/16` is a concrete blocker, including
 local addresses or more-specific routes that capture regional DNS. Reject
 known conflicts before mutation and report prefixes, rather than silently
 choosing VPC or mesh ownership. Identical destination addresses require an
 operator addressing decision. Do not change the fleet range in this ticket.
+This is a known limitation for hosts whose own network uses `10.0.0.0/24` or
+`10.0.1.0/24`, such as a default OCI VCN or a home router on 10.0.0.x.
 
 Require a root-owned deployment policy before Full activation, independently of
 whether the caller appears to use SSH. The policy explicitly declares either
@@ -366,17 +374,30 @@ ordinary underlay connectivity/DNS. The v1 claim is supported steady-state VPN
 DNS routing, not fail-closed DNS under arbitrary external reconfiguration. A
 stronger guarantee requires a separately specified enforcement policy.
 
-Resolve the WireGuard hostname before replacing routes/DNS. Retain its hostname
-separately from the current numeric endpoint. On relevant network changes or
-sustained handshake failure, retry endpoint resolution with bounded backoff.
-The [upstream re-resolution helper](https://git.zx2c4.com/wireguard-tools/plain/contrib/reresolve-dns/reresolve-dns.sh)
-shows that endpoint refresh is an explicit userspace responsibility.
+Resolve the WireGuard hostname with normal host DNS during `up`, before
+installing VPN routes/DNS. A server deploy changes its public IPv4 and leaves a
+connected tunnel dead. There is no automatic re-resolution or polling.
 
-Recovery cannot depend solely on DNS inside a dead tunnel. Prove interface-scoped
-resolution of only the WireGuard infrastructure hostname through the physical
-link before supporting that host setup. Reject configurations where the proposed
-method cannot bypass a dead tunnel without reopening general application DNS.
-This is a narrow control-plane exception, not general DNS fallback.
+Netd answers "is the server responding?" only when `status`, `doctor`, or
+`refresh` asks. If the kernel's latest handshake is under 60 seconds old, the
+answer is yes, with no traffic. Otherwise netd sends one DNS query through the
+tunnel to the regional DNS address with a 2-second timeout. A reply means yes.
+Handshake age alone can't give a 1-minute bound: keepalives don't update it, and
+a healthy tunnel only rehandshakes about every 2 minutes. This probe only
+drives the hint below. It doesn't change the observation mapping.
+
+When the server isn't responding, human `status` output and a `doctor` warning
+suggest `cloudgateway refresh`. Status JSON is unchanged.
+
+Only `refresh` and `list --refresh` try to recover a changed server IP. They
+run the same check first. If the server is responding, everything stays inside
+the VPN and the inventory refresh runs as usual. If not, netd re-resolves the
+server's hostname outside the VPN: one query for only that hostname, sent to
+the physical link's DNS servers from a socket carrying the WireGuard fwmark.
+Mesh can use normal host DNS for this. If the IP changed, netd updates the peer
+endpoint in place with `wg set`, leaving routes and DNS alone, then the
+inventory refresh runs. No other lookup leaves the tunnel. If refresh can't fix
+it, `down` then `up` still works. Management exceptions keep SSH available.
 
 ### Observations, failure, and persistence
 
@@ -403,8 +424,7 @@ Use this normative mapping, without traffic probes or connection history:
 | No usable observation has ever completed | `unknown` with `unavailable` observation, active mode null |
 
 Endpoint/handshake failure alone does not erase verified configured state.
-Keep routes/DNS and active mode, and report transport uncertainty through doctor
-when supported evidence exists. `connected` means configured runtime readiness,
+Keep routes/DNS and active mode. `connected` means configured runtime readiness,
 not verified end-to-end delivery. A kernel tunnel can remain configured after
 either service crashes. Before reporting a current applied client/mode after
 restart, compare actual owned resources with the committed profile/hash/mode.
@@ -462,9 +482,9 @@ Distinguish daemon crash recovery from a fresh OS boot and explicit service
 maintenance from user down. `network-online.target` is
 [boot ordering, not a runtime availability monitor](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#network-online.target).
 
-When an established tunnel loses its endpoint, retain routes/DNS, expose honest
-observation/readiness evidence, and retry the endpoint. Do not restore ordinary
-underlay access as an endpoint-recovery strategy. Resolver-policy failure has the
+When an established tunnel loses its endpoint, retain routes/DNS until the user
+runs `refresh` or `down`. Do not restore ordinary underlay access as an
+endpoint-recovery strategy. Resolver-policy failure has the
 explicit failed-teardown behavior above. This is functional full routing with
 the same absence of a kill-switch promise as macOS. Start, stop,
 rollback, replacement, interface deletion, and boot may have underlay windows.
@@ -503,42 +523,40 @@ Dependency installation uses Ubuntu repositories only when explicitly selected
 in the installer. There is no CloudGateway APT/RPM repository and no package
 manager requirement during ordinary CLI use.
 
-Preserve macOS `update` semantics: activate/reconcile an already installed
-privileged VPN runtime, rather than redefine it as a release downloader. Its
-Linux target is **netd and its packaged network dependencies only**. The
-controller/CLI are not replaced during that operation. The unchanged controller
-owns the durable update result, captured config/mode, and reconnect workflow.
+Installing a new release should just work. Linux has none of the macOS update
+constraints: no OS-owned extension that refuses replacement, and no separate
+approval or restart. The tunnel also outlives its service. The WireGuard
+interface, routes, rules, and resolver settings are kernel and resolved state,
+so a restarted netd adopts them from its journal, the same as crash recovery.
 
-The root installer stages verified versioned assets and a signed target manifest.
-A fixed root-owned launcher starts netd from a root-owned active-runtime selector.
-Netd accepts only a staged target ID whose signature, hashes, paths, ownership,
-and IPC/storage compatibility have been verified. It atomically persists the
-target selector/recovery record, then requests systemd to restart its own unit.
-The launcher verifies the selected assets before executing them. No caller path,
-arbitrary executable, shell command, or user-writable release is accepted.
+The installer verifies the release, extracts it into a root-owned versioned
+directory, and atomically points `current` at it. It then restarts the
+controller and netd onto the new version. The tunnel stays up when the new
+netd can adopt the existing network journal. The controller first stops
+accepting new work and waits briefly for running operations. If work is still
+running, the installer leaves the new release installed and tells the user to
+run `cloudgateway update` later. A controller restart can make an ordinary
+operation result unknown, as the parity contract already allows. Nothing is
+replayed.
 
-A matching target is a no-op. An active replacement requires `--allow-disconnect`
-and confirmed stop. The controller observes the new helper's authenticated
-target version/hash and readiness, then supplies a fresh revision-bound grant
-to reconnect only the captured still-authorized client/mode. New down/logout
-suppression wins over reconnect. Initially off stays off. CLI detach does not
-cancel the operation; controller restart resumes only from its durable update
-record after the generation/suppression handshake. An ordinary operation result
-can still be unknown after restart, as specified by the parity contract.
+`cloudgateway update` keeps its macOS meaning: activate the installed runtime.
+On Linux it restarts any service not running the installed version. When
+everything matches, it's a no-op. When netd can't adopt the running tunnel, such
+as after a network journal format change, the update needs `--allow-disconnect`.
+It stops the tunnel, restarts, and reconnects the same still-authorized
+client/mode. New down/logout wins over reconnect, and initially off stays off.
+The controller persists the update record before restarting itself, so
+`status --operation` still works afterward and CLI detach doesn't cancel it.
 
-The installer replaces CLI/controller in a separate disconnected-only maintenance
-phase with no live operation/update. It first drains the controller and confirms
-netd start suppression, then switches root-owned binaries and restarts the
-controller. Otherwise it stages and reports the prerequisite rather than
-replacing the update owner. New CLI and old controller communicate only within
-an explicitly compatible IPC window; incompatible versions return the existing
-version error. All shipped runtime combinations must be covered by the manifest.
-
-Keep rollback within compatible storage/IPC versions. Prove this sequence in the
-packaging checkpoint before calling update implemented. Apple-specific
-approval/restart phases remain schema enum values but are not fabricated Linux
-events. Linux help/diagnostics/recovery suggestions use platform wording without
-changing JSON shapes or exit categories.
+Each service migrates its own stored state forward on start. The installer
+refuses a downgrade across a storage format change. A new CLI and an older
+running controller only talk within a compatible IPC version. Otherwise they
+return the existing version error until `update` or the installer restarts the
+controller. Linux emits `prepared`, `activating`, `checking_readiness`, and
+`completed`. It adds `stopping` and `reconnecting` only for a disconnecting
+update. Apple's approval and restart phases stay in the schema but are never
+emitted. Linux help and recovery text use platform wording without changing
+JSON shapes or exit categories.
 
 Uninstall stops only managed networking, restores owned DNS/routes, disables
 service/socket activation, and removes only owned installation files. Preserve
@@ -564,8 +582,9 @@ Release requires evidence for:
   regions, cross-account denial, and unchanged ordinary internet/DNS behavior.
   Host service bindings/firewalls still govern inbound access.
 * Lifecycle: caller detach, failed acceptance output, service crash in every
-  mutation phase, explicit down, boot policies, logout/account change, endpoint
-  replacement/dead DNS, partial cleanup, and signed runtime upgrade/rollback.
+  mutation phase, explicit down, boot policies, logout/account change, manual
+  `down`/`up` after a server IP change, partial cleanup, `netplan apply`/networkd
+  restart, and installing a new release while connected.
 * VM safety: SSH return paths, configured management/cloud-service exceptions,
   VPC/mesh collisions, competing VPN/rule/mark allocations, and unsupported
   resolver domains. Verify failures leave an existing tunnel untouched.
@@ -573,8 +592,8 @@ Release requires evidence for:
   permissions, account redaction, revoked/downgraded access, refresh rotation,
   and no secrets in process lists, output, journal, or diagnostics.
 
-The highest-risk implementation spikes are full-mode DNS exclusivity,
-endpoint bootstrap during tunnel failure, VM management routing, two-service
-recovery, and installed-runtime activation. Existing backend gaps are create
-idempotency and per-device remote revocation. Neither requires new endpoints
+The highest-risk implementation spikes are full-mode DNS exclusivity, VM
+management routing, two-service recovery, and netd adopting a running tunnel
+on restart. Existing backend gaps
+are create idempotency and per-device remote revocation. Neither requires new endpoints
 to ship parity, but neither should be promised by the Linux client.

@@ -15,11 +15,15 @@ amd64/arm64, are proposed release targets, pending actual validation.
 - [ ] Add host-free `linux` validation to `scripts/test.sh` and document the Go
   toolchain pin and reproducible release build
 - [ ] Prove root network helper/controller socket authority and enrolled UID
-- [ ] On disposable Ubuntu VMs, prove owned dual-stack policy routing,
-  resolved DNS exclusivity, dead-tunnel endpoint resolution, and SSH/cloud
-  management exceptions before committing to the production adapter
+- [ ] Set up disposable Ubuntu 24.04/26.04 test VMs, amd64 and arm64, with
+  console access for recovery. None exist yet
+- [ ] On those VMs, prove owned dual-stack policy routing, resolved DNS
+  exclusivity, the Full-mode server hostname lookup over the physical link, and
+  SSH/cloud management exceptions before committing to the production adapter
+- [ ] Check which owned rules/routes networkd removes on `netplan apply` and
+  networkd restart, and that netd's reapply restores them
 - [ ] Specify exact service units and supported resolver configurations. Verify
-  the documented observation, intent-revision, maintenance, and boot policies
+  the documented observation, intent-revision, update, and boot policies
 
 Checkpoint: runnable local help/version/parser with compatible output, plus
 written VM spike evidence. Do not claim full mode from an interface-up check.
@@ -30,7 +34,7 @@ written VM spike evidence. Do not claim full mode from an interface-up check.
   behavior with the same timeout, cancellation, and login JSON contract
 - [ ] Add serialized Firebase refresh, atomic credentials, identity/project
   continuity, safe errors, access checks, and session-generation fences
-- [ ] Implement rules-constrained paged Firestore reads and config retrieval
+- [ ] Implement rules-constrained Firestore reads and config retrieval
 - [ ] Preserve role downgrade/denial, complete-refresh publication, hash/secret
   separation, transport-only offline fallback, sorting, indices, and selection
 - [ ] Implement auth status/logout, list/ls/long/region, and refresh without
@@ -48,6 +52,7 @@ headless VM. No service-account credentials and no new read endpoints.
   and restart unknown outcomes without cloud mutation replay
 - [ ] Implement allowlisted config parser and private pipe-based `wg` input
 - [ ] Add owned interface/address/MTU/route/rule/mark lifecycle and cleanup journal
+- [ ] Watch owned rules/routes over netlink and reapply any that disappear
 - [ ] Implement up/down/mode/status with separate desired and observed state
 - [ ] Keep bare signed-out down and down during add available
 - [ ] Verify same/cross-region IPv4/IPv6 mesh reachability and cross-account
@@ -62,8 +67,13 @@ and service restart leave no unowned changes or secret output.
 - [ ] Apply exclusive supported resolved policy, with conflict detection and
   VPN-link-only teardown. Implement the documented running-policy repair/failure
   transition, including its explicit underlay-restoration behavior
-- [ ] Implement endpoint bootstrap/re-resolution during dead tunnel DNS and
-  physical network changes, with bounded retries and no general DNS fallback
+- [ ] Resolve the endpoint during `up` before installing routes
+- [ ] Add the on-demand server check: handshake under 60s, else a 2-second
+  DNS query through the tunnel. Verify the probe works in both modes
+- [ ] When the server isn't responding, make refresh re-resolve its hostname
+  outside the VPN and update the endpoint in place. Verify recovery after a
+  server IP change in both modes
+- [ ] Show the refresh hint in human status output
 - [ ] Verify regional IPv4/IPv6 egress and tunnel DNS on IPv4-only/dual-stack VMs
 - [ ] Verify overlap, firewall/mark/rule collision, SSH safety, resolver restart,
   MTU, interrupted transition, rollback, and incomplete-cleanup behavior
@@ -71,7 +81,7 @@ and service restart leave no unowned changes or secret output.
   logout suppression, and optional enrolled-account boot resume
 
 Checkpoint: both modes meet the network acceptance matrix. Document the absence
-of a kill-switch guarantee and the exact management/control-plane exceptions.
+of a kill-switch guarantee and the exact management exceptions.
 
 ## 5. Cloud add/remove and diagnostics
 
@@ -81,7 +91,8 @@ of a kill-switch guarantee and the exact management/control-plane exceptions.
   check, pre-dispatch durable eviction, and post-success warning precedence
 - [ ] Verify target identity across account changes, concurrent down, missing
   config/disabled region, lost response, daemon restart, and stale index recovery
-- [ ] Add read-only Linux doctor probes with existing report/exit semantics
+- [ ] Add read-only Linux doctor probes with existing report/exit semantics,
+  including a server-reachability warning that suggests refresh
 
 Checkpoint: full public command surface except installed-runtime update, with
 compatible NDJSON and safe diagnostics. Cloud mutation validation uses isolated
@@ -92,12 +103,14 @@ test accounts/clients rather than ordinary production inventory.
 - [ ] Build amd64/arm64 assets and signed manifests for `linux-v1.0.0`
 - [ ] Implement inspectable shell installer, architecture/capability checks,
   explicit optional dependency installation, UID enrollment, and private state
-- [ ] Stage immutable versioned releases and prove netd-only runtime activation
-  with the controller retained, a trusted launcher, and compatible state formats
-- [ ] Implement separate disconnected-only CLI/controller maintenance, with
-  drained operations and acknowledged netd start suppression
-- [ ] Implement update/no-op/allow-disconnect/readiness/same-client reconnect,
-  durable caller-detached recovery, and explicit rollback limits
+- [ ] Install versioned releases with an atomic `current` switch, then restart
+  the controller and netd. Wait briefly for running operations first
+- [ ] Prove netd restarts adopt a running tunnel without disconnecting
+- [ ] Implement update as restart-to-installed-version, with no-op,
+  `--allow-disconnect` for journal format changes, same-client reconnect, and
+  a persisted update record that survives the controller restart
+- [ ] Migrate stored state forward on start and refuse downgrades across a
+  storage format change
 - [ ] Keep JSON version/build strings mapped to the same release version
 - [ ] Implement owned-resource uninstall and opt-in data purge without deleting
   cloud clients or shared distro packages

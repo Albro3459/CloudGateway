@@ -30,7 +30,8 @@ Current macOS mode/selector syntax supersedes the older proposed syntax.
 * Keep cloud work unprivileged. Use a persistent controller and a narrow network
   service with explicit operator identity and private sockets.
 * Ubuntu resolved requires more than `~.` for an all-DNS claim. Detect
-  unsupported competing domains and prove dead-tunnel endpoint resolution.
+  unsupported competing domains. Endpoint recovery after a server IP change
+  was later limited to user-run refresh, with no polling.
 * Full routes can disrupt VM management. Require a bounded management-path
   design and real SSH/cloud-service validation before release.
 * Match current Full default and `mode` commands, region-local current indices,
@@ -41,8 +42,8 @@ Current macOS mode/selector syntax supersedes the older proposed syntax.
   Keep update as installed-runtime activation, with packaging proof required.
 * Start services at boot without connecting by default. Distinguish service
   crash recovery, explicit down, logout, and optional boot resume.
-* Source uses a 60-second stale threshold. Older Apple prose says 30. Use source
-  for parity and record the discrepancy rather than changing Apple behavior.
+* Source uses a 60-second stale threshold. The Apple docs said 30 and now
+  match source.
 
 ## Independent draft review
 
@@ -55,7 +56,8 @@ macOS config-hash authorization. The design now requires full config-bearing
 inventory initially. A projection optimization cannot renew offline eligibility
 without reading the relevant config bytes in the same snapshot. The reviewer
 otherwise found no material parser, JSON-shape, exit-mapping, replay, or version
-contradiction. Explicit read-only transactions resolved pagination ambiguity.
+contradiction. Inventory is small, so paging and read transactions were later
+dropped in favor of the same unpaged queries macOS uses.
 
 The reviewer also suggested appending supersession to the original T3 thread.
 The original research produced no Linux Markdown file and remains historical
@@ -79,8 +81,8 @@ parent resolved them in the research and checkpoints:
    unknown status and doctor failure. Detection windows and restored underlay
    access are disclosed, without claiming fail-closed DNS.
 3. Update replaces netd/network assets only, retaining its controller owner.
-   The root-owned selector/launcher and staged signed target define activation.
-   CLI/controller replacement is separate disconnected-only maintenance.
+   Later replaced: Linux lacks the macOS extension constraints, so installing
+   a release restarts both services and netd adopts the running tunnel.
 4. Full requires a root-owned management policy: console administration or
    approved fixed destination prefixes with explicit underlay route rules.
    No SSH environment/ancestry inference is trusted.
