@@ -383,8 +383,9 @@ Equal matching domains can send queries over multiple links. Preflight and
 network-change reconciliation must detect these conflicts and reject unsupported
 full-mode resolver setups, rather than promise that all DNS uses the VPN.
 This follows [systemd-resolved routing](https://www.freedesktop.org/software/systemd/man/latest/systemd-resolved.service.html).
-No arbitrary resolver-file replacement or new DNS proxy is included. A later
-resolvconf adapter can support other Debian/Arch setups after validation.
+No arbitrary resolver-file replacement or new DNS proxy is included. Full mode
+requires systemd-resolved on every distro, rather than separate resolvconf or
+NetworkManager adapters. The installer handles the setup check below.
 
 For a running Full tunnel, subscribe to resolver/link changes and recheck the
 complete supported policy. If resolved loses the VPN-link settings, attempt one
@@ -546,9 +547,23 @@ The installer detects architecture, parses
 [`os-release`](https://www.freedesktop.org/software/systemd/man/latest/os-release.html)
 as data, checks actual kernel/tools/resolver/systemd capabilities, enrolls the
 operator, and installs root-owned binaries/units. No OS files are sourced.
-Dependency installation uses Ubuntu repositories only when explicitly selected
-in the installer. There is no CloudGateway APT/RPM repository and no package
-manager requirement during ordinary CLI use.
+The script installs a missing dependency through the system package manager
+only after the user answers yes. That's a few lines to find `apt-get`, `dnf`, or
+`pacman`, and is separate from publishing packages. There is no CloudGateway
+APT/RPM repository and no package manager requirement during ordinary CLI use.
+
+The installer also checks that systemd-resolved is the system resolver: the
+service is running, `/etc/resolv.conf` points at its stub, and links have
+upstream DNS servers. Ubuntu Server already works this way. A missing or
+inactive resolved doesn't block installation. Mesh doesn't touch host DNS and
+works without it. Full refuses with a clear error, and `doctor` shows the fix.
+
+On other distros, installing the package isn't enough. On Debian with ifupdown,
+the DHCP client writes `/etc/resolv.conf` itself, so resolved can end up unused
+or without upstream servers. Oracle Linux needs NetworkManager set to
+`dns=systemd-resolved`. A wrong switch breaks DNS for the whole machine. The
+installer offers to switch with a Y prompt only on distros where that switch
+has been tested, and prints the steps elsewhere.
 
 Installing a new release should just work. Linux has none of the macOS update
 constraints: no OS-owned extension that refuses replacement, and no separate
