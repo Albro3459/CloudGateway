@@ -12,7 +12,8 @@
 #   ./scripts/test.sh macos --signed  # signed macOS build + entitlement/profile checks
 #   ./scripts/test.sh apple      # both iOS and macOS, with shared tests run once
 #   ./scripts/test.sh apple --signed  # both iOS and macOS with signed builds
-#   ./scripts/test.sh web infra  # any combination of: api web infra ios macos apple firebase
+#   ./scripts/test.sh linux      # Linux CLI and daemon: Go tests, cross-builds, installer checks
+#   ./scripts/test.sh web infra  # any combination of: api web infra ios macos apple firebase linux
 #
 # One-time setup (API venv, Web node_modules, terraform providers) happens
 # automatically on first run.
@@ -338,6 +339,34 @@ test_macos() {
   return "$failed"
 }
 
+check_linux_gofmt() {
+  local unformatted
+  unformatted="$(gofmt -l .)" || return 1
+  if [[ -n "$unformatted" ]]; then
+    echo "gofmt needed:" >&2
+    echo "$unformatted" >&2
+    return 1
+  fi
+}
+
+# Host-free Linux checks. Privileged route/DNS behavior needs real Ubuntu VMs
+test_linux() {
+  cd "$ROOT/Frontend/Linux" || return 1
+  local failed=0
+  run_check "Linux Go format" check_linux_gofmt || failed=1
+  run_check "Linux Go vet (host)" go vet ./... || failed=1
+  run_check "Linux Go vet (linux/amd64)" env GOOS=linux GOARCH=amd64 go vet ./... || failed=1
+  run_check "Linux Go vet (linux/arm64)" env GOOS=linux GOARCH=arm64 go vet ./... || failed=1
+  run_check "Linux Go tests" go test -race -count=1 ./... || failed=1
+  local arch
+  for arch in amd64 arm64; do
+    run_check "Linux $arch static build" \
+      env CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o /dev/null ./cmd/... ||
+      failed=1
+  done
+  return "$failed"
+}
+
 test_infra() {
   cd "$ROOT" || return 1
 
@@ -427,9 +456,9 @@ targets=()
 for arg in "$@"; do
   case "$arg" in
     --signed) APPLE_SIGNED=1 ;;
-    api|web|app|ios|macos|apple|infra|firebase) targets+=("$arg") ;;
+    api|web|app|ios|macos|apple|infra|firebase|linux) targets+=("$arg") ;;
     *)
-      echo "Unknown target: $arg (expected: api, web, ios, macos, apple, infra, firebase; optional flag: --signed)" >&2
+      echo "Unknown target: $arg (expected: api, web, ios, macos, apple, infra, firebase, linux; optional flag: --signed)" >&2
       exit 2
       ;;
   esac
@@ -438,7 +467,7 @@ done
 if [[ ${#targets[@]} -eq 0 ]]; then
   # Apple builds run last and unsigned by default; pass --signed to sign.
   # Non-macOS/CI runners should pass explicit targets instead.
-  targets=(api web infra firebase apple)
+  targets=(api web infra firebase linux apple)
 fi
 
 expanded_targets=()
@@ -463,6 +492,7 @@ for target in "${expanded_targets[@]}"; do
     macos) run_step "macOS tests + arm64 app and system extension build" test_macos ;;
     infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
     firebase) run_step "Firebase schema, rules and API exchange tests (emulators)" test_firebase ;;
+    linux) run_step "Linux CLI and daemon tests + cross-builds" test_linux ;;
   esac
 done
 
