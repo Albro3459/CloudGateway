@@ -21,7 +21,7 @@ cloudgateway mode status
 cloudgateway mode full
 cloudgateway mode mesh
 cloudgateway list|ls [--region <region>] [--refresh] [-l|--long]
-cloudgateway status [--operation <operation-uuid>]
+cloudgateway status [--operation <operation-id>]
 cloudgateway up [<client-uuid> | <region> <index>]
 cloudgateway down [<client-uuid> | <region> <index>]
 cloudgateway add <region> <name>
@@ -36,8 +36,10 @@ Every topic accepts `-h`/`--help`, `--json`, `--non-interactive`, and
 `--mode`, `--name`, `--config`, `--autostart`, or daemon-management command.
 
 * Root without a command shows help. Help/version finish without initializing
-  auth, services, or networking. Help still validates operands/options, but
-  `remove --help` requires neither consent nor a selector.
+  auth, the daemon, or networking. `--help` still validates operands, allowed
+  options, and `--timeout`, but not `--region` or `--operation` values.
+  `remove --help` requires neither consent nor a selector. `help <topic>`
+  accepts only the common options.
 * Commands/modes are case-sensitive. `ls` canonicalizes to `list`; bare `mode`
   canonicalizes to `mode status`. Version flags work only without a command.
   Help takes precedence over a valid version flag.
@@ -61,8 +63,9 @@ and [parser cases](../Frontend/Apple/macOS/CloudGatewayMacCore/Tests/CloudGatewa
 
 ## Selectors and inventory
 
-Accept a client UUID or a region plus positive ASCII-decimal index. Leading
-zeroes work. Reject compound config IDs as public selectors, signed numbers,
+Accept a client UUID or a region plus positive ASCII-decimal index. UUIDs use
+only the 36-character hyphenated form, in either case. Go's `uuid.Parse` accepts
+more forms, so don't use it as the selector check. Leading zeroes work. Reject compound config IDs as public selectors, signed numbers,
 fractions, Unicode digits, and overflow. Exact case-sensitive region IDs win;
 otherwise match trimmed lowercase display names or city aliases formed by
 removing the ID's first/last hyphen-separated components. Quote names with spaces.
@@ -80,10 +83,13 @@ Do not implement the older last-displayed-number mapping.
 
 `clientId` is the cloud UUID. `configId` is `signedInUID/regionId/clientId`,
 including when an admin can see another owner's client. Online inventory lists
-authorized cloud records, including configless/inactive rows. Offline inventory
-contains only the current account's authorized saved configurations. Owner
-metadata may be absent offline. Cached `installed:true` describes retained
-installation metadata, not a fresh operating-system observation.
+authorized cloud records, including configless/inactive rows, and drops
+`removed` rows. Offline inventory contains only the current account's
+authorized saved configurations, with `owner:null`, region order 1000, and
+eligibility `eligible` or `inactive`. The same cached rows appear online when
+the cloud list is empty, with `source:"cache"` and `scope:"authorized"`. Cached
+`installed:true` describes retained installation metadata, not a fresh
+operating-system observation.
 
 Source: [selectors/order](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCLI/CloudGatewayMacCLISelectors.swift),
 [account cache](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCore/CloudGatewayMacAccountCache.swift),
@@ -93,8 +99,10 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
 
 * Auth uses browser device approval. Print URL/code promptly, without
   automatically opening a browser. Suitable terminals offer copy/open/cancel.
-  JSON/redirected/noninteractive output suppress shortcuts and decoration.
-  `NO_COLOR` disables style/QR but retains interactive shortcuts. Cancellation
+  JSON/redirected/noninteractive output and `TERM=dumb` suppress shortcuts,
+  QR, and decoration. A non-empty `NO_COLOR` disables style/QR but retains
+  interactive shortcuts. Shortcuts also need stdin to be a terminal in the
+  foreground process group. Cancellation
   targets that attempt; frontend disappearance leaves polling bounded by expiry.
   `auth status` can succeed while signed out, denied, or restoring.
 * Logout ends the local session and hides account data, retaining the running
@@ -118,7 +126,8 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
   inventory. `--long` changes human output only.
 * Add uses enabled creation regions and verified capacity, including empty
   regions. It leaves the VPN and selection unchanged. Result creation data
-  carries requested name/region, not a new UUID. Inventory failure after verified
+  carries the trimmed name and the canonical region ID after matching (`sanjose`
+  becomes `us-sanjose-1`), not a new UUID. Inventory failure after verified
   success produces a warning. Ordinary uncertain creation failures map to
   `operation_unknown`; actual 401/403 invalidates account access.
 * Remove always requires an explicit selector and `--yes`, checked before IPC.
@@ -132,17 +141,24 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
 * Status can succeed with stale/unavailable observation and a failed latest
   operation. Explicit operation lookup returns the operation's mapped failure
   together with current observed state, which can differ from its original target.
-  The observation read is bounded at five seconds within the caller deadline.
+  Plain `status` and `mode status` wait up to five seconds for an observation,
+  within the caller deadline. `status --operation` makes one lookup without that
+  wait.
 * Update activates the already-installed runtime. Matching runtime is a no-op.
-  On Linux, services restart onto the installed version and keep the tunnel up.
-  Only an update that must stop the tunnel needs `--allow-disconnect`. It then
-  reconnects the same authorized config/mode, and initially off stays off.
-  See the update design in research.
+  On Linux, the daemon restarts onto the installed version and keeps the tunnel
+  up. `--allow-disconnect` is accepted and has no effect, and Linux never
+  returns `disconnect_required`. See the update design in research.
+* After a reboot, Linux reconnects the last connected client and mode unless
+  `down` or logout came first. macOS stays off after a reboot. This is an
+  intentional difference for headless machines, with no new flag.
 * Doctor reads supported setup/permission/auth/network evidence without login,
-  refresh, install, repair, or tunnel changes. Optional unknown/warning succeeds.
-  Linux adds a server-reachability warning that suggests `cloudgateway refresh`.
-  Cancellation/deadline takes precedence, then first required setup failure,
-  then required online failure. Setup probes can supply a specific mapped code.
+  refresh, install, repair, or tunnel changes. Only a `fail` status counts: a
+  failed optional check, and a warning or unknown on any check, still succeeds.
+  Each probe has a five-second default timeout, which fails a required check and
+  makes an optional one `unknown`. Linux adds a server-reachability warning that
+  suggests `cloudgateway refresh`. Cancellation/deadline takes precedence, then
+  first required setup failure, then required online failure. Setup probes can
+  supply a specific mapped code.
 
 Sources: [session reads](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCLI/CloudGatewayMacCLISession.swift),
 [mutations](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCLI/CloudGatewayMacCLIMutations.swift),
@@ -154,7 +170,8 @@ and [doctor](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMac
 ## JSON schema 1
 
 Stdout is compact NDJSON with recursively sorted object keys, unescaped `/`,
-UTC ISO-8601 timestamps, lowercase operation UUIDs, and a newline per record.
+UTC ISO-8601 timestamps in whole seconds with a `Z` suffix, lowercase operation
+UUIDs, and a newline per record.
 Data objects have no enum-case wrapper. Preserve arrays as `[]`, not null.
 In the field inventory below, `?` means omitted when absent. `|null` means the
 field is present even without a value. Other fields are required.
@@ -240,13 +257,17 @@ record. Login can emit `login_required` before its auth result. Accepted records
 have null `data` and `error`. Ordinary status leaves envelope `operationId:null`
 even with a retained `data.operation`. Explicit lookup uses the requested ID.
 Error records can carry typed data, including stale refresh inventory. Account
-redaction retains coarse operation state but nulls account-bound result,
-configId, warning, and error. Internal `isLong` and operation `failure` never
-serialize. Do not blanket-apply Go `omitempty` to optional fields.
+redaction retains coarse operation state but nulls account-bound result and
+configId. A redacted failed or unknown operation still carries a generic error
+(the operation's own failure, else `command_failed` or `operation_unknown`),
+and `warning` comes from the operation record. Error messages replace each
+control or format character with a space. Suggestions and IDs aren't sanitized.
+Internal `isLong` and operation `failure` never serialize. Do not blanket-apply Go `omitempty` to optional fields.
 
 Normative source: [public records](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCLI/CloudGatewayMacCLIRecords.swift),
 plus the login/update/doctor types linked above. Version fields remain strings;
 Linux sets both to its release version, without a separate build number.
+`codeHash` is the lowercase hex SHA-256 of the signed release manifest.
 Platform-specific messages/checks differ meaningfully, while shapes, shared
 enum values, command names, and exit mappings remain compatible.
 
@@ -259,7 +280,7 @@ the operation. Suppress SIGPIPE termination and return exit 1 on output failure.
 
 Unconfirmed reservations last 30 seconds. Non-stop receipts last 600 seconds
 from acceptance and are capped at 64. Ordinary terminal results last 600 seconds
-from completion in memory, unless replaced or the controller exits. Creation
+from completion in memory, unless replaced or the daemon exits. Creation
 has a separate result slot. Managed update has durable recovery. These clocks
 are independent. A receipt can survive restart without its result and yield
 unknown without redispatch. Expiry does not prove whether a cloud effect occurred.
@@ -297,11 +318,12 @@ and [request receipts](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Cloud
 
 Create language-neutral fixtures from existing literal macOS expectations,
 using synthetic state, fixed timestamps, and fixed UUIDs. Each case supplies
-argv/terminal environment, controller replies, expected stdout/stderr/exit,
+argv/terminal environment, daemon replies, expected stdout/stderr/exit,
 and reserve/flush/confirm/detach actions. Preserve JSON semantics and exact
 stable bytes, including Unicode sanitization/counting/order, nulls versus
 omissions, empty arrays, HTML escaping, date precision, and newline behavior.
 Go's default JSON encoding does not automatically match Swift's serializer.
+For example, Go always escapes U+2028 and U+2029, while Swift writes them raw.
 
 Cover every command/flag/alias, malformed argv, account states, offline/denied
 reads, region collisions, numbering, redaction, add/remove unknown outcomes,

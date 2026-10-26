@@ -1,8 +1,6 @@
 # Linux CLI research
 
-Research date: 2026-10-26. Reference implementation: `32dae6c` on local `main`.
-The existing `cli` branch had no unique commits. It was rebased onto that commit
-and renamed `linux-cli`. Nothing was pushed or committed for this research.
+Research date: 2026-10-26. Reference implementation: `32dae6c` on `main`.
 
 This is a proposed implementation design. There is no Linux client, installer,
 release, or completed Linux VM validation yet. Source inspection establishes
@@ -10,12 +8,11 @@ backend capability, not the state of deployed servers.
 
 ## Scope and original decisions
 
-This document supersedes the Linux proposal in
-[Plan Cross-Distro Linux CLI](t3-thread://v1/d1fc7405-49b5-4991-b988-486ff20689a2),
-including the final user corrections in that thread. The current macOS CLI is
-the public compatibility baseline. See the [parity contract](linux-cli-parity.md),
-[implementation checkpoints](../TODO/linux-cli.md), and
-[design review](linux-cli-review.md).
+This document supersedes the earlier cross-distro Linux CLI proposal, including
+the final user corrections from that discussion. The current macOS CLI is the
+public compatibility baseline. Linux emulates its interface, not its process
+architecture. See the [parity contract](linux-cli-parity.md) and
+[implementation checkpoints](../TODO/linux-cli.md).
 
 | Earlier proposal | Updated decision |
 | --- | --- |
@@ -24,7 +21,7 @@ the public compatibility baseline. See the [parity contract](linux-cli-parity.md
 | Required `up --mode` | Superseded by current `mode full\|mesh`, saved per-account preference, Full default |
 | Number from the last displayed list | Superseded by current region-local indices from settled inventory |
 | `login`, `regions`, `--autostart` examples | Use the implemented macOS command surface, with no added public commands/flags |
-| Daemon from v1 | Keep. Accepted work must survive CLI/SSH detachment |
+| Daemon from v1 | Keep, as one root daemon. Accepted work must survive CLI/SSH detachment |
 | Bundle `wg` or `wg-quick` | Wrap `wg`; own routes and DNS. Start with distro `wireguard-tools` |
 | Ubuntu first, few OS flags | Keep. Detect capabilities, with no distro flags in normal commands |
 | Shell installer, no CloudGateway package repository | Keep. Verify release assets before privileged installation |
@@ -40,8 +37,8 @@ WireGuard fallbacks are outside the initial target.
 
 ## Implementation choice
 
-Recommend Go under `Frontend/Linux/`, with a thin `cloudgateway` executable,
-an unprivileged background controller, and a small privileged networking service.
+Recommend Go under `Frontend/Linux/`, with a thin `cloudgateway` executable and
+one root background daemon.
 Use standard-library HTTP, JSON, cryptographic randomness, hashing, and local IPC.
 No generic REST framework is needed. Go's
 [`net/http`](https://pkg.go.dev/net/http) supplies HTTPS and transport control.
@@ -57,52 +54,54 @@ Extracting a portable contract core would require a separate refactor and Linux
 adapters. Go avoids that refactor but duplicates policy logic. Shared contract
 fixtures are therefore an implementation requirement.
 
-### Processes and local authority
+### Process and local authority
 
 * `cloudgateway`: parser, rendering, terminal interaction, and IPC only. Help and
-  version work locally without services, credentials, or network access.
-* `cloudgatewayd`: dedicated unprivileged system account. Owns device login,
-  Firebase tokens/refresh, inventory/cache, account generations, selections,
-  modes, operation reservations/results, and cloud mutations. Runs independently
-  of desktop login sessions.
-* `cloudgateway-netd`: root service with bounded capabilities. Owns one managed
-  kernel interface, retained tunnel secret records, route/rule/mark allocation,
-  resolver integration, observed network state, and an interrupted-change journal.
-  It has no Firebase SDK/client, release downloader, or shell execution endpoint.
+  version work locally without the daemon, credentials, or network access.
+* `cloudgatewayd`: one root systemd service. Owns device login, Firebase
+  tokens/refresh, inventory/cache, account generations, selections, modes,
+  operation reservations/results, cloud mutations, the managed kernel interface,
+  retained tunnel secret records, route/rule/mark allocation, its nftables table,
+  resolver integration, observed network state, and an interrupted-change
+  journal. Runs independently of login sessions.
 
-This preserves the macOS separation between account/controller work and the
-privileged VPN runtime. Linux interface and routing changes need
+macOS splits this work because NetworkExtension runs the tunnel in a separate
+OS-managed process. Linux has no such requirement. A second Linux service would
+need its own socket, intent protocol, and restart handshake, and the privileged
+side would still parse downloaded configs. tailscaled and NetBird also run one
+root daemon. Keep the network code in its own Go package with a typed interface
+and no HTTP or Firebase imports, so the boundary stays without a second process.
+
+Linux interface and routing changes need
 [`CAP_NET_ADMIN`](https://man7.org/linux/man-pages/man7/capabilities.7.html).
 That capability alone does not grant resolver D-Bus or privileged file access.
-Use root initially for the narrow network service and restrict it with systemd
-capability and filesystem controls. Do not apply `PrivateNetwork` or a sandbox
-that hides the host network it must configure. Exact unit settings need a spike
-on both supported Ubuntu versions, rather than copying latest-systemd options.
+Run as root and restrict the unit with systemd capability and filesystem
+controls. Do not apply `PrivateNetwork` or a sandbox that hides the host network
+it must configure. Exact unit settings need a spike on both supported Ubuntu
+versions, rather than copying latest-systemd options.
 
 Enroll one administrator-designated local operator UID during installation.
-The public socket accepts that UID and root. The private networking socket
-accepts the controller service UID and root. Check filesystem socket permissions
+The daemon socket accepts that UID and root. Check filesystem socket permissions
 and kernel [`SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html) on
 every connection. Never trust a UID/account claim supplied in a request.
 Cloud admin status does not confer local machine control. Root is the recovery
 authority, not a second Firebase account. Other local users cannot inspect or
 stop the operator's connection.
 
-Bind account-bound controller requests to the enrolled UID, Firebase UID, and
-session generation. Bare down requires local operator authority, with no account
-or usable auth credentials. The network service accepts bounded typed operations and opaque
-profile IDs, never arbitrary executable names, paths, shell snippets, or routes.
-Use bounded length-framed local messages and explicit IPC versions. Canonical
-profile identity stays `signedInUID/regionId/clientId`, including admin views of
-another owner's client. Root-owned installation directories prevent an ordinary
-user from replacing the privileged executable or its dependencies.
+Bind account-bound requests to the enrolled UID, Firebase UID, and session
+generation. Bare down requires local operator authority, with no account or
+usable auth credentials. The network package accepts bounded typed operations
+and opaque profile IDs, never arbitrary executable names, paths, shell snippets,
+or routes. Use bounded length-framed local messages and explicit IPC versions.
+Canonical profile identity stays `signedInUID/regionId/clientId`, including admin
+views of another owner's client. Root-owned installation directories prevent an
+ordinary user from replacing the daemon or its dependencies.
 
 ### Secrets and persisted state
 
-Keep metadata caches separate from credentials and tunnel secrets. The
-controller's service-owned directory is `0700`, with atomically replaced `0600`
-credential files. The networking service keeps structured secret records in a
-root-owned `0700` directory with `0600` files. Do not persist downloaded config
+Keep metadata caches separate from credentials and tunnel secrets. The daemon's
+state directory is root-owned `0700`. Credentials and structured tunnel secret
+records are separate, atomically replaced `0600` files. Do not persist downloaded config
 documents in metadata, operation logs, journals, or diagnostic output. An
 opaque reference identifies the retained secret record.
 
@@ -117,7 +116,7 @@ requirement.
 
 Pass WireGuard configuration to `wg` through an inherited descriptor/pipe,
 with no key bytes in argv or ordinary temporary files. Disable core dumps for
-services. Never print raw HTTP error bodies, tokens, keys, full configs,
+the daemon. Never print raw HTTP error bodies, tokens, keys, full configs,
 `wg showconf`, or `wg show ... dump`. No VPN traffic, DNS-query, packet,
 destination, or per-user connection-history logging is added.
 
@@ -234,7 +233,7 @@ Removal requires fresh authorization and an exact inactive target. Evict local
 eligibility durably before dispatch, preserve uncertain eviction across restart,
 and never infer removal from a changed index. Verified deletion succeeds even
 if local cleanup/inventory refresh needs a warning. Retained secret records stay
-under the existing retention policy. A disconnected network service or unknown
+under the existing retention policy. A failed network observation or unknown
 runtime state cannot prove that a target is inactive.
 
 Use explicit HTTP deadlines, response-size limits, redirect rejection for
@@ -267,7 +266,7 @@ while reporting full-mode success is not.
 
 [`wg`](https://git.zx2c4.com/wireguard-tools/plain/src/man/wg.8) configures
 WireGuard peers/keys, while Linux tools configure links and routes. This lets the
-service own resource identity, rollback, DNS, and observed state explicitly.
+daemon own resource identity, rollback, DNS, and observed state explicitly.
 Invoke trusted absolute executables with fixed argument arrays, never a shell.
 
 [`wg-quick`](https://git.zx2c4.com/wireguard-tools/plain/src/man/wg-quick.8)
@@ -289,24 +288,52 @@ Ubuntu, Debian, and Arch. Direct netlink or
 [`wgctrl-go`](https://github.com/WireGuard/wgctrl-go) can replace the adapter later,
 but neither removes route/DNS lifecycle work.
 
-### Routing and VM management
+### Full routing and VM access
+
+Full means internet traffic and DNS use the region. Browsers, package managers,
+and other outbound connections exit from the regional server over IPv4 and IPv6.
+The local network still works, and SSH into the machine keeps working. This
+matches macOS, where WireGuardKit adds the AllowedIPs routes without capturing
+the Mac's local subnets.
+
+Use the `wg-quick` policy routing pattern for both address families. WireGuard's
+[routing reference](https://www.wireguard.com/netns/) explains it.
+
+* A dedicated route table holds the tunnel default route. A rule sends every
+  packet without the tunnel's fwmark to that table. WireGuard marks its own
+  encrypted packets, so they use the physical link.
+* A higher-priority `lookup main suppress_prefixlength 0` rule keeps every
+  more-specific main-table route outside the tunnel. That covers directly
+  connected subnets, link-local DHCP and metadata, cloud static routes, and
+  container bridges. Only the default route moves.
+* A higher-priority `from <physical address> lookup main` rule for each physical
+  address sends replies to inbound sessions out the physical link. SSH from any
+  source keeps working without a management allowlist. The daemon updates these
+  rules when DHCP changes an address.
+
+An application that explicitly binds to the physical address also bypasses the
+tunnel. Full-route claims disclose that and the local-route behavior.
 
 Allocate one interface and dedicated route tables, rule priorities, and marks
-for both address families. Record the allocation and reject collisions.
-Exempt marked outer WireGuard packets from the tunnel to prevent recursion.
-WireGuard's [routing reference](https://www.wireguard.com/netns/) explains this
-fwmark policy and the usual preservation of nondefault main-table routes.
-Porting that pattern without reviewing its exceptions would not establish the
-requested full-route behavior.
+for both address families. Record the allocation and reject collisions. Owned
+resources use fixed identities, so the daemon can find and remove them without
+the journal.
 
 Ubuntu Server manages its network with netplan and systemd-networkd. By default,
 networkd [removes routing rules and routes](https://www.freedesktop.org/software/systemd/man/latest/networkd.conf.html)
 it didn't configure, such as after `netplan apply` or a networkd restart. It
 ignores links it doesn't manage, so tunnel interface routes are likely safe.
-Policy rules and exception routes on the physical link are exposed. `wg-quick`
-doesn't handle this. If those rules vanish, Full traffic quietly falls back to
-the underlay. Netd watches its owned rules and routes over netlink and reapplies
-any that disappear, reporting `connecting` until they match again.
+Policy rules are exposed. `wg-quick` doesn't handle this. If those rules vanish,
+Full traffic quietly falls back to the underlay. The daemon watches its owned
+rules and routes over netlink and reapplies any that disappear, reporting
+`connecting` until they match again.
+
+The backend config has no `MTU` line. Set the interface MTU to the smaller of
+the route MTU toward the endpoint and 1500, minus 80. Ordinary links get 1420,
+which matches macOS's physical MTU minus 80 on a 1500-byte network. Cloud NICs
+often use jumbo frames, such as OCI's 9000-byte default, while their internet
+gateways drop packets over 1500. The plain `wg-quick` calculation would produce
+an 8920-byte tunnel there. A config `MTU` wins, as on macOS.
 
 Preflight must inspect actual routes, local addresses, other VPNs, and resolver
 paths. A cloud VPC overlapping `10.0.0.0/16` is a concrete blocker, including
@@ -317,27 +344,30 @@ operator addressing decision. Do not change the fleet range in this ticket.
 This is a known limitation for hosts whose own network uses `10.0.0.0/24` or
 `10.0.1.0/24`, such as a default OCI VCN or a home router on 10.0.0.x.
 
-Require a root-owned deployment policy before Full activation, independently of
-whether the caller appears to use SSH. The policy explicitly declares either
-console administration or fixed administrator-approved management destination
-prefixes. Use dedicated higher-priority underlay route rules for those prefixes,
-bound to the validated physical link/gateway. Do not infer authority from
-`SSH_CONNECTION`, caller ancestry, or local socket credentials.
+The public CLI gains no Linux-only routing flags.
 
-This protects replies to existing and new management sessions only when their
-remote source falls within a configured prefix. A new management source outside
-that set is not protected. An administrator can choose a trusted management
-network, VPN, or bastion address rather than a changing laptop address. Require
-console recovery during initial validation. Preflight checks the policy's
-routes in both relevant families, rejects conflicts, and refuses Full without
-an explicit valid policy. Link/gateway changes require revalidation.
+### Owned nftables table
 
-Required metadata/cloud-service bypasses are separate explicit policy entries.
-Do not silently bypass all RFC1918 networks or all link-local space. OCI
-link-local space also carries non-metadata services. Never learn or persist
-exceptions from traffic or retain SSH source history. The public CLI gains no
-Linux-only routing flags. Full-route claims disclose these approved static
-management/service exceptions, without extending them to general internet traffic.
+`wg-quick` adds nftables rules beyond routes, and the daemon needs equivalents.
+Own one `inet cloudgateway_client` table. Its name differs from the regional
+servers' `inet cloudgateway` ACL table in the
+[host bootstrap](../Infrastructure/OCI/host/bootstrap.sh), so a test install on
+a server can't remove server policy. Like the server, create the table on up,
+delete the whole table on down, and never edit other tables or flush global
+rules. A drop verdict in any table is final, so this table can't weaken UFW or
+other firewall rules.
+
+* In both modes, drop packets addressed to the tunnel addresses that arrive on
+  another interface, unless they come from the host itself. Linux accepts
+  traffic for any local address on any interface. Without this rule, a neighbor
+  on the same LAN or VPC can reach services bound to the mesh address and skip
+  the server-side account ACL.
+* In Full, copy the WireGuard UDP connection mark back onto incoming packets and
+  set `net.ipv4.conf.all.src_valid_mark=1`. Without them, a host with strict
+  `rp_filter` drops the server's replies. Leave the sysctl set on down, as
+  `wg-quick` does.
+
+Check for `nft` alongside `wg` and `iproute2`.
 
 ### DNS and endpoint resolution
 
@@ -375,13 +405,17 @@ DNS routing, not fail-closed DNS under arbitrary external reconfiguration. A
 stronger guarantee requires a separately specified enforcement policy.
 
 Resolve the WireGuard hostname with normal host DNS during `up`, before
-installing VPN routes/DNS. A server deploy changes its public IPv4 and leaves a
-connected tunnel dead. There is no automatic re-resolution or polling.
+installing VPN routes/DNS. When a Full tunnel is already installed, such as when
+switching clients or reconnecting, use the outside-tunnel lookup described below
+instead, so a dead tunnel can't block the new endpoint. A server deploy changes
+its public IPv4 and leaves a connected tunnel dead. There is no automatic
+re-resolution or polling.
 
-Netd answers "is the server responding?" only when `status`, `doctor`, or
-`refresh` asks. If the kernel's latest handshake is under 60 seconds old, the
-answer is yes, with no traffic. Otherwise netd sends one DNS query through the
-tunnel to the regional DNS address with a 2-second timeout. A reply means yes.
+The daemon checks "is the server responding?" only for human `status`, `doctor`,
+and `refresh`. JSON `status` never shows the hint, so it skips the check. If the
+kernel's latest handshake is under 60 seconds old, the answer is yes, with no
+traffic. Otherwise the daemon sends one DNS query through the tunnel to the
+regional DNS address with a 2-second timeout. A reply means yes.
 Handshake age alone can't give a 1-minute bound: keepalives don't update it, and
 a healthy tunnel only rehandshakes about every 2 minutes. This probe only
 drives the hint below. It doesn't change the observation mapping.
@@ -391,13 +425,13 @@ suggest `cloudgateway refresh`. Status JSON is unchanged.
 
 Only `refresh` and `list --refresh` try to recover a changed server IP. They
 run the same check first. If the server is responding, everything stays inside
-the VPN and the inventory refresh runs as usual. If not, netd re-resolves the
+the VPN and the inventory refresh runs as usual. If not, the daemon re-resolves the
 server's hostname outside the VPN: one query for only that hostname, sent to
 the physical link's DNS servers from a socket carrying the WireGuard fwmark.
-Mesh can use normal host DNS for this. If the IP changed, netd updates the peer
+Mesh can use normal host DNS for this. If the IP changed, the daemon updates the peer
 endpoint in place with `wg set`, leaving routes and DNS alone, then the
 inventory refresh runs. No other lookup leaves the tunnel. If refresh can't fix
-it, `down` then `up` still works. Management exceptions keep SSH available.
+it, `down` then `up` still works. The source-address rules keep SSH available.
 
 ### Observations, failure, and persistence
 
@@ -420,13 +454,13 @@ Use this normative mapping, without traffic probes or connection history:
 | Stop/failed-transition cleanup is running and owned resources remain | `disconnecting`, active mode null once its policy no longer holds |
 | Fresh observation proves all owned interface/routes/rules/DNS changes absent or reverted | `disconnected`, current observation, active mode null |
 | Read succeeds but state is partial, mismatched, or restart ownership is not reconciled | `unknown`, current observation, active mode null |
-| Helper observation is lost after a prior successful read | Retain last observed coarse state with `stale`, active mode null, never treat it as current readiness |
+| Network observation fails after a prior successful read | Retain last observed coarse state with `stale`, active mode null, never treat it as current readiness |
 | No usable observation has ever completed | `unknown` with `unavailable` observation, active mode null |
 
 Endpoint/handshake failure alone does not erase verified configured state.
 Keep routes/DNS and active mode. `connected` means configured runtime readiness,
 not verified end-to-end delivery. A kernel tunnel can remain configured after
-either service crashes. Before reporting a current applied client/mode after
+the daemon crashes. Before reporting a current applied client/mode after
 restart, compare actual owned resources with the committed profile/hash/mode.
 Redact profile identity when the current account cannot see it. Remove safety
 requires a fresh inactive observation; stale/unavailable data cannot authorize it.
@@ -436,50 +470,41 @@ Preflight failures preserve the current tunnel. During setup/replacement,
 journal only owned changes and roll them back on failure. Attempt restoration
 of a previous working profile, and report the actual state if restoration fails.
 Incomplete cleanup remains visible and blocks conflicting new work. Persist
-explicit down intent before teardown so a service crash cannot resurrect it.
-Service restart reconciles owned state, without adopting an unrelated interface
+explicit down intent before teardown so a daemon crash cannot resurrect it.
+Daemon restart reconciles owned state, without adopting an unrelated interface
 with a matching name. Preserve unrelated UFW/nftables rules and marks, never
 flush global tables. See [nftables verdict semantics](https://netfilter.org/projects/nftables/manpage.html).
 
-### Authority across the two services
+### Intent, logout, and boot
 
-Netd is the sole writer of the durable network intent record. It includes a
-monotonic revision, account/session generation, profile/mode identity, transition
-phase, and start/reconnect suppression. Every network effect is serialized
-against that revision. Controller requests name the expected revision; stale
-start/repair/update-reconnect requests fail rather than overwrite newer intent.
-Root recovery advances the same revision. On disagreement, netd's newer record
-wins and the controller observes/reconciles it instead of replaying local work.
+The daemon keeps one durable network intent record: a monotonic revision,
+account/session generation, profile/mode identity, transition phase, and
+start/reconnect suppression. Every network effect is serialized against it and
+persisted before the kernel changes. A newer revision wins over older queued
+work, and root recovery advances the same revision.
 
-Down first advances and persists netd's stop/suppression revision, then removes
-resources. Acknowledgment of intent is distinct from confirmed-stop success.
-No start from an older revision can run after that barrier. The stop path never
-requires a Firebase account. A failed persistence/observation step cannot be
-reported as a successful down.
+Down first persists a stop/suppression revision, then removes resources.
+Acknowledgment of intent is distinct from confirmed-stop success. No start from
+an older revision can run after that point. The stop path never requires a
+Firebase account. A failed persistence/observation step cannot be reported as a
+successful down.
 
-Logout first persists the controller's invalidated auth generation and cleanup
-marker and clears usable credentials. It then requests a netd suppression
-barrier that cancels uncommitted starts/repairs/reconnects while preserving a
-fully established tunnel. A start already committed before the barrier remains
-that retained tunnel. A partial start is rolled back. Successful logout waits
-for durable suppression acknowledgment; failure reports incomplete auth cleanup
-and retains the marker for recovery, rather than claiming suppression succeeded.
+Logout first persists the invalidated auth generation, a cleanup marker, and
+start suppression, then clears usable credentials. It cancels uncommitted
+starts/repairs/reconnects and rolls back a partial start, while preserving a
+fully established tunnel. Failure reports incomplete auth cleanup and retains
+the marker for recovery, rather than claiming suppression succeeded. After a
+restart, the daemon processes any logout/down marker before running a journaled
+start, and a revoked generation stays revoked.
 
-Start/repair grants also require the live authenticated controller channel.
-Channel loss suppresses new start effects but leaves an established tunnel and
-stop/cleanup available. After either service restarts, no journaled start or
-update reconnect may run until the controller restores its persisted generation,
-processes any logout/down marker, and issues a matching fresh grant. A revoked
-generation is never restored from netd's journal. This restart handshake closes
-the gap between controller-local auth invalidation and independent netd recovery.
-
-Start services at boot, with automatic VPN connection disabled by default to
-match macOS's separation between launch and connect. A proposed opt-in root
-deployment setting may resume a specific enrolled account/config/mode after
-reboot. It must require retained account authorization, obey persisted down
-intent, and be suppressed by logout. Do not add `--autostart` to the CLI.
-Distinguish daemon crash recovery from a fresh OS boot and explicit service
-maintenance from user down. `network-online.target` is
+Start the daemon at boot. After a reboot, reconnect the last client and mode
+when the saved intent was connected, with no `down` or logout since. Running
+`down` before a reboot keeps the VPN off. This intentionally differs from
+macOS, which stays off after a reboot, because a headless VM has nobody to
+reconnect it after an automatic update reboot. Boot resume needs the same
+retained account authorization as bare `up`, and retries the endpoint lookup
+until the network is ready, reporting `connecting`. Do not add `--autostart` to
+the CLI. `network-online.target` is
 [boot ordering, not a runtime availability monitor](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#network-online.target).
 
 When an established tunnel loses its endpoint, retain routes/DNS until the user
@@ -503,7 +528,9 @@ Retain JSON `version` and `build` as strings. Proposed Linux mapping:
 There is no separate build counter. Keep the human version formatter
 `CloudGateway 1.0.0 (1.0.0)` to preserve its shape. The duplicate value is the
 explicit cost of retaining schema 1. A cleaner single-field schema would be
-a separate public contract change.
+a separate public contract change. Update `target.codeHash` is the lowercase hex
+SHA-256 of the signed release manifest, which fits the 64-character format macOS
+validates.
 
 Publish amd64/arm64 archives and a signed manifest binding version, architecture,
 asset size/hash, runtime compatibility, and all installed executables. Verify
@@ -525,41 +552,44 @@ manager requirement during ordinary CLI use.
 
 Installing a new release should just work. Linux has none of the macOS update
 constraints: no OS-owned extension that refuses replacement, and no separate
-approval or restart. The tunnel also outlives its service. The WireGuard
-interface, routes, rules, and resolver settings are kernel and resolved state,
-so a restarted netd adopts them from its journal, the same as crash recovery.
+approval or restart. The tunnel also outlives the daemon process. The WireGuard
+interface, routes, rules, nftables table, and resolver settings are kernel and
+resolved state, so a restarted daemon adopts them from its journal, the same as
+crash recovery.
 
 The installer verifies the release, extracts it into a root-owned versioned
-directory, and atomically points `current` at it. It then restarts the
-controller and netd onto the new version. The tunnel stays up when the new
-netd can adopt the existing network journal. The controller first stops
-accepting new work and waits briefly for running operations. If work is still
-running, the installer leaves the new release installed and tells the user to
-run `cloudgateway update` later. A controller restart can make an ordinary
-operation result unknown, as the parity contract already allows. Nothing is
-replayed.
+directory, atomically points `current` at it, and restarts the daemon. On
+SIGTERM, the daemon stops accepting new work, waits up to a short bound for
+running cloud requests, persists receipts and results, and exits without
+touching the tunnel. The new daemon migrates its stored state, adopts the
+running tunnel, and continues. A request still running at the bound can end as
+unknown, as the parity contract already allows. Nothing is replayed.
+
+Each release reads the previous release's journal and state formats, so an
+ordinary update always adopts the tunnel. If the daemon finds a journal it
+can't read, it removes owned resources by their fixed identities and reports
+disconnected, rather than guessing. The installer refuses a downgrade across a
+storage format change. Keep the previous release directory for manual rollback.
 
 `cloudgateway update` keeps its macOS meaning: activate the installed runtime.
-On Linux it restarts any service not running the installed version. When
-everything matches, it's a no-op. When netd can't adopt the running tunnel, such
-as after a network journal format change, the update needs `--allow-disconnect`.
-It stops the tunnel, restarts, and reconnects the same still-authorized
-client/mode. New down/logout wins over reconnect, and initially off stays off.
-The controller persists the update record before restarting itself, so
-`status --operation` still works afterward and CLI detach doesn't cancel it.
+On Linux it restarts the daemon when the running version differs from `current`,
+and is a no-op when they match. That only happens when an install skipped or
+failed its restart. The daemon persists the update record before it exits,
+systemd restarts it on the new version, and the new daemon completes the record.
+`status --operation` works across the restart, and CLI detach doesn't cancel it.
 
-Each service migrates its own stored state forward on start. The installer
-refuses a downgrade across a storage format change. A new CLI and an older
-running controller only talk within a compatible IPC version. Otherwise they
-return the existing version error until `update` or the installer restarts the
-controller. Linux emits `prepared`, `activating`, `checking_readiness`, and
-`completed`. It adds `stopping` and `reconnecting` only for a disconnecting
-update. Apple's approval and restart phases stay in the schema but are never
-emitted. Linux help and recovery text use platform wording without changing
-JSON shapes or exit categories.
+Linux emits `prepared`, `activating`, `checking_readiness`, and `completed`. The
+tunnel stays up, so Linux never emits `stopping` or `reconnecting` and never
+returns `disconnect_required`. `--allow-disconnect` is accepted for parity and
+has no effect. Apple's approval and restart phases stay in the schema but are
+never emitted. A new CLI and an older running daemon only talk within a
+compatible IPC version, and otherwise return the existing version error until
+the restart finishes. Linux help and recovery text use platform wording without
+changing JSON shapes or exit categories.
 
-Uninstall stops only managed networking, restores owned DNS/routes, disables
-service/socket activation, and removes only owned installation files. Preserve
+Uninstall stops only managed networking, restores owned DNS/routes, deletes the
+owned nftables table, disables the service, and removes only owned installation
+files. Preserve
 account data unless purge is explicitly chosen. Do not delete cloud clients,
 remove distro dependencies, or disturb another network manager.
 
@@ -577,23 +607,27 @@ Release requires evidence for:
   underlays, kernel WireGuard, resolved, and restrictive supported firewalls.
 * Full: controlled IPv4/IPv6 internet egress and system DNS through the region,
   including inner IPv6 over IPv4 transport, resolver restarts, DHCP changes,
-  and MTU-sensitive traffic. Verify regional upstream IPv6 independently.
+  and MTU-sensitive traffic on jumbo-frame cloud NICs. Verify regional upstream
+  IPv6 independently.
 * Mesh: same-account IPv4/IPv6 inbound/outbound reachability within and across
   regions, cross-account denial, and unchanged ordinary internet/DNS behavior.
   Host service bindings/firewalls still govern inbound access.
-* Lifecycle: caller detach, failed acceptance output, service crash in every
-  mutation phase, explicit down, boot policies, logout/account change, manual
-  `down`/`up` after a server IP change, partial cleanup, `netplan apply`/networkd
-  restart, and installing a new release while connected.
-* VM safety: SSH return paths, configured management/cloud-service exceptions,
-  VPC/mesh collisions, competing VPN/rule/mark allocations, and unsupported
-  resolver domains. Verify failures leave an existing tunnel untouched.
-* Authority/secrets: rejected UID/path/argv/hook injection, private socket
-  permissions, account redaction, revoked/downgraded access, refresh rotation,
-  and no secrets in process lists, output, journal, or diagnostics.
+* Lifecycle: caller detach, failed acceptance output, daemon crash in every
+  mutation phase, explicit down, reboot resume and `down` before reboot,
+  logout/account change, manual `down`/`up` after a server IP change, partial
+  cleanup, `netplan apply`/networkd restart, and installing a new release while
+  connected.
+* VM safety: SSH from a source address not seen before, LAN/VPC, metadata,
+  DHCP, and NTP reachability in Full, LAN/VPC traffic to the mesh address being
+  dropped, VPC/mesh collisions, competing VPN/rule/mark allocations, strict
+  `rp_filter`, and unsupported resolver domains. Verify failures leave an
+  existing tunnel untouched.
+* Authority/secrets: rejected UID/path/argv/hook injection, socket permissions,
+  account redaction, revoked/downgraded access, refresh rotation, and no secrets
+  in process lists, output, journal, or diagnostics.
 
-The highest-risk implementation spikes are full-mode DNS exclusivity, VM
-management routing, two-service recovery, and netd adopting a running tunnel
-on restart. Existing backend gaps
+The highest-risk implementation spikes are full-mode DNS exclusivity, SSH and
+local-route behavior in Full, and the daemon adopting a running tunnel on
+restart. Existing backend gaps
 are create idempotency and per-device remote revocation. Neither requires new endpoints
 to ship parity, but neither should be promised by the Linux client.
