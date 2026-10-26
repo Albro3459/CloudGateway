@@ -202,7 +202,7 @@ another active VPN. Without a usable cloud config, the existing VPN stays on.
 Access checks and server inventory reads each have a 10-second deadline. Region
 and client queries run together, ignore Firestore cache-only snapshots, and
 detach their listeners on completion, cancellation, or timeout. Menu opening
-refreshes cloud inventory at most once per 30 seconds; explicit Refresh bypasses
+refreshes cloud inventory at most once per 60 seconds; explicit Refresh bypasses
 that interval. Account switching waits for cancelled commands and required installation
 cleanup before enabling another command.
 Launch at Login starts the menu app without connecting.
