@@ -216,6 +216,27 @@ applying uid/us-sanjose-1/client-5
 applied uid/us-sanjose-1/client-5`)
 }
 
+func TestFailedTeardownOfPreviousProfileIsAnApplyError(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	previous := testProfile(ModeFull, 5)
+	h.apply(previous)
+	host.FailWhen(networktest.Match("ip", "link", "del"))
+
+	_, err := h.m.Apply(ctx, testProfile(ModeFull, 9), &previous)
+
+	var applyErr *ApplyError
+	if !errors.As(err, &applyErr) || applyErr.Restored {
+		t.Fatalf("err = %v", err)
+	}
+	host.ClearFailures()
+	host.FailWhen(networktest.Match("ip", "-j", "-d", "-N", "address", "show"))
+	_, err = h.m.Apply(ctx, testProfile(ModeFull, 9), &previous)
+	if err == nil || errors.As(err, &applyErr) {
+		t.Fatalf("read failure before any change = %v, want a plain error", err)
+	}
+}
+
 func TestReplacementReportsDisconnectedWhenRestoreFails(t *testing.T) {
 	host := networktest.NewUbuntu()
 	h := newHarness(t, host)

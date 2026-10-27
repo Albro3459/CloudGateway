@@ -373,8 +373,9 @@ func (e *PreflightError) Has(kind ConflictKind) bool {
 	return false
 }
 
-// ApplyError reports a failed install after rollback. Restored is true when the
-// previous profile is running again
+// ApplyError reports a failure after Apply changed the kernel: a failed
+// teardown of the previous profile, or a failed install after rollback.
+// Restored is true when the previous profile is running again
 type ApplyError struct {
 	Err      error
 	Restored bool

@@ -18,10 +18,11 @@ type installPlan struct {
 	payload  []byte
 }
 
-// Apply installs p, replacing any owned tunnel. Preflight and lookup failures
-// leave the current tunnel untouched. A later failure rolls back owned changes
-// and, when previous is set and a tunnel was applied, reinstalls previous. The
-// observation reports the resulting state either way
+// Apply installs p, replacing any owned tunnel. Preflight, read, and lookup
+// failures leave the current tunnel untouched. Every failure after the first
+// kernel change is an *ApplyError: owned changes roll back and, when previous
+// is set and a tunnel was applied, previous is reinstalled. The observation
+// reports the resulting state either way
 func (m *Manager) Apply(ctx context.Context, p Profile, previous *Profile) (Observation, error) {
 	if err := p.validate(); err != nil {
 		return m.observeWith(ctx, err)
@@ -42,7 +43,7 @@ func (m *Manager) Apply(ctx context.Context, p Profile, previous *Profile) (Obse
 	physical := s.physicalAddrs(fixed)
 	if old != nil || s.anyOwned(res) {
 		if err := m.teardown(ctx, old); err != nil {
-			return m.observeWith(ctx, err)
+			return m.observeWith(ctx, &ApplyError{Err: err})
 		}
 	}
 	if err := m.install(ctx, p, plan, physical); err != nil {
