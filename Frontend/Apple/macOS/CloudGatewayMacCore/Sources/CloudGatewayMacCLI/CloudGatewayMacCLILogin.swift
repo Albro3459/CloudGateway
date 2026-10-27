@@ -143,6 +143,7 @@ struct CloudGatewayMacCLILogin {
         case .denied: .init(CloudGatewayMacCLIError.Code.accessDenied)
         case .invalidResponse: .init(CloudGatewayMacCLIError.Code.invalidResponse)
         case .offline: .init(CloudGatewayMacCLIError.Code.networkUnavailable)
+        case .signInRequired: .init(CloudGatewayMacCLIError.Code.signInRequired)
         case .unavailable: .init(CloudGatewayMacCLIError.Code.credentialsUnavailable, message: "Sign-in could not finish. Try again")
         }
     }

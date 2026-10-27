@@ -253,6 +253,8 @@ func loginFailure(result ipc.LoginResult) *cliError {
 		return errorCode(codeAccessDenied)
 	case ipc.LoginOffline:
 		return errorCode(codeNetworkUnavailable)
+	case ipc.LoginSignInRequired:
+		return errorCode(codeSignInRequired)
 	case ipc.LoginUnavailable:
 		return newError(codeCredentialsUnavailable, "Sign-in could not finish. Try again", "")
 	}

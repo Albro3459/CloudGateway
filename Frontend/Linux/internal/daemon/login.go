@@ -115,6 +115,9 @@ func (c *Controller) watchRetainedLogin(ctx context.Context, id string, restore 
 		c.finishRetainedLocked(id, ipc.LoginAuthorized)
 	case c.accessResult == ipc.AccessDenied:
 		c.finishRetainedLocked(id, ipc.LoginDenied)
+	case c.creds == nil:
+		// Firebase rejected the retained credentials, so they were discarded
+		c.finishRetainedLocked(id, ipc.LoginSignInRequired)
 	default:
 		c.finishRetainedLocked(id, ipc.LoginOffline)
 	}

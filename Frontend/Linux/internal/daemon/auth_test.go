@@ -187,6 +187,27 @@ func TestLoginWithDeniedRetainedSessionReportsDenied(t *testing.T) {
 	expect(t, "access", h.settled().Access, ipc.AccessDenied)
 }
 
+func TestLoginWithRejectedRetainedSessionRequiresSignIn(t *testing.T) {
+	h := newHarness(t)
+	h.seedSession(userA, 1)
+	h.cloud.set(func(f *fakeCloud) { f.accessErr = cloudError(cloud.KindOffline, 0, false) })
+	h.open()
+	h.settled()
+	h.cloud.set(func(f *fakeCloud) {
+		f.accessErr = nil
+		f.refreshErr = cloudError(cloud.KindSignInRequired, 400, false)
+	})
+	// An expired ID token makes the restore refresh with the rejected token
+	h.clock.Advance(3 * time.Hour)
+	id := newID()
+
+	h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: id})
+	done := h.waitLogin(id, ipc.LoginFinished)
+
+	expect(t, "result", done.Result, ipc.LoginSignInRequired)
+	expect(t, "retained", h.settled().HasRetainedSession, false)
+}
+
 func TestRestoreRetainedSessionOnlineAndOffline(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)

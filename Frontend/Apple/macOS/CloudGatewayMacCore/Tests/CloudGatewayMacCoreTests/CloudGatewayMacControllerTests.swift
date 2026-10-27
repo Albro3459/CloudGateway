@@ -2409,6 +2409,22 @@ private actor MacControllerGate {
     #expect(fixture.auth.signOutCount == 0)
 }
 
+@Test @MainActor func macControllerRetainedLoginRequiresSignInWhenFirebaseDropsTheSession() async throws {
+    let fixture = try MacControllerFixture()
+    let access = MacControllerGate()
+    fixture.inventory.accessGate = access
+    fixture.controller.start()
+    defer { fixture.controller.shutdown() }
+    try await controllerWaitUntil { await access.entered }
+    let id = UUID()
+    #expect(fixture.controller.beginLogin(attemptId: id, origin: .cli).phase == .restoring)
+    // Firebase signs out once it rejects the refresh token
+    fixture.auth.emit(nil)
+    await access.release()
+    try await controllerWaitUntil { fixture.controller.loginStatus(attemptId: id).result == .signInRequired }
+    #expect(fixture.domainSnapshot.domain.accountId == nil)
+}
+
 @Test @MainActor func macControllerRetainedLoginAuthorizationIsTerminalBeforeAccountPublication() async throws {
     let fixture = try MacControllerFixture()
     let access = MacControllerGate()

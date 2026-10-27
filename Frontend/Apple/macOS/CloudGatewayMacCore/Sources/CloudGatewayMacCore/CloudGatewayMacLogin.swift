@@ -10,7 +10,7 @@ public struct CloudGatewayMacLoginStatus: Codable, Equatable, Sendable {
     }
 
     public enum Result: String, Codable, Sendable {
-        case authorized, busy, cancelled, expired, denied, unavailable, invalidResponse, offline
+        case authorized, busy, cancelled, expired, denied, unavailable, invalidResponse, offline, signInRequired
     }
 
     public struct Challenge: Codable, Equatable, Sendable {

@@ -361,6 +361,8 @@ const (
 	LoginInvalidResponse LoginResult = "invalidResponse"
 	LoginOffline         LoginResult = "offline"
 	LoginUnavailable     LoginResult = "unavailable"
+	// LoginSignInRequired means the retained session was rejected and discarded, so a new sign-in is needed
+	LoginSignInRequired LoginResult = "signInRequired"
 )
 
 type LoginChallenge struct {

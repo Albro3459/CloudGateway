@@ -169,7 +169,7 @@ func TestLoginOutputFailureCancelsOnlySubmittedAttempt(t *testing.T) {
 
 func TestLoginTerminalResultsMapExitCodes(t *testing.T) {
 	for result, exit := range map[ipc.LoginResult]int{ipc.LoginDenied: 3, ipc.LoginExpired: 8, ipc.LoginBusy: 7,
-		ipc.LoginCancelled: 130, ipc.LoginOffline: 6, ipc.LoginUnavailable: 4, ipc.LoginInvalidResponse: 1} {
+		ipc.LoginCancelled: 130, ipc.LoginOffline: 6, ipc.LoginUnavailable: 4, ipc.LoginInvalidResponse: 1, ipc.LoginSignInRequired: 3} {
 		f := newLoginFixture(t)
 		f.result = result
 		expectExit(t, f.run("auth", "login", "--json"), exit)
