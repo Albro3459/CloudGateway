@@ -202,7 +202,7 @@ func (s *snapshot) link(name string) *link {
 }
 
 func (res Resources) priorities() []int {
-	return []int{res.SourcePriority, res.MeshPriority, res.LocalPriority, res.SuppressPriority, res.TunnelPriority}
+	return []int{res.SourcePriority, res.MeshLocalPriority, res.MeshPriority, res.LocalPriority, res.SuppressPriority, res.TunnelPriority}
 }
 
 func (s *snapshot) ownedRules(res Resources) []rule {
@@ -284,18 +284,21 @@ func (s *snapshot) fullInstalled(res Resources) bool {
 	return false
 }
 
-// physicalAddrs are global addresses on links that are up, outside the owned
-// interface and loopback. Down links carry no replies, and skipping them keeps
-// a Kubernetes kube-ipvs0 with one address per service from adding a rule each
+// physicalAddrs are global addresses outside the owned interface. Addresses on
+// loopback and down links, such as anycast VIPs or kube-ipvs0 service IPs,
+// count only outside the local ranges. Replies to private clients already take
+// the local rules, so a Kubernetes node adds no rule per ClusterIP, while a
+// public load balancer IP still answers outside the tunnel
 func (s *snapshot) physicalAddrs(res Resources) []netip.Addr {
 	var addrs []netip.Addr
 	for _, l := range s.links {
-		if l.Name == res.Interface || l.Name == res.PendingInterface || l.Loopback || !l.Up {
+		if l.Name == res.Interface || l.Name == res.PendingInterface {
 			continue
 		}
 		for _, a := range l.Addrs {
-			if a.Global {
-				addrs = append(addrs, a.Prefix.Addr())
+			addr := a.Prefix.Addr()
+			if a.Global && (l.Up && !l.Loopback || !slices.ContainsFunc(localPrefixes, func(p netip.Prefix) bool { return p.Contains(addr) })) {
+				addrs = append(addrs, addr)
 			}
 		}
 	}
@@ -464,8 +467,10 @@ func parseRules(data []byte, family int) ([]rule, error) {
 	}
 	rules := make([]rule, 0, len(raw))
 	for i, r := range raw {
-		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0,
-			Limited: r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })}
+		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0}
+		// not inverts every selector, so not iif lo sees only forwarded traffic and not oif eth1 sees most host traffic
+		selected := r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })
+		parsed.Limited = !parsed.Not && selected || parsed.Not && r.IIf == "lo"
 		var err error
 		if parsed.Src, err = rulePrefix(r.Src, r.SrcLen); err != nil {
 			return nil, err

@@ -19,16 +19,19 @@ resolver dns=[10.0.0.1 fd42:42:42::1] domains=[~. corp.example] default-route=tr
 route 0.0.0.0/0 table 52820
 route ::/0 table 52820
 rule v4 30200 from=192.168.64.5/32 to=all not=false fwmark=0x0 table=254 suppress=false
-rule v4 30203 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=52820 suppress=false
+rule v4 30202 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=254 suppress=false
+rule v4 30203 from=all to=10.0.0.0/16 not=true fwmark=0xce54 table=52820 suppress=false
 rule v4 30205 from=all to=10.0.0.0/8 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=100.64.0.0/10 not=false fwmark=0x0 table=254 suppress=false
+rule v4 30205 from=all to=168.63.129.16/32 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=169.254.0.0/16 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=172.16.0.0/12 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=192.168.0.0/16 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
 rule v4 30220 from=all to=all not=true fwmark=0xce54 table=52820 suppress=false
 rule v6 30200 from=2001:db8:1::5/128 to=all not=false fwmark=0x0 table=254 suppress=false
-rule v6 30203 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=52820 suppress=false
+rule v6 30202 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=254 suppress=false
+rule v6 30203 from=all to=fd42:42:42::/48 not=true fwmark=0xce54 table=52820 suppress=false
 rule v6 30205 from=all to=fc00::/7 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30205 from=all to=fe80::/10 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
@@ -62,10 +65,13 @@ ip -4 route add 0.0.0.0/0 dev cloudgateway table 52820 proto 206
 ip -6 route add ::/0 dev cloudgateway table 52820 proto 206
 ip -4 rule add priority 30200 from 192.168.64.5 lookup main protocol 206
 ip -6 rule add priority 30200 from 2001:db8:1::5 lookup main protocol 206
-ip -4 rule add priority 30203 to 10.0.0.0/16 lookup 52820 protocol 206
-ip -6 rule add priority 30203 to fd42:42:42::/48 lookup 52820 protocol 206
+ip -4 rule add priority 30202 to 10.0.0.0/16 lookup main suppress_prefixlength 16 protocol 206
+ip -6 rule add priority 30202 to fd42:42:42::/48 lookup main suppress_prefixlength 48 protocol 206
+ip -4 rule add priority 30203 to 10.0.0.0/16 not fwmark 0xce54 lookup 52820 protocol 206
+ip -6 rule add priority 30203 to fd42:42:42::/48 not fwmark 0xce54 lookup 52820 protocol 206
 ip -4 rule add priority 30205 to 10.0.0.0/8 lookup main protocol 206
 ip -4 rule add priority 30205 to 100.64.0.0/10 lookup main protocol 206
+ip -4 rule add priority 30205 to 168.63.129.16/32 lookup main protocol 206
 ip -4 rule add priority 30205 to 169.254.0.0/16 lookup main protocol 206
 ip -4 rule add priority 30205 to 172.16.0.0/12 lookup main protocol 206
 ip -4 rule add priority 30205 to 192.168.0.0/16 lookup main protocol 206
@@ -765,6 +771,7 @@ func TestFullKeepsPrivateRangesOutsideTunnel(t *testing.T) {
 30203 fd42:42:42::/48 52820
 30205 10.0.0.0/8 254
 30205 100.64.0.0/10 254
+30205 168.63.129.16/32 254
 30205 169.254.0.0/16 254
 30205 172.16.0.0/12 254
 30205 192.168.0.0/16 254
@@ -825,15 +832,52 @@ func TestEndpointInsideTunnelRoutesIsRefused(t *testing.T) {
 	}
 }
 
-func TestDownLinksGetNoSourceRules(t *testing.T) {
+func TestDownLinksGetSourceRulesOnlyForPublicAddresses(t *testing.T) {
 	host := networktest.NewUbuntu()
-	// kube-proxy in IPVS mode keeps every service address on a down dummy link
+	// kube-proxy in IPVS mode keeps every service address on a down dummy link,
+	// including a public load balancer IP whose replies must skip the tunnel
 	host.AddLink(networktest.Link{Name: "kube-ipvs0", Kind: "dummy", MTU: 1500})
 	host.AddAddress("kube-ipvs0", netip.MustParsePrefix("10.96.0.1/32"), "global")
 	host.AddAddress("kube-ipvs0", netip.MustParsePrefix("10.96.0.10/32"), "global")
+	host.AddAddress("kube-ipvs0", netip.MustParsePrefix("203.0.113.50/32"), "global")
 	h := newHarness(t, host)
 
 	h.apply(testProfile(ModeFull, 5))
 
+	var sources []string
+	for _, r := range host.Rules() {
+		if r.Protocol == RouteProtocol && r.Priority == PrioritySource {
+			sources = append(sources, r.Src.String())
+		}
+	}
+	expect(t, "source rules", strings.Join(sources, " "), "192.168.64.5/32 203.0.113.50/32 2001:db8:1::5/128")
+}
+
+func TestReconcileDeletesOnlyTheExtraLocalRule(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	// An extra owned rule at a priority shared by several local rules. A delete
+	// without its destination would hit the first local rule instead
+	host.AddRule(networktest.Rule{Family: 4, Priority: PriorityLocal, Dst: netip.MustParsePrefix("198.18.0.0/15"), Table: 254, Protocol: RouteProtocol})
+
+	if _, err := h.m.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	expectText(t, "owned state", ownedState(host), fullOwnedState)
+}
+
+func TestFailedTableListingKeepsTunnelConnected(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	host.FailWhen(networktest.Match("nft", "-j", "list", "table"))
+
+	obs, err := h.m.Observe(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "state", obs.State, StateConnected)
 }

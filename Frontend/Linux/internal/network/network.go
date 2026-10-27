@@ -29,11 +29,12 @@ const (
 	// and 186-198, and the stock rt_protos names nothing above 192
 	RouteProtocol = 206
 	// Full's rule priorities sit below main at 32766 and clear of Tailscale's 5210-5270
-	PrioritySource   = 30200
-	PriorityMesh     = 30203
-	PriorityLocal    = 30205
-	PrioritySuppress = 30210
-	PriorityTunnel   = 30220
+	PrioritySource    = 30200
+	PriorityMeshLocal = 30202
+	PriorityMesh      = 30203
+	PriorityLocal     = 30205
+	PrioritySuppress  = 30210
+	PriorityTunnel    = 30220
 	// NftTable is in the inet family. Regional servers own inet cloudgateway
 	NftTable = "cloudgateway_client"
 )
@@ -57,10 +58,12 @@ var meshPrefixes = []netip.Prefix{
 // localPrefixes stay on the physical path in Full. Full carries traffic bound for
 // the public internet, so cloud metadata, time sync, VPC peers, and LANs keep
 // working even when main has no specific route to them. Mesh ranges and VPN DNS
-// inside these go back to the tunnel first
+// inside these go back to the tunnel first. 168.63.129.16 is Azure's platform
+// DNS and guest agent endpoint
 var localPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("168.63.129.16/32"),
 	netip.MustParsePrefix("169.254.0.0/16"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
@@ -71,33 +74,35 @@ var localPrefixes = []netip.Prefix{
 // Resources is the fixed resource set. The journal records it so a later release
 // can still remove what this one installed
 type Resources struct {
-	Interface        string `json:"interface"`
-	PendingInterface string `json:"pendingInterface"`
-	Alias            string `json:"alias"`
-	Table            int    `json:"table"`
-	FwMark           uint32 `json:"fwmark"`
-	Protocol         int    `json:"protocol"`
-	SourcePriority   int    `json:"sourcePriority"`
-	MeshPriority     int    `json:"meshPriority"`
-	LocalPriority    int    `json:"localPriority"`
-	SuppressPriority int    `json:"suppressPriority"`
-	TunnelPriority   int    `json:"tunnelPriority"`
-	NftTable         string `json:"nftTable"`
+	Interface         string `json:"interface"`
+	PendingInterface  string `json:"pendingInterface"`
+	Alias             string `json:"alias"`
+	Table             int    `json:"table"`
+	FwMark            uint32 `json:"fwmark"`
+	Protocol          int    `json:"protocol"`
+	SourcePriority    int    `json:"sourcePriority"`
+	MeshLocalPriority int    `json:"meshLocalPriority"`
+	MeshPriority      int    `json:"meshPriority"`
+	LocalPriority     int    `json:"localPriority"`
+	SuppressPriority  int    `json:"suppressPriority"`
+	TunnelPriority    int    `json:"tunnelPriority"`
+	NftTable          string `json:"nftTable"`
 }
 
 var fixed = Resources{
-	Interface:        InterfaceName,
-	PendingInterface: PendingInterfaceName,
-	Alias:            InterfaceAlias,
-	Table:            RouteTable,
-	FwMark:           FwMark,
-	Protocol:         RouteProtocol,
-	SourcePriority:   PrioritySource,
-	MeshPriority:     PriorityMesh,
-	LocalPriority:    PriorityLocal,
-	SuppressPriority: PrioritySuppress,
-	TunnelPriority:   PriorityTunnel,
-	NftTable:         NftTable,
+	Interface:         InterfaceName,
+	PendingInterface:  PendingInterfaceName,
+	Alias:             InterfaceAlias,
+	Table:             RouteTable,
+	FwMark:            FwMark,
+	Protocol:          RouteProtocol,
+	SourcePriority:    PrioritySource,
+	MeshLocalPriority: PriorityMeshLocal,
+	MeshPriority:      PriorityMesh,
+	LocalPriority:     PriorityLocal,
+	SuppressPriority:  PrioritySuppress,
+	TunnelPriority:    PriorityTunnel,
+	NftTable:          NftTable,
 }
 
 // knownResources lists every resource set a release has installed. A journal
@@ -112,7 +117,7 @@ func (r Resources) valid() bool {
 	return r.Interface != "" && r.PendingInterface != "" && r.Alias != "" && r.NftTable != "" &&
 		r.Protocol > 2 && r.Protocol < 256 && r.FwMark != 0 &&
 		!slices.Contains(systemTables, r.Table) &&
-		r.SourcePriority > 0 && r.MeshPriority > 0 && r.LocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
+		r.SourcePriority > 0 && r.MeshLocalPriority > 0 && r.MeshPriority > 0 && r.LocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
 }
 
 type Mode string
@@ -219,7 +224,8 @@ func covers(outer, inner netip.Prefix) bool {
 
 // checkEndpoint refuses an endpoint the tunnel would carry, since its own
 // encrypted packets would loop. Default routes are fine, because the fwmark
-// skips Full's tunnel rule, but no rule skips a main route or Full's mesh rule
+// skips Full's tunnel and mesh rules, but nothing skips a main route. Full's
+// mesh ranges are refused too, since a server there makes no sense
 func checkEndpoint(endpoint netip.Addr, mode Mode, allowed []netip.Prefix, dns []netip.Addr) error {
 	inside := slices.ContainsFunc(allowed, func(prefix netip.Prefix) bool { return prefix.Bits() > 0 && prefix.Contains(endpoint) })
 	if mode == ModeFull {

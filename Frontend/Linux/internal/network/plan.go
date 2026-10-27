@@ -93,6 +93,9 @@ func desiredRules(j *Journal, physical []netip.Addr) []ruleKey {
 	for _, addr := range physical {
 		rules = append(rules, ruleKey{Family: addrFamily(addr), Priority: res.SourcePriority, Src: addr})
 	}
+	for _, prefix := range meshPrefixes {
+		rules = append(rules, ruleKey{Family: addrFamily(prefix.Addr()), Priority: res.MeshLocalPriority, Dst: prefix})
+	}
 	for _, prefix := range tunnelPrefixes(j.DNS) {
 		rules = append(rules, ruleKey{Family: addrFamily(prefix.Addr()), Priority: res.MeshPriority, Dst: prefix})
 	}
@@ -154,8 +157,12 @@ func ruleAddCommand(res Resources, r ruleKey) command {
 	switch r.Priority {
 	case res.SourcePriority:
 		args = append(args, "from", r.Src.String(), "lookup", "main")
+	case res.MeshLocalPriority:
+		// A local subnet more specific than the mesh range keeps its main route, as before Full started
+		args = append(args, "to", r.Dst.String(), "lookup", "main", "suppress_prefixlength", strconv.Itoa(r.Dst.Bits()))
 	case res.MeshPriority:
-		args = append(args, "to", r.Dst.String(), "lookup", strconv.Itoa(res.Table))
+		// Marked packets, such as the outside endpoint lookup, skip the tunnel
+		args = append(args, "to", r.Dst.String(), "not", "fwmark", fmt.Sprintf("%#x", res.FwMark), "lookup", strconv.Itoa(res.Table))
 	case res.LocalPriority:
 		args = append(args, "to", r.Dst.String(), "lookup", "main")
 	case res.SuppressPriority:

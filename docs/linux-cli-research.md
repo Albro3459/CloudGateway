@@ -313,10 +313,12 @@ Use the `wg-quick` policy routing pattern for both address families. WireGuard's
   connected subnets, cloud static routes, and container bridges. Only the
   default route moves.
 * Higher-priority `to <prefix> lookup main` rules keep `10.0.0.0/8`,
-  `100.64.0.0/10`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`,
-  `fc00::/7`, and `fe80::/10` outside the tunnel even when main only has a
-  default route to them. Rules ahead of those send the mesh ranges, and any VPN
-  DNS address inside a private range, to the tunnel table.
+  `100.64.0.0/10`, `168.63.129.16` (Azure platform DNS), `169.254.0.0/16`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, and `fe80::/10` outside the
+  tunnel even when main only has a default route to them. Rules ahead of those
+  send the mesh ranges, and any VPN DNS address inside a private range, to the
+  tunnel table. A main route more specific than a mesh range still wins, so a
+  local subnet that overlaps the mesh keeps working, as it did before.
 * A higher-priority `from <physical address> lookup main` rule for each physical
   address sends replies to inbound sessions out the physical link. SSH from any
   source keeps working without a management allowlist. The daemon updates these
@@ -334,12 +336,15 @@ The implementation uses interface `cloudgateway` with alias `cloudgatewayd`,
 created as `cloudgw-pending` and renamed once the alias is set, so a crash
 never leaves an ambiguous link. Table and fwmark are `52820`, and rules and
 routes carry routing protocol `206`. Rule priorities are `30200` for physical
-source addresses, `30203` for the mesh ranges and VPN DNS, `30205` for private
-and link-local destinations, `30210` for the suppress rule, and `30220` for the
-tunnel rule. They stay clear of Tailscale's `5210`-`5270`. Source rules cover
-addresses on links that are up, so a Kubernetes `kube-ipvs0` with one address
-per service adds none. The daemon also refuses an endpoint inside the tunnel's
-own routes, since its encrypted packets would loop. A journal must name a known resource set, and teardown
+source addresses, `30202` for local routes inside the mesh ranges, `30203` for
+the mesh ranges and VPN DNS, `30205` for private and link-local destinations,
+`30210` for the suppress rule, and `30220` for the tunnel rule. They stay clear
+of Tailscale's `5210`-`5270`. The `30203` rules skip marked packets, so the
+outside endpoint lookup never enters the tunnel. Addresses on loopback and down
+links, such as `kube-ipvs0`, get source rules only outside the private ranges,
+so a Kubernetes node adds no rule per ClusterIP while a public load balancer IP
+still answers outside the tunnel. The daemon also refuses an endpoint inside
+the tunnel's own routes, since its encrypted packets would loop. A journal must name a known resource set, and teardown
 never matches protocol `0` or `2`, so a damaged journal can't remove kernel
 rules. Rule, table, and mark collision checks apply only to Full, which is the
 only mode that installs them.

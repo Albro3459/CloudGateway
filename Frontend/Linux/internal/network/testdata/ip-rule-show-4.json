@@ -1,9 +1,11 @@
 [
   {"priority": 0, "src": "all", "table": "255"},
   {"priority": 30200, "src": "192.168.64.5", "table": "254", "protocol": "206"},
-  {"priority": 30203, "src": "all", "dst": "10.0.0.0", "dstlen": 16, "table": "52820", "protocol": "206"},
+  {"priority": 30202, "src": "all", "dst": "10.0.0.0", "dstlen": 16, "table": "254", "suppress_prefixlen": 16, "protocol": "206"},
+  {"priority": 30203, "src": "all", "dst": "10.0.0.0", "dstlen": 16, "not": null, "fwmark": "0xce54", "table": "52820", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "10.0.0.0", "dstlen": 8, "table": "254", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "100.64.0.0", "dstlen": 10, "table": "254", "protocol": "206"},
+  {"priority": 30205, "src": "all", "dst": "168.63.129.16", "table": "254", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "169.254.0.0", "dstlen": 16, "table": "254", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "172.16.0.0", "dstlen": 12, "table": "254", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "192.168.0.0", "dstlen": 16, "table": "254", "protocol": "206"},

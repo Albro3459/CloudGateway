@@ -91,13 +91,14 @@ func TestReconcileRestoresRulesRemovedByNetworkd(t *testing.T) {
 	h := newHarness(t, host)
 	h.apply(testProfile(ModeFull, 5))
 	removed := host.RemoveRules(isOwnedRule)
-	expect(t, "removed", removed, 15)
+	expect(t, "removed", removed, 18)
 
 	obs, _ := h.m.Observe(ctx)
 	expect(t, "before reconcile", obs.State, StateConnecting)
 	expect(t, "drift", strings.Join(obs.Drift, "; "), "missing rule 30200 from 192.168.64.5; missing rule 30200 from 2001:db8:1::5; "+
+		"missing rule 30202 to 10.0.0.0/16; missing rule 30202 to fd42:42:42::/48; "+
 		"missing rule 30203 to 10.0.0.0/16; missing rule 30203 to fd42:42:42::/48; missing rule 30205 to 10.0.0.0/8; "+
-		"missing rule 30205 to 100.64.0.0/10; missing rule 30205 to 169.254.0.0/16; missing rule 30205 to 172.16.0.0/12; "+
+		"missing rule 30205 to 100.64.0.0/10; missing rule 30205 to 168.63.129.16/32; missing rule 30205 to 169.254.0.0/16; missing rule 30205 to 172.16.0.0/12; "+
 		"missing rule 30205 to 192.168.0.0/16; missing rule 30205 to fc00::/7; missing rule 30205 to fe80::/10; "+
 		"missing rule 30210 ipv4; missing rule 30210 ipv6; missing rule 30220 ipv4; missing rule 30220 ipv6")
 	obs, err := h.m.Reconcile(ctx)
@@ -392,6 +393,10 @@ func TestPreflightConflicts(t *testing.T) {
 		{name: "unowned link with the pending name", mode: ModeMesh, setup: func(host *networktest.Host) {
 			host.AddLink(networktest.Link{Name: PendingInterfaceName, Kind: "wireguard", MTU: 1420})
 		}, kind: ConflictForeignInterface, names: []string{PendingInterfaceName}},
+		{name: "inverted selector still catches host traffic", mode: ModeFull, setup: func(host *networktest.Host) {
+			host.AddRule(networktest.Rule{Family: 4, Priority: 100, Not: true, Table: 100, Selector: "uid_start", SelectorValue: 0})
+			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("0.0.0.0/0"), Table: 100, Dev: "tun0", Protocol: 4})
+		}, kind: ConflictForeignVPN, names: []string{"100 lookup 100"}},
 		{name: "VPN rule for all locally generated traffic", mode: ModeFull, setup: func(host *networktest.Host) {
 			host.AddRule(networktest.Rule{Family: 4, Priority: 100, Table: 100, Selector: "iif", SelectorValue: "lo"})
 			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("0.0.0.0/0"), Table: 100, Dev: "tun0", Protocol: 4})
@@ -471,6 +476,7 @@ func TestPreflightPassesModeSpecificSetups(t *testing.T) {
 			host.AddRule(networktest.Rule{Family: 4, Priority: 101, Table: 100, Selector: "oif", SelectorValue: "enp0s2"})
 			host.AddRule(networktest.Rule{Family: 4, Priority: 102, Table: 100, Selector: "iif", SelectorValue: "docker0"})
 			host.AddRule(networktest.Rule{Family: 4, Priority: 103, Table: 100, Selector: "ipproto", SelectorValue: "tcp"})
+			host.AddRule(networktest.Rule{Family: 4, Priority: 104, Not: true, Table: 100, Selector: "iif", SelectorValue: "lo"})
 			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("0.0.0.0/0"), Table: 100, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
 		}},
 	}

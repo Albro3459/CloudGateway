@@ -1,7 +1,8 @@
 [
   {"priority": 0, "src": "all", "table": "255"},
   {"priority": 30200, "src": "2001:db8:1::5", "table": "254", "protocol": "206"},
-  {"priority": 30203, "src": "all", "dst": "fd42:42:42::", "dstlen": 48, "table": "52820", "protocol": "206"},
+  {"priority": 30202, "src": "all", "dst": "fd42:42:42::", "dstlen": 48, "table": "254", "suppress_prefixlen": 48, "protocol": "206"},
+  {"priority": 30203, "src": "all", "dst": "fd42:42:42::", "dstlen": 48, "not": null, "fwmark": "0xce54", "table": "52820", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "fc00::", "dstlen": 7, "table": "254", "protocol": "206"},
   {"priority": 30205, "src": "all", "dst": "fe80::", "dstlen": 10, "table": "254", "protocol": "206"},
   {"priority": 30210, "src": "all", "table": "254", "suppress_prefixlen": 0, "protocol": "206"},
