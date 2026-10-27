@@ -215,12 +215,37 @@ func (s *Server) serveConn(conn *net.UnixConn, peer Peer, peerErr error) {
 		}
 		reply := ipc.Reply{Error: Validate(request)}
 		if reply.Error == "" {
-			reply = s.handler.Handle(s.ctx, peer, request)
+			reply = s.handle(conn, peer, request)
 		}
 		if s.write(conn, reply) != nil {
 			return
 		}
 	}
+}
+
+// handle cancels the request's context when the client hangs up, as on
+// Ctrl-C, so a prepare or wait doesn't keep the daemon busy. A client sends one
+// request at a time, so any read before the reply ends the request
+func (s *Server) handle(conn *net.UnixConn, peer Peer, request ipc.Request) ipc.Reply {
+	ctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	// Cleared before the watcher starts, so the deadline below always ends its read
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return s.handler.Handle(ctx, peer, request)
+	}
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		var b [1]byte
+		// Shutdown's deadline also lands here, and leaves the request running
+		if _, err := conn.Read(b[:]); !errors.Is(err, os.ErrDeadlineExceeded) {
+			cancel()
+		}
+	}()
+	reply := s.handler.Handle(ctx, peer, request)
+	_ = conn.SetReadDeadline(time.Now())
+	<-watched
+	return reply
 }
 
 // awaitRequest arms the idle deadline unless Shutdown already started

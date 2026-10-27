@@ -20,16 +20,17 @@ import (
 )
 
 // testHandler answers handshakes with a lifecycle, blocks awaitRefresh until
-// released, and returns an oversized reply for prepareClient
+// released or cancelled, and returns an oversized reply for prepareClient
 type testHandler struct {
-	mu      sync.Mutex
-	peers   []Peer
-	started chan struct{}
-	release chan struct{}
+	mu        sync.Mutex
+	peers     []Peer
+	started   chan struct{}
+	release   chan struct{}
+	cancelled chan struct{}
 }
 
 func newTestHandler() *testHandler {
-	return &testHandler{started: make(chan struct{}, 8), release: make(chan struct{})}
+	return &testHandler{started: make(chan struct{}, 8), release: make(chan struct{}), cancelled: make(chan struct{}, 8)}
 }
 
 func (h *testHandler) Handle(ctx context.Context, peer Peer, request ipc.Request) ipc.Reply {
@@ -45,6 +46,7 @@ func (h *testHandler) Handle(ctx context.Context, peer Peer, request ipc.Request
 		case <-h.release:
 			return ipc.Reply{Refresh: ipc.RefreshRefreshed}
 		case <-ctx.Done():
+			h.cancelled <- struct{}{}
 			return ipc.Reply{Error: ipc.FailureTimeout}
 		}
 	case ipc.ActionPrepareClient:
@@ -361,6 +363,26 @@ func TestShutdownDeadlineCancelsHandlers(t *testing.T) {
 	}
 	if err := <-errs; err == nil {
 		t.Fatal("caller got a reply from a cancelled request")
+	}
+}
+
+func TestHangupCancelsTheRequest(t *testing.T) {
+	handler := newTestHandler()
+	server := startServer(t, handler, 0, nil)
+	busy := dial(t, server.path)
+	go func() { _, _ = call(busy, ipc.Request{Action: ipc.ActionAwaitRefresh}) }()
+	<-handler.started
+
+	busy.Close()
+
+	select {
+	case <-handler.cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the request outlived its connection")
+	}
+	// The next connection still gets answered
+	if reply, err := call(dial(t, server.path), ipc.Request{Action: ipc.ActionHandshake}); err != nil || reply.Lifecycle == nil {
+		t.Fatalf("handshake = %+v, %v", reply, err)
 	}
 }
 
