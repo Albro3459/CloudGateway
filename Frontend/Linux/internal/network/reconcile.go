@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,10 +31,12 @@ func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 	if err != nil {
 		return m.stale(), err
 	}
-	if len(coreMismatch(s, j)) > 0 {
-		// Nothing owned left, as after a reboot, observes as disconnected instead
+	if core := coreMismatch(s, j); len(core) > 0 {
+		// Nothing owned left, as after a reboot, observes as disconnected instead.
+		// Only an added address leaves the tunnel working, so that stays unknown
+		lost := slices.ContainsFunc(core, func(m string) bool { return !strings.HasPrefix(m, extraAddressDrift) })
 		obs, err := m.Observe(ctx)
-		if err == nil && obs.State == StateUnknown {
+		if err == nil && lost && obs.State == StateUnknown {
 			err = ErrTunnelLost
 		}
 		return obs, err

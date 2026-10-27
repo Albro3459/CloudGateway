@@ -94,6 +94,10 @@ func evaluate(s *snapshot, j *Journal, t transition, res Resources) Observation 
 	return obs
 }
 
+// extraAddressDrift starts the core mismatch for an address someone else added
+// to the link, which leaves the tunnel working
+const extraAddressDrift = "extra address "
+
 // coreMismatch covers what Reconcile never repairs: a missing link, addresses
 // someone else added, and the peer
 func coreMismatch(s *snapshot, j *Journal) []string {
@@ -103,7 +107,7 @@ func coreMismatch(s *snapshot, j *Journal) []string {
 	var mismatch []string
 	for _, a := range s.own.Addrs {
 		if a.Global && !slices.Contains(j.Addresses, a.Prefix) {
-			mismatch = append(mismatch, "extra address "+a.Prefix.String())
+			mismatch = append(mismatch, extraAddressDrift+a.Prefix.String())
 		}
 	}
 	if len(s.peers) != 1 || s.peers[0].Key != j.PeerKey || !sameSet(s.peers[0].AllowedIPs, j.AllowedIPs) {

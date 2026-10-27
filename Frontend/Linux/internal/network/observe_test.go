@@ -190,6 +190,22 @@ func TestReconcileReportsLostLinkOnlyWhileOwnedStateRemains(t *testing.T) {
 	expect(t, "state after reboot", obs.State, StateDisconnected)
 }
 
+func TestReconcileLeavesAnAddedAddressAsUnknown(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	host.AddAddress(InterfaceName, netip.MustParsePrefix("10.9.9.9/32"), "global")
+	host.ResetCalls()
+
+	obs, err := h.m.Reconcile(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "state", obs.State, StateUnknown)
+	expect(t, "mutations", len(mutations(host.Calls())), 0)
+}
+
 func TestResolverRepairThenPolicyFailure(t *testing.T) {
 	host := networktest.NewUbuntu()
 	h := newHarness(t, host)
