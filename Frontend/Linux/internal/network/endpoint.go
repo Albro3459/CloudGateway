@@ -192,6 +192,9 @@ func (m *Manager) UpdateEndpoint(ctx context.Context) (netip.AddrPort, bool, err
 	if err != nil {
 		return current, false, err
 	}
+	if err := checkEndpoint(endpoint.Addr(), j.Mode, j.AllowedIPs, j.DNS); err != nil {
+		return current, false, err
+	}
 	if endpoint != j.Endpoint {
 		next := *j
 		next.Endpoint = endpoint

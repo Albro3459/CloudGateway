@@ -20,10 +20,12 @@ type ruleKey struct {
 	Priority int
 	// Src is set only for source rules
 	Src netip.Addr
+	// Dst is set only for mesh and local rules
+	Dst netip.Prefix
 }
 
 func (r rule) key() ruleKey {
-	k := ruleKey{Family: r.Family, Priority: r.Priority}
+	k := ruleKey{Family: r.Family, Priority: r.Priority, Dst: r.Dst}
 	if r.Src.IsValid() {
 		k.Src = r.Src.Addr()
 	}
@@ -31,8 +33,11 @@ func (r rule) key() ruleKey {
 }
 
 func (k ruleKey) String() string {
-	if k.Src.IsValid() {
+	switch {
+	case k.Src.IsValid():
 		return fmt.Sprintf("rule %d from %s", k.Priority, k.Src)
+	case k.Dst.IsValid():
+		return fmt.Sprintf("rule %d to %s", k.Priority, k.Dst)
 	}
 	return fmt.Sprintf("rule %d ipv%d", k.Priority, k.Family)
 }
@@ -63,13 +68,18 @@ func desiredRoutes(j *Journal) []routeKey {
 	return routes
 }
 
-// linkLocal stays on the physical path in Full even when main has no specific
-// route, which keeps cloud metadata at 169.254.169.254 and time sync reachable
-func linkLocal(family int) netip.Prefix {
-	if family == 4 {
-		return netip.MustParsePrefix("169.254.0.0/16")
+// tunnelPrefixes are the mesh ranges plus any VPN DNS address the local rules
+// would otherwise send outside the tunnel
+func tunnelPrefixes(dns []netip.Addr) []netip.Prefix {
+	prefixes := slices.Clone(meshPrefixes)
+	for _, addr := range dns {
+		host := netip.PrefixFrom(addr, addr.BitLen())
+		local := slices.ContainsFunc(localPrefixes, func(prefix netip.Prefix) bool { return prefix.Contains(addr) })
+		if local && !slices.ContainsFunc(prefixes, func(prefix netip.Prefix) bool { return covers(prefix, host) }) {
+			prefixes = append(prefixes, host)
+		}
 	}
-	return netip.MustParsePrefix("fe80::/10")
+	return prefixes
 }
 
 // desiredRules lists Full's rules in install order, so the rules keeping
@@ -83,7 +93,13 @@ func desiredRules(j *Journal, physical []netip.Addr) []ruleKey {
 	for _, addr := range physical {
 		rules = append(rules, ruleKey{Family: addrFamily(addr), Priority: res.SourcePriority, Src: addr})
 	}
-	for _, priority := range []int{res.LinkLocalPriority, res.SuppressPriority, res.TunnelPriority} {
+	for _, prefix := range tunnelPrefixes(j.DNS) {
+		rules = append(rules, ruleKey{Family: addrFamily(prefix.Addr()), Priority: res.MeshPriority, Dst: prefix})
+	}
+	for _, prefix := range localPrefixes {
+		rules = append(rules, ruleKey{Family: addrFamily(prefix.Addr()), Priority: res.LocalPriority, Dst: prefix})
+	}
+	for _, priority := range []int{res.SuppressPriority, res.TunnelPriority} {
 		for _, family := range []int{4, 6} {
 			rules = append(rules, ruleKey{Family: family, Priority: priority})
 		}
@@ -138,8 +154,10 @@ func ruleAddCommand(res Resources, r ruleKey) command {
 	switch r.Priority {
 	case res.SourcePriority:
 		args = append(args, "from", r.Src.String(), "lookup", "main")
-	case res.LinkLocalPriority:
-		args = append(args, "to", linkLocal(r.Family).String(), "lookup", "main")
+	case res.MeshPriority:
+		args = append(args, "to", r.Dst.String(), "lookup", strconv.Itoa(res.Table))
+	case res.LocalPriority:
+		args = append(args, "to", r.Dst.String(), "lookup", "main")
 	case res.SuppressPriority:
 		args = append(args, "lookup", "main", "suppress_prefixlength", "0")
 	case res.TunnelPriority:
@@ -148,11 +166,15 @@ func ruleAddCommand(res Resources, r ruleKey) command {
 	return ipCommand(append(args, "protocol", strconv.Itoa(res.Protocol))...)
 }
 
-// ruleDelCommand selects by protocol too, so the kernel never matches a foreign rule
+// ruleDelCommand selects by protocol too, so the kernel never matches a foreign
+// rule, and by destination, since several local rules share one priority
 func ruleDelCommand(res Resources, r ruleKey) command {
 	args := []string{familyFlag(r.Family), "rule", "del", "priority", strconv.Itoa(r.Priority)}
 	if r.Src.IsValid() {
 		args = append(args, "from", r.Src.String())
+	}
+	if r.Dst.IsValid() {
+		args = append(args, "to", r.Dst.String())
 	}
 	return ipCommand(append(args, "protocol", strconv.Itoa(res.Protocol))...)
 }

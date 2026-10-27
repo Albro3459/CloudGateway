@@ -83,6 +83,9 @@ func (m *Manager) plan(ctx context.Context, p Profile, s *snapshot, installed Re
 			return installPlan{}, err
 		}
 	}
+	if err := checkEndpoint(endpoint.Addr(), p.Mode, p.AllowedIPs, p.DNS); err != nil {
+		return installPlan{}, err
+	}
 	mtu := p.MTU
 	if mtu == 0 {
 		if mtu, err = m.endpointMTU(ctx, endpoint.Addr(), s, installed.FwMark); err != nil {
@@ -90,7 +93,7 @@ func (m *Manager) plan(ctx context.Context, p Profile, s *snapshot, installed Re
 		}
 	}
 	var mark uint32
-	if p.Mode() == ModeFull {
+	if p.Mode == ModeFull {
 		mark = fixed.FwMark
 	}
 	payload, err := p.SetConf(endpoint, mark)
@@ -107,7 +110,7 @@ func (m *Manager) install(ctx context.Context, p Profile, plan installPlan, phys
 		Phase:      PhaseApplying,
 		ProfileID:  p.ID,
 		ConfigHash: p.ConfigHash,
-		Mode:       p.Mode(),
+		Mode:       p.Mode,
 		Host:       p.EndpointHost,
 		Endpoint:   plan.endpoint,
 		PeerKey:    p.PeerPublicKey,
@@ -166,7 +169,7 @@ func (m *Manager) install(ctx context.Context, p Profile, plan installPlan, phys
 // its resolved endpoint when the host is unchanged. It only accepts the profile
 // the replaced journal describes
 func (m *Manager) restore(ctx context.Context, p Profile, old *Journal, s *snapshot) error {
-	if p.ID != old.ProfileID || p.ConfigHash != old.ConfigHash || p.Mode() != old.Mode {
+	if p.ID != old.ProfileID || p.ConfigHash != old.ConfigHash || p.Mode != old.Mode {
 		return errors.New("network: previous profile does not match the replaced tunnel")
 	}
 	if err := p.validate(); err != nil {

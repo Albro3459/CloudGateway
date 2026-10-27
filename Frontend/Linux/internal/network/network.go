@@ -29,10 +29,11 @@ const (
 	// and 186-198, and the stock rt_protos names nothing above 192
 	RouteProtocol = 206
 	// Full's rule priorities sit below main at 32766 and clear of Tailscale's 5210-5270
-	PrioritySource    = 30200
-	PriorityLinkLocal = 30205
-	PrioritySuppress  = 30210
-	PriorityTunnel    = 30220
+	PrioritySource   = 30200
+	PriorityMesh     = 30203
+	PriorityLocal    = 30205
+	PrioritySuppress = 30210
+	PriorityTunnel   = 30220
 	// NftTable is in the inet family. Regional servers own inet cloudgateway
 	NftTable = "cloudgateway_client"
 )
@@ -53,34 +54,50 @@ var meshPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("fd42:42:42::/48"),
 }
 
+// localPrefixes stay on the physical path in Full. Full carries traffic bound for
+// the public internet, so cloud metadata, time sync, VPC peers, and LANs keep
+// working even when main has no specific route to them. Mesh ranges and VPN DNS
+// inside these go back to the tunnel first
+var localPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+}
+
 // Resources is the fixed resource set. The journal records it so a later release
 // can still remove what this one installed
 type Resources struct {
-	Interface         string `json:"interface"`
-	PendingInterface  string `json:"pendingInterface"`
-	Alias             string `json:"alias"`
-	Table             int    `json:"table"`
-	FwMark            uint32 `json:"fwmark"`
-	Protocol          int    `json:"protocol"`
-	SourcePriority    int    `json:"sourcePriority"`
-	LinkLocalPriority int    `json:"linkLocalPriority"`
-	SuppressPriority  int    `json:"suppressPriority"`
-	TunnelPriority    int    `json:"tunnelPriority"`
-	NftTable          string `json:"nftTable"`
+	Interface        string `json:"interface"`
+	PendingInterface string `json:"pendingInterface"`
+	Alias            string `json:"alias"`
+	Table            int    `json:"table"`
+	FwMark           uint32 `json:"fwmark"`
+	Protocol         int    `json:"protocol"`
+	SourcePriority   int    `json:"sourcePriority"`
+	MeshPriority     int    `json:"meshPriority"`
+	LocalPriority    int    `json:"localPriority"`
+	SuppressPriority int    `json:"suppressPriority"`
+	TunnelPriority   int    `json:"tunnelPriority"`
+	NftTable         string `json:"nftTable"`
 }
 
 var fixed = Resources{
-	Interface:         InterfaceName,
-	PendingInterface:  PendingInterfaceName,
-	Alias:             InterfaceAlias,
-	Table:             RouteTable,
-	FwMark:            FwMark,
-	Protocol:          RouteProtocol,
-	SourcePriority:    PrioritySource,
-	LinkLocalPriority: PriorityLinkLocal,
-	SuppressPriority:  PrioritySuppress,
-	TunnelPriority:    PriorityTunnel,
-	NftTable:          NftTable,
+	Interface:        InterfaceName,
+	PendingInterface: PendingInterfaceName,
+	Alias:            InterfaceAlias,
+	Table:            RouteTable,
+	FwMark:           FwMark,
+	Protocol:         RouteProtocol,
+	SourcePriority:   PrioritySource,
+	MeshPriority:     PriorityMesh,
+	LocalPriority:    PriorityLocal,
+	SuppressPriority: PrioritySuppress,
+	TunnelPriority:   PriorityTunnel,
+	NftTable:         NftTable,
 }
 
 // knownResources lists every resource set a release has installed. A journal
@@ -95,7 +112,7 @@ func (r Resources) valid() bool {
 	return r.Interface != "" && r.PendingInterface != "" && r.Alias != "" && r.NftTable != "" &&
 		r.Protocol > 2 && r.Protocol < 256 && r.FwMark != 0 &&
 		!slices.Contains(systemTables, r.Table) &&
-		r.SourcePriority > 0 && r.LinkLocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
+		r.SourcePriority > 0 && r.MeshPriority > 0 && r.LocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
 }
 
 type Mode string
@@ -111,7 +128,9 @@ type Profile struct {
 	// ID is opaque, such as signedInUID/regionId/clientId
 	ID         string
 	ConfigHash string
-	Addresses  []netip.Prefix
+	// Mode is the mode the user chose. AllowedIPs must fit it
+	Mode      Mode
+	Addresses []netip.Prefix
 	// DNS holds the regional DNS addresses from the canonical config, even in Mesh
 	// where the mode transform clears them. Full sets them on the VPN link. Both
 	// modes probe the first and keep them out of overlaps
@@ -127,16 +146,6 @@ type Profile struct {
 	EndpointPort  uint16
 	// SetConf renders wg setconf input for the resolved endpoint and fwmark, zero in Mesh
 	SetConf func(endpoint netip.AddrPort, fwmark uint32) ([]byte, error)
-}
-
-// Mode is Full when any allowed IP is a default route
-func (p Profile) Mode() Mode {
-	for _, prefix := range p.AllowedIPs {
-		if prefix.Bits() == 0 {
-			return ModeFull
-		}
-	}
-	return ModeMesh
 }
 
 func (p Profile) validate() error {
@@ -157,7 +166,15 @@ func (p Profile) validate() error {
 	case p.MTU != 0 && (p.MTU < 1280 || p.MTU > 65535):
 		return invalid("MTU")
 	}
-	if p.Mode() == ModeFull {
+	switch p.Mode {
+	case ModeMesh:
+		// Anything wider would route ordinary traffic, and the endpoint, into a tunnel with no Full rules
+		for _, prefix := range p.AllowedIPs {
+			if !slices.ContainsFunc(meshPrefixes, func(mesh netip.Prefix) bool { return covers(mesh, prefix) }) {
+				return invalid("mesh mode allowed IP outside the mesh ranges")
+			}
+		}
+	case ModeFull:
 		// Full carries both families, so a missing address or default for either would blackhole it
 		hasIPv4 := slices.ContainsFunc(p.Addresses, func(prefix netip.Prefix) bool { return prefix.Addr().Is4() })
 		hasIPv6 := slices.ContainsFunc(p.Addresses, func(prefix netip.Prefix) bool { return prefix.Addr().Is6() })
@@ -169,6 +186,8 @@ func (p Profile) validate() error {
 		case !slices.Contains(p.AllowedIPs, netip.MustParsePrefix("0.0.0.0/0")) || !slices.Contains(p.AllowedIPs, netip.MustParsePrefix("::/0")):
 			return invalid("full mode without both default routes")
 		}
+	default:
+		return invalid("mode")
 	}
 	for _, prefix := range p.Addresses {
 		if !prefix.IsValid() || prefix.Addr().Zone() != "" {
@@ -189,6 +208,25 @@ func (p Profile) validate() error {
 		if !validDomain(domain) {
 			return invalid("search domain")
 		}
+	}
+	return nil
+}
+
+// covers reports whether outer contains all of inner
+func covers(outer, inner netip.Prefix) bool {
+	return outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())
+}
+
+// checkEndpoint refuses an endpoint the tunnel would carry, since its own
+// encrypted packets would loop. Default routes are fine, because the fwmark
+// skips Full's tunnel rule, but no rule skips a main route or Full's mesh rule
+func checkEndpoint(endpoint netip.Addr, mode Mode, allowed []netip.Prefix, dns []netip.Addr) error {
+	inside := slices.ContainsFunc(allowed, func(prefix netip.Prefix) bool { return prefix.Bits() > 0 && prefix.Contains(endpoint) })
+	if mode == ModeFull {
+		inside = inside || slices.ContainsFunc(tunnelPrefixes(dns), func(prefix netip.Prefix) bool { return prefix.Contains(endpoint) })
+	}
+	if inside {
+		return fmt.Errorf("%w: endpoint %s is inside the tunnel's own routes", ErrInvalidProfile, endpoint)
 	}
 	return nil
 }

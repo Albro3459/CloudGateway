@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -48,6 +49,9 @@ type rule struct {
 	Table    int
 	Suppress bool
 	Protocol int
+	// Limited is set for a selector that host traffic does not generally match,
+	// such as iif other than lo, oif, uidrange, ipproto, ports, tos, or l3mdev
+	Limited bool
 }
 
 type peer struct {
@@ -82,6 +86,9 @@ type snapshot struct {
 	routes    []route
 	rules     []rule
 	nftTables []string
+	// nftRules counts rules per chain in the owned table, nil when it is absent
+	// or could not be listed
+	nftRules map[string]int
 	// own is the owned link, nil when absent
 	own *link
 	// pending is an owned link still under its temporary name
@@ -145,6 +152,12 @@ func (m *Manager) read(ctx context.Context, res Resources, adoptPending, withRes
 	if s.nftTables, err = parseNftTables(out); err != nil {
 		return nil, err
 	}
+	if s.hasTable(res) {
+		// Only drift checks use the rule counts, so a failed listing leaves them unknown
+		if out, err := m.exec.Run(ctx, ToolNft, []string{"-j", "list", "table", "inet", res.NftTable}, nil); err == nil {
+			s.nftRules, _ = parseNftRules(out)
+		}
+	}
 	s.own, s.pending = s.ownedLinks(res, adoptPending)
 	if s.own == nil {
 		return s, nil
@@ -189,7 +202,7 @@ func (s *snapshot) link(name string) *link {
 }
 
 func (res Resources) priorities() []int {
-	return []int{res.SourcePriority, res.LinkLocalPriority, res.SuppressPriority, res.TunnelPriority}
+	return []int{res.SourcePriority, res.MeshPriority, res.LocalPriority, res.SuppressPriority, res.TunnelPriority}
 }
 
 func (s *snapshot) ownedRules(res Resources) []rule {
@@ -222,7 +235,7 @@ func (s *snapshot) ownedRoutes(res Resources) []route {
 // A source or fwmark selector limits a rule to traffic that already chose its
 // path, such as a secondary NIC's from rule, and a destination selector to its prefix
 func (r rule) catchesHostTrafficTo(target netip.Prefix) bool {
-	return !r.Src.IsValid() && (r.FwMark == 0 || r.Not) && (!r.Dst.IsValid() || r.Dst.Overlaps(target))
+	return !r.Src.IsValid() && !r.Limited && (r.FwMark == 0 || r.Not) && (!r.Dst.IsValid() || r.Dst.Overlaps(target))
 }
 
 // catchesHostTraffic reports whether the rule sees all host traffic
@@ -240,6 +253,23 @@ func (s *snapshot) hasTable(res Resources) bool {
 	return res.valid() && slices.Contains(s.nftTables, "inet "+res.NftTable)
 }
 
+// tableMatches reports whether the owned table has the chains and rule counts
+// nftScript installs for j, so a flushed table or deleted chain is drift. Rule
+// contents are not compared. Unknown counts match
+func (s *snapshot) tableMatches(j *Journal) bool {
+	if !s.hasTable(j.Resources) {
+		return false
+	}
+	if s.nftRules == nil {
+		return true
+	}
+	want := map[string]int{"preraw": len(j.Addresses)}
+	if j.Mode == ModeFull {
+		want["premangle"], want["postmangle"] = 1, 1
+	}
+	return maps.Equal(s.nftRules, want)
+}
+
 func (s *snapshot) anyOwned(res Resources) bool {
 	return s.own != nil || s.pending != nil || len(s.ownedRules(res)) > 0 || len(s.ownedRoutes(res)) > 0 || s.hasTable(res)
 }
@@ -254,11 +284,13 @@ func (s *snapshot) fullInstalled(res Resources) bool {
 	return false
 }
 
-// physicalAddrs are global addresses outside the owned interface and loopback
+// physicalAddrs are global addresses on links that are up, outside the owned
+// interface and loopback. Down links carry no replies, and skipping them keeps
+// a Kubernetes kube-ipvs0 with one address per service from adding a rule each
 func (s *snapshot) physicalAddrs(res Resources) []netip.Addr {
 	var addrs []netip.Addr
 	for _, l := range s.links {
-		if l.Name == res.Interface || l.Name == res.PendingInterface || l.Loopback {
+		if l.Name == res.Interface || l.Name == res.PendingInterface || l.Loopback || !l.Up {
 			continue
 		}
 		for _, a := range l.Addrs {
@@ -421,13 +453,19 @@ func parseRules(data []byte, family int) ([]rule, error) {
 		Table    ipValue         `json:"table"`
 		Suppress *int            `json:"suppress_prefixlen"`
 		Protocol ipValue         `json:"protocol"`
+		IIf      string          `json:"iif"`
 	}
 	if err := decodeList(data, &raw); err != nil {
 		return nil, fmt.Errorf("network: parsing ip rule output: %w", err)
 	}
+	var keys []map[string]json.RawMessage
+	if err := decodeList(data, &keys); err != nil {
+		return nil, fmt.Errorf("network: parsing ip rule output: %w", err)
+	}
 	rules := make([]rule, 0, len(raw))
-	for _, r := range raw {
-		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0}
+	for i, r := range raw {
+		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0,
+			Limited: r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })}
 		var err error
 		if parsed.Src, err = rulePrefix(r.Src, r.SrcLen); err != nil {
 			return nil, err
@@ -452,6 +490,11 @@ func parseRules(data []byte, family int) ([]rule, error) {
 	}
 	return rules, nil
 }
+
+// limitingSelectors are iproute2's JSON keys for selectors that narrow a rule
+// below all host traffic. iif is handled apart, since iif lo matches every
+// locally generated packet
+var limitingSelectors = []string{"oif", "uid_start", "ipproto", "sport", "sport_start", "dport", "dport_start", "tos", "dscp", "flowlabel", "l3mdev"}
 
 // rulePrefix reads a rule's from or to, where iproute2 prints the length apart
 // and only when it is not a host length
@@ -493,6 +536,36 @@ func parseNftTables(data []byte) ([]string, error) {
 		}
 	}
 	return tables, nil
+}
+
+// parseNftRules counts the rules in each chain of one listed table
+func parseNftRules(data []byte) (map[string]int, error) {
+	var raw struct {
+		Nftables []struct {
+			Chain *struct {
+				Name string `json:"name"`
+			} `json:"chain"`
+			Rule *struct {
+				Chain string `json:"chain"`
+			} `json:"rule"`
+		} `json:"nftables"`
+	}
+	if err := decodeList(data, &raw); err != nil {
+		return nil, fmt.Errorf("network: parsing nft output: %w", err)
+	}
+	chains := map[string]int{}
+	for _, entry := range raw.Nftables {
+		switch {
+		case entry.Chain != nil:
+			// A flushed chain still shows up, with zero rules
+			if _, ok := chains[entry.Chain.Name]; !ok {
+				chains[entry.Chain.Name] = 0
+			}
+		case entry.Rule != nil:
+			chains[entry.Rule.Chain]++
+		}
+	}
+	return chains, nil
 }
 
 // wgFields splits wg show <if> <field> output into key and value per line

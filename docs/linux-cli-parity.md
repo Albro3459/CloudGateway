@@ -357,3 +357,8 @@ Other intentional differences, all with schema and exit compatibility kept:
 * `incompatible_version` suggests waiting for the daemon restart or running
   `sudo systemctl restart cloudgatewayd`.
 * The QR mask can differ from CoreImage's. The encoded link and level M match.
+* Full keeps private, shared, and link-local destinations (`10.0.0.0/8`,
+  `100.64.0.0/10`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `fc00::/7`, `fe80::/10`) outside the tunnel, except the mesh ranges and VPN
+  DNS. macOS only keeps its local subnets out. Cloud VMs need their VPC,
+  metadata, and internal services.

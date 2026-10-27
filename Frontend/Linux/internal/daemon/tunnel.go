@@ -276,7 +276,7 @@ func profileFor(identifier string, config *wgconfig.Config, mode ipc.Mode) netwo
 		applied = config.Mesh()
 	}
 	profile := network.Profile{
-		ID: identifier, ConfigHash: config.Hash(), Addresses: config.Addresses, DNS: config.DNS, MTU: int(config.MTU),
+		ID: identifier, ConfigHash: config.Hash(), Mode: network.Mode(mode), Addresses: config.Addresses, DNS: config.DNS, MTU: int(config.MTU),
 		PeerPublicKey: base64.StdEncoding.EncodeToString(config.Peer.PublicKey[:]), AllowedIPs: applied.Peer.AllowedIPs,
 		EndpointHost: config.Peer.Endpoint.Host, EndpointPort: config.Peer.Endpoint.Port, SetConf: applied.SetConf,
 	}

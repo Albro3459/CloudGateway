@@ -36,6 +36,7 @@ func testProfile(mode Mode, host int) Profile {
 	p := Profile{
 		ID:            fmt.Sprintf("uid/us-sanjose-1/client-%d", host),
 		ConfigHash:    fmt.Sprintf("hash-%d", host),
+		Mode:          mode,
 		Addresses:     []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("10.0.0.%d/32", host)), netip.MustParsePrefix(fmt.Sprintf("fd42:42:42::%d/128", host))},
 		DNS:           []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fd42:42:42::1")},
 		SearchDomains: []string{"corp.example"},

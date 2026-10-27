@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
@@ -18,10 +19,17 @@ resolver dns=[10.0.0.1 fd42:42:42::1] domains=[~. corp.example] default-route=tr
 route 0.0.0.0/0 table 52820
 route ::/0 table 52820
 rule v4 30200 from=192.168.64.5/32 to=all not=false fwmark=0x0 table=254 suppress=false
+rule v4 30203 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=52820 suppress=false
+rule v4 30205 from=all to=10.0.0.0/8 not=false fwmark=0x0 table=254 suppress=false
+rule v4 30205 from=all to=100.64.0.0/10 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=169.254.0.0/16 not=false fwmark=0x0 table=254 suppress=false
+rule v4 30205 from=all to=172.16.0.0/12 not=false fwmark=0x0 table=254 suppress=false
+rule v4 30205 from=all to=192.168.0.0/16 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
 rule v4 30220 from=all to=all not=true fwmark=0xce54 table=52820 suppress=false
 rule v6 30200 from=2001:db8:1::5/128 to=all not=false fwmark=0x0 table=254 suppress=false
+rule v6 30203 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=52820 suppress=false
+rule v6 30205 from=all to=fc00::/7 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30205 from=all to=fe80::/10 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
 rule v6 30220 from=all to=all not=true fwmark=0xce54 table=52820 suppress=false
@@ -54,7 +62,14 @@ ip -4 route add 0.0.0.0/0 dev cloudgateway table 52820 proto 206
 ip -6 route add ::/0 dev cloudgateway table 52820 proto 206
 ip -4 rule add priority 30200 from 192.168.64.5 lookup main protocol 206
 ip -6 rule add priority 30200 from 2001:db8:1::5 lookup main protocol 206
+ip -4 rule add priority 30203 to 10.0.0.0/16 lookup 52820 protocol 206
+ip -6 rule add priority 30203 to fd42:42:42::/48 lookup 52820 protocol 206
+ip -4 rule add priority 30205 to 10.0.0.0/8 lookup main protocol 206
+ip -4 rule add priority 30205 to 100.64.0.0/10 lookup main protocol 206
 ip -4 rule add priority 30205 to 169.254.0.0/16 lookup main protocol 206
+ip -4 rule add priority 30205 to 172.16.0.0/12 lookup main protocol 206
+ip -4 rule add priority 30205 to 192.168.0.0/16 lookup main protocol 206
+ip -6 rule add priority 30205 to fc00::/7 lookup main protocol 206
 ip -6 rule add priority 30205 to fe80::/10 lookup main protocol 206
 ip -4 rule add priority 30210 lookup main suppress_prefixlength 0 protocol 206
 ip -6 rule add priority 30210 lookup main suppress_prefixlength 0 protocol 206
@@ -727,4 +742,98 @@ func TestObserveRetriesAcrossConcurrentChange(t *testing.T) {
 	stale, _ := h.m.Observe(ctx)
 	// The outer observation started first, so it must not replace the inner one
 	expect(t, "last observed", stale.ObservedAt, start.Add(time.Second))
+}
+
+func TestFullKeepsPrivateRangesOutsideTunnel(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	p := testProfile(ModeFull, 5)
+	// VPN DNS outside the mesh ranges but inside a private range stays in the tunnel
+	p.DNS = []netip.Addr{netip.MustParseAddr("172.20.0.53"), netip.MustParseAddr("fd42:42:42::1")}
+
+	h.apply(p)
+
+	var rules []string
+	for _, r := range host.Rules() {
+		if r.Protocol == RouteProtocol && (r.Priority == PriorityMesh || r.Priority == PriorityLocal) {
+			rules = append(rules, fmt.Sprintf("%d %s %d", r.Priority, r.Dst, r.Table))
+		}
+	}
+	slices.Sort(rules)
+	expectText(t, "mesh and local rules", strings.Join(rules, "\n"), `30203 10.0.0.0/16 52820
+30203 172.20.0.53/32 52820
+30203 fd42:42:42::/48 52820
+30205 10.0.0.0/8 254
+30205 100.64.0.0/10 254
+30205 169.254.0.0/16 254
+30205 172.16.0.0/12 254
+30205 192.168.0.0/16 254
+30205 fc00::/7 254
+30205 fe80::/10 254`)
+	if _, err := h.m.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	expectText(t, "owned state after down", ownedState(host), "")
+}
+
+func TestModeMustMatchAllowedIPs(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	split := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"),
+		netip.MustParsePrefix("::/1"), netip.MustParsePrefix("8000::/1")}
+	for name, mutate := range map[string]func(*Profile){
+		"mesh with a split default route": func(p *Profile) { p.AllowedIPs = split },
+		"mesh with a default route":       func(p *Profile) { p.AllowedIPs = fullIPs },
+		"no mode":                         func(p *Profile) { p.Mode = "" },
+	} {
+		p := testProfile(ModeMesh, 5)
+		mutate(&p)
+		if _, err := h.m.Apply(ctx, p, nil); !errors.Is(err, ErrInvalidProfile) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	expect(t, "mutations", len(mutations(host.Calls())), 0)
+}
+
+func TestEndpointInsideTunnelRoutesIsRefused(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     Mode
+		server   string
+		extraIPs []netip.Prefix
+	}{
+		{name: "Full with an extra allowed IP covering the endpoint", mode: ModeFull, server: "203.0.113.10",
+			extraIPs: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}},
+		{name: "Full endpoint in the mesh ranges", mode: ModeFull, server: "10.0.9.1"},
+		{name: "Mesh endpoint in the mesh ranges", mode: ModeMesh, server: "10.0.9.1"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host := networktest.NewUbuntu()
+			h := newHarness(t, host)
+			h.server = netip.MustParseAddr(test.server)
+			p := testProfile(test.mode, 5)
+			p.AllowedIPs = append(slices.Clone(p.AllowedIPs), test.extraIPs...)
+
+			_, err := h.m.Apply(ctx, p, nil)
+
+			if !errors.Is(err, ErrInvalidProfile) {
+				t.Fatalf("err = %v", err)
+			}
+			expect(t, "mutations", len(mutations(host.Calls())), 0)
+		})
+	}
+}
+
+func TestDownLinksGetNoSourceRules(t *testing.T) {
+	host := networktest.NewUbuntu()
+	// kube-proxy in IPVS mode keeps every service address on a down dummy link
+	host.AddLink(networktest.Link{Name: "kube-ipvs0", Kind: "dummy", MTU: 1500})
+	host.AddAddress("kube-ipvs0", netip.MustParsePrefix("10.96.0.1/32"), "global")
+	host.AddAddress("kube-ipvs0", netip.MustParsePrefix("10.96.0.10/32"), "global")
+	h := newHarness(t, host)
+
+	h.apply(testProfile(ModeFull, 5))
+
+	expectText(t, "owned state", ownedState(host), fullOwnedState)
 }

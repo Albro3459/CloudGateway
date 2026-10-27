@@ -57,6 +57,9 @@ type Rule struct {
 	Table    int
 	Suppress bool
 	Protocol int
+	// Selector adds one printed key, such as "oif" or "uid_start", with SelectorValue
+	Selector      string
+	SelectorValue any
 }
 
 type WireGuard struct {
@@ -280,6 +283,27 @@ func (h *Host) FlushNftRuleset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	clear(h.nft)
+}
+
+// FlushNftTable empties every chain in "family name" and keeps the chains
+func (h *Host) FlushNftTable(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var kept []string
+	chain := false
+	for line := range strings.Lines(h.nft[name]) {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "chain "):
+			chain = true
+		case trimmed == "}":
+			chain = false
+		case chain && !strings.HasPrefix(trimmed, "type "):
+			continue
+		}
+		kept = append(kept, strings.TrimSuffix(line, "\n"))
+	}
+	h.nft[name] = strings.Join(kept, "\n")
 }
 
 // SetResolverActive stops or starts systemd-resolved. Stopping it keeps link settings

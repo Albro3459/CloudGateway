@@ -23,7 +23,9 @@ actual validation.
   exclusivity, and the Full-mode server hostname lookup over the physical link
   before committing to the production adapter
 - [ ] Prove Full keeps SSH from a new source address, LAN/VPC, metadata, DHCP,
-  and NTP working through `suppress_prefixlength 0` and the source-address rules
+  and NTP working through `suppress_prefixlength 0`, the private-range rules,
+  and the source-address rules. Include a GCE `/32` VM and an AWS VPC peer in
+  another subnet
 - [ ] Check which owned rules/routes networkd removes on `netplan apply` and
   networkd restart, and that the daemon's reapply restores them
 - [ ] Specify the exact service unit and supported resolver configurations.

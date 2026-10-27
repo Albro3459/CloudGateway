@@ -26,7 +26,7 @@ func (m *Manager) Preflight(ctx context.Context, p Profile) error {
 func (m *Manager) check(ctx context.Context, p Profile, res Resources, adopt bool) (*snapshot, error) {
 	var missing []string
 	tools := []string{ToolIP, ToolWG, ToolNft}
-	if p.Mode() == ModeFull {
+	if p.Mode == ModeFull {
 		tools = append(tools, ToolResolvectl, ToolBusctl)
 	}
 	for _, tool := range tools {
@@ -75,7 +75,7 @@ func (m *Manager) conflicts(ctx context.Context, p Profile, s *snapshot, res Res
 
 	add(ConflictOverlap, nil, overlaps(p, s, res))
 	// Mesh installs no rules, table routes, mark, or resolver settings
-	if p.Mode() != ModeFull {
+	if p.Mode != ModeFull {
 		return conflicts, nil
 	}
 
@@ -140,11 +140,12 @@ func (m *Manager) conflicts(ctx context.Context, p Profile, s *snapshot, res Res
 	return conflicts, nil
 }
 
-// overlaps finds local networks and routes that would capture the mesh ranges,
-// tunnel addresses, or regional DNS. Full only moves the default route, so any
-// more-specific main route wins there. Mesh routes win against main routes
-// shorter than their own prefix. Tables that foreign rules reach before main
-// win with any overlapping route
+// overlaps finds local networks and routes that collide with the mesh ranges,
+// tunnel addresses, or regional DNS. In Mesh, a main route at least as specific
+// as the tunnel's route wins. In Full, the mesh rule sends these ranges to the
+// tunnel ahead of main, so an overlapping local network would lose its traffic
+// instead. Either way it is a conflict. Tables that foreign rules reach before
+// main win with any overlapping route
 func overlaps(p Profile, s *snapshot, res Resources) []netip.Prefix {
 	protected := slices.Clone(meshPrefixes)
 	for _, prefix := range p.Addresses {

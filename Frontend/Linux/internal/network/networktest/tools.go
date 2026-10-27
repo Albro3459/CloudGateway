@@ -153,6 +153,9 @@ func (h *Host) nftRun(args []string, stdin []byte) ([]byte, error) {
 		}
 		return json.Marshal(map[string]any{"nftables": entries})
 	}
+	if len(args) == 5 && slices.Equal(args[:3], []string{"-j", "list", "table"}) {
+		return h.listNftTable(args[3] + " " + args[4])
+	}
 	if !slices.Equal(args, []string{"-f", "-"}) {
 		return nil, errUsage
 	}
@@ -197,6 +200,34 @@ func (h *Host) nftRun(args []string, stdin []byte) ([]byte, error) {
 	}
 	h.nft = tables
 	return nil, nil
+}
+
+// listNftTable lists one table's chains, each followed by its rules, from the
+// loaded body. Rule expressions are left out
+func (h *Host) listNftTable(name string) ([]byte, error) {
+	body, ok := h.nft[name]
+	if !ok {
+		return nil, fmt.Errorf("Error: No such file or directory")
+	}
+	family, table, _ := strings.Cut(name, " ")
+	entries := []any{
+		map[string]any{"metainfo": map[string]any{"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}},
+		map[string]any{"table": map[string]any{"family": family, "name": table, "handle": 1}},
+	}
+	chain := ""
+	for line := range strings.Lines(body) {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "chain ") && strings.HasSuffix(line, "{"):
+			chain = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "chain "), "{"))
+			entries = append(entries, map[string]any{"chain": map[string]any{"family": family, "table": table, "name": chain}})
+		case line == "}":
+			chain = ""
+		case chain != "" && line != "" && !strings.HasPrefix(line, "type "):
+			entries = append(entries, map[string]any{"rule": map[string]any{"family": family, "table": table, "chain": chain, "expr": []any{}}})
+		}
+	}
+	return json.Marshal(map[string]any{"nftables": entries})
 }
 
 func (h *Host) resolvectl(args []string) error {

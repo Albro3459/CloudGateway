@@ -424,6 +424,9 @@ func (h *Host) renderRules(family int, numeric bool) ([]byte, error) {
 		if r.Protocol != 0 && r.Protocol != 2 {
 			entry["protocol"] = named(r.Protocol, protocolNames, numeric)
 		}
+		if r.Selector != "" {
+			entry[r.Selector] = r.SelectorValue
+		}
 		entries = append(entries, entry)
 	}
 	return json.Marshal(entries)

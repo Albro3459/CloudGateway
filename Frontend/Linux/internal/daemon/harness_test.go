@@ -665,7 +665,11 @@ func (h *harness) owned() string {
 	}
 	for _, r := range h.host.Rules() {
 		if r.Protocol == network.RouteProtocol {
-			lines = append(lines, fmt.Sprintf("rule v%d %d", r.Family, r.Priority))
+			line := fmt.Sprintf("rule v%d %d", r.Family, r.Priority)
+			if r.Dst.IsValid() {
+				line += " to " + r.Dst.String()
+			}
+			lines = append(lines, line)
 		}
 	}
 	if slices.Contains(h.host.NftTables(), "inet "+network.NftTable) {
@@ -699,7 +703,10 @@ func deref[T any](value *T) any {
 }
 
 var fullOwned = fmt.Sprintf("link mtu=1420 endpoint=203.0.113.10:51820 allowed=[0.0.0.0/0 ::/0]\n"+
-	"rule v4 %[1]d\nrule v6 %[1]d\nrule v4 %[2]d\nrule v6 %[2]d\nrule v4 %[3]d\nrule v6 %[3]d\nrule v4 %[4]d\nrule v6 %[4]d\nnft",
-	network.PrioritySource, network.PriorityLinkLocal, network.PrioritySuppress, network.PriorityTunnel)
+	"rule v4 %[1]d\nrule v6 %[1]d\nrule v4 %[2]d to 10.0.0.0/16\nrule v6 %[2]d to fd42:42:42::/48\n"+
+	"rule v4 %[3]d to 10.0.0.0/8\nrule v4 %[3]d to 100.64.0.0/10\nrule v4 %[3]d to 169.254.0.0/16\n"+
+	"rule v4 %[3]d to 172.16.0.0/12\nrule v4 %[3]d to 192.168.0.0/16\nrule v6 %[3]d to fc00::/7\nrule v6 %[3]d to fe80::/10\n"+
+	"rule v4 %[4]d\nrule v6 %[4]d\nrule v4 %[5]d\nrule v6 %[5]d\nnft",
+	network.PrioritySource, network.PriorityMesh, network.PriorityLocal, network.PrioritySuppress, network.PriorityTunnel)
 
 const meshOwned = "link mtu=1420 endpoint=203.0.113.10:51820 allowed=[10.0.0.0/16 fd42:42:42::/48]\nnft"

@@ -91,11 +91,15 @@ func TestReconcileRestoresRulesRemovedByNetworkd(t *testing.T) {
 	h := newHarness(t, host)
 	h.apply(testProfile(ModeFull, 5))
 	removed := host.RemoveRules(isOwnedRule)
-	expect(t, "removed", removed, 8)
+	expect(t, "removed", removed, 15)
 
 	obs, _ := h.m.Observe(ctx)
 	expect(t, "before reconcile", obs.State, StateConnecting)
-	expect(t, "drift", strings.Join(obs.Drift, "; "), "missing rule 30200 from 192.168.64.5; missing rule 30200 from 2001:db8:1::5; missing rule 30205 ipv4; missing rule 30205 ipv6; missing rule 30210 ipv4; missing rule 30210 ipv6; missing rule 30220 ipv4; missing rule 30220 ipv6")
+	expect(t, "drift", strings.Join(obs.Drift, "; "), "missing rule 30200 from 192.168.64.5; missing rule 30200 from 2001:db8:1::5; "+
+		"missing rule 30203 to 10.0.0.0/16; missing rule 30203 to fd42:42:42::/48; missing rule 30205 to 10.0.0.0/8; "+
+		"missing rule 30205 to 100.64.0.0/10; missing rule 30205 to 169.254.0.0/16; missing rule 30205 to 172.16.0.0/12; "+
+		"missing rule 30205 to 192.168.0.0/16; missing rule 30205 to fc00::/7; missing rule 30205 to fe80::/10; "+
+		"missing rule 30210 ipv4; missing rule 30210 ipv6; missing rule 30220 ipv4; missing rule 30220 ipv6")
 	obs, err := h.m.Reconcile(ctx)
 
 	if err != nil {
@@ -388,6 +392,10 @@ func TestPreflightConflicts(t *testing.T) {
 		{name: "unowned link with the pending name", mode: ModeMesh, setup: func(host *networktest.Host) {
 			host.AddLink(networktest.Link{Name: PendingInterfaceName, Kind: "wireguard", MTU: 1420})
 		}, kind: ConflictForeignInterface, names: []string{PendingInterfaceName}},
+		{name: "VPN rule for all locally generated traffic", mode: ModeFull, setup: func(host *networktest.Host) {
+			host.AddRule(networktest.Rule{Family: 4, Priority: 100, Table: 100, Selector: "iif", SelectorValue: "lo"})
+			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("0.0.0.0/0"), Table: 100, Dev: "tun0", Protocol: 4})
+		}, kind: ConflictForeignVPN, names: []string{"100 lookup 100"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -457,6 +465,13 @@ func TestPreflightPassesModeSpecificSetups(t *testing.T) {
 		{name: "unrelated rules and tables", mode: ModeFull, setup: func(host *networktest.Host) {
 			host.AddRule(networktest.Rule{Family: 4, Priority: 5270, Table: 52})
 			host.AddNftTable("inet", "cloudgateway")
+		}},
+		{name: "rules limited to one user, interface, or protocol", mode: ModeFull, setup: func(host *networktest.Host) {
+			host.AddRule(networktest.Rule{Family: 4, Priority: 100, Table: 100, Selector: "uid_start", SelectorValue: 1001})
+			host.AddRule(networktest.Rule{Family: 4, Priority: 101, Table: 100, Selector: "oif", SelectorValue: "enp0s2"})
+			host.AddRule(networktest.Rule{Family: 4, Priority: 102, Table: 100, Selector: "iif", SelectorValue: "docker0"})
+			host.AddRule(networktest.Rule{Family: 4, Priority: 103, Table: 100, Selector: "ipproto", SelectorValue: "tcp"})
+			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("0.0.0.0/0"), Table: 100, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
 		}},
 	}
 	for _, test := range tests {
@@ -593,4 +608,42 @@ func TestResolverReapplyFailureIsBounded(t *testing.T) {
 	}
 
 	expect(t, "failed at", failedAt, 30*time.Second)
+}
+
+func TestReconcileRefillsFlushedTable(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	body, _ := host.NftTable("inet " + NftTable)
+	host.FlushNftTable("inet " + NftTable)
+
+	obs, _ := h.m.Observe(ctx)
+	expect(t, "before reconcile", obs.State, StateConnecting)
+	expect(t, "drift", strings.Join(obs.Drift, "; "), "nftables")
+	obs, err := h.m.Reconcile(ctx)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "state", obs.State, StateConnected)
+	refilled, _ := host.NftTable("inet " + NftTable)
+	expectText(t, "nft table", refilled, body)
+}
+
+func TestUpdateEndpointRefusesMoveIntoTunnel(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	host.ResetCalls()
+	h.server = netip.MustParseAddr("10.0.9.1")
+
+	endpoint, changed, err := h.m.UpdateEndpoint(ctx)
+
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("err = %v", err)
+	}
+	expect(t, "changed", changed, false)
+	expect(t, "endpoint", endpoint, netip.MustParseAddrPort("203.0.113.10:51820"))
+	expect(t, "journal endpoint", h.lastJournal().Endpoint, endpoint)
+	expect(t, "mutations", len(mutations(host.Calls())), 0)
 }

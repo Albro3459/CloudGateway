@@ -149,7 +149,7 @@ func (c *Controller) diagnosticMode() ipc.Mode {
 // doctorProfile lets Preflight read the resolver policy a Full start needs. Only its resolver findings are used
 func doctorProfile() network.Profile {
 	return network.Profile{
-		ID: "doctor", Addresses: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/32"), netip.MustParsePrefix("fd42:42:42::2/128")},
+		ID: "doctor", Mode: network.ModeFull, Addresses: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/32"), netip.MustParsePrefix("fd42:42:42::2/128")},
 		DNS: []netip.Addr{netip.MustParseAddr("10.0.0.1")}, PeerPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		AllowedIPs:   []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
 		EndpointHost: "doctor.invalid", EndpointPort: 51820,

@@ -42,7 +42,7 @@ func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 	for _, prefix := range missingAddresses(s, j) {
 		commands = append(commands, ipCommand(familyFlag(addrFamily(prefix.Addr())), "address", "add", prefix.String(), "dev", res.Interface))
 	}
-	if !s.hasTable(res) {
+	if !s.tableMatches(j) {
 		commands = append(commands, nftScript(res, j.Addresses, j.Mode == ModeFull))
 	}
 	missingRoutes, extraRoutes := diffRoutes(s, j)

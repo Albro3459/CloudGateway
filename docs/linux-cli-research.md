@@ -290,11 +290,15 @@ but neither removes route/DNS lifecycle work.
 
 ### Full routing and VM access
 
-Full means internet traffic and DNS use the region. Browsers, package managers,
-and other outbound connections exit from the regional server over IPv4 and IPv6.
-The local network still works, and SSH into the machine keeps working. This
-matches macOS, where WireGuardKit adds the AllowedIPs routes without capturing
-the Mac's local subnets.
+Full means public internet traffic and DNS use the region. Browsers, package
+managers, and other outbound connections exit from the regional server over
+IPv4 and IPv6. Private, shared (`100.64.0.0/10`), and link-local destinations
+stay on the VM's own network, so VPC peers, internal load balancers, metadata,
+and LANs keep working, and SSH into the machine keeps working. The mesh ranges
+and VPN DNS still use the tunnel. macOS only keeps the Mac's local subnets out of
+the tunnel. A cloud VM often reaches its VPC through the default gateway, as on
+GCE with a `/32` address or across AWS subnets, so Linux keeps all private
+ranges out.
 
 Use the `wg-quick` policy routing pattern for both address families. WireGuard's
 [routing reference](https://www.wireguard.com/netns/) explains it.
@@ -304,8 +308,13 @@ Use the `wg-quick` policy routing pattern for both address families. WireGuard's
   encrypted packets, so they use the physical link.
 * A higher-priority `lookup main suppress_prefixlength 0` rule keeps every
   more-specific main-table route outside the tunnel. That covers directly
-  connected subnets, link-local DHCP and metadata, cloud static routes, and
-  container bridges. Only the default route moves.
+  connected subnets, cloud static routes, and container bridges. Only the
+  default route moves.
+* Higher-priority `to <prefix> lookup main` rules keep `10.0.0.0/8`,
+  `100.64.0.0/10`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `fc00::/7`, and `fe80::/10` outside the tunnel even when main only has a
+  default route to them. Rules ahead of those send the mesh ranges, and any VPN
+  DNS address inside a private range, to the tunnel table.
 * A higher-priority `from <physical address> lookup main` rule for each physical
   address sends replies to inbound sessions out the physical link. SSH from any
   source keeps working without a management allowlist. The daemon updates these
@@ -323,11 +332,12 @@ The implementation uses interface `cloudgateway` with alias `cloudgatewayd`,
 created as `cloudgw-pending` and renamed once the alias is set, so a crash
 never leaves an ambiguous link. Table and fwmark are `52820`, and rules and
 routes carry routing protocol `206`. Rule priorities are `30200` for physical
-source addresses, `30205` for link-local destinations, `30210` for the
-suppress rule, and `30220` for the tunnel rule. They stay clear of Tailscale's
-`5210`-`5270`. The link-local rules send `169.254.0.0/16` and `fe80::/10` to
-the main table, since EC2 and GCE images often have no specific route for
-metadata or time sync. A journal must name a known resource set, and teardown
+source addresses, `30203` for the mesh ranges and VPN DNS, `30205` for private
+and link-local destinations, `30210` for the suppress rule, and `30220` for the
+tunnel rule. They stay clear of Tailscale's `5210`-`5270`. Source rules cover
+addresses on links that are up, so a Kubernetes `kube-ipvs0` with one address
+per service adds none. The daemon also refuses an endpoint inside the tunnel's
+own routes, since its encrypted packets would loop. A journal must name a known resource set, and teardown
 never matches protocol `0` or `2`, so a damaged journal can't remove kernel
 rules. Rule, table, and mark collision checks apply only to Full, which is the
 only mode that installs them.
@@ -637,7 +647,8 @@ Known limitations to settle on VMs before release:
 * The `from <address> lookup main` rules skip later host policy rules, such as
   multi-NIC `routing-policy` without a priority. `goto` to an owned `nop` rule
   would keep them.
-* AWS IPv6 metadata (`fd00:ec2::254`) has no owned bypass rule.
+* VPC IPv6 is usually global unicast on AWS and GCE. Traffic to the VM's own
+  subnet stays out of the tunnel, but other subnets in the VPC go through it.
 * Full rejects any search or routing domain on another link with DNS servers.
   netplan `use-domains` or NetworkManager DHCP search domains block it.
 * `503 AUTH_UNAVAILABLE` and edge HTML errors keep the session without granting

@@ -141,7 +141,7 @@ func drift(s *snapshot, j *Journal) []string {
 	for _, prefix := range missingAddresses(s, j) {
 		names = append(names, "missing address "+prefix.String())
 	}
-	if !s.hasTable(j.Resources) {
+	if !s.tableMatches(j) {
 		names = append(names, "nftables")
 	}
 	missingRoutes, extraRoutes := diffRoutes(s, j)
