@@ -190,12 +190,12 @@ func TestReconcileReportsLostLinkOnlyWhileOwnedStateRemains(t *testing.T) {
 	expect(t, "state after reboot", obs.State, StateDisconnected)
 }
 
-func TestReconcileLeavesAnAddedAddressAsUnknown(t *testing.T) {
+func TestReconcileKeepsRepairingWithAnAddedAddress(t *testing.T) {
 	host := networktest.NewUbuntu()
 	h := newHarness(t, host)
 	h.apply(testProfile(ModeFull, 5))
 	host.AddAddress(InterfaceName, netip.MustParsePrefix("10.9.9.9/32"), "global")
-	host.ResetCalls()
+	host.RemoveRules(func(r networktest.Rule) bool { return r.Priority == PriorityTunnel })
 
 	obs, err := h.m.Reconcile(ctx)
 
@@ -203,7 +203,12 @@ func TestReconcileLeavesAnAddedAddressAsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, "state", obs.State, StateUnknown)
-	expect(t, "mutations", len(mutations(host.Calls())), 0)
+	expect(t, "tunnel rule restored", slices.ContainsFunc(host.Rules(), func(r networktest.Rule) bool { return r.Priority == PriorityTunnel }), true)
+	// Full's DNS policy still holds the tunnel to exclusive VPN DNS
+	host.SetLinkDomains("enp0s1", "lan")
+	if _, err := h.m.Reconcile(ctx); !errors.Is(err, ErrResolverPolicy) {
+		t.Fatalf("err = %v, want ErrResolverPolicy", err)
+	}
 }
 
 func TestResolverRepairThenPolicyFailure(t *testing.T) {

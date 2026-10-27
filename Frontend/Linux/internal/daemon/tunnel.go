@@ -349,7 +349,10 @@ func (c *Controller) cancelResume() {
 // That start may change nothing and hand the desired revision back, and the
 // resume's own start checks the revision again under netMu
 func (c *Controller) resumeAbandonedLocked(r *resumeState) bool {
-	superseded := c.desiredRevision() != r.revision && c.currentIntent().Phase != store.PhaseStarting
+	// One read, since a failing start hands the revision back and then rolls the phase back
+	c.intentMu.Lock()
+	superseded := c.desired != r.revision && c.intent.Phase != store.PhaseStarting
+	c.intentMu.Unlock()
 	return c.closing || c.resume != r || superseded || c.creds == nil || c.creds.AccountID != r.account ||
 		c.creds.Generation != r.generation || c.accessResult == ipc.AccessDenied
 }

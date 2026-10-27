@@ -31,16 +31,16 @@ func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 	if err != nil {
 		return m.stale(), err
 	}
-	if core := coreMismatch(s, j); len(core) > 0 {
-		// Nothing owned left, as after a reboot, observes as disconnected instead.
-		// Only an added address leaves the tunnel working, so that stays unknown
-		lost := slices.ContainsFunc(core, func(m string) bool { return !strings.HasPrefix(m, extraAddressDrift) })
+	if slices.ContainsFunc(coreMismatch(s, j), func(m string) bool { return !strings.HasPrefix(m, extraAddressDrift) }) {
+		// Nothing owned left, as after a reboot, observes as disconnected instead
 		obs, err := m.Observe(ctx)
-		if err == nil && lost && obs.State == StateUnknown {
+		if err == nil && obs.State == StateUnknown {
 			err = ErrTunnelLost
 		}
 		return obs, err
 	}
+	// An address someone added leaves the link and peer working, so the repairs
+	// and Full's DNS policy below still run. The tunnel keeps reading as unknown
 	var commands []command
 	if s.own.MTU != j.MTU {
 		commands = append(commands, ipCommand("link", "set", "dev", res.Interface, "mtu", strconv.Itoa(j.MTU)))

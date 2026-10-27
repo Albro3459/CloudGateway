@@ -770,15 +770,13 @@ func TestUpFailingAfterItsStartingIntentKeepsReconnect(t *testing.T) {
 	h.leaveResumeRetrying()
 	before := h.c.desiredRevision()
 	var once sync.Once
-	// The resume's backoff ends while the up is past its starting write
+	var checked, abandoned bool
+	// The resume's check runs while the up is past its starting write
 	h.host.After(func(networktest.Call) bool { return h.c.desiredRevision() != before }, func() {
 		once.Do(func() {
-			h.clock.releaseSleeps()
-			deadline := time.Now().Add(500 * time.Millisecond)
-			for h.resuming() && time.Now().Before(deadline) {
-				time.Sleep(5 * time.Millisecond)
-			}
-			h.clock.holdSleeps()
+			h.c.mu.Lock()
+			checked, abandoned = true, h.c.resumeAbandonedLocked(h.c.resume)
+			h.c.mu.Unlock()
 		})
 	})
 
@@ -786,6 +784,8 @@ func TestUpFailingAfterItsStartingIntentKeepsReconnect(t *testing.T) {
 	out := h.up(configB)
 
 	expect(t, "up", *out.outcome, failedOutcome(ipc.CommandNetworkUnavailable))
+	expect(t, "checked mid-up", checked, true)
+	expect(t, "abandoned mid-up", abandoned, false)
 	expect(t, "resume kept", h.resuming(), true)
 	h.recoverNetwork()
 	expect(t, "config", deref(h.snapshot().Tunnel.ConfigID), any(configA))
