@@ -102,7 +102,8 @@ func (s *session) add(regionInput, name string, accepted func(string) error) (da
 		return nil, errorCode(codeBusy)
 	}
 	prepared, err := s.call(ipc.Request{Action: ipc.ActionPrepareClient})
-	if isControllerFailure(err, ipc.FailureUnavailable) {
+	// Both a lost connection and an unavailable reply mean the regions couldn't load
+	if errors.Is(err, errNoConnection) || isControllerFailure(err, ipc.FailureUnavailable) {
 		current, snapshotErr := s.call(ipc.Request{Action: ipc.ActionSnapshot})
 		if s.ctx.Err() != nil {
 			return nil, errorCode(codeInterrupted)

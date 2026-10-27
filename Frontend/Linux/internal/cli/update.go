@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"slices"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/ipc"
@@ -63,11 +64,11 @@ func (s *session) update(allowDisconnect bool, accepted func(string) error) (dat
 func (s *session) observeUpdate(id string) (data, error) {
 	lookup := ipc.Request{Action: ipc.ActionOperation, ContextID: id}
 	reply, err := s.call(ipc.Request{Action: ipc.ActionConfirm, ContextID: id})
-	if err != nil && !isControllerFailure(err, ipc.FailureUnavailable) {
+	if err != nil && !errors.Is(err, errNoConnection) {
 		return nil, confirmFailure(err)
 	}
 	for {
-		for isControllerFailure(err, ipc.FailureUnavailable) {
+		for errors.Is(err, errNoConnection) {
 			if err = s.reconnect(); err == nil && !s.current {
 				err = s.versionError()
 			}

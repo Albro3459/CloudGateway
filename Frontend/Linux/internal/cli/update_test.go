@@ -338,3 +338,46 @@ func TestStatusOperationFailsFastWhenTheDaemonIsDown(t *testing.T) {
 	expectEqual(t, "elapsed", h.clock.elapsed(), 0)
 	expectEqual(t, "dials", h.daemon.acceptCount(), 0)
 }
+
+// A live daemon replying unavailable keeps its connection. Only a dropped connection follows a restart
+func TestUnavailableRepliesAreNotTreatedAsDaemonRestarts(t *testing.T) {
+	polling := updateHarness(t, true)
+	answer := polling.daemon.onRequest
+	polling.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
+		if request.Action == ipc.ActionOperation {
+			return &ipc.Reply{Error: ipc.FailureUnavailable}
+		}
+		return answer(request)
+	}
+	expectExit(t, polling.run("update", "--json"), 4)
+	id := polling.daemon.requestsFor(ipc.ActionUpdate)[0].ID
+	expectEqual(t, "code", field(polling.last(), "error", "code"), any("controller_unavailable"))
+	expectEqual(t, "suggestion", field(polling.last(), "error", "suggestion"),
+		any("Observation stopped. Confirmed update work can keep running. Check this operation before retrying: cloudgateway status --operation "+id))
+	expectActions(t, polling.daemon, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionUpdate, ipc.ActionConfirm, ipc.ActionOperation)
+	expectEqual(t, "connections", polling.daemon.acceptCount(), 1)
+
+	confirming := updateHarness(t, true)
+	answer = confirming.daemon.onRequest
+	confirming.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
+		if request.Action == ipc.ActionConfirm {
+			return &ipc.Reply{Error: ipc.FailureUnavailable}
+		}
+		return answer(request)
+	}
+	expectExit(t, confirming.run("update", "--json"), 10)
+	expectEqual(t, "code", field(confirming.last(), "error", "code"), any("operation_unknown"))
+	expectActions(t, confirming.daemon, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionUpdate, ipc.ActionConfirm)
+
+	lookup := newHarness(t)
+	lookup.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
+		if request.Action == ipc.ActionOperation {
+			return &ipc.Reply{Error: ipc.FailureUnavailable}
+		}
+		return nil
+	}
+	expectExit(t, lookup.run("status", "--operation", "6f9619ff-8b86-d011-b42d-00c04fc964ff", "--json"), 4)
+	expectEqual(t, "code", field(lookup.last(), "error", "code"), any("controller_unavailable"))
+	expectActions(t, lookup.daemon, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionOperation)
+	expectEqual(t, "elapsed", lookup.clock.elapsed(), 0)
+}

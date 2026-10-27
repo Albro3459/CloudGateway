@@ -149,7 +149,11 @@ func newError(c code, message, suggestion string) *cliError {
 
 func errorCode(c code) *cliError { return newError(c, "", "") }
 
-// controllerFailure is a request-level daemon failure, from a reply or the transport
+// errNoConnection means the socket couldn't connect or the connection dropped mid-call, as when the
+// daemon restarts. A live daemon replying unavailable is a controllerFailure instead
+var errNoConnection = errors.New("no daemon connection")
+
+// controllerFailure is a request-level failure the daemon replied with
 type controllerFailure ipc.ControllerFailure
 
 func (f controllerFailure) Error() string { return string(f) }
@@ -187,6 +191,8 @@ func asError(err error) *cliError {
 		return public
 	case errors.As(err, &failure):
 		return fromControllerFailure(ipc.ControllerFailure(failure))
+	case errors.Is(err, errNoConnection):
+		return errorCode(codeControllerUnavailable)
 	case errors.Is(err, context.Canceled):
 		return errorCode(codeInterrupted)
 	case errors.Is(err, context.DeadlineExceeded):

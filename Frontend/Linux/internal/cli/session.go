@@ -91,7 +91,7 @@ func (s *session) open() error {
 	if _, statErr := os.Stat(s.cli.currentLink); errors.Is(statErr, fs.ErrNotExist) {
 		return errorCode(codeInstallationRequired)
 	}
-	return controllerFailure(ipc.FailureUnavailable)
+	return errNoConnection
 }
 
 // call sends one request on the open connection, bounded by the caller deadline
@@ -104,7 +104,7 @@ func (s *session) call(request ipc.Request) (ipc.Reply, error) {
 		return ipc.Reply{}, errorCode(codeInterrupted)
 	}
 	if s.conn == nil {
-		return ipc.Reply{}, controllerFailure(ipc.FailureUnavailable)
+		return ipc.Reply{}, errNoConnection
 	}
 	if request.ID == "" {
 		request.ID = newUUID()
@@ -125,7 +125,7 @@ func (s *session) call(request ipc.Request) (ipc.Reply, error) {
 		case errors.As(err, &syntax), errors.As(err, &mismatch), errors.Is(err, ipc.ErrMessageTooLarge):
 			return ipc.Reply{}, controllerFailure(ipc.FailureInvalidRequest)
 		}
-		return ipc.Reply{}, controllerFailure(ipc.FailureUnavailable)
+		return ipc.Reply{}, errNoConnection
 	}
 	if reply.Error != "" {
 		return reply, controllerFailure(reply.Error)
@@ -411,7 +411,7 @@ func (s *session) operation(id string) (data, error) {
 	}
 	lookup := ipc.Request{Action: ipc.ActionOperation, ContextID: id}
 	reply, err := s.call(lookup)
-	for isControllerFailure(err, ipc.FailureUnavailable) {
+	for errors.Is(err, errNoConnection) {
 		if err = s.reconnect(); err == nil {
 			reply, err = s.call(lookup)
 		}
@@ -462,7 +462,7 @@ func (s *session) reconnect() error {
 		if err == nil && s.lifecycle.State != ipc.LifecycleDraining {
 			return nil
 		}
-		if err != nil && !isControllerFailure(err, ipc.FailureUnavailable) {
+		if err != nil && !errors.Is(err, errNoConnection) {
 			return err
 		}
 	}
