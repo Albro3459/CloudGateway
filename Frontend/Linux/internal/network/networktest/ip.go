@@ -229,9 +229,12 @@ func (h *Host) changeRule(verb string, family int, rest []string) error {
 	}
 	if verb == "del" {
 		// Like the kernel, protocol 0 matches any protocol
+		// Like the kernel, every attribute given must match, and not is ignored
 		index := slices.IndexFunc(h.rules, func(other Rule) bool {
 			return other.Family == family && other.Priority == r.Priority &&
 				(!r.Src.IsValid() || other.Src == r.Src) && (!r.Dst.IsValid() || other.Dst == r.Dst) &&
+				(r.FwMark == 0 || other.FwMark == r.FwMark) && (r.Table == 0 || other.Table == r.Table) &&
+				(!r.Suppress || other.Suppress && other.SuppressLength == r.SuppressLength) &&
 				(!hasProtocol || r.Protocol == 0 || other.Protocol == r.Protocol)
 		})
 		if index < 0 {

@@ -73,10 +73,10 @@ func TestSamplesParse(t *testing.T) {
 	expect(t, "owned routes", fmt.Sprint(s.ownedRoutes(fixed)), "[{0.0.0.0/0 52820 cloudgateway 206 0 } {::/0 52820 cloudgateway 206 0 }]")
 	expect(t, "rules", len(s.rules), 25)
 	expect(t, "owned rules", len(s.ownedRules(fixed)), 20)
-	expect(t, "mark rule", fmt.Sprintf("%+v", s.rules[2]), "{Family:4 Priority:30201 Src:invalid Prefix Dst:invalid Prefix Not:false FwMark:52820 Table:254 Suppress:false Protocol:206 Limited:false}")
-	expect(t, "mesh rule", fmt.Sprintf("%+v", s.rules[4]), "{Family:4 Priority:30203 Src:invalid Prefix Dst:10.0.0.0/16 Not:false FwMark:0 Table:52820 Suppress:false Protocol:206 Limited:false}")
-	expect(t, "link-local rule", fmt.Sprintf("%+v", s.rules[8]), "{Family:4 Priority:30205 Src:invalid Prefix Dst:169.254.0.0/16 Not:false FwMark:0 Table:254 Suppress:false Protocol:206 Limited:false}")
-	expect(t, "tunnel rule", fmt.Sprintf("%+v", s.rules[12]), "{Family:4 Priority:30220 Src:invalid Prefix Dst:invalid Prefix Not:true FwMark:52820 Table:52820 Suppress:false Protocol:206 Limited:false}")
+	expect(t, "mark rule", fmt.Sprintf("%+v", s.rules[2]), "{Family:4 Priority:30201 Src:invalid Prefix Dst:invalid Prefix Not:false FwMark:52820 Table:254 SuppressLength:-1 Protocol:206 Limited:false}")
+	expect(t, "mesh rule", fmt.Sprintf("%+v", s.rules[4]), "{Family:4 Priority:30203 Src:invalid Prefix Dst:10.0.0.0/16 Not:false FwMark:0 Table:52820 SuppressLength:-1 Protocol:206 Limited:false}")
+	expect(t, "link-local rule", fmt.Sprintf("%+v", s.rules[8]), "{Family:4 Priority:30205 Src:invalid Prefix Dst:169.254.0.0/16 Not:false FwMark:0 Table:254 SuppressLength:-1 Protocol:206 Limited:false}")
+	expect(t, "tunnel rule", fmt.Sprintf("%+v", s.rules[12]), "{Family:4 Priority:30220 Src:invalid Prefix Dst:invalid Prefix Not:true FwMark:52820 Table:52820 SuppressLength:-1 Protocol:206 Limited:false}")
 	expect(t, "main default protocol", s.routes[1].Protocol, 16)
 	expect(t, "nft", fmt.Sprint(s.nftTables), "[ip filter ip6 filter inet cloudgateway_client]")
 	expect(t, "fwmark", s.wgMark, uint32(FwMark))
@@ -121,7 +121,7 @@ func TestParseRulesWithNamesAndForeignMarks(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, "count", len(rules), 7)
-	expect(t, "bypass", fmt.Sprintf("%+v", rules[1]), "{Family:4 Priority:5210 Src:invalid Prefix Dst:invalid Prefix Not:false FwMark:524288 Table:254 Suppress:false Protocol:0 Limited:false}")
+	expect(t, "bypass", fmt.Sprintf("%+v", rules[1]), "{Family:4 Priority:5210 Src:invalid Prefix Dst:invalid Prefix Not:false FwMark:524288 Table:254 SuppressLength:-1 Protocol:0 Limited:false}")
 	expect(t, "unreachable has no table", rules[3].Table, 0)
 	expect(t, "named table", rules[4].Table, 52)
 	s := &snapshot{rules: rules}

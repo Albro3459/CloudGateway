@@ -318,8 +318,7 @@ Use the `wg-quick` policy routing pattern for both address families. WireGuard's
   `100.64.0.0/10`, `168.63.129.16` (Azure platform DNS), `169.254.0.0/16`,
   `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, and `fe80::/10` outside the
   tunnel even when main only has a default route to them. Rules ahead of those
-  send the mesh ranges, and any VPN DNS address inside a private range, to the
-  tunnel table. A main route more specific than a mesh range still wins, so a
+  send the mesh ranges and every VPN DNS address to the tunnel table. A main route more specific than a mesh range still wins, so a
   local subnet that overlaps the mesh keeps working, as it did before.
 * A higher-priority `from <physical address> lookup main` rule for each physical
   address sends replies to inbound sessions out the physical link. SSH from any
@@ -658,8 +657,12 @@ recovery, not the ARM macOS development host.
 Known limitations to settle on VMs before release:
 
 * Full sends replies for DNAT'd inbound traffic, such as Docker `-p` or
-  libvirt port forwards, into the tunnel, as `wg-quick` does. A masked
-  connection mark could keep them on the underlay.
+  libvirt port forwards, into the tunnel, as `wg-quick` does. So do replies
+  from UDP services bound to `0.0.0.0` or `::` without `IP_PKTINFO`, since
+  they carry no source address for the source rules to match. A masked
+  connection mark on inbound connections could keep both on the underlay.
+* Connections opened before Full starts keep their physical source address,
+  so they stay outside the tunnel until they close.
 * The `from <address> lookup main` rules skip later host policy rules, such as
   multi-NIC `routing-policy` without a priority. `goto` to an owned `nop` rule
   would keep them.

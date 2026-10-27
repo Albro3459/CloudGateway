@@ -44,13 +44,14 @@ type rule struct {
 	Family   int
 	Priority int
 	// Src and Dst are invalid for all
-	Src      netip.Prefix
-	Dst      netip.Prefix
-	Not      bool
-	FwMark   uint32
-	Table    int
-	Suppress bool
-	Protocol int
+	Src    netip.Prefix
+	Dst    netip.Prefix
+	Not    bool
+	FwMark uint32
+	Table  int
+	// SuppressLength is -1 without suppress_prefixlength
+	SuppressLength int
+	Protocol       int
 	// Limited is set for a selector that host traffic does not generally match,
 	// such as iif other than lo, oif, uidrange, ipproto, ports, tos, or l3mdev,
 	// before any not inversion
@@ -488,7 +489,7 @@ func parseRules(data []byte, family int) ([]rule, error) {
 	}
 	rules := make([]rule, 0, len(raw))
 	for i, r := range raw {
-		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0,
+		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, SuppressLength: -1,
 			Limited: r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })}
 		var err error
 		if parsed.Src, err = rulePrefix(r.Src, r.SrcLen); err != nil {
@@ -509,6 +510,9 @@ func parseRules(data []byte, family int) ([]rule, error) {
 		}
 		if r.Protocol != "" {
 			parsed.Protocol = protocolID(r.Protocol)
+		}
+		if r.Suppress != nil {
+			parsed.SuppressLength = *r.Suppress
 		}
 		rules = append(rules, parsed)
 	}

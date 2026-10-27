@@ -389,12 +389,12 @@ func (h *Host) ClearFailures() {
 	h.failures = nil
 }
 
-// RouteVia returns the link a locally generated, unbound packet to dst takes,
-// or "" when no rule finds a route. It walks rules like the kernel: by
-// priority, with not inverting the whole selector set, then the longest
-// matching route in the rule's table, which a suppress length at least as long
-// as its prefix skips
-func (h *Host) RouteVia(dst netip.Addr, mark uint32) string {
+// RouteVia returns the link a locally generated packet from src to dst takes,
+// or "" when no rule finds a route. An invalid src is an unbound socket. It
+// walks rules like the kernel: by priority, with not inverting the whole
+// selector set, then the longest matching route in the rule's table, which a
+// suppress length at least as long as its prefix skips
+func (h *Host) RouteVia(src, dst netip.Addr, mark uint32) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	family := addrFamily(dst)
@@ -404,7 +404,7 @@ func (h *Host) RouteVia(dst netip.Addr, mark uint32) string {
 		if r.Family != family || r.Table == 255 {
 			continue
 		}
-		match := !r.Src.IsValid() && (!r.Dst.IsValid() || r.Dst.Contains(dst)) && (r.FwMark == 0 || r.FwMark == mark) &&
+		match := (!r.Src.IsValid() || src.IsValid() && r.Src.Contains(src)) && (!r.Dst.IsValid() || r.Dst.Contains(dst)) && (r.FwMark == 0 || r.FwMark == mark) &&
 			(r.Selector == "" || r.Selector == "iif" && r.SelectorValue == "lo")
 		if match == r.Not {
 			continue

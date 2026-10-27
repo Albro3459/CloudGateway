@@ -96,7 +96,7 @@ resolvectl default-route cloudgateway yes`)
 	}
 	chain premangle {
 		type filter hook prerouting priority -150; policy accept;
-		meta l4proto udp meta mark set ct mark
+		meta l4proto udp ct mark 0xce54 meta mark set 0xce54
 	}
 	chain postmangle {
 		type filter hook postrouting priority -150; policy accept;
@@ -896,29 +896,41 @@ func TestFullRoutesPackets(t *testing.T) {
 	host.AddLink(networktest.Link{Name: "docker0", Kind: "bridge", MTU: 1500, Up: true})
 	host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.5.0/24"), Table: 254, Dev: "docker0", Protocol: 2})
 
+	// Broad main routes lose to the mesh at the suppress boundary
+	host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.0.0/8"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
+
 	for _, tc := range []struct {
+		src  string
 		dst  string
 		mark uint32
 		want string
 	}{
-		{"1.1.1.1", 0, InterfaceName},
-		{"2606:4700::1111", 0, InterfaceName},
-		{"203.0.113.10", FwMark, "enp0s1"},
-		{"169.254.169.254", 0, "enp0s1"},
-		{"10.128.0.9", 0, "enp0s1"},
-		{"172.31.5.5", 0, "enp0s1"},
-		{"100.100.100.200", 0, "enp0s1"},
-		{"168.63.129.16", 0, "enp0s1"},
-		{"192.168.64.20", 0, "enp0s1"},
-		{"fd00:ec2::254", 0, "enp0s1"},
-		{"10.0.3.3", 0, InterfaceName},
-		{"10.0.0.1", 0, InterfaceName},
-		{"fd42:42:42::1", 0, InterfaceName},
-		{"10.0.0.53", FwMark, "enp0s1"},
-		{"10.0.5.9", 0, "docker0"},
+		// SSH replies to a new public client leave from the physical address
+		{"192.168.64.5", "198.51.100.7", 0, "enp0s1"},
+		{"2001:db8:1::5", "2001:db8:ffff::7", 0, "enp0s1"},
+		{"", "2001:db8:ffff::10", FwMark, "enp0s1"},
+		{"", "1.1.1.1", 0, InterfaceName},
+		{"", "2606:4700::1111", 0, InterfaceName},
+		{"", "203.0.113.10", FwMark, "enp0s1"},
+		{"", "169.254.169.254", 0, "enp0s1"},
+		{"", "10.128.0.9", 0, "enp0s1"},
+		{"", "172.31.5.5", 0, "enp0s1"},
+		{"", "100.100.100.200", 0, "enp0s1"},
+		{"", "168.63.129.16", 0, "enp0s1"},
+		{"", "192.168.64.20", 0, "enp0s1"},
+		{"", "fd00:ec2::254", 0, "enp0s1"},
+		{"", "10.0.3.3", 0, InterfaceName},
+		{"", "10.0.0.1", 0, InterfaceName},
+		{"", "fd42:42:42::1", 0, InterfaceName},
+		{"", "10.0.0.53", FwMark, "enp0s1"},
+		{"", "10.0.5.9", 0, "docker0"},
 	} {
-		if got := host.RouteVia(netip.MustParseAddr(tc.dst), tc.mark); got != tc.want {
-			t.Errorf("%s mark %#x goes via %q, want %q", tc.dst, tc.mark, got, tc.want)
+		var src netip.Addr
+		if tc.src != "" {
+			src = netip.MustParseAddr(tc.src)
+		}
+		if got := host.RouteVia(src, netip.MustParseAddr(tc.dst), tc.mark); got != tc.want {
+			t.Errorf("%s to %s mark %#x goes via %q, want %q", tc.src, tc.dst, tc.mark, got, tc.want)
 		}
 	}
 }
@@ -936,4 +948,21 @@ func TestLocalRoutesWithoutAddressesGetSourceRules(t *testing.T) {
 	}) {
 		t.Fatal("no source rule for the load balancer IP")
 	}
+}
+
+func TestReconcileReplacesRuleWithStaleAction(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	// An earlier build's mesh rule, with the same selectors and an inverted action
+	host.RemoveRules(func(r networktest.Rule) bool { return r.Priority == PriorityMesh && r.Family == 4 })
+	host.AddRule(networktest.Rule{Family: 4, Priority: PriorityMesh, Dst: netip.MustParsePrefix("10.0.0.0/16"), Not: true, FwMark: FwMark, Table: RouteTable, Protocol: RouteProtocol})
+
+	obs, _ := h.m.Observe(ctx)
+	expect(t, "drift", obs.State, StateConnecting)
+	if _, err := h.m.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	expectText(t, "owned state", ownedState(host), fullOwnedState)
 }

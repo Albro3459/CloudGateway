@@ -128,7 +128,7 @@ func TestReconcileFollowsDHCPAddressChange(t *testing.T) {
 	}
 	expect(t, "state", obs.State, StateConnected)
 	expectText(t, "commands", strings.Join(mutations(host.Calls()), "\n"), `ip -4 rule add priority 30200 from 192.168.64.77 lookup main protocol 206
-ip -4 rule del priority 30200 from 192.168.64.5 protocol 206`)
+ip -4 rule del priority 30200 from 192.168.64.5 lookup main protocol 206`)
 	expect(t, "old rule gone", strings.Contains(ownedState(host), "192.168.64.5/32"), false)
 }
 
