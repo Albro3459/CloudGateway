@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -838,6 +839,27 @@ func TestResumeStopsOnKernelFailure(t *testing.T) {
 
 	expect(t, "owned", h.owned(), "")
 	expect(t, "no retry", h.clock.Now(), testStart)
+	expect(t, "tried", slices.ContainsFunc(h.host.Calls(), func(c networktest.Call) bool { return c.Has("link", "add") }), true)
+}
+
+func TestResumeRetriesRouteLookupBeforeDHCP(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunning()
+	// No route to the endpoint yet, so the MTU lookup fails before anything changes
+	lookups := 0
+	h.host.FailWhen(func(c networktest.Call) bool {
+		if c.Has("route", "get") {
+			lookups++
+			return lookups <= 2
+		}
+		return false
+	})
+
+	h.open()
+	h.eventually("resume", func() bool { return h.snapshot().Tunnel.Phase == ipc.TunnelConnected && !h.resuming() })
+
+	expect(t, "owned", h.owned(), fullOwned)
+	expect(t, "backoff", h.clock.Now().Sub(testStart), 15*time.Second)
 }
 
 func TestDownOverwritesResolverFailureThatLandedFirst(t *testing.T) {
@@ -861,27 +883,6 @@ func TestDownOverwritesResolverFailureThatLandedFirst(t *testing.T) {
 	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
 	intent := h.intent()
 	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression)+" "+string(intent.FailureCode), "stopped down ")
-}
-
-func TestDownReplacedByLaterUpKeepsTheTunnel(t *testing.T) {
-	h := newHarness(t)
-	h.signedIn(userA)
-	h.up(configA)
-	downed := make(chan result, 1)
-
-	h.c.netMu.Lock()
-	go func() { downed <- h.run(ipc.Request{Action: ipc.ActionTurnOff}) }()
-	h.waitSuppression(store.SuppressDown)
-	// An up accepted after the down reached running first
-	if _, err := h.c.writeIntent(func(i *store.Intent) { i.Phase, i.Suppression = store.PhaseRunning, "" }, true); err != nil {
-		t.Fatal(err)
-	}
-	h.c.netMu.Unlock()
-	out := <-downed
-
-	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
-	expect(t, "owned", h.owned(), fullOwned)
-	expect(t, "intent", h.intent().Phase, store.PhaseRunning)
 }
 
 func TestUnsavedRunningIntentIsNotSavedAfterTheTunnelIsGone(t *testing.T) {

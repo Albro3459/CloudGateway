@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/ipc"
@@ -16,8 +17,8 @@ import (
 const (
 	resumeBackoff    = 5 * time.Second
 	resumeMaxBackoff = 60 * time.Second
-	// resumeSetupWindow bounds boot resume retries after preflight failures,
-	// such as resolved starting after the daemon, which clear as boot finishes
+	// resumeSetupWindow bounds boot resume retries after failures that changed
+	// nothing, such as resolved starting after the daemon or no route yet
 	resumeSetupWindow = 5 * time.Minute
 )
 
@@ -287,8 +288,8 @@ func (c *Controller) runResume(ctx context.Context, r *resumeState) {
 			if !retry() {
 				return
 			}
-		case errors.As(err, new(*network.PreflightError)):
-			// Preflight changes nothing, so retrying it never cycles the tunnel
+		case !errors.As(err, new(*network.ApplyError)) && (failure(err) == ipc.CommandSetupRequired || failure(err) == ipc.CommandVPNFailed):
+			// Only an ApplyError changed the kernel, so retrying the rest never cycles the tunnel
 			if setupDeadline.IsZero() {
 				setupDeadline = c.now().Add(resumeSetupWindow)
 			}
@@ -494,11 +495,6 @@ func (c *Controller) stop() ipc.Outcome {
 	}, true)
 	c.wake()
 	c.netMu.Lock()
-	if persistErr == nil && c.currentIntent().Phase != store.PhaseStopping {
-		// An up accepted after this down already replaced it
-		c.netMu.Unlock()
-		return ipc.Outcome{Kind: ipc.OutcomeCompleted}
-	}
 	_, err := c.stopTunnel(context.Background())
 	if err == nil && persistErr == nil {
 		// A resolver failure that ran while this waited for netMu leaves its own
@@ -565,8 +561,8 @@ func (c *Controller) reconcile(ctx context.Context) {
 	c.mu.Unlock()
 	obs, err := c.net.Reconcile(ctx)
 	c.setObservation(obs)
-	if obs.State == network.StateConnected || obs.State == network.StateConnecting {
-		// Only a tunnel that is still up may persist its running phase
+	if obs.Freshness == network.FreshnessCurrent && obs.State != network.StateDisconnected && !slices.Contains(obs.Drift, "interface") {
+		// Only a tunnel whose link a fresh read still finds may persist its running phase
 		c.saveUnsaved()
 	}
 	if drifted && obs.State == network.StateConnected {
