@@ -255,8 +255,8 @@ func (c *Client) runQuery(ctx context.Context, op string, token Secret, from, wh
 		}
 		fields, err := decodeFields(entry.Document.Fields)
 		if err != nil {
-			// Like the SDK mapper, one undecodable document can't hide the rest
-			continue
+			// Dropping it would publish a refresh that revokes its configs, so the read fails instead
+			return nil, &Error{Op: op, Kind: KindInvalidResponse, Status: resp.status}
 		}
 		documents = append(documents, document{name: entry.Document.Name, fields: fields})
 	}

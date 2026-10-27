@@ -159,6 +159,7 @@ func TestFetchInventoryErrors(t *testing.T) {
 		{"index needed", reply(400, `{"error":{"code":400,"status":"FAILED_PRECONDITION"}}`), KindUnavailable},
 		{"stream error", reply(200, `[{"readTime":"2026-10-26T12:00:00Z"},{"error":{"code":403,"status":"PERMISSION_DENIED"}}]`), KindAccessDenied},
 		{"malformed stream", reply(200, `{"document":{}}`), KindInvalidResponse},
+		{"malformed value", reply(200, `[`+clientEntry("r", "c", `"status":{"integerValue":5}`)+`]`), KindInvalidResponse},
 		{"oversized", reply(200, `["`+strings.Repeat("a", firestoreLimit)+`"]`), KindInvalidResponse},
 	}
 	for _, tc := range cases {
@@ -286,18 +287,6 @@ func TestDecodeValue(t *testing.T) {
 	}
 }
 
-func TestFetchInventorySkipsUndecodableDocument(t *testing.T) {
-	clients := `[` + clientEntry("us-sanjose-1", "bad", `"status":{"integerValue":5}`) + `,` +
-		clientEntry("us-sanjose-1", "c1", clientFields("uid-1", "active", configValue)) + `]`
-	client, _ := newTestClient(t, firestoreHandler(`[]`, clients))
-
-	inventory, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, staticTokens("id-1"))
-
-	if err != nil || len(inventory.Options) != 1 || inventory.Options[0].Client.ClientID != "c1" {
-		t.Fatalf("inventory = %+v, err %v", inventory, err)
-	}
-}
-
 func TestFetchInventoryRefreshesWhenSiblingIsDenied(t *testing.T) {
 	clients := `[` + clientEntry("us-sanjose-1", "c1", clientFields("uid-1", "active", configValue)) + `]`
 	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -323,7 +312,7 @@ func TestFetchInventoryRefreshesWhenSiblingIsDenied(t *testing.T) {
 		return "stale", nil
 	})
 
-	if err != nil || len(inventory.Options) != 1 || fmt.Sprint(rejections) != "[[redacted] [redacted]]" || rejections[1] != "stale" {
+	if err != nil || len(inventory.Options) != 1 || len(rejections) != 2 || rejections[0] != "" || rejections[1] != "stale" {
 		t.Fatalf("inventory = %+v, err %v, rejections %d", inventory, err, len(rejections))
 	}
 }

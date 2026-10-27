@@ -5,6 +5,7 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -183,12 +184,13 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	var dispatched atomic.Bool
-	if r.write {
-		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-			GotConn: func(httptrace.GotConnInfo) { dispatched.Store(true) },
-		})
-	}
+	// handshakeFailed catches a reset or close during the TLS handshake, as when
+	// a firewall blocks the server name, which macOS reports as a TLS failure
+	var dispatched, handshakeFailed atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn:          func(httptrace.GotConnInfo) { dispatched.Store(r.write) },
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) { handshakeFailed.Store(err != nil) },
+	})
 	var body io.Reader
 	if r.body != nil {
 		body = bytes.NewReader(r.body)
@@ -212,7 +214,12 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, transportError(parent, r.op, r.write && dispatched.Load(), err)
+		failure := transportError(parent, r.op, dispatched.Load(), err)
+		var timeout interface{ Timeout() bool }
+		if failure.Kind == KindOffline && handshakeFailed.Load() && !(errors.As(err, &timeout) && timeout.Timeout()) {
+			failure.Kind = KindUnavailable
+		}
+		return nil, failure
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, r.limit+1))
@@ -244,6 +251,9 @@ func offline(err error) bool {
 	var op *net.OpError
 	var timeout interface{ Timeout() bool }
 	switch {
+	case errors.As(err, &op) && op.Op == "proxyconnect":
+		// macOS doesn't list proxy failures
+		return false
 	case errors.As(err, &dns):
 		return true
 	case errors.As(err, &timeout) && timeout.Timeout():

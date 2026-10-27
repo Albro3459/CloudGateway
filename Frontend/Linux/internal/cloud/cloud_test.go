@@ -2,16 +2,22 @@ package cloud
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -496,6 +502,61 @@ func TestCertificateFailuresAreUnavailable(t *testing.T) {
 	_, err = client.CheckAccess(t.Context(), "uid-1", staticTokens("id-1"))
 
 	wantKind(t, err, KindUnavailable)
+}
+
+func TestHandshakeResetIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	// Like a firewall that drops a blocked server name after the ClientHello
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Read(make([]byte, 1024))
+			conn.Close()
+		}
+	}()
+	client, err := New(Config{
+		Origin: "gocloudlaunch.com", FirebaseAPIKey: testAPIKey, FirebaseProjectID: testProject, FirebaseDatabaseID: "(default)",
+		APIBaseURL: "https://" + listener.Addr().String(), Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.CheckAccess(t.Context(), "uid-1", staticTokens("id-1"))
+
+	wantKind(t, err, KindUnavailable)
+}
+
+func TestOfflineMatchesMacOSURLErrors(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"DNS failure":        {&net.DNSError{Err: "no such host", IsNotFound: true}, true},
+		"refused":            {&net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}, true},
+		"no route":           {&net.OpError{Op: "dial", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}, true},
+		"reset mid-response": {&net.OpError{Op: "read", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, true},
+		"truncated body":     {io.ErrUnexpectedEOF, true},
+		"deadline":           {context.DeadlineExceeded, true},
+		"proxy refused":      {&net.OpError{Op: "proxyconnect", Err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}}, false},
+		"proxy auth":         {errors.New("Proxy Authentication Required"), false},
+		"TLS alert":          {&net.OpError{Op: "remote error", Err: errors.New("tls: handshake failure")}, false},
+		"certificate":        {&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, false},
+		"HTTP to HTTPS":      {errors.New("http: server gave HTTP response to HTTPS client"), false},
+		"headers too large":  {errors.New("net/http: server response headers exceeded 65536 bytes; aborted"), false},
+	}
+	for name, tc := range cases {
+		if got := offline(&url.Error{Op: "Post", URL: "https://example.com", Err: tc.err}); got != tc.want {
+			t.Errorf("%s: offline = %t, want %t", name, got, tc.want)
+		}
+	}
 }
 
 func TestTransportFailuresAreOffline(t *testing.T) {
