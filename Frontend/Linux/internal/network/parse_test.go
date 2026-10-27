@@ -70,12 +70,13 @@ func TestSamplesParse(t *testing.T) {
 	expect(t, "owned mtu", s.own.MTU, 1420)
 	expect(t, "physical", fmt.Sprint(s.physicalAddrs(fixed)), "[192.168.64.5 2001:db8:1::5]")
 	expect(t, "routes", len(s.routes), 20)
-	expect(t, "owned routes", fmt.Sprint(s.ownedRoutes(fixed)), "[{0.0.0.0/0 52820 cloudgateway 206 0} {::/0 52820 cloudgateway 206 0}]")
-	expect(t, "rules", len(s.rules), 23)
-	expect(t, "owned rules", len(s.ownedRules(fixed)), 18)
-	expect(t, "mesh rule", fmt.Sprintf("%+v", s.rules[3]), "{Family:4 Priority:30203 Src:invalid Prefix Dst:10.0.0.0/16 Not:true FwMark:52820 Table:52820 Suppress:false Protocol:206 Limited:false}")
-	expect(t, "link-local rule", fmt.Sprintf("%+v", s.rules[7]), "{Family:4 Priority:30205 Src:invalid Prefix Dst:169.254.0.0/16 Not:false FwMark:0 Table:254 Suppress:false Protocol:206 Limited:false}")
-	expect(t, "tunnel rule", fmt.Sprintf("%+v", s.rules[11]), "{Family:4 Priority:30220 Src:invalid Prefix Dst:invalid Prefix Not:true FwMark:52820 Table:52820 Suppress:false Protocol:206 Limited:false}")
+	expect(t, "owned routes", fmt.Sprint(s.ownedRoutes(fixed)), "[{0.0.0.0/0 52820 cloudgateway 206 0 } {::/0 52820 cloudgateway 206 0 }]")
+	expect(t, "rules", len(s.rules), 25)
+	expect(t, "owned rules", len(s.ownedRules(fixed)), 20)
+	expect(t, "mark rule", fmt.Sprintf("%+v", s.rules[2]), "{Family:4 Priority:30201 Src:invalid Prefix Dst:invalid Prefix Not:false FwMark:52820 Table:254 Suppress:false Protocol:206 Limited:false}")
+	expect(t, "mesh rule", fmt.Sprintf("%+v", s.rules[4]), "{Family:4 Priority:30203 Src:invalid Prefix Dst:10.0.0.0/16 Not:false FwMark:0 Table:52820 Suppress:false Protocol:206 Limited:false}")
+	expect(t, "link-local rule", fmt.Sprintf("%+v", s.rules[8]), "{Family:4 Priority:30205 Src:invalid Prefix Dst:169.254.0.0/16 Not:false FwMark:0 Table:254 Suppress:false Protocol:206 Limited:false}")
+	expect(t, "tunnel rule", fmt.Sprintf("%+v", s.rules[12]), "{Family:4 Priority:30220 Src:invalid Prefix Dst:invalid Prefix Not:true FwMark:52820 Table:52820 Suppress:false Protocol:206 Limited:false}")
 	expect(t, "main default protocol", s.routes[1].Protocol, 16)
 	expect(t, "nft", fmt.Sprint(s.nftTables), "[ip filter ip6 filter inet cloudgateway_client]")
 	expect(t, "fwmark", s.wgMark, uint32(FwMark))
@@ -136,7 +137,7 @@ func TestParseRouteGet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, "route", fmt.Sprint(routes), "[{203.0.113.10/32 254 enp0s1 3 0}]")
+	expect(t, "route", fmt.Sprint(routes), "[{203.0.113.10/32 254 enp0s1 3 0 }]")
 
 	routes, err = parseRoutes([]byte(`[{"dst":"203.0.113.10","gateway":"192.168.64.1","dev":"enp0s1","prefsrc":"192.168.64.5","mark":"0xce54","metrics":[{"mtu":1400}],"flags":[],"uid":0,"cache":[]}]`), 4)
 	if err != nil {

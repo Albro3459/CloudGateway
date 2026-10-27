@@ -30,6 +30,7 @@ const (
 	RouteProtocol = 206
 	// Full's rule priorities sit below main at 32766 and clear of Tailscale's 5210-5270
 	PrioritySource    = 30200
+	PriorityMark      = 30201
 	PriorityMeshLocal = 30202
 	PriorityMesh      = 30203
 	PriorityLocal     = 30205
@@ -81,6 +82,7 @@ type Resources struct {
 	FwMark            uint32 `json:"fwmark"`
 	Protocol          int    `json:"protocol"`
 	SourcePriority    int    `json:"sourcePriority"`
+	MarkPriority      int    `json:"markPriority"`
 	MeshLocalPriority int    `json:"meshLocalPriority"`
 	MeshPriority      int    `json:"meshPriority"`
 	LocalPriority     int    `json:"localPriority"`
@@ -97,6 +99,7 @@ var fixed = Resources{
 	FwMark:            FwMark,
 	Protocol:          RouteProtocol,
 	SourcePriority:    PrioritySource,
+	MarkPriority:      PriorityMark,
 	MeshLocalPriority: PriorityMeshLocal,
 	MeshPriority:      PriorityMesh,
 	LocalPriority:     PriorityLocal,
@@ -117,7 +120,7 @@ func (r Resources) valid() bool {
 	return r.Interface != "" && r.PendingInterface != "" && r.Alias != "" && r.NftTable != "" &&
 		r.Protocol > 2 && r.Protocol < 256 && r.FwMark != 0 &&
 		!slices.Contains(systemTables, r.Table) &&
-		r.SourcePriority > 0 && r.MeshLocalPriority > 0 && r.MeshPriority > 0 && r.LocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
+		r.SourcePriority > 0 && r.MarkPriority > 0 && r.MeshLocalPriority > 0 && r.MeshPriority > 0 && r.LocalPriority > 0 && r.SuppressPriority > 0 && r.TunnelPriority > 0
 }
 
 type Mode string
@@ -223,9 +226,9 @@ func covers(outer, inner netip.Prefix) bool {
 }
 
 // checkEndpoint refuses an endpoint the tunnel would carry, since its own
-// encrypted packets would loop. Default routes are fine, because the fwmark
-// skips Full's tunnel and mesh rules, but nothing skips a main route. Full's
-// mesh ranges are refused too, since a server there makes no sense
+// encrypted packets would loop. In Full the fwmark rule sends them to main
+// ahead of the tunnel rules, but nothing skips a main route. Full's mesh
+// ranges are refused too, since a server there makes no sense
 func checkEndpoint(endpoint netip.Addr, mode Mode, allowed []netip.Prefix, dns []netip.Addr) error {
 	inside := slices.ContainsFunc(allowed, func(prefix netip.Prefix) bool { return prefix.Bits() > 0 && prefix.Contains(endpoint) })
 	if mode == ModeFull {

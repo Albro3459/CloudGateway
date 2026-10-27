@@ -19,8 +19,9 @@ resolver dns=[10.0.0.1 fd42:42:42::1] domains=[~. corp.example] default-route=tr
 route 0.0.0.0/0 table 52820
 route ::/0 table 52820
 rule v4 30200 from=192.168.64.5/32 to=all not=false fwmark=0x0 table=254 suppress=false
-rule v4 30202 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=254 suppress=false
-rule v4 30203 from=all to=10.0.0.0/16 not=true fwmark=0xce54 table=52820 suppress=false
+rule v4 30201 from=all to=all not=false fwmark=0xce54 table=254 suppress=false
+rule v4 30202 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=254 suppress=16
+rule v4 30203 from=all to=10.0.0.0/16 not=false fwmark=0x0 table=52820 suppress=false
 rule v4 30205 from=all to=10.0.0.0/8 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=100.64.0.0/10 not=false fwmark=0x0 table=254 suppress=false
 rule v4 30205 from=all to=168.63.129.16/32 not=false fwmark=0x0 table=254 suppress=false
@@ -30,8 +31,9 @@ rule v4 30205 from=all to=192.168.0.0/16 not=false fwmark=0x0 table=254 suppress
 rule v4 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
 rule v4 30220 from=all to=all not=true fwmark=0xce54 table=52820 suppress=false
 rule v6 30200 from=2001:db8:1::5/128 to=all not=false fwmark=0x0 table=254 suppress=false
-rule v6 30202 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=254 suppress=false
-rule v6 30203 from=all to=fd42:42:42::/48 not=true fwmark=0xce54 table=52820 suppress=false
+rule v6 30201 from=all to=all not=false fwmark=0xce54 table=254 suppress=false
+rule v6 30202 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=254 suppress=48
+rule v6 30203 from=all to=fd42:42:42::/48 not=false fwmark=0x0 table=52820 suppress=false
 rule v6 30205 from=all to=fc00::/7 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30205 from=all to=fe80::/10 not=false fwmark=0x0 table=254 suppress=false
 rule v6 30210 from=all to=all not=false fwmark=0x0 table=254 suppress=true
@@ -65,10 +67,12 @@ ip -4 route add 0.0.0.0/0 dev cloudgateway table 52820 proto 206
 ip -6 route add ::/0 dev cloudgateway table 52820 proto 206
 ip -4 rule add priority 30200 from 192.168.64.5 lookup main protocol 206
 ip -6 rule add priority 30200 from 2001:db8:1::5 lookup main protocol 206
+ip -4 rule add priority 30201 fwmark 0xce54 lookup main protocol 206
+ip -6 rule add priority 30201 fwmark 0xce54 lookup main protocol 206
 ip -4 rule add priority 30202 to 10.0.0.0/16 lookup main suppress_prefixlength 16 protocol 206
 ip -6 rule add priority 30202 to fd42:42:42::/48 lookup main suppress_prefixlength 48 protocol 206
-ip -4 rule add priority 30203 to 10.0.0.0/16 not fwmark 0xce54 lookup 52820 protocol 206
-ip -6 rule add priority 30203 to fd42:42:42::/48 not fwmark 0xce54 lookup 52820 protocol 206
+ip -4 rule add priority 30203 to 10.0.0.0/16 lookup 52820 protocol 206
+ip -6 rule add priority 30203 to fd42:42:42::/48 lookup 52820 protocol 206
 ip -4 rule add priority 30205 to 10.0.0.0/8 lookup main protocol 206
 ip -4 rule add priority 30205 to 100.64.0.0/10 lookup main protocol 206
 ip -4 rule add priority 30205 to 168.63.129.16/32 lookup main protocol 206
@@ -880,4 +884,56 @@ func TestFailedTableListingKeepsTunnelConnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, "state", obs.State, StateConnected)
+}
+
+// TestFullRoutesPackets checks where Full sends each kind of traffic, by
+// walking the installed rules and routes like the kernel
+func TestFullRoutesPackets(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	// A Docker bridge inside the mesh range appears after Full starts
+	host.AddLink(networktest.Link{Name: "docker0", Kind: "bridge", MTU: 1500, Up: true})
+	host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.5.0/24"), Table: 254, Dev: "docker0", Protocol: 2})
+
+	for _, tc := range []struct {
+		dst  string
+		mark uint32
+		want string
+	}{
+		{"1.1.1.1", 0, InterfaceName},
+		{"2606:4700::1111", 0, InterfaceName},
+		{"203.0.113.10", FwMark, "enp0s1"},
+		{"169.254.169.254", 0, "enp0s1"},
+		{"10.128.0.9", 0, "enp0s1"},
+		{"172.31.5.5", 0, "enp0s1"},
+		{"100.100.100.200", 0, "enp0s1"},
+		{"168.63.129.16", 0, "enp0s1"},
+		{"192.168.64.20", 0, "enp0s1"},
+		{"fd00:ec2::254", 0, "enp0s1"},
+		{"10.0.3.3", 0, InterfaceName},
+		{"10.0.0.1", 0, InterfaceName},
+		{"fd42:42:42::1", 0, InterfaceName},
+		{"10.0.0.53", FwMark, "enp0s1"},
+		{"10.0.5.9", 0, "docker0"},
+	} {
+		if got := host.RouteVia(netip.MustParseAddr(tc.dst), tc.mark); got != tc.want {
+			t.Errorf("%s mark %#x goes via %q, want %q", tc.dst, tc.mark, got, tc.want)
+		}
+	}
+}
+
+func TestLocalRoutesWithoutAddressesGetSourceRules(t *testing.T) {
+	host := networktest.NewUbuntu()
+	// The GCE guest agent adds load balancer IPs as local routes, not addresses
+	host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("34.120.1.2/32"), Table: 255, Dev: "enp0s1", Type: "local", Protocol: 66})
+	h := newHarness(t, host)
+
+	h.apply(testProfile(ModeFull, 5))
+
+	if !slices.ContainsFunc(host.Rules(), func(r networktest.Rule) bool {
+		return r.Priority == PrioritySource && r.Src == netip.MustParsePrefix("34.120.1.2/32")
+	}) {
+		t.Fatal("no source rule for the load balancer IP")
+	}
 }

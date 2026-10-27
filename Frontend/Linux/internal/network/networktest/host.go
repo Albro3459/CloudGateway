@@ -49,15 +49,18 @@ type Rule struct {
 	Family   int
 	Priority int
 	// Src and Dst are the zero prefix for all
-	Src      netip.Prefix
-	Dst      netip.Prefix
-	Not      bool
-	FwMark   uint32
-	FwMask   uint32
-	Table    int
-	Suppress bool
-	Protocol int
-	// Selector adds one printed key, such as "oif" or "uid_start", with SelectorValue
+	Src    netip.Prefix
+	Dst    netip.Prefix
+	Not    bool
+	FwMark uint32
+	FwMask uint32
+	Table  int
+	// Suppress means suppress_prefixlength SuppressLength
+	Suppress       bool
+	SuppressLength int
+	Protocol       int
+	// Selector adds one printed key, such as "oif" or "uid_start", with SelectorValue.
+	// RouteVia treats any selector but iif lo as not matching host traffic
 	Selector      string
 	SelectorValue any
 }
@@ -384,6 +387,40 @@ func (h *Host) ClearFailures() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.failures = nil
+}
+
+// RouteVia returns the link a locally generated, unbound packet to dst takes,
+// or "" when no rule finds a route. It walks rules like the kernel: by
+// priority, with not inverting the whole selector set, then the longest
+// matching route in the rule's table, which a suppress length at least as long
+// as its prefix skips
+func (h *Host) RouteVia(dst netip.Addr, mark uint32) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	family := addrFamily(dst)
+	rules := slices.Clone(h.rules)
+	slices.SortStableFunc(rules, func(a, b Rule) int { return a.Priority - b.Priority })
+	for _, r := range rules {
+		if r.Family != family || r.Table == 255 {
+			continue
+		}
+		match := !r.Src.IsValid() && (!r.Dst.IsValid() || r.Dst.Contains(dst)) && (r.FwMark == 0 || r.FwMark == mark) &&
+			(r.Selector == "" || r.Selector == "iif" && r.SelectorValue == "lo")
+		if match == r.Not {
+			continue
+		}
+		var best *Route
+		for i, route := range h.routes {
+			if route.Table == r.Table && route.Type == "" && route.Dst.Contains(dst) && (best == nil || route.Dst.Bits() > best.Dst.Bits()) {
+				best = &h.routes[i]
+			}
+		}
+		if best == nil || r.Suppress && best.Dst.Bits() <= r.SuppressLength {
+			continue
+		}
+		return best.Dev
+	}
+	return ""
 }
 
 // After runs fn once a matching call succeeds

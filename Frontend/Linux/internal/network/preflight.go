@@ -142,10 +142,9 @@ func (m *Manager) conflicts(ctx context.Context, p Profile, s *snapshot, res Res
 
 // overlaps finds local networks and routes that collide with the mesh ranges,
 // tunnel addresses, or regional DNS. In Mesh, a main route at least as specific
-// as the tunnel's route wins. In Full, the mesh rule sends these ranges to the
-// tunnel ahead of main, so an overlapping local network would lose its traffic
-// instead. Either way it is a conflict. Tables that foreign rules reach before
-// main win with any overlapping route
+// as the tunnel's route wins. In Full, only a main route more specific than the
+// mesh range wins, and VPN DNS outside the mesh always takes the tunnel. Tables
+// that foreign rules reach before main win with any overlapping route
 func overlaps(p Profile, s *snapshot, res Resources) []netip.Prefix {
 	protected := slices.Clone(meshPrefixes)
 	for _, prefix := range p.Addresses {
@@ -154,14 +153,23 @@ func overlaps(p Profile, s *snapshot, res Resources) []netip.Prefix {
 	for _, addr := range p.DNS {
 		protected = append(protected, netip.PrefixFrom(addr, addr.BitLen()))
 	}
-	tunnelBits := func(target netip.Prefix) int {
+	// winsOverTunnel reports whether a main route at dst beats the tunnel for target
+	winsOverTunnel := func(dst, target netip.Prefix) bool {
+		if p.Mode == ModeFull {
+			for _, mesh := range meshPrefixes {
+				if mesh.Overlaps(target) {
+					return dst.Bits() > mesh.Bits()
+				}
+			}
+			return false
+		}
 		bits := 0
 		for _, allowed := range p.AllowedIPs {
 			if allowed.Bits() > 0 && allowed.Overlaps(target) {
 				bits = max(bits, allowed.Bits())
 			}
 		}
-		return bits
+		return dst.Bits() >= bits
 	}
 	owned := s.ownedRules(res)
 	earlier := map[int][]rule{}
@@ -202,7 +210,7 @@ func overlaps(p Profile, s *snapshot, res Resources) []netip.Prefix {
 			}
 		case r.Table == mainTable && r.Dst.Bits() > 0:
 			for _, target := range protected {
-				if r.Dst.Overlaps(target) && r.Dst.Bits() >= tunnelBits(target) {
+				if r.Dst.Overlaps(target) && winsOverTunnel(r.Dst, target) {
 					found = append(found, r.Dst)
 					break
 				}

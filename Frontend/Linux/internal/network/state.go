@@ -36,6 +36,8 @@ type route struct {
 	Dev      string
 	Protocol int
 	MTU      int
+	// Type is empty for unicast
+	Type string
 }
 
 type rule struct {
@@ -50,7 +52,8 @@ type rule struct {
 	Suppress bool
 	Protocol int
 	// Limited is set for a selector that host traffic does not generally match,
-	// such as iif other than lo, oif, uidrange, ipproto, ports, tos, or l3mdev
+	// such as iif other than lo, oif, uidrange, ipproto, ports, tos, or l3mdev,
+	// before any not inversion
 	Limited bool
 }
 
@@ -202,7 +205,7 @@ func (s *snapshot) link(name string) *link {
 }
 
 func (res Resources) priorities() []int {
-	return []int{res.SourcePriority, res.MeshLocalPriority, res.MeshPriority, res.LocalPriority, res.SuppressPriority, res.TunnelPriority}
+	return []int{res.SourcePriority, res.MarkPriority, res.MeshLocalPriority, res.MeshPriority, res.LocalPriority, res.SuppressPriority, res.TunnelPriority}
 }
 
 func (s *snapshot) ownedRules(res Resources) []rule {
@@ -231,16 +234,22 @@ func (s *snapshot) ownedRoutes(res Resources) []route {
 	return owned
 }
 
-// catchesHostTrafficTo reports whether the rule sees host traffic toward target.
-// A source or fwmark selector limits a rule to traffic that already chose its
-// path, such as a secondary NIC's from rule, and a destination selector to its prefix
+// catchesHostTrafficTo reports whether the rule sees host traffic toward target,
+// or toward most destinations when target is invalid. Host traffic is unbound
+// and unmarked, so a source, fwmark, or limiting selector keeps a rule off it,
+// such as a secondary NIC's from rule, and a destination limits it to its
+// prefix. not inverts the whole selector set, as the kernel does
 func (r rule) catchesHostTrafficTo(target netip.Prefix) bool {
-	return !r.Src.IsValid() && !r.Limited && (r.FwMark == 0 || r.Not) && (!r.Dst.IsValid() || r.Dst.Overlaps(target))
+	limited := r.Src.IsValid() || r.Limited || r.FwMark != 0
+	if r.Not {
+		return limited || r.Dst.IsValid() && !(target.IsValid() && covers(r.Dst, target))
+	}
+	return !limited && (!r.Dst.IsValid() || !target.IsValid() || r.Dst.Overlaps(target))
 }
 
-// catchesHostTraffic reports whether the rule sees all host traffic
+// catchesHostTraffic reports whether the rule sees most host traffic
 func (r rule) catchesHostTraffic() bool {
-	return !r.Dst.IsValid() && r.catchesHostTrafficTo(netip.Prefix{})
+	return r.catchesHostTrafficTo(netip.Prefix{}) && (r.Not || !r.Dst.IsValid())
 }
 
 func (s *snapshot) hasDefaultRoute(table, family int) bool {
@@ -288,8 +297,12 @@ func (s *snapshot) fullInstalled(res Resources) bool {
 // loopback and down links, such as anycast VIPs or kube-ipvs0 service IPs,
 // count only outside the local ranges. Replies to private clients already take
 // the local rules, so a Kubernetes node adds no rule per ClusterIP, while a
-// public load balancer IP still answers outside the tunnel
+// public load balancer IP still answers outside the tunnel. Local routes that
+// no address created, like the GCE guest agent's load balancer IPs, count too
 func (s *snapshot) physicalAddrs(res Resources) []netip.Addr {
+	local := func(addr netip.Addr) bool {
+		return slices.ContainsFunc(localPrefixes, func(p netip.Prefix) bool { return p.Contains(addr) })
+	}
 	var addrs []netip.Addr
 	for _, l := range s.links {
 		if l.Name == res.Interface || l.Name == res.PendingInterface {
@@ -297,9 +310,16 @@ func (s *snapshot) physicalAddrs(res Resources) []netip.Addr {
 		}
 		for _, a := range l.Addrs {
 			addr := a.Prefix.Addr()
-			if a.Global && (l.Up && !l.Loopback || !slices.ContainsFunc(localPrefixes, func(p netip.Prefix) bool { return p.Contains(addr) })) {
+			if a.Global && (l.Up && !l.Loopback || !local(addr)) {
 				addrs = append(addrs, addr)
 			}
+		}
+	}
+	for _, r := range s.routes {
+		addr := r.Dst.Addr()
+		if r.Type == "local" && r.Table == 255 && r.Protocol != 2 && r.Dst.IsSingleIP() && r.Dev != res.Interface &&
+			r.Dev != res.PendingInterface && addr.IsGlobalUnicast() && !local(addr) {
+			addrs = append(addrs, addr)
 		}
 	}
 	slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
@@ -415,6 +435,7 @@ func parseRoutes(data []byte, family int) ([]route, error) {
 	var raw []struct {
 		Dst      string  `json:"dst"`
 		Dev      string  `json:"dev"`
+		Type     string  `json:"type"`
 		Table    ipValue `json:"table"`
 		Protocol ipValue `json:"protocol"`
 		Metrics  []struct {
@@ -435,7 +456,7 @@ func parseRoutes(data []byte, family int) ([]route, error) {
 		if r.Protocol != "" {
 			protocol = protocolID(r.Protocol)
 		}
-		parsed := route{Dst: dst, Table: tableID(r.Table), Dev: r.Dev, Protocol: protocol}
+		parsed := route{Dst: dst, Table: tableID(r.Table), Dev: r.Dev, Protocol: protocol, Type: r.Type}
 		for _, metric := range r.Metrics {
 			parsed.MTU = max(parsed.MTU, metric.MTU)
 		}
@@ -467,10 +488,8 @@ func parseRules(data []byte, family int) ([]rule, error) {
 	}
 	rules := make([]rule, 0, len(raw))
 	for i, r := range raw {
-		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0}
-		// not inverts every selector, so not iif lo sees only forwarded traffic and not oif eth1 sees most host traffic
-		selected := r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })
-		parsed.Limited = !parsed.Not && selected || parsed.Not && r.IIf == "lo"
+		parsed := rule{Family: family, Priority: r.Priority, Not: r.Not != nil, Suppress: r.Suppress != nil && *r.Suppress == 0,
+			Limited: r.IIf != "" && r.IIf != "lo" || slices.ContainsFunc(limitingSelectors, func(key string) bool { return keys[i][key] != nil })}
 		var err error
 		if parsed.Src, err = rulePrefix(r.Src, r.SrcLen); err != nil {
 			return nil, err

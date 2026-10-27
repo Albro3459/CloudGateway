@@ -704,11 +704,11 @@ func deref[T any](value *T) any {
 }
 
 var fullOwned = fmt.Sprintf("link mtu=1420 endpoint=203.0.113.10:51820 allowed=[0.0.0.0/0 ::/0]\n"+
-	"rule v4 %[1]d\nrule v6 %[1]d\nrule v4 %[6]d to 10.0.0.0/16\nrule v6 %[6]d to fd42:42:42::/48\n"+
+	"rule v4 %[1]d\nrule v6 %[1]d\nrule v4 %[7]d\nrule v6 %[7]d\nrule v4 %[6]d to 10.0.0.0/16\nrule v6 %[6]d to fd42:42:42::/48\n"+
 	"rule v4 %[2]d to 10.0.0.0/16\nrule v6 %[2]d to fd42:42:42::/48\n"+
 	"rule v4 %[3]d to 10.0.0.0/8\nrule v4 %[3]d to 100.64.0.0/10\nrule v4 %[3]d to 168.63.129.16/32\nrule v4 %[3]d to 169.254.0.0/16\n"+
 	"rule v4 %[3]d to 172.16.0.0/12\nrule v4 %[3]d to 192.168.0.0/16\nrule v6 %[3]d to fc00::/7\nrule v6 %[3]d to fe80::/10\n"+
 	"rule v4 %[4]d\nrule v6 %[4]d\nrule v4 %[5]d\nrule v6 %[5]d\nnft",
-	network.PrioritySource, network.PriorityMesh, network.PriorityLocal, network.PrioritySuppress, network.PriorityTunnel, network.PriorityMeshLocal)
+	network.PrioritySource, network.PriorityMesh, network.PriorityLocal, network.PrioritySuppress, network.PriorityTunnel, network.PriorityMeshLocal, network.PriorityMark)
 
 const meshOwned = "link mtu=1420 endpoint=203.0.113.10:51820 allowed=[10.0.0.0/16 fd42:42:42::/48]\nnft"

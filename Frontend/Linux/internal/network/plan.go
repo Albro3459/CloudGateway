@@ -93,6 +93,9 @@ func desiredRules(j *Journal, physical []netip.Addr) []ruleKey {
 	for _, addr := range physical {
 		rules = append(rules, ruleKey{Family: addrFamily(addr), Priority: res.SourcePriority, Src: addr})
 	}
+	for _, family := range []int{4, 6} {
+		rules = append(rules, ruleKey{Family: family, Priority: res.MarkPriority})
+	}
 	for _, prefix := range meshPrefixes {
 		rules = append(rules, ruleKey{Family: addrFamily(prefix.Addr()), Priority: res.MeshLocalPriority, Dst: prefix})
 	}
@@ -160,9 +163,12 @@ func ruleAddCommand(res Resources, r ruleKey) command {
 	case res.MeshLocalPriority:
 		// A local subnet more specific than the mesh range keeps its main route, as before Full started
 		args = append(args, "to", r.Dst.String(), "lookup", "main", "suppress_prefixlength", strconv.Itoa(r.Dst.Bits()))
+	case res.MarkPriority:
+		// WireGuard's packets and the outside endpoint lookup skip every tunnel rule.
+		// not would invert the whole selector set, so this matches the mark directly
+		args = append(args, "fwmark", fmt.Sprintf("%#x", res.FwMark), "lookup", "main")
 	case res.MeshPriority:
-		// Marked packets, such as the outside endpoint lookup, skip the tunnel
-		args = append(args, "to", r.Dst.String(), "not", "fwmark", fmt.Sprintf("%#x", res.FwMark), "lookup", strconv.Itoa(res.Table))
+		args = append(args, "to", r.Dst.String(), "lookup", strconv.Itoa(res.Table))
 	case res.LocalPriority:
 		args = append(args, "to", r.Dst.String(), "lookup", "main")
 	case res.SuppressPriority:

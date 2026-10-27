@@ -91,11 +91,12 @@ func TestReconcileRestoresRulesRemovedByNetworkd(t *testing.T) {
 	h := newHarness(t, host)
 	h.apply(testProfile(ModeFull, 5))
 	removed := host.RemoveRules(isOwnedRule)
-	expect(t, "removed", removed, 18)
+	expect(t, "removed", removed, 20)
 
 	obs, _ := h.m.Observe(ctx)
 	expect(t, "before reconcile", obs.State, StateConnecting)
 	expect(t, "drift", strings.Join(obs.Drift, "; "), "missing rule 30200 from 192.168.64.5; missing rule 30200 from 2001:db8:1::5; "+
+		"missing rule 30201 ipv4; missing rule 30201 ipv6; "+
 		"missing rule 30202 to 10.0.0.0/16; missing rule 30202 to fd42:42:42::/48; "+
 		"missing rule 30203 to 10.0.0.0/16; missing rule 30203 to fd42:42:42::/48; missing rule 30205 to 10.0.0.0/8; "+
 		"missing rule 30205 to 100.64.0.0/10; missing rule 30205 to 168.63.129.16/32; missing rule 30205 to 169.254.0.0/16; missing rule 30205 to 172.16.0.0/12; "+
@@ -328,9 +329,9 @@ func TestPreflightConflicts(t *testing.T) {
 		{name: "VPC route captures regional DNS", mode: ModeFull, setup: func(host *networktest.Host) {
 			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.0.0/30"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
 		}, kind: ConflictOverlap, prefixes: []string{"10.0.0.0/30"}},
-		{name: "broad route captures mesh in Full", mode: ModeFull, setup: func(host *networktest.Host) {
-			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.0.0/8"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
-		}, kind: ConflictOverlap, prefixes: []string{"10.0.0.0/8"}},
+		{name: "specific route inside mesh in Full", mode: ModeFull, setup: func(host *networktest.Host) {
+			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.7.0/24"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
+		}, kind: ConflictOverlap, prefixes: []string{"10.0.7.0/24"}},
 		{name: "foreign rule at owned priority", mode: ModeFull, setup: func(host *networktest.Host) {
 			host.AddRule(networktest.Rule{Family: 4, Priority: PrioritySuppress, Table: 100})
 		}, kind: ConflictForeignRule, names: []string{"30210"}},
@@ -436,6 +437,9 @@ func TestPreflightPassesModeSpecificSetups(t *testing.T) {
 		setup func(*networktest.Host)
 	}{
 		{name: "broad route is less specific than mesh routes", mode: ModeMesh, setup: func(host *networktest.Host) {
+			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.0.0/8"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
+		}},
+		{name: "broad route is suppressed for mesh in Full", mode: ModeFull, setup: func(host *networktest.Host) {
 			host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("10.0.0.0/8"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
 		}},
 		{name: "mesh ignores rules, table routes, and marks", mode: ModeMesh, setup: func(host *networktest.Host) {

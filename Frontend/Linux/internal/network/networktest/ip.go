@@ -215,7 +215,8 @@ func (h *Host) changeRule(verb string, family int, rest []string) error {
 		case "lookup":
 			r.Table, err = parseTable(v)
 		case "suppress_prefixlength":
-			r.Suppress = v == "0"
+			r.Suppress = true
+			r.SuppressLength, err = strconv.Atoi(v)
 		case "protocol":
 			r.Protocol, err = strconv.Atoi(v)
 			hasProtocol = true
@@ -419,7 +420,7 @@ func (h *Host) renderRules(family int, numeric bool) ([]byte, error) {
 			entry["table"] = named(r.Table, tableNames, numeric)
 		}
 		if r.Suppress {
-			entry["suppress_prefixlen"] = 0
+			entry["suppress_prefixlen"] = r.SuppressLength
 		}
 		if r.Protocol != 0 && r.Protocol != 2 {
 			entry["protocol"] = named(r.Protocol, protocolNames, numeric)

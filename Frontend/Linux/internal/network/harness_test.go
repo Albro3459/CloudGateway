@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -200,7 +201,14 @@ func ownedState(host *networktest.Host) string {
 			if r.Dst.IsValid() {
 				dst = r.Dst.String()
 			}
-			lines = append(lines, fmt.Sprintf("rule v%d %d from=%s to=%s not=%t fwmark=%#x table=%d suppress=%t", r.Family, r.Priority, src, dst, r.Not, r.FwMark, r.Table, r.Suppress))
+			suppress := "false"
+			switch {
+			case r.Suppress && r.SuppressLength == 0:
+				suppress = "true"
+			case r.Suppress:
+				suppress = strconv.Itoa(r.SuppressLength)
+			}
+			lines = append(lines, fmt.Sprintf("rule v%d %d from=%s to=%s not=%t fwmark=%#x table=%d suppress=%s", r.Family, r.Priority, src, dst, r.Not, r.FwMark, r.Table, suppress))
 		}
 	}
 	for _, name := range host.NftTables() {
