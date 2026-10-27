@@ -143,6 +143,9 @@ type AccountCache struct {
 	now      func() time.Time
 	mu       sync.Mutex
 	denied   map[string]bool
+	// drop receives secret references for configs a denial, downgrade, or
+	// refresh revoked. Removal keeps them, like macOS
+	drop func(references []string)
 }
 
 func newAccountCache(dir string) *AccountCache {
@@ -160,7 +163,7 @@ func (c *AccountCache) Load(accountID string) (InventorySnapshot, error) {
 }
 
 func (c *AccountCache) load(accountID string) (inventoryPayload, error) {
-	if !validAccountID(accountID) {
+	if !ValidAccountID(accountID) {
 		return inventoryPayload{}, ErrInvalidMetadata
 	}
 	if c.denied[accountID] {
@@ -241,7 +244,7 @@ func (c *AccountCache) Save(config InstalledConfig) error {
 func (c *AccountCache) ObserveRole(accountID string, role Role) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !validAccountID(accountID) {
+	if !ValidAccountID(accountID) {
 		return false, ErrInvalidMetadata
 	}
 	if role != RoleUser {
@@ -262,7 +265,7 @@ func (c *AccountCache) ObserveRole(accountID string, role Role) (bool, error) {
 func (c *AccountCache) Authorize(accountID string, role Role, options []AuthorizedOption) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !validAccountID(accountID) || role != RoleUser && role != RoleAdmin {
+	if !ValidAccountID(accountID) || role != RoleUser && role != RoleAdmin {
 		return ErrInvalidMetadata
 	}
 	var inventory []AuthorizedOption
@@ -299,9 +302,11 @@ func (c *AccountCache) Authorize(accountID string, role Role, options []Authoriz
 		payload.AuthorizedConfigHashes[identifier] = option.ConfigHash
 	}
 	configs := []InstalledConfig{}
+	var dropped []string
 	for _, config := range payload.Snapshot.Configs {
 		option, ok := authorized[config.Identifier]
 		if !ok || option.ConfigHash != config.Snapshot.ConfigHash {
+			dropped = append(dropped, config.Snapshot.SecretReference)
 			continue
 		}
 		config.Snapshot = ConfigSnapshot{
@@ -326,6 +331,7 @@ func (c *AccountCache) Authorize(accountID string, role Role, options []Authoriz
 		return err
 	}
 	delete(c.denied, accountID)
+	c.dropSecrets(dropped)
 	return nil
 }
 
@@ -336,11 +342,27 @@ func (c *AccountCache) Deny(accountID string) error {
 }
 
 func (c *AccountCache) deny(accountID string) error {
-	if !validAccountID(accountID) {
+	if !ValidAccountID(accountID) {
 		return ErrInvalidMetadata
 	}
+	var dropped []string
+	if payload, err := c.load(accountID); err == nil {
+		for _, config := range payload.Snapshot.Configs {
+			dropped = append(dropped, config.Snapshot.SecretReference)
+		}
+	}
 	c.denied[accountID] = true
-	return c.write(emptyPayload(accountID))
+	if err := c.write(emptyPayload(accountID)); err != nil {
+		return err
+	}
+	c.dropSecrets(dropped)
+	return nil
+}
+
+func (c *AccountCache) dropSecrets(references []string) {
+	if c.drop != nil && len(references) > 0 {
+		c.drop(references)
+	}
 }
 
 func (c *AccountCache) Select(identifier, accountID string) error {
@@ -381,7 +403,7 @@ func (c *AccountCache) SelectMode(mode ipc.Mode, accountID string) error {
 func (c *AccountCache) Evict(identifier, accountID string) (InventorySnapshot, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !validAccountID(accountID) {
+	if !ValidAccountID(accountID) {
 		return InventorySnapshot{}, ErrInvalidMetadata
 	}
 	if !ValidIdentifier(identifier) || strings.Split(identifier, "/")[0] != accountID {
@@ -405,7 +427,7 @@ func (c *AccountCache) Evict(identifier, accountID string) (InventorySnapshot, e
 }
 
 func (c *AccountCache) write(payload inventoryPayload) error {
-	if !validAccountID(payload.AccountID) {
+	if !ValidAccountID(payload.AccountID) {
 		return ErrInvalidMetadata
 	}
 	if c.readOnly {
@@ -425,7 +447,11 @@ func (c *AccountCache) write(payload inventoryPayload) error {
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil && !os.IsExist(err) {
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err == nil {
+		if err := syncDir(c.dir); err != nil {
+			return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+	} else if !os.IsExist(err) {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
@@ -442,13 +468,15 @@ func (c *AccountCache) path(accountID string) string {
 	return filepath.Join(c.dir, hex.EncodeToString(sum[:]), "inventory.json")
 }
 
-func validAccountID(accountID string) bool {
-	return accountID != "" && len(accountID) <= 128 && !strings.ContainsFunc(accountID, isControl)
+// ValidAccountID matches the account segment of a config identifier, so every
+// signed-in account can name its configs
+func ValidAccountID(accountID string) bool {
+	return len(accountID) <= 128 && ValidComponent(accountID)
 }
 
 func validConfig(config InstalledConfig, accountID string) bool {
 	snapshot := config.Snapshot
-	return validAccountID(accountID) && config.AccountID == accountID &&
+	return ValidAccountID(accountID) && config.AccountID == accountID &&
 		snapshot.Status == statusActive && snapshot.ClientID != "" && snapshot.RegionID != "" &&
 		config.Identifier == accountID+"/"+snapshot.RegionID+"/"+snapshot.ClientID &&
 		validHash(snapshot.ConfigHash) && ValidSecretReference(snapshot.SecretReference)

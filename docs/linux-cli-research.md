@@ -103,7 +103,9 @@ Keep metadata caches separate from credentials and tunnel secrets. The daemon's
 state directory is root-owned `0700`. Credentials and structured tunnel secret
 records are separate, atomically replaced `0600` files. Do not persist downloaded config
 documents in metadata, operation logs, journals, or diagnostic output. An
-opaque reference identifies the retained secret record.
+opaque reference identifies the retained secret record. Logout and client
+removal keep secret records. A denial, role downgrade, or refresh that revokes
+or rotates a config deletes its record, except the one the running tunnel uses.
 
 This baseline is plaintext secret storage protected by OS permissions, not
 Keychain-equivalent encrypted storage. It supports unattended VMs without a

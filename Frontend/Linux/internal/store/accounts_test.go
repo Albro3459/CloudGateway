@@ -618,3 +618,71 @@ func TestCorruptOrOversizedInventoryIsUnavailableOrInvalid(t *testing.T) {
 		t.Fatal("authorization did not replace the oversized cache")
 	}
 }
+
+// installSecret saves a secret record for config and binds config to it
+func installSecret(t *testing.T, st *Store, config InstalledConfig) InstalledConfig {
+	t.Helper()
+	reference, err := st.PutSecret(SecretRecord{ConfigID: config.Identifier, ConfigHash: config.Snapshot.ConfigHash, Config: "[Interface]"})
+	must(t, err)
+	config.Snapshot.SecretReference = reference
+	must(t, st.Accounts().Save(config))
+	return config
+}
+
+func secretExists(st *Store, reference string) bool {
+	_, err := st.GetSecret(reference)
+	return err == nil
+}
+
+func TestRevokedConfigsDropSecretsExceptTheRunningOne(t *testing.T) {
+	st := openStore(t)
+	cache := st.Accounts()
+	configA, optionA := fixture("user-a", "client-a")
+	configB, optionB := fixture("user-a", "client-b")
+	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{optionA, optionB}))
+	configA = installSecret(t, st, configA)
+	configB = installSecret(t, st, configB)
+	must(t, st.SaveIntent(Intent{Revision: 1, AccountID: "user-a", ProfileID: configB.Identifier,
+		SecretReference: configB.Snapshot.SecretReference, Phase: PhaseRunning}))
+
+	// A rotated hash revokes both installs, but the running tunnel still needs B
+	rotatedA, rotatedB := optionA, optionB
+	rotatedA.ConfigHash, rotatedB.ConfigHash = hashB, hashB
+	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{rotatedA, rotatedB}))
+
+	if secretExists(st, configA.Snapshot.SecretReference) {
+		t.Fatal("rotated config kept its secret")
+	}
+	if !secretExists(st, configB.Snapshot.SecretReference) {
+		t.Fatal("running config lost its secret")
+	}
+}
+
+func TestDenialDropsSecretsAndRemovalKeepsThem(t *testing.T) {
+	st := openStore(t)
+	cache := st.Accounts()
+	configA, optionA := fixture("user-a", "client-a")
+	configB, optionB := fixture("user-a", "client-b")
+	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{optionA, optionB}))
+	configA = installSecret(t, st, configA)
+	configB = installSecret(t, st, configB)
+
+	_, err := cache.Evict(configA.Identifier, "user-a")
+	must(t, err)
+	must(t, cache.Deny("user-a"))
+
+	if !secretExists(st, configA.Snapshot.SecretReference) {
+		t.Fatal("removal deleted the retained secret")
+	}
+	if secretExists(st, configB.Snapshot.SecretReference) {
+		t.Fatal("denial kept an installed secret")
+	}
+}
+
+func TestAccountIDsMustFitConfigIdentifiers(t *testing.T) {
+	cache := newCache(t)
+	for _, id := range []string{"user:a", "user@example.com", "a|b", "..", strings.Repeat("a", 129)} {
+		expectErr(t, cache.Deny(id), ErrInvalidMetadata)
+	}
+	must(t, cache.Deny("Zx9_firebase-uid.1"))
+}

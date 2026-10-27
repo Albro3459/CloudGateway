@@ -176,6 +176,10 @@ func (c *Controller) cancelLogin(id string) *ipc.LoginStatus {
 func (c *Controller) startLoginLocked(id string) {
 	ctx, cancel := context.WithCancel(c.ctx)
 	a := &loginAttempt{id: id, phase: ipc.LoginRequestingCode, deadline: c.now().Add(loginStartupLimit), ctx: ctx, cancel: cancel}
+	if c.creds == nil {
+		// A denial belongs to the earlier attempt. A signed-in account keeps its own result
+		c.accessResult = ""
+	}
 	// The watchdog runs on wall time so a stalled request still ends at the deadline
 	var watchdog context.CancelFunc
 	a.rearm = func(deadline time.Time) {
@@ -359,6 +363,10 @@ func (c *Controller) exchange(a *loginAttempt, customToken cloud.Secret) ipc.Log
 		}
 		return ipc.LoginUnavailable
 	}
+	// Config identifiers embed the account ID, so an ID they can't hold would leave an unusable session
+	if !store.ValidAccountID(session.UserID) {
+		return ipc.LoginInvalidResponse
+	}
 	if ok, result := c.loginCurrent(a); !ok {
 		return result
 	}
@@ -373,6 +381,9 @@ func (c *Controller) exchange(a *loginAttempt, customToken cloud.Secret) ipc.Log
 	defer c.mu.Unlock()
 	if c.login != a {
 		return ""
+	}
+	if c.signingOut {
+		return ipc.LoginCancelled
 	}
 	switch classify(err) {
 	case failDenied:

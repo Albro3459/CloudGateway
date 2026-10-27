@@ -171,7 +171,13 @@ func (c *Controller) signOut() ipc.Outcome {
 		c.logf("logout could not revoke the session: %v", err)
 		return failed
 	}
+	c.signingOut = true
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.signingOut = false
+		c.mu.Unlock()
+	}()
 	if _, err := c.writeIntent(func(i *store.Intent) {
 		if i.Suppression == "" {
 			i.Suppression = store.SuppressLogout
@@ -244,7 +250,7 @@ func (c *Controller) clearAccountPresentationLocked() {
 	c.selected, c.selectedMode = "", nil
 	c.rows, c.installed = nil, nil
 	c.removed = map[string]bool{}
-	c.isOffline, c.hasInventory = false, false
+	c.isOffline, c.hasInventory, c.inventoryFailure = false, false, ""
 	c.schedule.reset()
 	c.deferred, c.deferredAutomatic = false, false
 	c.creation = nil

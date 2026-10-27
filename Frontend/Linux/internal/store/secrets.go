@@ -63,6 +63,21 @@ func (s *Store) DeleteSecret(reference string) error {
 	return s.remove(s.secretPath(reference))
 }
 
+// dropSecrets deletes records the account cache no longer references, except
+// the one the saved intent uses. Without a readable intent it keeps them all.
+// A failed delete leaves an unreferenced record behind
+func (s *Store) dropSecrets(references []string) {
+	intent, err := s.LoadIntent()
+	if err != nil && !errors.Is(err, ErrMissing) {
+		return
+	}
+	for _, reference := range references {
+		if reference != intent.SecretReference {
+			_ = s.DeleteSecret(reference)
+		}
+	}
+}
+
 func (s *Store) secretPath(reference string) string {
 	return filepath.Join(s.dir, secretsDir, reference)
 }

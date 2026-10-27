@@ -92,6 +92,9 @@ func TestDeviceLoginDenialExpiryAndOffline(t *testing.T) {
 		{name: "offline access check", setup: func(h *harness) {
 			h.cloud.set(func(f *fakeCloud) { f.accessErr = cloudError(cloud.KindOffline, 0, false) })
 		}, polls: []pollReply{{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}}, result: ipc.LoginOffline, access: ipc.AccessUnverified},
+		{name: "account ID config identifiers cannot hold", setup: func(h *harness) {
+			h.cloud.set(func(f *fakeCloud) { f.customTokens["custom-odd"] = "user:odd" })
+		}, polls: []pollReply{{poll: cloud.DevicePoll{CustomToken: "custom-odd"}}}, result: ipc.LoginInvalidResponse, access: ipc.AccessUnverified},
 		{name: "exchange fails", setup: func(h *harness) {
 			h.cloud.set(func(f *fakeCloud) { f.signInErr = cloudError(cloud.KindSignInRequired, 400, false) })
 		}, polls: []pollReply{{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}}, result: ipc.LoginUnavailable, access: ipc.AccessUnverified},
@@ -355,4 +358,42 @@ func TestTokenRefreshIsCachedRotatedAndChecked(t *testing.T) {
 	if _, err := h.st().LoadCredentials(); err == nil {
 		t.Fatal("credentials survived a project change")
 	}
+}
+
+func TestLoginFinishingDuringLogoutIsCancelled(t *testing.T) {
+	h := newHarness(t)
+	h.open()
+	id := newID()
+	h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: id})
+	// Logout has saved its revocation marker and not yet cleared credentials
+	h.c.mu.Lock()
+	h.c.signingOut = true
+	h.c.mu.Unlock()
+
+	h.cloud.polls <- pollReply{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}
+	status := h.waitLogin(id, ipc.LoginFinished)
+
+	expect(t, "result", status.Result, ipc.LoginCancelled)
+	if _, err := h.st().LoadCredentials(); err == nil {
+		t.Fatal("credentials were saved")
+	}
+}
+
+func TestNewLoginClearsEarlierDenial(t *testing.T) {
+	h := newHarness(t)
+	h.cloud.set(func(f *fakeCloud) { delete(f.roles, userA) })
+	h.open()
+	denied := newID()
+	h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: denied})
+	h.cloud.polls <- pollReply{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}
+	expect(t, "first", h.waitLogin(denied, ipc.LoginFinished).Result, ipc.LoginDenied)
+	expect(t, "access", h.snapshot().Access, ipc.AccessDenied)
+	h.cloud.set(func(f *fakeCloud) { f.accessErr = cloudError(cloud.KindOffline, 0, false) })
+
+	offline := newID()
+	h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: offline})
+	h.cloud.polls <- pollReply{poll: cloud.DevicePoll{CustomToken: "custom-" + userB}}
+
+	expect(t, "second", h.waitLogin(offline, ipc.LoginFinished).Result, ipc.LoginOffline)
+	expect(t, "access", h.snapshot().Access, ipc.AccessUnverified)
 }

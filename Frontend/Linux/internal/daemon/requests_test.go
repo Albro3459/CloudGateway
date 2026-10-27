@@ -113,7 +113,7 @@ func state(operation *ipc.Operation) ipc.OperationState {
 func TestRegistryStopSurvivesFullDurableReceiptsAndWriteFailure(t *testing.T) {
 	store := newReceiptStore()
 	r := store.make(t)
-	for range 64 {
+	for range maxReceipts {
 		complete(t, r, request(ipc.ActionSignOut))
 	}
 	durable, writes := string(store.data), store.writes
@@ -146,7 +146,7 @@ func TestRegistryStopSurvivesFullDurableReceiptsAndWriteFailure(t *testing.T) {
 func TestRegistryFailedAdmissionDoesNotConsumeFinalDurableSlot(t *testing.T) {
 	store := newReceiptStore()
 	r := store.make(t)
-	for range 63 {
+	for range maxReceipts - 1 {
 		signOut := request(ipc.ActionSignOut)
 		reserve(t, r, signOut)
 		r.Fail(signOut.ID, ipc.FailureRejected, nil)
@@ -396,7 +396,7 @@ func TestRegistryStopDoesNotEraseCreationWhenDurableStorageIsFullOrUnavailable(t
 	add := creation()
 	reserve(t, r, add)
 	confirm(t, r, add.ID)
-	for range 63 {
+	for range maxReceipts - 1 {
 		if failure := acceptRaw(r, request(ipc.ActionSignOut)); failure != "" {
 			t.Fatal(failure)
 		}
@@ -627,12 +627,12 @@ func TestNewRegistryRestoresOnlyValidUnexpiredReceipts(t *testing.T) {
 		t.Fatal("restored corrupt receipts")
 	}
 	receipts := map[string]receipt{}
-	for range 65 {
+	for range maxReceipts + 1 {
 		receipts[newID()] = receipt{Digest: "d", Expires: now.Add(time.Minute)}
 	}
 	data, _ := json.Marshal(receiptFile{Receipts: receipts})
 	if _, err := NewRegistry(data, clock, persist); err == nil {
-		t.Fatal("restored more than 64 receipts")
+		t.Fatal("restored more than maxReceipts receipts")
 	}
 	expired, live := newID(), newID()
 	data, _ = json.Marshal(receiptFile{Receipts: map[string]receipt{

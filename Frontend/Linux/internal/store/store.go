@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -29,6 +30,9 @@ var (
 	ErrReadOnly = errors.New("store: read-only")
 
 	errTooLarge = errors.New("too large")
+	// errIO marks an unreadable file the OS failed to read, such as EMFILE or
+	// EIO, as opposed to one that is malformed
+	errIO = errors.New("I/O failure")
 )
 
 const (
@@ -48,6 +52,8 @@ type Store struct {
 	dir      string
 	readOnly bool
 	accounts *AccountCache
+	// sessionMu makes each session record check and write atomic
+	sessionMu sync.Mutex
 }
 
 // Open prepares dir and checks its storage version. A newer version is
@@ -59,6 +65,7 @@ func Open(dir string) (*Store, error) {
 		}
 	}
 	s := &Store{dir: dir, accounts: newAccountCache(filepath.Join(dir, accountsDir))}
+	s.accounts.drop = s.dropSecrets
 	var version struct {
 		StorageVersion int `json:"storageVersion"`
 	}
@@ -151,6 +158,10 @@ func privateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
+	// A new directory's entry is durable only once its parent is synced
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return err
+	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -173,19 +184,19 @@ func readFile(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", ErrMissing, path)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: %s is not a regular file", ErrUnreadable, path)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("%w: %s: %w", ErrUnreadable, path, errTooLarge)
@@ -242,7 +253,10 @@ func writeFile(path string, data []byte) (err error) {
 	if err = os.Rename(file.Name(), path); err != nil {
 		return err
 	}
-	return syncDir(dir)
+	// The new contents are in place, so callers must treat the write as done.
+	// A failed directory sync only risks losing it to a crash, as before the write
+	_ = syncDir(dir)
+	return nil
 }
 
 // tempMarker names in-progress writes, which a crash can leave behind

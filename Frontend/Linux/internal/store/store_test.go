@@ -529,3 +529,22 @@ func TestSecretRedactionCoversExportedFields(t *testing.T) {
 		}
 	}
 }
+
+func TestOSReadFailureKeepsSessionRecord(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files without permission")
+	}
+	store := openStore(t)
+	saved := Session{Generation: 4, AccountID: "uid-1", RevokedThrough: 3}
+	must(t, store.SaveSession(saved))
+	path := filepath.Join(store.Dir(), "session.json")
+	must(t, os.Chmod(path, 0))
+
+	_, err := store.RecoverSession()
+
+	expectErr(t, err, ErrUnreadable)
+	must(t, os.Chmod(path, 0o600))
+	if loaded, err := store.LoadSession(); err != nil || loaded != saved {
+		t.Fatalf("loaded = %+v, err = %v", loaded, err)
+	}
+}

@@ -163,6 +163,8 @@ type Controller struct {
 	deferredAutomatic bool
 	schedule          schedule
 	inventoryFailure  string
+	// signingOut keeps a login from committing while logout runs
+	signingOut bool
 
 	// commands counts running commands and creation. stops counts running stops
 	commands      int

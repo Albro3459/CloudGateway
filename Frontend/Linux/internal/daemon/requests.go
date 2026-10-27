@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	maxReceipts         = 64
+	// maxReceipts covers a script running a command every second for the
+	// whole receipt lifetime. macOS keeps 64
+	maxReceipts         = 1024
 	receiptLifetime     = 600 * time.Second
 	resultLifetime      = 600 * time.Second
 	reservationLifetime = 30 * time.Second

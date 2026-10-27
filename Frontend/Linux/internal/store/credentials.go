@@ -66,6 +66,8 @@ func (s *Store) LoadSession() (Session, error) {
 // a readable record it also refuses to reuse or unrevoke any generation that
 // saved credentials or the intent still name
 func (s *Store) SaveSession(session Session) error {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
 	current, err := s.LoadSession()
 	if err == nil && (session.Generation < current.Generation || session.RevokedThrough < current.RevokedThrough) {
 		return ErrStale
@@ -76,12 +78,19 @@ func (s *Store) SaveSession(session Session) error {
 	return s.save(s.path(sessionFile), session)
 }
 
-// RecoverSession replaces a missing or unreadable session record with one that
+// RecoverSession replaces a missing or malformed session record with one that
 // revokes every generation saved credentials or the intent still name, and
-// returns it. A readable record is returned unchanged
+// returns it. A readable record is returned unchanged, and an OS read failure
+// is returned, since the record may still be fine
 func (s *Store) RecoverSession() (Session, error) {
-	if current, err := s.LoadSession(); err == nil {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	current, err := s.LoadSession()
+	switch {
+	case err == nil:
 		return current, nil
+	case errors.Is(err, errIO):
+		return Session{}, err
 	}
 	floor := s.sessionFloor()
 	session := Session{Generation: floor + 1, RevokedThrough: floor}
