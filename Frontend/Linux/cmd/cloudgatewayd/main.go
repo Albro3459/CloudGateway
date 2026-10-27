@@ -130,20 +130,22 @@ func cleanup() int {
 
 // releases reads the running release once and the installed one on demand,
 // since an update can switch the current link while the daemon runs
-type releases struct{ running ipc.BuildIdentity }
+type releases struct {
+	running   ipc.BuildIdentity
+	installed *release.Installed
+}
 
 func newReleases() releases {
-	running, err := release.Running()
+	running := ipc.BuildIdentity{Version: buildinfo.Version, Build: buildinfo.Build()}
+	// /proc/self/exe opens the file this process started from, even after an update replaced it
+	hash, err := release.Hash("/proc/self/exe")
 	if err != nil {
-		log.Printf("running release unverified: %v", err)
-		return releases{running: ipc.BuildIdentity{Version: buildinfo.Version, Build: buildinfo.Build()}}
+		log.Printf("hash the running executable: %v", err)
 	}
-	return releases{running: running.BuildIdentity}
+	running.CodeHash = hash
+	return releases{running: running, installed: release.NewInstalled(buildinfo.CurrentLink)}
 }
 
 func (r releases) Running() ipc.BuildIdentity { return r.running }
 
-func (releases) Installed() (ipc.BuildIdentity, error) {
-	installed, err := release.Read(buildinfo.CurrentLink)
-	return installed.BuildIdentity, err
-}
+func (r releases) Installed() (ipc.BuildIdentity, error) { return r.installed.Identity() }

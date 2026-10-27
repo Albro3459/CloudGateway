@@ -130,7 +130,7 @@ const (
 type BuildIdentity struct {
 	Version string `json:"version"`
 	Build   string `json:"build"`
-	// CodeHash is the lowercase hex SHA-256 of the release manifest
+	// CodeHash is the lowercase hex SHA-256 of the daemon executable
 	CodeHash string `json:"codeHash"`
 }
 

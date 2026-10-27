@@ -37,6 +37,8 @@ const (
 	// maxNumber bounds every manifest number to 18 digits, which install.sh
 	// matches and bash arithmetic holds
 	maxNumber = 999_999_999_999_999_999
+
+	maxManifestBytes = 64 << 10
 )
 
 var (
