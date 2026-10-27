@@ -497,10 +497,43 @@ func TestCloudIDsThatCantNameConfigsAreDropped(t *testing.T) {
 
 	state := h.signedIn(userA)
 
+	expect(t, "clients", len(state.Clients), 2)
 	for _, client := range state.Clients {
 		if strings.ContainsRune(client.Identifier, 0x1b) {
 			t.Fatalf("client %q reached the CLI", client.Identifier)
 		}
+	}
+}
+
+func TestUnsafeIDsStillGetTheOwnerCheck(t *testing.T) {
+	h := newHarness(t)
+	// Rules let another owner's client through, under an ID the CLI never shows
+	h.cloud.set(func(f *fakeCloud) {
+		f.allOwners = true
+		f.clients = append(f.clients, clientDoc(userB, "evil\x1b]0;owned\x07", "Evil", 7))
+	})
+
+	state := h.signedIn(userA)
+
+	// Authorize refused the foreign owner, so nothing was published
+	expect(t, "clients", len(state.Clients), 0)
+}
+
+func TestHandshakeCarriesTheUpdateAfterARestart(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.releases.set(identityV1, identityV2, nil)
+	id := newID()
+	h.do(ipc.Request{Action: ipc.ActionUpdate, ID: id})
+	h.do(ipc.Request{Action: ipc.ActionConfirm, ContextID: id})
+	h.close(h.c)
+	h.releases.set(identityV2, identityV2, nil)
+	h.open()
+
+	reply := h.do(ipc.Request{Action: ipc.ActionHandshake})
+
+	if reply.Operation == nil || reply.Operation.ID != id || reply.Operation.State != ipc.OperationCompleted {
+		t.Fatalf("operation = %+v", reply.Operation)
 	}
 }
 

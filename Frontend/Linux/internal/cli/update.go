@@ -71,9 +71,10 @@ func (s *session) observeUpdate(id string) (data, error) {
 		for errors.Is(err, errNoConnection) {
 			if err = s.reconnect(); err == nil && !s.current {
 				err = s.versionError()
-				if s.lifecycle.State == ipc.LifecycleCurrent {
-					// The restarted daemon speaks a newer protocol, so the update itself went through
-					err = newError(codeIncompatibleVersion, "CloudGateway updated to a newer release than this CLI process", "No restart is needed")
+				if op := s.handshakeOperation; s.lifecycle.State == ipc.LifecycleCurrent && op != nil && sameID(op.ID, id) &&
+					op.State == ipc.OperationCompleted {
+					// The restarted daemon speaks another protocol but reports this update completed
+					err = newError(codeIncompatibleVersion, "CloudGateway updated to a release this CLI process doesn't match", "No restart is needed")
 				}
 			}
 			if err == nil {

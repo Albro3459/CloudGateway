@@ -159,22 +159,34 @@ func TestUpdateFollowsTheOperationAcrossADaemonRestart(t *testing.T) {
 }
 
 func TestUpdateReconnectReportsAVersionChangeWithRecovery(t *testing.T) {
-	h := updateHarness(t, false, ipc.UpdateActivating, ipc.UpdateCompleted)
-	answer := h.daemon.onRequest
-	h.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
-		if request.Action == ipc.ActionOperation {
-			h.daemon.version = ipc.Version + 1
-			return dropReply
+	for _, completed := range []bool{false, true} {
+		h := updateHarness(t, false, ipc.UpdateActivating, ipc.UpdateCompleted)
+		answer := h.daemon.onRequest
+		h.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
+			if request.Action == ipc.ActionOperation {
+				// The restarted daemon speaks another protocol, and only its handshake reports the update
+				h.daemon.version = ipc.Version + 1
+				h.daemon.operation = &ipc.Operation{ID: request.ContextID, State: ipc.OperationRunning}
+				if completed {
+					h.daemon.operation.State = ipc.OperationCompleted
+				}
+				return dropReply
+			}
+			return answer(request)
 		}
-		return answer(request)
+		expectExit(t, h.run("update", "--json"), 4)
+		id := h.daemon.requestsFor(ipc.ActionUpdate)[0].ID
+		message, suggestion := "CloudGateway is updating, or this CLI does not match the running daemon",
+			"Wait for the daemon restart to finish, or run: sudo systemctl restart cloudgatewayd"
+		if completed {
+			message, suggestion = "CloudGateway updated to a release this CLI process doesn't match", "No restart is needed"
+		}
+		expectEqual(t, "code", field(h.last(), "error", "code"), any("incompatible_version"))
+		expectEqual(t, "message", field(h.last(), "error", "message"), any(message))
+		expectEqual(t, "suggestion", field(h.last(), "error", "suggestion"), any(suggestion+". "+
+			"Check this operation before retrying: cloudgateway status --operation "+id))
+		expectEqual(t, "reservations", len(h.daemon.requestsFor(ipc.ActionUpdate)), 1)
 	}
-	expectExit(t, h.run("update", "--json"), 4)
-	id := h.daemon.requestsFor(ipc.ActionUpdate)[0].ID
-	expectEqual(t, "code", field(h.last(), "error", "code"), any("incompatible_version"))
-	expectEqual(t, "message", field(h.last(), "error", "message"), any("CloudGateway updated to a newer release than this CLI process"))
-	expectEqual(t, "suggestion", field(h.last(), "error", "suggestion"), any("No restart is needed. "+
-		"Check this operation before retrying: cloudgateway status --operation "+id))
-	expectEqual(t, "reservations", len(h.daemon.requestsFor(ipc.ActionUpdate)), 1)
 }
 
 func TestUpdateTimeoutUsesOneDeadlineAndDetachesWithoutCancellingWork(t *testing.T) {

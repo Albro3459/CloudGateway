@@ -79,6 +79,11 @@ type row struct {
 	hash       string
 }
 
+// safeIDs keeps IDs with control characters or slashes away from terminals and config identifiers
+func (r row) safeIDs() bool {
+	return store.ValidComponent(r.option.Client.RegionID) && store.ValidComponent(r.option.Client.ClientID)
+}
+
 // eligibility ports CloudGatewayMacController.eligibility. A config the
 // allowlisted parser rejects counts as missing on Linux
 func (r row) eligibility() string {
@@ -96,10 +101,6 @@ func (r row) eligibility() string {
 func buildRows(account string, inventory cloud.Inventory) []row {
 	rows := make([]row, 0, len(inventory.Options))
 	for _, option := range inventory.Options {
-		// IDs reach terminals and config identifiers, so control characters or slashes never pass
-		if !store.ValidComponent(option.Client.RegionID) || !store.ValidComponent(option.Client.ClientID) {
-			continue
-		}
 		r := row{option: option, identifier: account + "/" + option.Client.RegionID + "/" + option.Client.ClientID,
 			usable: option.Client.HasUsableConfig()}
 		if r.usable {
@@ -355,9 +356,11 @@ func (c *Controller) publishLocked(rows []row, role cloud.Role, account string) 
 			RegionDisplayName: r.option.RegionDisplayName(), Status: string(client.Status), UpdatedAt: client.UpdatedAt,
 			AssignedTunnelIPv4: client.AssignedTunnelIPv4, ServerEndpointIPv4: client.ServerEndpointIPv4,
 			ServerEndpointHostname: client.ServerEndpointHostname, OwnerUID: client.OwnerUID,
-			Usable: r.eligibility() == eligible, ConfigHash: r.hash,
+			Usable: r.eligibility() == eligible && r.safeIDs(), ConfigHash: r.hash,
 		})
 	}
+	// Every row still went through Authorize's owner check
+	rows = slices.DeleteFunc(rows, func(r row) bool { return !r.safeIDs() })
 	if err := c.cache.Authorize(account, store.Role(role), options); err != nil {
 		c.clearInventoryPresentationLocked(account)
 		return err

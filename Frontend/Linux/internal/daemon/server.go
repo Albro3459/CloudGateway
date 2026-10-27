@@ -99,38 +99,44 @@ func listen(path string, operatorUID, dirOwner uint32) (*net.UnixListener, error
 	if err := os.Chmod(dir, 0o711); err != nil {
 		return nil, err
 	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode().Type() != fs.ModeSocket {
-			return nil, fmt.Errorf("%s exists and is not a socket", path)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	if info, err := os.Lstat(path); err == nil && info.Mode().Type() != fs.ModeSocket {
+		return nil, fmt.Errorf("%s exists and is not a socket", path)
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	// The daemon's 077 umask keeps the socket private until chmod and chown
-	// finish. Only the directory owner can swap the path in between
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	// The socket is ready under a temporary name, then renamed over a stale one,
+	// so a CLI never finds the path missing or root-owned while the daemon starts.
+	// The daemon's 077 umask keeps it private until chmod and chown finish, and
+	// only the directory owner can swap names in between
+	next := path + ".new"
+	if err := os.Remove(next); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: next, Net: "unix"})
 	if err != nil {
 		return nil, err
 	}
-	if info, err := os.Lstat(path); err != nil || info.Mode().Type() != fs.ModeSocket {
-		listener.Close()
-		return nil, fmt.Errorf("%s changed while listening", path)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	fail := func(err error) (*net.UnixListener, error) {
 		listener.Close()
 		return nil, err
 	}
-	if err := os.Lchown(path, int(operatorUID), -1); err != nil {
-		listener.Close()
-		return nil, err
+	if info, err := os.Lstat(next); err != nil || info.Mode().Type() != fs.ModeSocket {
+		return fail(fmt.Errorf("%s changed while listening", next))
+	}
+	if err := os.Chmod(next, 0o600); err != nil {
+		return fail(err)
+	}
+	if err := os.Lchown(next, int(operatorUID), -1); err != nil {
+		return fail(err)
 	}
 	// The socket file outlives an update restart, so a CLI sees a refused
 	// connection and waits instead of reporting the daemon gone. The next
 	// listen replaces it, and systemctl stop removes the directory
 	listener.SetUnlinkOnClose(false)
+	if err := os.Rename(next, path); err != nil {
+		_ = os.Remove(next)
+		return fail(err)
+	}
 	return listener, nil
 }
 

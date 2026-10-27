@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -391,7 +392,19 @@ func TestListenReplacesOnlyStaleSockets(t *testing.T) {
 	if info, _ := os.Stat(filepath.Dir(path)); info.Mode().Perm() != 0o711 {
 		t.Fatalf("dir mode = %o", info.Mode().Perm())
 	}
+	if conn, err := net.Dial("unix", path); err != nil {
+		t.Fatalf("renamed socket refused: %v", err)
+	} else {
+		conn.Close()
+	}
 	listener.Close()
+	// The file stays so a CLI sees a refused socket during a restart
+	if _, err := net.Dial("unix", path); !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("closed socket dial = %v", err)
+	}
+	if _, err := os.Lstat(path + ".new"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary socket left: %v", err)
+	}
 
 	file := filepath.Join(dir, "run", "file")
 	if err := os.WriteFile(file, []byte("keep"), 0o600); err != nil {

@@ -55,8 +55,11 @@ type session struct {
 	deadline  time.Time
 	conn      *ipc.Conn
 	lifecycle ipc.Lifecycle
-	current   bool
-	reported  bool
+	// handshakeOperation is the latest operation the last handshake reported,
+	// which any daemon version can share
+	handshakeOperation *ipc.Operation
+	current            bool
+	reported           bool
 }
 
 func (s *session) remaining() time.Duration { return s.deadline.Sub(s.cli.clock.now()) }
@@ -168,7 +171,7 @@ func (s *session) handshake() error {
 	if reply.Lifecycle == nil {
 		return controllerFailure(ipc.FailureInvalidRequest)
 	}
-	s.lifecycle = *reply.Lifecycle
+	s.lifecycle, s.handshakeOperation = *reply.Lifecycle, reply.Operation
 	s.current = reply.Version == ipc.Version && reply.Lifecycle.State == ipc.LifecycleCurrent
 	return nil
 }
@@ -458,8 +461,6 @@ func (s *session) operation(id string) (data, error) {
 	return nil, failure
 }
 
-// reconnect waits out a daemon restart, then repeats the handshake on a new connection until the
-// daemon has finished starting
 // awaitRestart keeps opening a refused socket for up to restartWait, so a
 // lookup started while an update restarts the daemon reaches the new one. A
 // missing socket, as after systemctl stop, fails right away
@@ -476,6 +477,8 @@ func (s *session) awaitRestart() error {
 	return errNoConnection
 }
 
+// reconnect waits out a daemon restart, then repeats the handshake on a new connection until the
+// daemon has finished starting
 func (s *session) reconnect() error {
 	for {
 		s.close()

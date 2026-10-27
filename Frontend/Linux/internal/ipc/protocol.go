@@ -261,6 +261,8 @@ const (
 	WarningReconnectSuppressionNotPersisted Warning = "reconnect_suppression_not_persisted"
 )
 
+// Operation is part of the handshake every daemon version answers, so keep its
+// shape stable, like Lifecycle
 type Operation struct {
 	ID      string            `json:"id"`
 	State   OperationState    `json:"state"`
