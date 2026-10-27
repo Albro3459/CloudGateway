@@ -4,8 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"crypto/ed25519"
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -18,19 +18,6 @@ import (
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/release"
 )
 
-func testSigner(t *testing.T) (ed25519.PrivateKey, string) {
-	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := release.EncodePublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return private, encoded
-}
-
 func TestRunValidatesArguments(t *testing.T) {
 	cases := []struct {
 		args []string
@@ -38,12 +25,11 @@ func TestRunValidatesArguments(t *testing.T) {
 	}{
 		{nil, "Usage:"},
 		{[]string{"publish"}, `unknown command "publish"`},
-		{[]string{"keygen"}, "keygen needs -out"},
-		{[]string{"keygen", "-out", "a", "extra"}, `unexpected argument "extra"`},
-		{[]string{"build", "-key", "k", "-out", "o"}, "build needs -version in x.y.z form"},
-		{[]string{"build", "-version", "v1.0.0", "-key", "k", "-out", "o"}, "build needs -version in x.y.z form"},
-		{[]string{"build", "-version", "1.0.0", "-out", "o"}, "build needs -key"},
-		{[]string{"build", "-version", "1.0.0", "-key", "k"}, "build needs -out"},
+		{[]string{"keygen"}, `unknown command "keygen"`},
+		{[]string{"build", "-out", "o"}, "build needs -version in x.y.z form"},
+		{[]string{"build", "-version", "v1.0.0", "-out", "o"}, "build needs -version in x.y.z form"},
+		{[]string{"build", "-version", "1.0.0"}, "build needs -out"},
+		{[]string{"build", "-version", "1.0.0", "-out", "o", "extra"}, `unexpected argument "extra"`},
 		{[]string{"build", "-bogus"}, "flag provided but not defined: -bogus"},
 	}
 	for _, c := range cases {
@@ -52,49 +38,9 @@ func TestRunValidatesArguments(t *testing.T) {
 			t.Errorf("run(%q) = %d, stderr %q", c.args, code, stderr.String())
 		}
 	}
-	options, err := parseBuildArgs([]string{"-version", "1.0.2", "-key", "k", "-out", "o", "-env", "e"}, io.Discard)
-	if err != nil || options != (buildOptions{version: "1.0.2", keyPath: "k", outDir: "o", envPath: "e"}) {
+	options, err := parseBuildArgs([]string{"-version", "1.0.2", "-out", "o", "-env", "e", "-allow-dirty"}, io.Discard)
+	if err != nil || options != (buildOptions{version: "1.0.2", outDir: "o", envPath: "e", allowDirty: true}) {
 		t.Fatalf("parseBuildArgs = %+v, %v", options, err)
-	}
-}
-
-func TestKeygenWritesPrivateKeyAndPrintsPublicKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "release.key")
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"keygen", "-out", path}, &stdout, &stderr); code != 0 {
-		t.Fatalf("keygen = %d: %s", code, stderr.String())
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("key file %v, %v", info, err)
-	}
-	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	public := lines[len(lines)-1]
-	if _, err := loadSigner(path, public); err != nil {
-		t.Fatalf("printed key does not match the private key: %v", err)
-	}
-	if code := run([]string{"keygen", "-out", path}, io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "exists") {
-		t.Fatalf("keygen overwrote %s: %d %s", path, code, stderr.String())
-	}
-}
-
-func TestLoadSignerRequiresPinnedMatchingKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "release.key")
-	if code := run([]string{"keygen", "-out", path}, io.Discard, io.Discard); code != 0 {
-		t.Fatal("keygen failed")
-	}
-	if _, err := loadSigner(path, ""); !errors.Is(err, release.ErrNoPublicKey) {
-		t.Errorf("empty pinned key: %v", err)
-	}
-	_, other := testSigner(t)
-	if _, err := loadSigner(path, other); err == nil || !strings.Contains(err.Error(), "does not match release.PublicKey") {
-		t.Errorf("other key: %v", err)
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadSigner(path, other); err == nil || !strings.Contains(err.Error(), "readable by other users") {
-		t.Errorf("open key file: %v", err)
 	}
 }
 
@@ -167,68 +113,64 @@ func TestWriteArchiveIsDeterministic(t *testing.T) {
 }
 
 func TestStampInstaller(t *testing.T) {
-	_, public := testSigner(t)
-	stamped, err := stampInstaller(install.Script, "1.2.3", public)
+	archives := map[string][]byte{"amd64": []byte("abc"), "arm64": []byte("arm")}
+	stamped, err := stampInstaller(install.Script, "1.2.3", 2, archives)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(stamped, []byte("\nRELEASE_VERSION=\"1.2.3\"\n")) || !bytes.Contains(stamped, []byte("\nPINNED_PUBLIC_KEY=\""+public+"\"\n")) {
-		t.Fatal("placeholders not stamped")
+	for _, want := range []string{
+		"\nRELEASE_VERSION=\"1.2.3\"\n", "\nSTORAGE_VERSION=\"2\"\n",
+		"\nAMD64_ARCHIVE_SIZE=\"3\"\n", "\nAMD64_ARCHIVE_SHA256=\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"\n",
+		"\nARM64_ARCHIVE_SIZE=\"3\"\n",
+	} {
+		if !bytes.Contains(stamped, []byte(want)) {
+			t.Errorf("stamped installer lacks %q", want)
+		}
 	}
-	if _, err := stampInstaller(stamped, "1.2.3", public); err == nil {
+	if _, err := stampInstaller(stamped, "1.2.3", 2, archives); err == nil {
 		t.Error("stamped an already stamped installer")
 	}
-	if _, err := stampInstaller(install.Script, "1.2.3\"; reboot; \"", public); err == nil {
+	if _, err := stampInstaller(install.Script, "1.2.3\"; reboot; \"", 2, archives); err == nil {
 		t.Error("stamped an invalid version")
 	}
-	if _, err := stampInstaller(install.Script, "1.2.3", ""); !errors.Is(err, release.ErrNoPublicKey) {
-		t.Errorf("empty key: %v", err)
+	if _, err := stampInstaller(install.Script, "1.2.3", 0, archives); err == nil {
+		t.Error("stamped storage version 0")
+	}
+	if _, err := stampInstaller(install.Script, "1.2.3", 2, map[string][]byte{"amd64": []byte("abc")}); err == nil {
+		t.Error("stamped without an arm64 archive")
 	}
 }
 
-func TestPackageReleaseWritesVerifiedAssetsOnce(t *testing.T) {
-	signer, public := testSigner(t)
+func TestPackageReleaseWritesAssetsOnce(t *testing.T) {
 	out := t.TempDir()
-	params := fixtureParams(out, "1.0.0", 1, signer, public)
-	codeHash, err := packageRelease(params)
-	if err != nil {
+	params := fixtureParams(out, "1.0.0", 1)
+	if err := packageRelease(params); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(out, "linux-v1.0.0")
-	data, _ := os.ReadFile(filepath.Join(dir, release.ManifestName))
-	signature, _ := os.ReadFile(filepath.Join(dir, release.SignatureName))
-	manifest, err := release.Verify(data, signature, public)
-	if err != nil || codeHash != release.CodeHash(data) || manifest.IPCVersion != 1 || manifest.StorageVersion != 1 {
-		t.Fatalf("manifest %+v, codeHash %s, %v", manifest, codeHash, err)
-	}
+	script, _ := os.ReadFile(filepath.Join(dir, "install.sh"))
 	for _, arch := range release.Arches {
-		archive, ok := manifest.Archive(arch)
-		contents, err := os.ReadFile(filepath.Join(dir, archive.Path))
-		if !ok || err != nil || entry(arch, release.KindArchive, archive.Path, contents) != archive {
-			t.Errorf("%s archive %+v %v", arch, archive, err)
-		}
-		if len(manifest.Files(arch)) != 3 {
-			t.Errorf("%s files %+v", arch, manifest.Files(arch))
+		archive, err := os.ReadFile(filepath.Join(dir, release.ArchiveName("1.0.0", arch)))
+		sum := sha256.Sum256(archive)
+		if err != nil || !bytes.Contains(script, []byte(strings.ToUpper(arch)+"_ARCHIVE_SHA256=\""+hex.EncodeToString(sum[:])+"\"")) {
+			t.Errorf("%s archive not stamped into install.sh: %v", arch, err)
 		}
 	}
-	entries, _ := os.ReadDir(out)
-	if len(entries) != 1 {
+	if entries, _ := os.ReadDir(dir); len(entries) != 3 {
+		t.Errorf("release assets: %v", entries)
+	}
+	if entries, _ := os.ReadDir(out); len(entries) != 1 {
 		t.Errorf("left temporary output: %v", entries)
 	}
 
-	if _, err := packageRelease(params); err == nil || !strings.Contains(err.Error(), "Refusing to overwrite release 1.0.0") {
+	if err := packageRelease(params); err == nil || !strings.Contains(err.Error(), "Refusing to overwrite release 1.0.0") {
 		t.Fatalf("second package: %v", err)
-	}
-	again := fixtureParams(t.TempDir(), "1.0.0", 1, signer, public)
-	againHash, err := packageRelease(again)
-	if err != nil || againHash != codeHash {
-		t.Fatalf("repackaged codeHash %s, want %s, %v", againHash, codeHash, err)
 	}
 }
 
-func TestCompileIsReproducible(t *testing.T) {
+func TestCompileStampsVersion(t *testing.T) {
 	if testing.Short() {
-		t.Skip("cross-compiles the executables twice")
+		t.Skip("cross-compiles the executables")
 	}
 	module, err := moduleDir()
 	if err != nil {
@@ -239,21 +181,13 @@ func TestCompileIsReproducible(t *testing.T) {
 		t.Fatal(err)
 	}
 	firebase := firebaseConfig{apiKey: "test-key", projectID: "test-project", databaseID: "(default)"}
-	first, err := compile(module, toolchain, "arm64", "9.8.7", firebase, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The second build hits the compile cache but links again
-	second, err := compile(module, toolchain, "arm64", "9.8.7", firebase, "")
+	binaries, err := compile(module, toolchain, "arm64", "9.8.7", firebase)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, executable := range release.Executables {
-		if !bytes.Contains(first[executable], []byte("9.8.7")) {
+		if !bytes.Contains(binaries[executable], []byte("9.8.7")) {
 			t.Errorf("%s lacks the stamped version", executable)
-		}
-		if !bytes.Equal(first[executable], second[executable]) {
-			t.Errorf("%s differs between builds", executable)
 		}
 	}
 }
@@ -290,7 +224,7 @@ func TestSourceCommitRefusesDirtyTree(t *testing.T) {
 }
 
 // fixtureParams packages shell scripts as executables so installer tests can run them
-func fixtureParams(out, version string, storageVersion int, signer ed25519.PrivateKey, public string) packageParams {
+func fixtureParams(out, version string, storageVersion int) packageParams {
 	binaries := map[string]map[string][]byte{}
 	for _, arch := range release.Arches {
 		binaries[arch] = map[string][]byte{}
@@ -299,23 +233,5 @@ func fixtureParams(out, version string, storageVersion int, signer ed25519.Priva
 			binaries[arch][executable] = []byte("#!/bin/sh\necho \"" + name + " " + version + " $*\" >>\"$CLOUDGATEWAY_TEST_LOG\"\n")
 		}
 	}
-	return packageParams{outDir: out, version: version, storageVersion: storageVersion, signer: signer, publicKey: public, binaries: binaries}
-}
-
-func TestDirtyBuildsNeedATestKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "release.key")
-	if code := run([]string{"keygen", "-out", path}, io.Discard, io.Discard); code != 0 {
-		t.Fatal("keygen failed")
-	}
-	public, err := testPublicKey(path)
-	if err != nil || public == "" {
-		t.Fatalf("test key: %q, %v", public, err)
-	}
-
-	pinned := release.PublicKey
-	release.PublicKey = public
-	t.Cleanup(func() { release.PublicKey = pinned })
-	if _, err := testPublicKey(path); err == nil || !strings.Contains(err.Error(), "not the release key") {
-		t.Fatalf("release key accepted for a dirty build: %v", err)
-	}
+	return packageParams{outDir: out, version: version, storageVersion: storageVersion, binaries: binaries}
 }

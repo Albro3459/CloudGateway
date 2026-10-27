@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,18 +15,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/install"
-	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/ipc"
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/release"
 )
 
 const (
 	modulePath    = "github.com/Albro3459/CloudGateway/Frontend/Linux"
 	buildinfoPath = modulePath + "/internal/buildinfo"
-	releasePath   = modulePath + "/internal/release"
 )
 
 // Values are stamped with -ldflags -X, which splits on spaces
@@ -165,9 +163,8 @@ func sourceCommit(dir string, allowDirty bool) (string, bool, error) {
 	return commit, dirty, nil
 }
 
-// compile builds both executables reproducibly and returns them by release path.
-// A nonempty testKey replaces release.PublicKey for a dirty test build
-func compile(module, toolchain, arch, version string, firebase firebaseConfig, testKey string) (map[string][]byte, error) {
+// compile builds both executables reproducibly and returns them by release path
+func compile(module, toolchain, arch, version string, firebase firebaseConfig) (map[string][]byte, error) {
 	dir, err := os.MkdirTemp("", "cloudgateway-release-")
 	if err != nil {
 		return nil, err
@@ -180,9 +177,6 @@ func compile(module, toolchain, arch, version string, firebase firebaseConfig, t
 		"-X", buildinfoPath + ".FirebaseProjectID=" + firebase.projectID,
 		"-X", buildinfoPath + ".FirebaseDatabaseID=" + firebase.databaseID,
 	}, " ")
-	if testKey != "" {
-		ldflags += " -X " + releasePath + ".PublicKey=" + testKey
-	}
 	binaries := map[string][]byte{}
 	for _, executable := range release.Executables {
 		output := filepath.Join(dir, path.Base(executable))
@@ -205,17 +199,14 @@ type packageParams struct {
 	outDir         string
 	version        string
 	storageVersion int
-	signer         ed25519.PrivateKey
-	publicKey      string
 	// binaries maps each architecture to its executables by release path
 	binaries map[string]map[string][]byte
 }
 
-// packageRelease writes archives, the signed manifest, and the stamped
-// installer to a new outDir/linux-v<version> and returns the manifest codeHash
-func packageRelease(p packageParams) (string, error) {
+// packageRelease writes the archives and the stamped installer to a new outDir/linux-v<version>
+func packageRelease(p packageParams) error {
 	if err := os.MkdirAll(p.outDir, 0o755); err != nil {
-		return "", err
+		return err
 	}
 	// Mkdir claims the release dir, so an existing one, even empty, is never
 	// reused. Assets go to a temp dir that replaces the empty claim at the end,
@@ -223,14 +214,14 @@ func packageRelease(p packageParams) (string, error) {
 	finalDir := filepath.Join(p.outDir, "linux-v"+p.version)
 	if err := os.Mkdir(finalDir, 0o755); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("%s already exists. Refusing to overwrite release %s", finalDir, p.version)
+			return fmt.Errorf("%s already exists. Refusing to overwrite release %s", finalDir, p.version)
 		}
-		return "", err
+		return err
 	}
 	dir, err := os.MkdirTemp(p.outDir, ".linux-v"+p.version+"-")
 	if err != nil {
 		os.Remove(finalDir)
-		return "", err
+		return err
 	}
 	defer os.RemoveAll(dir)
 	complete := false
@@ -240,65 +231,43 @@ func packageRelease(p packageParams) (string, error) {
 		}
 	}()
 
-	manifest := release.Manifest{
-		SchemaVersion: release.SchemaVersion, Version: p.version,
-		IPCVersion: ipc.Version, StorageVersion: p.storageVersion,
-	}
+	archives := map[string][]byte{}
 	for _, arch := range release.Arches {
 		files := map[string][]byte{release.UnitName: install.Unit}
 		for _, executable := range release.Executables {
 			if p.binaries[arch][executable] == nil {
-				return "", fmt.Errorf("no %s build of %s", arch, executable)
+				return fmt.Errorf("no %s build of %s", arch, executable)
 			}
 			files[executable] = p.binaries[arch][executable]
 		}
 		archive, err := writeArchive(files)
 		if err != nil {
-			return "", err
+			return err
 		}
-		name := release.ArchiveName(p.version, arch)
-		if err := os.WriteFile(filepath.Join(dir, name), archive, 0o644); err != nil {
-			return "", err
+		if err := os.WriteFile(filepath.Join(dir, release.ArchiveName(p.version, arch)), archive, 0o644); err != nil {
+			return err
 		}
-		manifest.Entries = append(manifest.Entries, entry(arch, release.KindArchive, name, archive))
-		for name, contents := range files {
-			manifest.Entries = append(manifest.Entries, entry(arch, release.KindFile, name, contents))
-		}
+		archives[arch] = archive
 	}
-	data, err := manifest.Encode()
+	script, err := stampInstaller(install.Script, p.version, p.storageVersion, archives)
 	if err != nil {
-		return "", err
+		return err
 	}
-	signature := ed25519.Sign(p.signer, data)
-	if _, err := release.Verify(data, signature, p.publicKey); err != nil {
-		return "", err
-	}
-	script, err := stampInstaller(install.Script, p.version, p.publicKey)
-	if err != nil {
-		return "", err
-	}
-	for name, contents := range map[string][]byte{release.ManifestName: data, release.SignatureName: signature, "install.sh": script} {
-		if err := os.WriteFile(filepath.Join(dir, name), contents, 0o644); err != nil {
-			return "", err
-		}
+	if err := os.WriteFile(filepath.Join(dir, "install.sh"), script, 0o644); err != nil {
+		return err
 	}
 	if err := os.Chmod(dir, 0o755); err != nil {
-		return "", err
+		return err
 	}
 	// macOS refuses rename over an empty dir. Remove fails if anything filled the claim
 	if err := os.Remove(finalDir); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.Rename(dir, finalDir); err != nil {
-		return "", err
+		return err
 	}
 	complete = true
-	return release.CodeHash(data), nil
-}
-
-func entry(arch, kind, name string, contents []byte) release.Entry {
-	sum := sha256.Sum256(contents)
-	return release.Entry{Arch: arch, Kind: kind, Path: name, Size: int64(len(contents)), SHA256: hex.EncodeToString(sum[:])}
+	return nil
 }
 
 // writeArchive writes a tar.gz with sorted entries, zero mtimes, root
@@ -351,15 +320,28 @@ func writeArchive(files map[string][]byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// stampInstaller fills the release version and pinned key placeholders in install.sh
-func stampInstaller(script []byte, version, publicKey string) ([]byte, error) {
+// stampInstaller fills the release placeholders in install.sh: the version,
+// the storage version, and each archive's size and SHA-256, so it installs
+// only those archives
+func stampInstaller(script []byte, version string, storageVersion int, archives map[string][]byte) ([]byte, error) {
 	if !release.ValidVersion(version) {
 		return nil, fmt.Errorf("invalid version %q", version)
 	}
-	if _, err := release.ParsePublicKey(publicKey); err != nil {
-		return nil, err
+	if storageVersion < 1 {
+		return nil, fmt.Errorf("invalid storage version %d", storageVersion)
 	}
-	for placeholder, value := range map[string]string{"RELEASE_VERSION": version, "PINNED_PUBLIC_KEY": publicKey} {
+	values := map[string]string{"RELEASE_VERSION": version, "STORAGE_VERSION": strconv.Itoa(storageVersion)}
+	for _, arch := range release.Arches {
+		archive := archives[arch]
+		if len(archive) == 0 {
+			return nil, fmt.Errorf("no %s archive", arch)
+		}
+		sum := sha256.Sum256(archive)
+		prefix := strings.ToUpper(arch) + "_ARCHIVE_"
+		values[prefix+"SIZE"] = strconv.Itoa(len(archive))
+		values[prefix+"SHA256"] = hex.EncodeToString(sum[:])
+	}
+	for placeholder, value := range values {
 		line := []byte("\n" + placeholder + "=\"\"\n")
 		if bytes.Count(script, line) != 1 {
 			return nil, fmt.Errorf("install.sh needs exactly one %s=\"\" line", placeholder)

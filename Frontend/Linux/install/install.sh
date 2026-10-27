@@ -4,22 +4,27 @@
 #   curl --proto '=https' --tlsv1.2 -fsSLO https://github.com/Albro3459/CloudGateway/releases/download/linux-v<version>/install.sh
 #   sudo bash install.sh
 #
-# It verifies the release manifest signature against the pinned key below,
-# then every archive and file hash, before installing anything
+# It installs only the release it was published with, after checking the
+# archive against the size and SHA-256 stamped below
 set -euo pipefail
-# Byte order for manifest sorting and plain tool output
+# Byte order for sorting and plain tool output
 export LC_ALL=C
 
 # Stamped by cloudgateway-release build
 RELEASE_VERSION=""
-PINNED_PUBLIC_KEY=""
+STORAGE_VERSION=""
+AMD64_ARCHIVE_SIZE=""
+AMD64_ARCHIVE_SHA256=""
+ARM64_ARCHIVE_SIZE=""
+ARM64_ARCHIVE_SHA256=""
 
 REPOSITORY="Albro3459/CloudGateway"
 SERVICE="cloudgatewayd.service"
 # Matches release.ValidVersion and its 18-digit bound
 NUMBER='(0|[1-9][0-9]{0,17})'
 VERSION_RE="^$NUMBER[.]$NUMBER[.]$NUMBER\$"
-MAX_MANIFEST_BYTES=65536
+# Release paths in the sorted order cloudgateway-release archives them
+RELEASE_FILES=(bin/cloudgateway bin/cloudgatewayd "$SERVICE")
 
 # Test only: prefixes every system path so tests run unprivileged with stub
 # commands on PATH. Never set it for a real install
@@ -41,16 +46,15 @@ BIN_LINK="$ROOT/usr/local/bin/cloudgateway"
 usage() {
   cat <<'EOF'
 Usage:
-  install.sh [--operator <user>] [--version <x.y.z>] [--from <dir>] [--yes]
+  install.sh [--operator <user>] [--from <dir>] [--yes]
   install.sh --uninstall [--purge]
 
 Options:
   --operator <user>  Local user allowed to control CloudGateway, besides root.
                      Defaults to $SUDO_USER on first install, then keeps the
                      enrolled user. Use --operator root to allow only root
-  --version <x.y.z>  Release to install. Defaults to this installer's release
-  --from <dir>       Use manifest.json, manifest.json.sig, and the archive in
-                     <dir> instead of downloading them
+  --from <dir>       Use this release's archive in <dir> instead of
+                     downloading it
   --yes              Answer yes to prompts, such as installing missing packages
   --uninstall        Stop CloudGateway, remove its network changes, and remove
                      its files. Keeps account data in /var/lib/cloudgateway
@@ -81,17 +85,15 @@ confirm() {
 
 OPERATOR=""
 ASSUME_YES=0
-VERSION=""
 FROM=""
 UNINSTALL=0
 PURGE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --operator | --version | --from)
+    --operator | --from)
       [[ $# -ge 2 && -n $2 ]] || die "$1 needs a value"
       case "$1" in
         --operator) OPERATOR="$2" ;;
-        --version) VERSION="$2" ;;
         --from) FROM="$2" ;;
       esac
       shift 2
@@ -103,14 +105,11 @@ while [[ $# -gt 0 ]]; do
     *) usage >&2 && exit 2 ;;
   esac
 done
-if [[ $UNINSTALL -eq 1 && -n $OPERATOR$VERSION$FROM ]]; then
+if [[ $UNINSTALL -eq 1 && -n $OPERATOR$FROM ]]; then
   die "--uninstall takes only --purge and --yes"
 fi
 if [[ $PURGE -eq 1 && $UNINSTALL -eq 0 ]]; then
   die "--purge needs --uninstall"
-fi
-if [[ -n $VERSION && ! $VERSION =~ $VERSION_RE ]]; then
-  die "--version must look like 1.0.0"
 fi
 if [[ $OPERATOR == -* ]]; then
   die "invalid operator name $OPERATOR"
@@ -211,11 +210,17 @@ if [[ $UNINSTALL -eq 1 ]]; then
   exit 0
 fi
 
+[[ $RELEASE_VERSION =~ $VERSION_RE ]] ||
+  die "this installer has no stamped release. Use install.sh from a published release"
+VERSION="$RELEASE_VERSION"
+
 case "$(uname -m)" in
-  x86_64 | amd64) ARCH=amd64 ;;
-  aarch64 | arm64) ARCH=arm64 ;;
+  x86_64 | amd64) ARCH=amd64 archive_size="$AMD64_ARCHIVE_SIZE" archive_sha="$AMD64_ARCHIVE_SHA256" ;;
+  aarch64 | arm64) ARCH=arm64 archive_size="$ARM64_ARCHIVE_SIZE" archive_sha="$ARM64_ARCHIVE_SHA256" ;;
   *) die "unsupported architecture $(uname -m). CloudGateway ships amd64 and arm64" ;;
 esac
+[[ -n $archive_sha ]] || die "release $VERSION has no $ARCH build"
+archive_name="cloudgateway-linux-$VERSION-$ARCH.tar.gz"
 
 # os-release is parsed as data and never sourced
 OS_ID=""
@@ -386,160 +391,35 @@ file_matches() {
   [[ $size == "$2" && ${sum%% *} == "$3" ]]
 }
 
-if [[ -z $VERSION ]]; then
-  # With --from too, so a stale release left in that folder is never installed by mistake
-  VERSION="$RELEASE_VERSION"
-  [[ -n $VERSION || -n $FROM ]] || die "this installer has no stamped release. Pass --version <x.y.z> or --from <dir>"
-fi
-say "Verifying CloudGateway${VERSION:+ $VERSION} for $ARCH"
-fetch manifest.json "$MAX_MANIFEST_BYTES"
-fetch manifest.json.sig 64
-
-[[ -n $PINNED_PUBLIC_KEY ]] || die "this installer has no pinned release key. Use install.sh from a published release"
-openssl_version="$(openssl version 2>/dev/null || true)"
-openssl_re='^OpenSSL ([0-9]+)[.]'
-if [[ ! $openssl_version =~ $openssl_re ]] || ((BASH_REMATCH[1] < 3)); then
-  die "verifying the release needs OpenSSL 3 or later, found: ${openssl_version:-none}"
-fi
-printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$PINNED_PUBLIC_KEY" >"$WORK/release.pub"
-openssl pkeyutl -verify -pubin -inkey "$WORK/release.pub" -rawin \
-  -in "$WORK/manifest.json" -sigfile "$WORK/manifest.json.sig" >/dev/null 2>&1 ||
-  die "the release manifest signature does not verify. Refusing to install"
-
-# Accepts exactly the canonical encoding release.Parse accepts. Entries must be
-# strictly sorted, which also rejects duplicates and a second archive
-malformed() { die "the release manifest is malformed: $1"; }
-path_re='[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*'
-version_line_re='^  "version": "([0-9.]+)",$'
-ipc_line_re='^  "ipcVersion": [1-9][0-9]{0,17},$'
-storage_line_re='^  "storageVersion": ([1-9][0-9]{0,17}),$'
-entry_re="^    [{]\"arch\":\"(amd64|arm64)\",\"kind\":\"(archive|file)\",\"path\":\"($path_re)\",\"size\":$NUMBER,\"sha256\":\"([0-9a-f]{64})\"[}](,?)\$"
-[[ $(tr -d '\000\r' <"$WORK/manifest.json" | wc -c) -eq $(wc -c <"$WORK/manifest.json") ]] || malformed "control bytes"
-line_number=0
-section=header
-release_version=""
-storage_version=""
-previous_key=""
-previous_comma=""
-seen=" "
-archive=""
-files=""
-while IFS= read -r line; do
-  line_number=$((line_number + 1))
-  case "$section:$line_number" in
-    header:1) [[ $line == "{" ]] || malformed "line 1" ;;
-    header:2) [[ $line == '  "schemaVersion": 1,' ]] || die "unsupported release manifest schema. Use the install.sh published with the release" ;;
-    header:3)
-      [[ $line =~ $version_line_re ]] || malformed "version"
-      release_version="${BASH_REMATCH[1]}"
-      [[ $release_version =~ $VERSION_RE ]] || malformed "version"
-      ;;
-    header:4) [[ $line =~ $ipc_line_re ]] || malformed "ipcVersion" ;;
-    header:5)
-      [[ $line =~ $storage_line_re ]] || malformed "storageVersion"
-      storage_version="${BASH_REMATCH[1]}"
-      ;;
-    header:6)
-      [[ $line == '  "entries": [' ]] || malformed "line 6"
-      section=entries
-      ;;
-    entries:*)
-      if [[ $line == "  ]" ]]; then
-        [[ -n $previous_key && -z $previous_comma ]] || malformed "entries end"
-        section=end
-        continue
-      fi
-      [[ $line =~ $entry_re ]] || malformed "line $line_number"
-      entry_arch="${BASH_REMATCH[1]}"
-      entry_kind="${BASH_REMATCH[2]}"
-      entry_path="${BASH_REMATCH[3]}"
-      entry_size="${BASH_REMATCH[5]}"
-      entry_sha="${BASH_REMATCH[6]}"
-      entry_comma="${BASH_REMATCH[7]}"
-      key="$entry_arch $entry_kind $entry_path"
-      if [[ -n $previous_key ]] && [[ -z $previous_comma || ! $previous_key < $key ]]; then
-        malformed "entries are not strictly sorted at line $line_number"
-      fi
-      if [[ $entry_kind == archive ]]; then
-        [[ $entry_path == "cloudgateway-linux-$release_version-$entry_arch.tar.gz" && $entry_size != 0 ]] || malformed "archive $entry_path"
-      fi
-      seen="$seen$entry_arch:$entry_kind:$entry_path "
-      if [[ $entry_arch == "$ARCH" ]]; then
-        if [[ $entry_kind == archive ]]; then
-          archive="$entry_path $entry_size $entry_sha"
-        else
-          files="$files$entry_path $entry_size $entry_sha"$'\n'
-        fi
-      fi
-      previous_key="$key"
-      previous_comma="$entry_comma"
-      ;;
-    end:*)
-      [[ $line == "}" && $section == end ]] || malformed "line $line_number"
-      section=done
-      ;;
-    *) malformed "line $line_number" ;;
-  esac
-done <"$WORK/manifest.json"
-# read skips a last line without a newline, leaving it in line
-[[ -z $line ]] || malformed "trailing data"
-[[ $section == done ]] || malformed "truncated"
-for arch in amd64 arm64; do
-  if [[ $seen == *" $arch:"* ]]; then
-    for required in "archive:cloudgateway-linux-$release_version-$arch.tar.gz" file:bin/cloudgateway file:bin/cloudgatewayd "file:$SERVICE"; do
-      [[ $seen == *" $arch:$required "* ]] || malformed "no $arch ${required#*:}"
-    done
-  fi
-done
-
-[[ -z $VERSION || $VERSION == "$release_version" ]] || die "the manifest is for release $release_version, not $VERSION"
-VERSION="$release_version"
-[[ -n $archive ]] || die "release $VERSION has no $ARCH build"
-read -r archive_name archive_size archive_sha <<<"$archive"
-
 # A downgrade across a storage format change would leave state the daemon refuses
 storage_floor=0
 storage_re='"storageVersion": *([0-9]+)'
-for storage_file in "$CURRENT_LINK/manifest.json" "$STATE_DIR/storage.json"; do
-  if [[ -f $storage_file ]]; then
-    while IFS= read -r line || [[ -n $line ]]; do
-      if [[ $line =~ $storage_re ]] && ((BASH_REMATCH[1] > storage_floor)); then
-        storage_floor="${BASH_REMATCH[1]}"
-      fi
-    done <"$storage_file"
-  fi
-done
-if ((storage_version < storage_floor)); then
-  die "release $VERSION reads storage format $storage_version, but this machine already uses format $storage_floor. Refusing a downgrade across a storage format change"
+if [[ -f $STATE_DIR/storage.json ]]; then
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line =~ $storage_re ]] && ((BASH_REMATCH[1] > storage_floor)); then
+      storage_floor="${BASH_REMATCH[1]}"
+    fi
+  done <"$STATE_DIR/storage.json"
+fi
+if ((STORAGE_VERSION < storage_floor)); then
+  die "release $VERSION reads storage format $STORAGE_VERSION, but this machine already uses format $storage_floor. Refusing a downgrade across a storage format change"
 fi
 
+say "Checking CloudGateway $VERSION for $ARCH"
 fetch "$archive_name" "$archive_size"
 file_matches "$WORK/$archive_name" "$archive_size" "$archive_sha" ||
-  die "$archive_name does not match the signed manifest. Refusing to install"
+  die "$archive_name does not match this installer's release. Refusing to install"
 
-# The archive must list exactly the manifest's files and their parent dirs, in
-# the sorted order cloudgateway-release writes. That rules out traversal,
-# absolute paths, extra entries, and duplicates before anything is extracted
-expected_listing="$(
-  while read -r path _; do
-    dir="$path"
-    while [[ $dir == */* ]]; do
-      dir="${dir%/*}"
-      echo "$dir/"
-    done
-    echo "$path"
-  done <<<"${files%$'\n'}" | sort -u
-)"
+# The archive must list exactly the release files and bin/, in the sorted
+# order cloudgateway-release writes. That rules out traversal, absolute paths,
+# extra entries, and duplicates before anything is extracted
+expected_listing="$(printf '%s\n' bin/ "${RELEASE_FILES[@]}")"
 [[ $(tar -tzf "$WORK/$archive_name") == "$expected_listing" ]] ||
-  die "$archive_name does not hold exactly the files in the signed manifest. Refusing to install"
+  die "$archive_name does not hold exactly the release files. Refusing to install"
 
 STAGE="$(mktemp -d "$RELEASES_DIR/.staging.XXXXXX")"
 tar -xzf "$WORK/$archive_name" -C "$STAGE" --no-same-owner || die "cannot extract $archive_name"
 [[ -z $(find "$STAGE" ! -type f ! -type d) ]] || die "$archive_name holds entries other than files and directories"
-while read -r path size sha; do
-  file_matches "$STAGE/$path" "$size" "$sha" || die "$path does not match the signed manifest. Refusing to install"
-done <<<"${files%$'\n'}"
-cp "$WORK/manifest.json" "$WORK/manifest.json.sig" "$STAGE/"
 chown -R root:root "$STAGE"
 chmod -R u=rwX,go=rX "$STAGE"
 chmod 0755 "$STAGE/bin/cloudgateway" "$STAGE/bin/cloudgatewayd"
@@ -549,12 +429,13 @@ chmod 0755 "$STAGE/bin/cloudgateway" "$STAGE/bin/cloudgatewayd"
 # exit trap restores it if the swap fails
 target="$RELEASES_DIR/$VERSION"
 reuse=0
-if [[ -d $target ]] && cmp -s "$WORK/manifest.json" "$target/manifest.json" &&
-  cmp -s "$WORK/manifest.json.sig" "$target/manifest.json.sig"; then
+if [[ -d $target && ! -L $target ]]; then
   reuse=1
-  while read -r path size sha; do
-    file_matches "$target/$path" "$size" "$sha" || reuse=0
-  done <<<"${files%$'\n'}"
+  for path in "${RELEASE_FILES[@]}"; do
+    if [[ ! -f $target/$path || -L $target/$path ]] || ! cmp -s "$STAGE/$path" "$target/$path"; then
+      reuse=0
+    fi
+  done
 fi
 if [[ $reuse -eq 1 ]]; then
   rm -rf "$STAGE"

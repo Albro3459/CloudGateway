@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestValidVersion(t *testing.T) {
+	for _, good := range []string{"0.0.0", "1.0.0", "1.10.0", "999999999999999999.0.0"} {
+		if !ValidVersion(good) {
+			t.Errorf("ValidVersion(%q) = false", good)
+		}
+	}
+	for _, bad := range []string{"", "1.0", "1.0.0.0", "v1.0.0", "1.0.0-rc.1", "1.0.0+5", "01.0.0", "1..0", "1.0.-1", "1000000000000000000.0.0", "0.0.0-dev"} {
+		if ValidVersion(bad) {
+			t.Errorf("ValidVersion(%q) = true", bad)
+		}
+	}
+}
+
 func writeDaemon(t *testing.T, root, version, contents string) string {
 	t.Helper()
 	dir := filepath.Join(root, "releases", version)
