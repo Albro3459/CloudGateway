@@ -27,6 +27,8 @@ UMask=0077
 # The operator traverses to the 0600 operator-owned socket
 RuntimeDirectory=cloudgateway
 RuntimeDirectoryMode=0711
+# Keeps the socket across a restart, so the CLI waits for the new release
+RuntimeDirectoryPreserve=restart
 StateDirectory=cloudgateway
 StateDirectoryMode=0700
 

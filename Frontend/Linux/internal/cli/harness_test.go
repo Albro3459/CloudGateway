@@ -65,6 +65,8 @@ type fakeClock struct {
 	mu    sync.Mutex
 	start time.Time
 	now   time.Time
+	// afterSleep runs after each sleep with the total elapsed time, without mu held
+	afterSleep func(elapsed time.Duration)
 }
 
 func newFakeClock() *fakeClock {
@@ -83,7 +85,11 @@ func (f *fakeClock) clock() clock {
 		}
 		f.mu.Lock()
 		f.now = f.now.Add(d)
+		elapsed, after := f.now.Sub(f.start), f.afterSleep
 		f.mu.Unlock()
+		if after != nil {
+			after(elapsed)
+		}
 		return nil
 	}}
 }
@@ -155,6 +161,23 @@ func (d *fakeDaemon) listen() {
 	}()
 }
 
+// stopKeepingSocket stops like a daemon exiting for an update restart, which
+// leaves its socket file so connections are refused
+func (d *fakeDaemon) stopKeepingSocket() {
+	d.mu.Lock()
+	if listener, ok := d.listener.(*net.UnixListener); ok {
+		listener.SetUnlinkOnClose(false)
+	}
+	d.mu.Unlock()
+	d.stop()
+}
+
+// restart listens again over a left socket file, as the next release does
+func (d *fakeDaemon) restart() {
+	_ = os.Remove(d.path)
+	d.listen()
+}
+
 // stop closes the listener, which removes the socket, and every open connection
 func (d *fakeDaemon) stop() {
 	d.mu.Lock()
@@ -215,7 +238,8 @@ func (d *fakeDaemon) serve(conn net.Conn) {
 func (d *fakeDaemon) defaultReply(request ipc.Request) *ipc.Reply {
 	switch request.Action {
 	case ipc.ActionHandshake:
-		return &ipc.Reply{Lifecycle: &ipc.Lifecycle{Running: testBuild, Installed: &testBuild, State: d.lifecycle, Tunnel: d.handshakeTunnel}}
+		return &ipc.Reply{Lifecycle: &ipc.Lifecycle{Running: testBuild, Installed: &testBuild, State: d.lifecycle, Tunnel: d.handshakeTunnel},
+			Operation: d.operation}
 	case ipc.ActionUserActivity:
 		return &ipc.Reply{}
 	case ipc.ActionSnapshot:

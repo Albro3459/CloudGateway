@@ -355,7 +355,13 @@ Other intentional differences, all with schema and exit compatibility kept:
 * Human tables pad by Unicode scalar count. macOS measures grapheme clusters
   and pads by UTF-16 length, which truncates some emoji names.
 * `incompatible_version` suggests waiting for the daemon restart or running
-  `sudo systemctl restart cloudgatewayd`.
+  `sudo systemctl restart cloudgatewayd`. When `update` reconnects to a newer
+  release, it says the update went through and no restart is needed.
+* The `c` login shortcut copies with the OSC 52 terminal sequence, which the
+  terminal never confirms, so it prints that the link was sent and to use the
+  link above if nothing pastes.
+* `status --operation` waits up to 15 seconds for a daemon whose socket refuses
+  connections, which covers an update restart. A missing socket fails at once.
 * The QR mask can differ from CoreImage's. The encoded link and level M match.
 * Full keeps private, shared, and link-local destinations (`10.0.0.0/8`,
   `100.64.0.0/10`, `168.63.129.16`, `169.254.0.0/16`, `172.16.0.0/12`,

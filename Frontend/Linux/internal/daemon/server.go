@@ -127,6 +127,10 @@ func listen(path string, operatorUID, dirOwner uint32) (*net.UnixListener, error
 		listener.Close()
 		return nil, err
 	}
+	// The socket file outlives an update restart, so a CLI sees a refused
+	// connection and waits instead of reporting the daemon gone. The next
+	// listen replaces it, and systemctl stop removes the directory
+	listener.SetUnlinkOnClose(false)
 	return listener, nil
 }
 

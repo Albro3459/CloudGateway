@@ -488,3 +488,30 @@ func TestDeferredRefreshResumesAfterReservationExpires(t *testing.T) {
 	removed := h.run(ipc.Request{Action: ipc.ActionRemoveClient, Identifier: configB})
 	expect(t, "remove", removed.outcome.Kind, ipc.OutcomeCompleted)
 }
+
+func TestCloudIDsThatCantNameConfigsAreDropped(t *testing.T) {
+	h := newHarness(t)
+	h.cloud.set(func(f *fakeCloud) {
+		f.clients = append(f.clients, clientDoc(userA, "evil\x1b]0;owned\x07", "Evil", 7))
+	})
+
+	state := h.signedIn(userA)
+
+	for _, client := range state.Clients {
+		if strings.ContainsRune(client.Identifier, 0x1b) {
+			t.Fatalf("client %q reached the CLI", client.Identifier)
+		}
+	}
+}
+
+func TestHandshakeCarriesTheLatestOperation(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	out := h.up(configA)
+
+	reply := h.do(ipc.Request{Action: ipc.ActionHandshake})
+
+	if reply.Operation == nil || reply.Operation.ID != out.operation.ID || reply.Outcome != nil {
+		t.Fatalf("operation = %+v, outcome %+v", reply.Operation, reply.Outcome)
+	}
+}

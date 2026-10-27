@@ -96,6 +96,10 @@ func (r row) eligibility() string {
 func buildRows(account string, inventory cloud.Inventory) []row {
 	rows := make([]row, 0, len(inventory.Options))
 	for _, option := range inventory.Options {
+		// IDs reach terminals and config identifiers, so control characters or slashes never pass
+		if !store.ValidComponent(option.Client.RegionID) || !store.ValidComponent(option.Client.ClientID) {
+			continue
+		}
 		r := row{option: option, identifier: account + "/" + option.Client.RegionID + "/" + option.Client.ClientID,
 			usable: option.Client.HasUsableConfig()}
 		if r.usable {

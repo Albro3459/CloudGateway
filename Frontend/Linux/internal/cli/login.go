@@ -149,6 +149,9 @@ func (c *CLI) login(ctx context.Context, watch *signalWatch, inv invocation, sho
 					case 'c':
 						if !c.effects.copy(status.Challenge.VerificationURL) {
 							_, _ = io.WriteString(c.stderr, "Clipboard unavailable. Use the approval link above on another device\n")
+						} else {
+							// The terminal never confirms OSC 52, and some ignore it
+							_, _ = io.WriteString(c.stderr, "Sent the link to the terminal clipboard. If nothing pastes, use the link above\n")
 						}
 					case 'o':
 						if !c.effects.open(status.Challenge.VerificationURL) {

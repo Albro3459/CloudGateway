@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/ipc"
 )
@@ -152,6 +153,10 @@ func errorCode(c code) *cliError { return newError(c, "", "") }
 // errNoConnection means the socket couldn't connect or the connection dropped mid-call, as when the
 // daemon restarts. A live daemon replying unavailable is a controllerFailure instead
 var errNoConnection = errors.New("no daemon connection")
+
+// errRestarting is a socket that refuses connections. The daemon keeps its
+// socket file across a restart, so nobody listening means it is starting
+var errRestarting = fmt.Errorf("%w: socket refused", errNoConnection)
 
 // controllerFailure is a request-level failure the daemon replied with
 type controllerFailure ipc.ControllerFailure

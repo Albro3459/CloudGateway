@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/ipc"
@@ -17,6 +18,9 @@ import (
 const (
 	pollInterval    = 500 * time.Millisecond
 	observationWait = 5 * time.Second
+	// restartWait covers a managed update, where systemd waits 2 seconds
+	// before starting the new release and its socket
+	restartWait = 15 * time.Second
 )
 
 type clock struct {
@@ -90,6 +94,9 @@ func (s *session) open() error {
 	// A missing, refused, or stale socket without an installed release means CloudGateway isn't installed
 	if _, statErr := os.Stat(s.cli.currentLink); errors.Is(statErr, fs.ErrNotExist) {
 		return errorCode(codeInstallationRequired)
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return errRestarting
 	}
 	return errNoConnection
 }
@@ -403,7 +410,11 @@ func sameID(a, b string) bool { return strings.EqualFold(a, b) }
 // operation is a single lookup that also reports the current observed state. If the connection is
 // lost, as when an update restarts the daemon, it repeats the lookup on the restarted daemon
 func (s *session) operation(id string) (data, error) {
-	if err := s.open(); err != nil {
+	if err := s.open(); errors.Is(err, errRestarting) {
+		if err := s.awaitRestart(); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
 		return nil, err
 	}
 	if err := s.connect(); err != nil {
@@ -449,6 +460,22 @@ func (s *session) operation(id string) (data, error) {
 
 // reconnect waits out a daemon restart, then repeats the handshake on a new connection until the
 // daemon has finished starting
+// awaitRestart keeps opening a refused socket for up to restartWait, so a
+// lookup started while an update restarts the daemon reaches the new one. A
+// missing socket, as after systemctl stop, fails right away
+func (s *session) awaitRestart() error {
+	until := s.cli.clock.now().Add(restartWait)
+	for s.cli.clock.now().Before(until) {
+		if err := s.sleep(); err != nil {
+			return err
+		}
+		if err := s.open(); !errors.Is(err, errRestarting) {
+			return err
+		}
+	}
+	return errNoConnection
+}
+
 func (s *session) reconnect() error {
 	for {
 		s.close()

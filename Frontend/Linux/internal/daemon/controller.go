@@ -322,7 +322,17 @@ func (c *Controller) Close(ctx context.Context) {
 func (c *Controller) Handle(ctx context.Context, _ Peer, request ipc.Request) ipc.Reply {
 	switch request.Action {
 	case ipc.ActionHandshake:
-		return ipc.Reply{Lifecycle: c.lifecycle(ctx)}
+		// Any CLI version can read the latest operation's coarse state. Outcomes stay with status
+		reply := ipc.Reply{Lifecycle: c.lifecycle(ctx), Operation: c.registry.Latest()}
+		if reply.Operation == nil {
+			c.mu.Lock()
+			if status := c.updateStatusLocked(); status != nil {
+				operation := status.Operation()
+				reply.Operation = &operation
+			}
+			c.mu.Unlock()
+		}
+		return reply
 	case ipc.ActionDiagnostics:
 		return ipc.Reply{Check: c.diagnose(ctx, request.Probe)}
 	}

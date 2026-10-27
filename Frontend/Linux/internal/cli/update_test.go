@@ -171,7 +171,8 @@ func TestUpdateReconnectReportsAVersionChangeWithRecovery(t *testing.T) {
 	expectExit(t, h.run("update", "--json"), 4)
 	id := h.daemon.requestsFor(ipc.ActionUpdate)[0].ID
 	expectEqual(t, "code", field(h.last(), "error", "code"), any("incompatible_version"))
-	expectEqual(t, "suggestion", field(h.last(), "error", "suggestion"), any("Wait for the daemon restart to finish, or run: sudo systemctl restart cloudgatewayd. "+
+	expectEqual(t, "message", field(h.last(), "error", "message"), any("CloudGateway updated to a newer release than this CLI process"))
+	expectEqual(t, "suggestion", field(h.last(), "error", "suggestion"), any("No restart is needed. "+
 		"Check this operation before retrying: cloudgateway status --operation "+id))
 	expectEqual(t, "reservations", len(h.daemon.requestsFor(ipc.ActionUpdate)), 1)
 }
@@ -380,4 +381,43 @@ func TestUnavailableRepliesAreNotTreatedAsDaemonRestarts(t *testing.T) {
 	expectEqual(t, "code", field(lookup.last(), "error", "code"), any("controller_unavailable"))
 	expectActions(t, lookup.daemon, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionOperation)
 	expectEqual(t, "elapsed", lookup.clock.elapsed(), 0)
+}
+
+func TestStatusOperationWaitsForARestartingDaemon(t *testing.T) {
+	h := newHarness(t, testState())
+	id := "6f9619ff-8b86-d011-b42d-00c04fc964ff"
+	h.daemon.operation = &ipc.Operation{ID: id, State: ipc.OperationCompleted}
+	h.daemon.stopKeepingSocket()
+	restarted := false
+	h.clock.afterSleep = func(elapsed time.Duration) {
+		if elapsed >= 2*time.Second && !restarted {
+			restarted = true
+			h.daemon.restart()
+		}
+	}
+
+	expectExit(t, h.run("status", "--operation", id, "--json"), 0)
+	expectEqual(t, "envelope", field(h.last(), "operationId"), any(id))
+}
+
+func TestStatusOperationGivesUpOnARefusedSocket(t *testing.T) {
+	h := newHarness(t)
+	h.daemon.stopKeepingSocket()
+
+	expectExit(t, h.run("status", "--operation", "6f9619ff-8b86-d011-b42d-00c04fc964ff", "--json"), 4)
+
+	expectEqual(t, "code", field(h.last(), "error", "code"), any("controller_unavailable"))
+	expectEqual(t, "waited", h.clock.elapsed() >= restartWait, true)
+}
+
+func TestStatusShowsTheOperationWhileTheDaemonDrains(t *testing.T) {
+	h := newHarness(t)
+	h.daemon.lifecycle = ipc.LifecycleDraining
+	id := "6f9619ff-8b86-d011-b42d-00c04fc964ff"
+	h.daemon.operation = &ipc.Operation{ID: id, State: ipc.OperationRunning}
+
+	expectExit(t, h.run("status", "--json"), 0)
+
+	expectEqual(t, "operation", field(h.last(), "data", "operation", "id"), any(id))
+	expectEqual(t, "state", field(h.last(), "data", "operation", "state"), any("running"))
 }
