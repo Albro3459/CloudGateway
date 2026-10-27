@@ -285,7 +285,11 @@ func (c *AccountCache) Authorize(accountID string, role Role, options []Authoriz
 		}
 	}
 	payload, err := c.load(accountID)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrIO):
+		// A failed read may pass. Rebuilding would lose the installed configs and orphan their secrets
+		return err
+	case err != nil:
 		payload = emptyPayload(accountID)
 	}
 	payload.AuthorizedConfigHashes = map[string]string{}

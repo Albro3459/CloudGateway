@@ -634,6 +634,25 @@ func secretExists(st *Store, reference string) bool {
 	return err == nil
 }
 
+func TestFailedReadKeepsInstalledConfigsThroughAuthorization(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files without permission")
+	}
+	cache := newCache(t)
+	config, option := fixture("user-a", "client-a")
+	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{option}))
+	must(t, cache.Save(config))
+	path := cache.path("user-a")
+	must(t, os.Chmod(path, 0))
+
+	expectErr(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{option}), ErrIO)
+
+	must(t, os.Chmod(path, 0o600))
+	if got := load(t, cache, "user-a").Configs; !reflect.DeepEqual(got, []InstalledConfig{config}) {
+		t.Fatalf("configs = %+v", got)
+	}
+}
+
 func TestRevokedConfigsDropSecretsExceptTheRunningOne(t *testing.T) {
 	st := openStore(t)
 	cache := st.Accounts()
