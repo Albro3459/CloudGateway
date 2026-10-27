@@ -598,9 +598,9 @@ works without it. Full refuses with a clear error, and `doctor` shows the fix.
 On other distros, installing the package isn't enough. On Debian with ifupdown,
 the DHCP client writes `/etc/resolv.conf` itself, so resolved can end up unused
 or without upstream servers. Oracle Linux needs NetworkManager set to
-`dns=systemd-resolved`. A wrong switch breaks DNS for the whole machine. The
-installer offers to switch with a Y prompt only on distros where that switch
-has been tested, and prints the steps elsewhere.
+`dns=systemd-resolved`. A wrong switch breaks DNS for the whole machine, so the
+installer never switches. It warns and prints the steps on Ubuntu, and points
+other distros at their network manager.
 
 Installing a new release should just work. Linux has none of the macOS update
 constraints: no OS-owned extension that refuses replacement, and no separate

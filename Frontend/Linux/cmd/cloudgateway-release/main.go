@@ -157,6 +157,7 @@ func printPublishSteps(out io.Writer, dir, version, toolchain, commit string, di
 	fmt.Fprintf(out, "Built CloudGateway for Linux %s from %s with %s in %s\n", version, commit, toolchain, dir)
 	if dirty {
 		fmt.Fprintln(out, "The working tree had uncommitted changes, so this build doesn't match the commit. Don't publish it")
+		return
 	}
 	fmt.Fprintf(out, "\nNothing was uploaded. To publish, push %s, then run:\n", commit)
 	fmt.Fprintf(out, "  gh release create linux-v%s --repo Albro3459/CloudGateway --target %s --title \"CloudGateway for Linux %s\" --notes \"CloudGateway %s for Linux amd64 and arm64. Source commit %s\" --latest=false \\\n    %s\n",

@@ -61,6 +61,12 @@ journal: interface `cloudgateway` (created as `cloudgw-pending`) with alias
 `cloudgatewayd`, table and fwmark `52820`, rule priorities `30200`-`30220`,
 routing protocol `206`, and nftables table `inet cloudgateway_client`.
 
+Docker containers skip the systemd-resolved stub. Docker hands them the servers
+in `/run/systemd/resolve/resolv.conf`, without resolved's per-link routing, so
+in Full their DNS can go to the physical network's servers instead of the VPN.
+The [research](../../docs/linux-cli-research.md#validation-and-remaining-engineering-gates)
+lists other known limits.
+
 ## Releases
 
 1. Copy `Secrets/example.release.env` to `Secrets/release.env` and fill in the
@@ -71,7 +77,7 @@ routing protocol `206`, and nftables table `inet cloudgateway_client`.
    size and SHA-256. It prints the `gh release` command without running it.
    Builds ignore `go env -w` settings, so set `GOPROXY` and similar as
    environment variables. `-allow-dirty` builds uncommitted changes for
-   testing. Don't publish that build.
+   testing and prints no `gh release` command. Don't publish that build.
 
 Tags are `linux-v<version>`. JSON `version` and `build` both carry the release
 version, and `codeHash` is the SHA-256 of the daemon executable.
