@@ -76,6 +76,7 @@ type harness struct {
 	now        time.Time
 	server     netip.Addr
 	persisted  []*Journal
+	persistErr error
 	lookups    []string
 	exchanges  []exchangeCall
 	exchangeOK bool
@@ -97,6 +98,9 @@ func (h *harness) options(journal *Journal) Options {
 		Executor: h.host,
 		Journal:  journal,
 		Persist: func(j *Journal) error {
+			if h.persistErr != nil {
+				return h.persistErr
+			}
 			h.persisted = append(h.persisted, j)
 			return nil
 		},

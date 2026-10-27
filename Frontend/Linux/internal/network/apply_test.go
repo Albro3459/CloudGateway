@@ -487,6 +487,41 @@ func TestIncompleteDownStaysVisible(t *testing.T) {
 	expect(t, "journal phase", h.lastJournal().Phase, PhaseRemoving)
 }
 
+func TestDownRemovesTunnelWhenJournalCannotBeSaved(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	foreign := foreignState(host)
+	h.apply(testProfile(ModeFull, 5))
+	h.persistErr = errors.New("no space left on device")
+
+	obs, err := h.m.Down(ctx)
+
+	if !errors.Is(err, h.persistErr) {
+		t.Fatalf("err = %v, want the persist error", err)
+	}
+	expect(t, "state", obs.State, StateDisconnected)
+	expectText(t, "owned state", ownedState(host), "")
+	expectText(t, "foreign state", foreignState(host), foreign)
+}
+
+func TestDownRevertsDNSBeforeRemovingRules(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	host.ResetCalls()
+
+	if _, err := h.m.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := host.Calls()
+	revert := slices.IndexFunc(calls, networktest.Match("resolvectl", "revert", InterfaceName))
+	ruleDel := slices.IndexFunc(calls, networktest.Match("ip", "rule", "del"))
+	if revert < 0 || ruleDel < 0 || revert > ruleDel {
+		t.Fatalf("revert at %d, first rule del at %d, want revert first", revert, ruleDel)
+	}
+}
+
 func TestNoSecretsOutsideSetconfStdin(t *testing.T) {
 	host := networktest.NewUbuntu()
 	h := newHarness(t, host)
@@ -707,7 +742,7 @@ func TestSparseJournalNeverTouchesKernelDefaults(t *testing.T) {
 		var err error
 		if viaTeardown {
 			// Even past New, ownership falls back to fixed identity
-			err = h.m.teardown(ctx, &sparse)
+			err = h.m.teardown(ctx, &sparse, false)
 		} else {
 			h.restart(&sparse)
 			_, err = h.m.Down(ctx)

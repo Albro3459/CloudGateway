@@ -111,6 +111,35 @@ func TestDownBeforeRebootStaysOff(t *testing.T) {
 	expect(t, "mutations", len(h.mutations()), 0)
 }
 
+func TestDownWhoseFirstSavesFailTurnsOffAndStaysOff(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	// A directory where the intent file belongs fails the stopping and removing
+	// saves. The teardown's first change clears it, so the later saves work
+	path := filepath.Join(h.dir, "intent.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	h.host.After(networktest.Match("resolvectl", "revert"), func() { once.Do(func() { _ = os.Remove(path) }) })
+
+	out := h.run(ipc.Request{Action: ipc.ActionTurnOff})
+
+	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
+	expect(t, "owned", h.owned(), "")
+	intent := h.intent()
+	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression), "stopped down")
+	h.close(h.c)
+	h.host = networktest.NewUbuntu()
+	h.open()
+	h.settled()
+	expect(t, "resume", !h.resuming(), true)
+}
+
 func TestUnreadableIntentRemovesOwnedResources(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)

@@ -42,14 +42,14 @@ func (m *Manager) Apply(ctx context.Context, p Profile, previous *Profile) (Obse
 	}
 	physical := s.physicalAddrs(fixed)
 	if old != nil || s.anyOwned(res) {
-		if err := m.teardown(ctx, old); err != nil {
+		if err := m.teardown(ctx, old, false); err != nil {
 			return m.observeWith(ctx, &ApplyError{Err: err})
 		}
 	}
 	if err := m.install(ctx, p, plan, physical); err != nil {
 		failure := &ApplyError{Err: err}
 		current, _ := m.status()
-		if err := m.teardown(ctx, current); err != nil {
+		if err := m.teardown(ctx, current, false); err != nil {
 			failure.Err = errors.Join(failure.Err, err)
 			return m.observeWith(ctx, failure)
 		}
@@ -188,27 +188,34 @@ func (m *Manager) restore(ctx context.Context, p Profile, old *Journal, s *snaps
 	}
 	if err := m.install(ctx, p, plan, s.physicalAddrs(fixed)); err != nil {
 		current, _ := m.status()
-		return errors.Join(err, m.teardown(ctx, current))
+		return errors.Join(err, m.teardown(ctx, current, false))
 	}
 	return nil
 }
 
 // teardown removes owned resources found by the journal's resource set, or by
-// fixed identity without one, and clears the journal once a fresh read shows none remain
-func (m *Manager) teardown(ctx context.Context, j *Journal) error {
+// fixed identity without one, and clears the journal once a fresh read shows
+// none remain. Unless force is set, a removing journal that can't be saved
+// stops it before any change
+func (m *Manager) teardown(ctx context.Context, j *Journal, force bool) error {
 	res, adoptPending := ownership(j)
 	m.setTransition(transitionRemoving)
 	defer m.setTransition(transitionNone)
 	if j != nil {
 		removing := *j
 		removing.Phase = PhaseRemoving
-		if err := m.commit(&removing); err != nil {
+		if err := m.commit(&removing); err != nil && !force {
 			return err
 		}
 	}
 	s, err := m.read(ctx, res, adoptPending, false)
 	if err != nil {
 		return err
+	}
+	if s.own != nil && (j == nil || j.Mode == ModeFull) && m.exec.Available(ToolResolvectl) {
+		// Revert while the rules still send VPN DNS into the tunnel. Deleting the
+		// link also drops resolved's state for it, so a failed revert is not fatal
+		_, _ = m.run(ctx, command{tool: ToolResolvectl, args: []string{"revert", res.Interface}})
 	}
 	var errs []error
 	owned := s.ownedRules(res)
@@ -219,10 +226,6 @@ func (m *Manager) teardown(ctx context.Context, j *Journal) error {
 		}
 	}
 	if s.own != nil {
-		if (j == nil || j.Mode == ModeFull) && m.exec.Available(ToolResolvectl) {
-			// Deleting the link also drops resolved's state for it, so a failed revert is not fatal
-			_, _ = m.run(ctx, command{tool: ToolResolvectl, args: []string{"revert", res.Interface}})
-		}
 		if _, err := m.run(ctx, ipCommand("link", "del", "dev", res.Interface)); err != nil {
 			errs = append(errs, err)
 		}
@@ -247,10 +250,12 @@ func (m *Manager) teardown(ctx context.Context, j *Journal) error {
 }
 
 // Down removes every owned resource, using the journal when there is one and
-// fixed identities otherwise. It succeeds only after a fresh read shows none remain
+// fixed identities otherwise. It succeeds only after a fresh read shows none
+// remain. A journal that can't be saved, such as on a full disk, doesn't keep
+// the tunnel up
 func (m *Manager) Down(ctx context.Context) (Observation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	j, _ := m.status()
-	return m.observeWith(ctx, m.teardown(ctx, j))
+	return m.observeWith(ctx, m.teardown(ctx, j, true))
 }

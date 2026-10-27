@@ -512,12 +512,14 @@ func (c *Controller) stop() ipc.Outcome {
 	c.wake()
 	c.netMu.Lock()
 	_, err := c.stopTunnel(context.Background())
-	if err == nil && persistErr == nil {
+	if err == nil {
 		// A resolver failure that ran while this waited for netMu leaves its own
-		// suppression. This down is the later request, so it wins
+		// suppression. This down is the later request, so it wins. When the first
+		// write failed, this one supersedes older work instead, so a reboot or
+		// queued start can't bring the tunnel back
 		_, persistErr = c.writeIntent(func(i *store.Intent) {
 			i.Phase, i.Suppression, i.FailureCode = store.PhaseStopped, store.SuppressDown, ""
-		}, false)
+		}, persistErr != nil)
 	}
 	c.netMu.Unlock()
 	switch {
