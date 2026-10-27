@@ -16,8 +16,8 @@ import (
 const (
 	resumeBackoff    = 5 * time.Second
 	resumeMaxBackoff = 60 * time.Second
-	// resumeSetupWindow bounds boot resume retries after host setup or network
-	// failures, which can clear as the host finishes booting
+	// resumeSetupWindow bounds boot resume retries after preflight failures,
+	// such as resolved starting after the daemon, which clear as boot finishes
 	resumeSetupWindow = 5 * time.Minute
 )
 
@@ -287,7 +287,8 @@ func (c *Controller) runResume(ctx context.Context, r *resumeState) {
 			if !retry() {
 				return
 			}
-		case failure(err) == ipc.CommandSetupRequired || failure(err) == ipc.CommandVPNFailed:
+		case errors.As(err, new(*network.PreflightError)):
+			// Preflight changes nothing, so retrying it never cycles the tunnel
 			if setupDeadline.IsZero() {
 				setupDeadline = c.now().Add(resumeSetupWindow)
 			}
@@ -478,6 +479,11 @@ func (c *Controller) stop() ipc.Outcome {
 	}, true)
 	c.wake()
 	c.netMu.Lock()
+	if persistErr == nil && c.currentIntent().Phase != store.PhaseStopping {
+		// An up accepted after this down already replaced it
+		c.netMu.Unlock()
+		return ipc.Outcome{Kind: ipc.OutcomeCompleted}
+	}
 	_, err := c.stopTunnel(context.Background())
 	if err == nil && persistErr == nil {
 		// A resolver failure that ran while this waited for netMu leaves its own
@@ -539,12 +545,15 @@ func (c *Controller) reconcile(ctx context.Context) {
 		c.observe(ctx)
 		return
 	}
-	c.saveUnsaved()
 	c.mu.Lock()
 	drifted := len(c.obs.Drift) > 0 || c.obs.State != network.StateConnected
 	c.mu.Unlock()
 	obs, err := c.net.Reconcile(ctx)
 	c.setObservation(obs)
+	if obs.State == network.StateConnected || obs.State == network.StateConnecting {
+		// Only a tunnel that is still up may persist its running phase
+		c.saveUnsaved()
+	}
 	if drifted && obs.State == network.StateConnected {
 		c.cloud.CloseIdleConnections()
 	}

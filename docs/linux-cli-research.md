@@ -534,9 +534,9 @@ when the saved intent was connected, with no `down` or logout since. Running
 macOS, which stays off after a reboot, because a headless VM has nobody to
 reconnect it after an automatic update reboot. Boot resume needs the same
 retained account authorization as bare `up`, and retries the endpoint lookup
-until the network is ready, reporting `connecting`. Host setup and network
-failures, such as resolved starting after the daemon, retry the same way for
-up to 5 minutes. Do not add `--autostart` to
+until the network is ready, reporting `connecting`. Preflight failures, such
+as resolved starting after the daemon, retry the same way for up to 5 minutes.
+A failure after the kernel changed stops the resume. Do not add `--autostart` to
 the CLI. `network-online.target` is
 [boot ordering, not a runtime availability monitor](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#network-online.target).
 

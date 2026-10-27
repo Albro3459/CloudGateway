@@ -703,8 +703,8 @@ func TestDrainRefusesUpdateConfirm(t *testing.T) {
 }
 
 // leaveRunningUnsaved models a start whose apply succeeded but whose running
-// save failed: the saved intent says starting while the tunnel is up. The
-// returned func lets intent saves work again
+// save failed, so memory says running while saves fail. The returned func
+// lets saves work again by removing the intent file
 func (h *harness) leaveRunningUnsaved() func() {
 	h.t.Helper()
 	h.signedIn(userA)
@@ -826,4 +826,73 @@ func TestModeChangeReplacesDriftedTunnel(t *testing.T) {
 
 	expect(t, "mode", out.outcome.Kind, ipc.OutcomeStartRequested)
 	h.eventually("mesh", func() bool { return h.owned() == meshOwned })
+}
+
+func TestResumeStopsOnKernelFailure(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunning()
+	h.host.FailWhen(networktest.Match("ip", "link", "add"))
+
+	h.open()
+	h.eventually("resume stopped", func() bool { return !h.resuming() })
+
+	expect(t, "owned", h.owned(), "")
+	expect(t, "no retry", h.clock.Now(), testStart)
+}
+
+func TestDownOverwritesResolverFailureThatLandedFirst(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	downed := make(chan result, 1)
+
+	h.c.netMu.Lock()
+	go func() { downed <- h.run(ipc.Request{Action: ipc.ActionTurnOff}) }()
+	h.waitSuppression(store.SuppressDown)
+	// A resolver failure that checked the intent just before the down's write
+	if _, err := h.c.writeIntent(func(i *store.Intent) {
+		i.Phase, i.Suppression, i.FailureCode = store.PhaseStopping, store.SuppressResolverFailure, ipc.CommandVPNFailed
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	h.c.netMu.Unlock()
+	out := <-downed
+
+	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
+	intent := h.intent()
+	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression)+" "+string(intent.FailureCode), "stopped down ")
+}
+
+func TestDownReplacedByLaterUpKeepsTheTunnel(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	downed := make(chan result, 1)
+
+	h.c.netMu.Lock()
+	go func() { downed <- h.run(ipc.Request{Action: ipc.ActionTurnOff}) }()
+	h.waitSuppression(store.SuppressDown)
+	// An up accepted after the down reached running first
+	if _, err := h.c.writeIntent(func(i *store.Intent) { i.Phase, i.Suppression = store.PhaseRunning, "" }, true); err != nil {
+		t.Fatal(err)
+	}
+	h.c.netMu.Unlock()
+	out := <-downed
+
+	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
+	expect(t, "owned", h.owned(), fullOwned)
+	expect(t, "intent", h.intent().Phase, store.PhaseRunning)
+}
+
+func TestUnsavedRunningIntentIsNotSavedAfterTheTunnelIsGone(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunningUnsaved()()
+	// Someone deleted the interface behind the daemon
+	h.host.RemoveLink(network.InterfaceName)
+
+	h.c.reconcile(context.Background())
+
+	if _, err := h.st().LoadIntent(); !errors.Is(err, store.ErrMissing) {
+		t.Fatalf("intent saved: %v", err)
+	}
 }
