@@ -1,12 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/cli"
 )
 
-// TODO: replaced by the CLI implementation
 func main() {
-	fmt.Fprintln(os.Stderr, "cloudgateway: not implemented")
-	os.Exit(1)
+	os.Exit(cli.New().Run(os.Args[1:]))
 }
