@@ -66,6 +66,7 @@ func newInstallEnv(t *testing.T) *installEnv {
 		"chown":      logged,
 		"flock":      logged,
 		"systemctl":  logged + `; [ "$1" != "$CLOUDGATEWAY_TEST_FAIL" ]`,
+		"sleep":      logged,
 		"resolvectl": "echo Global:; echo 'Link 2 (eth0): 10.0.0.2'",
 	}
 	// GNU mv has -T. Elsewhere rename(2) through perl replaces the link the same way
@@ -424,9 +425,11 @@ func TestInstallRefusesUnsafeArchiveContents(t *testing.T) {
 		"no dir entry":  {legit[1:], "does not hold exactly the release files"},
 		"symlink":       {replace(1, archiveEntry{name: "bin/cloudgateway", typeflag: tar.TypeSymlink, link: escape}), "entries other than files and directories"},
 		"dir symlink":   {replace(0, archiveEntry{name: "bin", typeflag: tar.TypeSymlink, link: e.base}), "does not hold exactly the release files"},
-		"hardlink":      {replace(2, archiveEntry{name: "bin/cloudgatewayd", typeflag: tar.TypeLink, link: escape}), ""},
-		"fifo":          {replace(3, archiveEntry{name: release.UnitName, typeflag: tar.TypeFifo}), ""},
-		"char device":   {replace(3, archiveEntry{name: release.UnitName, typeflag: tar.TypeChar}), ""},
+		// tar strips the leading / from link targets, so the link has nothing to point at
+		"hardlink": {replace(2, archiveEntry{name: "bin/cloudgatewayd", typeflag: tar.TypeLink, link: escape}), "cannot extract"},
+		"fifo":     {replace(3, archiveEntry{name: release.UnitName, typeflag: tar.TypeFifo}), "entries other than files and directories"},
+		// mknod needs root, so tar fails here first. As root the find check refuses it
+		"char device": {replace(3, archiveEntry{name: release.UnitName, typeflag: tar.TypeChar}), "cannot extract"},
 	}
 	writeFile(t, escape, "outside", 0o644)
 	if dir := e.rawAssets(rawArchive(t, legit)); !strings.Contains(e.install(dir), "Installed CloudGateway 1.0.0") {
@@ -444,6 +447,43 @@ func TestInstallRefusesUnsafeArchiveContents(t *testing.T) {
 		if contents, _ := os.ReadFile(escape); string(contents) != "outside" || e.exists("opt/cloudgateway/current") || e.exists("escaped") {
 			t.Fatalf("%s: archive escaped the staging dir or installed", name)
 		}
+	}
+}
+
+func TestInstallFailsWhenTheDaemonDoesNotStayRunning(t *testing.T) {
+	e := newInstallEnv(t)
+	e.install(e.release("1.0.0", 1))
+	e.install(e.release("1.0.1", 1))
+	dir := e.release("1.0.2", 1)
+	for name, systemctl := range map[string]string{
+		// Each show reads a new invocation, as after an automatic restart
+		"restarted": `if [ "$1" = show ]; then echo >>"$CLOUDGATEWAY_TEST_LOG.starts"; wc -l <"$CLOUDGATEWAY_TEST_LOG.starts"; fi`,
+		"stopped":   `[ "$1" != is-active ]`,
+	} {
+		e.stub("systemctl", `echo "systemctl $*" >>"$CLOUDGATEWAY_TEST_LOG"; `+systemctl)
+		output, err := e.run(filepath.Join(dir, "install.sh"), "--from", dir)
+		if err == nil || !strings.Contains(output, "cloudgatewayd.service did not stay running") || strings.Contains(output, "Installed CloudGateway") {
+			t.Fatalf("%s: %v\n%s", name, err, output)
+		}
+		if !e.exists("opt/cloudgateway/releases/1.0.0") || !e.exists("opt/cloudgateway/releases/1.0.1") {
+			t.Fatalf("%s: a failed start pruned releases", name)
+		}
+	}
+}
+
+func TestInstallRefusesAnInstallDirOthersCanWrite(t *testing.T) {
+	e := newInstallEnv(t)
+	dir := e.release("1.0.0", 1)
+	mkdirAll(t, e.path("opt/cloudgateway"))
+	if err := os.Chmod(e.path("opt/cloudgateway"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(e.base, "target"), e.path("opt/cloudgateway/.lock")); err != nil {
+		t.Fatal(err)
+	}
+	e.refuse("is writable by a user other than root", filepath.Join(dir, "install.sh"), "--from", dir)
+	if e.exists("opt/cloudgateway/current") || e.exists("../target") {
+		t.Fatal("install continued in a dir others can write")
 	}
 }
 

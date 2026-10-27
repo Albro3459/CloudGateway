@@ -56,8 +56,9 @@ Options:
   --from <dir>       Use this release's archive in <dir> instead of
                      downloading it
   --yes              Answer yes to prompts, such as installing missing packages
-  --uninstall        Stop CloudGateway, remove its network changes, and remove
-                     its files. Keeps account data in /var/lib/cloudgateway
+  --uninstall        Stop CloudGateway and remove its files and network
+                     changes. Keeps account data in /var/lib/cloudgateway, and
+                     src_valid_mark=1 stays set, as with wg-quick
   --purge            With --uninstall, also delete /var/lib/cloudgateway
 EOF
 }
@@ -123,8 +124,12 @@ fi
 # Serializes every step that changes the system
 take_lock() {
   command -v flock >/dev/null 2>&1 || die "flock is missing. Install util-linux and rerun"
-  mkdir -p "$INSTALL_DIR"
-  chown root:root "$INSTALL_DIR"
+  # -m keeps a new directory 0755 under any umask, so the check below passes
+  mkdir -p -m 0755 "$INSTALL_DIR"
+  # A chown would keep entries another user planted, such as a .lock symlink
+  if [[ ! -O $INSTALL_DIR || -n $(find "$INSTALL_DIR" -maxdepth 0 \( -perm -020 -o -perm -002 \)) ]]; then
+    die "$INSTALL_DIR is writable by a user other than root. Check what is in it, make it root-owned with mode 0755, and rerun"
+  fi
   chmod 0755 "$INSTALL_DIR"
   exec 9>"$INSTALL_DIR/.lock"
   flock -n 9 || die "another install.sh is running"
@@ -485,10 +490,19 @@ systemctl daemon-reload
 systemctl enable "$SERVICE"
 systemctl reset-failed "$SERVICE" 2>/dev/null || true
 systemctl restart "$SERVICE"
-
-# Keep the new and previous releases. A reinstall keeps everything
 previous="${previous#releases/}"
 [[ $previous != "$VERSION" ]] || previous=""
+
+# Type=exec returns once the daemon launches. A daemon that exits waits 2s to
+# start again under a new invocation, so one still active on the same
+# invocation after 5s started cleanly
+invocation="$(systemctl show -p InvocationID --value "$SERVICE")"
+sleep 5
+if ! systemctl is-active --quiet "$SERVICE" || [[ $(systemctl show -p InvocationID --value "$SERVICE") != "$invocation" ]]; then
+  die "$SERVICE did not stay running. Check journalctl -u $SERVICE${previous:+. Release $previous is kept, so its install.sh can go back}"
+fi
+
+# Keep the new and previous releases. A reinstall keeps everything
 if [[ -n $previous ]]; then
   for dir in "$RELEASES_DIR"/*; do
     name="${dir##*/}"
