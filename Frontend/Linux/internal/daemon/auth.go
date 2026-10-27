@@ -49,7 +49,7 @@ func classify(err error) failureClass {
 // Refreshes are serialized, the token is cached until shortly before it
 // expires, and a rotated refresh token is saved atomically
 func (c *Controller) tokenSource(generation uint64) cloud.TokenSource {
-	return func(ctx context.Context, force bool) (cloud.Secret, error) {
+	return func(ctx context.Context, rejected cloud.Secret) (cloud.Secret, error) {
 		c.tokenMu.Lock()
 		defer c.tokenMu.Unlock()
 		c.mu.Lock()
@@ -58,7 +58,8 @@ func (c *Controller) tokenSource(generation uint64) cloud.TokenSource {
 			c.mu.Unlock()
 			return "", errSessionChanged
 		}
-		if !force && c.idToken != "" && c.now().Before(c.idTokenExpires.Add(-tokenMargin)) {
+		// Callers that saw the same rejection wait here, then share one refresh
+		if c.idToken != "" && c.idToken != rejected && c.now().Before(c.idTokenExpires.Add(-tokenMargin)) {
 			token := c.idToken
 			c.mu.Unlock()
 			return token, nil

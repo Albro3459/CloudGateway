@@ -255,7 +255,8 @@ func (c *Client) runQuery(ctx context.Context, op string, token Secret, from, wh
 		}
 		fields, err := decodeFields(entry.Document.Fields)
 		if err != nil {
-			return nil, &Error{Op: op, Kind: KindInvalidResponse, Status: resp.status}
+			// Like the SDK mapper, one undecodable document can't hide the rest
+			continue
 		}
 		documents = append(documents, document{name: entry.Document.Name, fields: fields})
 	}
@@ -287,11 +288,19 @@ func (c *Client) FetchInventory(ctx context.Context, uid string, role Role, toke
 				map[string]any{"collectionId": "Instances", "allDescendants": true}, where)
 		})
 		wg.Wait()
-		// A sibling transport failure must not hide a received denial or a 401 that needs a refresh
+		// A sibling transport failure must not hide a received denial, and a denial
+		// must not hide a 401 that needs a refresh
+		var denied error
 		for _, err := range []error{regionErr, clientErr} {
 			if e, ok := errors.AsType[*Error](err); ok && e.Kind == KindAccessDenied {
-				return Inventory{}, err
+				if e.Code == CodeAuthRequired || e.Code == "UNAUTHENTICATED" {
+					return Inventory{}, err
+				}
+				denied = cmp.Or(denied, err)
 			}
+		}
+		if denied != nil {
+			return Inventory{}, denied
 		}
 		if regionErr != nil {
 			return Inventory{}, regionErr

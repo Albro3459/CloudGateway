@@ -85,7 +85,7 @@ func reply(status int, body string) http.HandlerFunc {
 }
 
 func staticTokens(token Secret) TokenSource {
-	return func(context.Context, bool) (Secret, error) { return token, nil }
+	return func(context.Context, Secret) (Secret, error) { return token, nil }
 }
 
 func wantKind(t *testing.T, err error, kind Kind) *Error {
@@ -439,7 +439,8 @@ func TestCheckAccessRefreshesOnceAfter401(t *testing.T) {
 		reply(401, `{"error":{"code":"AUTH_REQUIRED"}}`)(w, r)
 	})
 	var forced []bool
-	tokens := func(_ context.Context, force bool) (Secret, error) {
+	tokens := func(_ context.Context, rejected Secret) (Secret, error) {
+		force := rejected != ""
 		forced = append(forced, force)
 		if force {
 			return "fresh", nil
@@ -469,7 +470,8 @@ func TestCheckAccessRefreshesOnceAfter401(t *testing.T) {
 
 	sourceErr := &Error{Op: "token refresh", Kind: KindSignInRequired}
 	client, _ = newTestClient(t, reply(401, `{"error":{"code":"AUTH_REQUIRED"}}`))
-	_, err = client.CheckAccess(t.Context(), "uid-1", func(_ context.Context, force bool) (Secret, error) {
+	_, err = client.CheckAccess(t.Context(), "uid-1", func(_ context.Context, rejected Secret) (Secret, error) {
+		force := rejected != ""
 		if force {
 			return "", sourceErr
 		}
@@ -478,6 +480,22 @@ func TestCheckAccessRefreshesOnceAfter401(t *testing.T) {
 	if err != sourceErr {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestCertificateFailuresAreUnavailable(t *testing.T) {
+	_, server := newTestClient(t, reply(200, `{}`))
+	// The default transport doesn't trust the test server, as with a wrong clock or an intercepting proxy
+	client, err := New(Config{
+		Origin: "gocloudlaunch.com", FirebaseAPIKey: testAPIKey, FirebaseProjectID: testProject, FirebaseDatabaseID: "(default)",
+		APIBaseURL: server.URL, Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.CheckAccess(t.Context(), "uid-1", staticTokens("id-1"))
+
+	wantKind(t, err, KindUnavailable)
 }
 
 func TestTransportFailuresAreOffline(t *testing.T) {

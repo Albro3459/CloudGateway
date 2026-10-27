@@ -436,10 +436,10 @@ func pendingTokens(c *Controller, session cloud.Session) *sessionTokens {
 	return &sessionTokens{c: c, current: session}
 }
 
-func (t *sessionTokens) source(ctx context.Context, force bool) (cloud.Secret, error) {
+func (t *sessionTokens) source(ctx context.Context, rejected cloud.Secret) (cloud.Secret, error) {
 	t.c.tokenMu.Lock()
 	defer t.c.tokenMu.Unlock()
-	if !force && t.c.now().Before(t.current.ExpiresAt.Add(-tokenMargin)) {
+	if t.current.IDToken != rejected && t.c.now().Before(t.current.ExpiresAt.Add(-tokenMargin)) {
 		return t.current.IDToken, nil
 	}
 	session, err := t.c.cloud.RefreshSession(ctx, t.current.RefreshToken)

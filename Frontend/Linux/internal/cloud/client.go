@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"regexp"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/buildinfo"
@@ -33,9 +35,10 @@ func (Secret) String() string { return "[redacted]" }
 
 func (s Secret) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, "[redacted]") }
 
-// TokenSource returns a Firebase ID token for the signed-in account. Safe reads call
-// it again with force set once after a 401 so the daemon can refresh serially
-type TokenSource func(ctx context.Context, force bool) (Secret, error)
+// TokenSource returns a Firebase ID token for the signed-in account. After a 401,
+// safe reads call it once more with the rejected token. A source returns a newer
+// cached token when another caller already refreshed, and refreshes otherwise
+type TokenSource func(ctx context.Context, rejected Secret) (Secret, error)
 
 type Config struct {
 	// Origin is the CloudGateway site host, such as gocloudlaunch.com
@@ -209,12 +212,12 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, transportError(parent, r.op, r.write && dispatched.Load())
+		return nil, transportError(parent, r.op, r.write && dispatched.Load(), err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, r.limit+1))
 	if err != nil {
-		return nil, transportError(parent, r.op, r.write)
+		return nil, transportError(parent, r.op, r.write, err)
 	}
 	if int64(len(data)) > r.limit {
 		return nil, &Error{Op: r.op, Kind: KindInvalidResponse, Status: resp.StatusCode, Dispatched: r.write}
@@ -222,17 +225,45 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	return &response{status: resp.StatusCode, header: resp.Header, body: data}, nil
 }
 
-func transportError(parent context.Context, op string, dispatched bool) *Error {
+func transportError(parent context.Context, op string, dispatched bool, err error) *Error {
 	if err := parent.Err(); err != nil {
 		return &Error{Op: op, Kind: KindCanceled, Dispatched: dispatched, cause: err}
 	}
-	return &Error{Op: op, Kind: KindOffline, Dispatched: dispatched}
+	if offline(err) {
+		return &Error{Op: op, Kind: KindOffline, Dispatched: dispatched}
+	}
+	return &Error{Op: op, Kind: KindUnavailable, Dispatched: dispatched}
+}
+
+// offline ports the macOS URL errors that count as offline: no network, a lost
+// connection, a timeout, a host that refuses or can't be reached, and a failed
+// DNS lookup. TLS, certificate, proxy, and protocol errors are unavailable, so
+// a wrong clock or an intercepting proxy never allows cached offline starts
+func offline(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	var timeout interface{ Timeout() bool }
+	switch {
+	case errors.As(err, &dns):
+		return true
+	case errors.As(err, &timeout) && timeout.Timeout():
+		return true
+	case errors.As(err, &op) && op.Op == "dial":
+		return true
+	}
+	for _, lost := range []error{syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ENETUNREACH,
+		syscall.EHOSTUNREACH, syscall.ENETDOWN, syscall.EPIPE, io.ErrUnexpectedEOF, io.EOF} {
+		if errors.Is(err, lost) {
+			return true
+		}
+	}
+	return false
 }
 
 // readWithRefresh runs a safe authenticated read and repeats it once with a forced
 // token refresh after a real 401 AUTH_REQUIRED or Firestore UNAUTHENTICATED
 func readWithRefresh[T any](ctx context.Context, tokens TokenSource, read func(Secret) (T, error)) (T, error) {
-	token, err := tokens(ctx, false)
+	token, err := tokens(ctx, "")
 	if err != nil {
 		var zero T
 		return zero, err
@@ -242,7 +273,7 @@ func readWithRefresh[T any](ctx context.Context, tokens TokenSource, read func(S
 		(e.Code != CodeAuthRequired && e.Code != "UNAUTHENTICATED") {
 		return value, err
 	}
-	token, err = tokens(ctx, true)
+	token, err = tokens(ctx, token)
 	if err != nil {
 		var zero T
 		return zero, err

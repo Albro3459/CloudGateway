@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -396,4 +398,37 @@ func TestNewLoginClearsEarlierDenial(t *testing.T) {
 
 	expect(t, "second", h.waitLogin(offline, ipc.LoginFinished).Result, ipc.LoginOffline)
 	expect(t, "access", h.snapshot().Access, ipc.AccessUnverified)
+}
+
+func TestCallersRejectedTogetherShareOneRefresh(t *testing.T) {
+	h := newHarness(t)
+	h.cloud.set(func(f *fakeCloud) { f.rotate = true })
+	h.signedIn(userA)
+	h.c.mu.Lock()
+	tokens := h.c.tokenSource(h.c.creds.Generation)
+	h.c.mu.Unlock()
+	ctx := context.Background()
+	rejected, err := tokens(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.cloud.mu.Lock()
+	before := h.cloud.refreshes
+	h.cloud.mu.Unlock()
+
+	var wg sync.WaitGroup
+	fresh := make([]cloud.Secret, 4)
+	for i := range fresh {
+		wg.Go(func() { fresh[i], _ = tokens(ctx, rejected) })
+	}
+	wg.Wait()
+
+	h.cloud.mu.Lock()
+	expect(t, "refreshes", h.cloud.refreshes-before, 1)
+	h.cloud.mu.Unlock()
+	for _, token := range fresh {
+		if token == rejected || token != fresh[0] {
+			t.Fatalf("tokens = %v, rejected %v", fresh, rejected)
+		}
+	}
 }

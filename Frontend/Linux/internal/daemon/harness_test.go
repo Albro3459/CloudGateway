@@ -233,6 +233,7 @@ func (f *fakeCloud) RefreshSession(_ context.Context, refreshToken cloud.Secret)
 	f.refreshes++
 	session := f.session(uid)
 	if f.rotate {
+		session.IDToken = cloud.Secret(fmt.Sprintf("id-%s#%d", uid, f.refreshes))
 		session.RefreshToken = cloud.Secret(fmt.Sprintf("refresh-%s#%d", uid, f.refreshes))
 	}
 	if f.project != "" {
@@ -242,7 +243,7 @@ func (f *fakeCloud) RefreshSession(_ context.Context, refreshToken cloud.Secret)
 }
 
 func (f *fakeCloud) token(ctx context.Context, tokens cloud.TokenSource) error {
-	token, err := tokens(ctx, false)
+	token, err := tokens(ctx, "")
 	if err == nil {
 		f.mu.Lock()
 		f.tokens = append(f.tokens, string(token))
@@ -338,7 +339,7 @@ func (f *fakeCloud) CreateClient(_ context.Context, regionID, name string, idTok
 	if f.createErr != nil {
 		return cloud.CreatedClient{}, f.createErr
 	}
-	owner := strings.TrimPrefix(string(idToken), "id-")
+	owner, _, _ := strings.Cut(strings.TrimPrefix(string(idToken), "id-"), "#")
 	doc := clientDoc(owner, fmt.Sprintf("client-new-%d", len(f.creates)), name, 9)
 	f.clients = append(f.clients, doc)
 	return cloud.CreatedClient{ClientID: doc.ClientID, RegionID: regionID, ClientName: name, Status: cloud.StatusActive,

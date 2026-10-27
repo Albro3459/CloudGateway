@@ -159,7 +159,6 @@ func TestFetchInventoryErrors(t *testing.T) {
 		{"index needed", reply(400, `{"error":{"code":400,"status":"FAILED_PRECONDITION"}}`), KindUnavailable},
 		{"stream error", reply(200, `[{"readTime":"2026-10-26T12:00:00Z"},{"error":{"code":403,"status":"PERMISSION_DENIED"}}]`), KindAccessDenied},
 		{"malformed stream", reply(200, `{"document":{}}`), KindInvalidResponse},
-		{"malformed value", reply(200, `[`+clientEntry("r", "c", `"status":{"integerValue":5}`)+`]`), KindInvalidResponse},
 		{"oversized", reply(200, `["`+strings.Repeat("a", firestoreLimit)+`"]`), KindInvalidResponse},
 	}
 	for _, tc := range cases {
@@ -190,7 +189,8 @@ func TestFetchInventoryRefreshesOnceAfter401(t *testing.T) {
 		reply(200, `[]`)(w, r)
 	})
 	refreshes := 0
-	_, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, force bool) (Secret, error) {
+	_, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, rejected Secret) (Secret, error) {
+		force := rejected != ""
 		if force {
 			refreshes++
 			return "fresh", nil
@@ -214,7 +214,8 @@ func TestFetchInventoryRefreshesAfterStreamUnauthenticated(t *testing.T) {
 		firestoreHandler(`[]`, expired)(w, r)
 	})
 	var forced []bool
-	inventory, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, force bool) (Secret, error) {
+	inventory, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, rejected Secret) (Secret, error) {
+		force := rejected != ""
 		forced = append(forced, force)
 		if force {
 			return "fresh", nil
@@ -227,7 +228,8 @@ func TestFetchInventoryRefreshesAfterStreamUnauthenticated(t *testing.T) {
 
 	client, _ = newTestClient(t, firestoreHandler(`[]`, expired))
 	forced = nil
-	_, err = client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, force bool) (Secret, error) {
+	_, err = client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, rejected Secret) (Secret, error) {
+		force := rejected != ""
 		forced = append(forced, force)
 		return "stale", nil
 	})
@@ -281,5 +283,47 @@ func TestDecodeValue(t *testing.T) {
 		if _, err := decodeValue(json.RawMessage(raw)); err == nil {
 			t.Fatalf("%s decoded", raw)
 		}
+	}
+}
+
+func TestFetchInventorySkipsUndecodableDocument(t *testing.T) {
+	clients := `[` + clientEntry("us-sanjose-1", "bad", `"status":{"integerValue":5}`) + `,` +
+		clientEntry("us-sanjose-1", "c1", clientFields("uid-1", "active", configValue)) + `]`
+	client, _ := newTestClient(t, firestoreHandler(`[]`, clients))
+
+	inventory, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, staticTokens("id-1"))
+
+	if err != nil || len(inventory.Options) != 1 || inventory.Options[0].Client.ClientID != "c1" {
+		t.Fatalf("inventory = %+v, err %v", inventory, err)
+	}
+}
+
+func TestFetchInventoryRefreshesWhenSiblingIsDenied(t *testing.T) {
+	clients := `[` + clientEntry("us-sanjose-1", "c1", clientFields("uid-1", "active", configValue)) + `]`
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer fresh" {
+			firestoreHandler(`[]`, clients)(w, r)
+			return
+		}
+		body := map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.Contains(fmt.Sprint(body), "Regions") {
+			reply(403, `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`)(w, r)
+			return
+		}
+		reply(401, `{"error":{"code":401,"status":"UNAUTHENTICATED"}}`)(w, r)
+	})
+	var rejections []Secret
+
+	inventory, err := client.FetchInventory(t.Context(), "uid-1", RoleUser, func(_ context.Context, rejected Secret) (Secret, error) {
+		rejections = append(rejections, rejected)
+		if rejected != "" {
+			return "fresh", nil
+		}
+		return "stale", nil
+	})
+
+	if err != nil || len(inventory.Options) != 1 || fmt.Sprint(rejections) != "[[redacted] [redacted]]" || rejections[1] != "stale" {
+		t.Fatalf("inventory = %+v, err %v, rejections %d", inventory, err, len(rejections))
 	}
 }

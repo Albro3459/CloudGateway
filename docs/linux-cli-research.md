@@ -205,7 +205,9 @@ composite indexes.
 
 Mirror account-generation fences, role-downgrade invalidation, authorized config
 hashes, and classified offline fallback from the macOS controller. Only a
-transport failure with previous account authorization permits offline starts.
+connection failure (no route, DNS, refused, reset, or timeout) with previous
+account authorization permits offline starts, matching the macOS URL error
+list. TLS, certificate, and proxy failures do not.
 Denial, malformed replies, and incomplete reads do not grant offline access.
 An old role-less cache requires fresh authorization. No new cache age TTL is
 introduced as an accidental Linux policy difference.
@@ -660,8 +662,9 @@ Known limitations to settle on VMs before release:
   subnet stays out of the tunnel, but other subnets in the VPC go through it.
 * Full rejects any search or routing domain on another link with DNS servers.
   netplan `use-domains` or NetworkManager DHCP search domains block it.
-* `503 AUTH_UNAVAILABLE` and edge HTML errors keep the session without granting
-  offline starts. Only transport failures allow cached authorization.
+* `503 AUTH_UNAVAILABLE`, edge HTML errors, and TLS or certificate failures
+  keep the session without granting offline starts. Only connection failures
+  allow cached authorization.
 
 Release requires evidence for:
 

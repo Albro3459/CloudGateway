@@ -661,7 +661,7 @@ func (c *Controller) runRemove(ctx context.Context, identifier, account string, 
 		if err != nil {
 			return err
 		}
-		idToken, err := tokens(ctx, false)
+		idToken, err := tokens(ctx, "")
 		if err != nil {
 			return err
 		}
@@ -799,7 +799,7 @@ func (c *Controller) runCreate(ctx context.Context, regionID, name, account stri
 		if err := c.observeRole(access.Role, account, authorize); err != nil {
 			return err
 		}
-		idToken, err := tokens(ctx, false)
+		idToken, err := tokens(ctx, "")
 		if err != nil {
 			return err
 		}
@@ -901,7 +901,7 @@ func (c *Controller) loadCreationRegions(ctx context.Context, tokens cloud.Token
 	if len(regions) == 0 {
 		return result, nil
 	}
-	if _, err := tokens(ctx, false); err != nil {
+	if _, err := tokens(ctx, ""); err != nil {
 		switch classify(err) {
 		case failDenied, failSignIn:
 			return nil, err
