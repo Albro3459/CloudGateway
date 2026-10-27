@@ -142,20 +142,20 @@ restore_replaced() {
   rm -rf "$RELEASES_DIR"/.replaced.*
 }
 
-# owned_link reports whether the daemon's link exists, found by its alias, or
-# under the temporary name only the daemon uses. It reads ip from the system dirs
-owned_link() {
-  local dir ip_tool="" out
+# owned_network reports whether the daemon's link or nftables table remains:
+# the link by its alias, or under the temporary name only the daemon uses
+owned_network() {
+  local alias="" dir
+  [[ -e $ROOT/sys/class/net/cloudgw-pending ]] && return 0
+  alias="$(cat "$ROOT/sys/class/net/cloudgateway/ifalias" 2>/dev/null || true)"
+  [[ $alias == cloudgatewayd ]] && return 0
   for dir in /usr/sbin /usr/bin /sbin /bin; do
-    if [[ -x $ROOT$dir/ip ]]; then
-      ip_tool="$ROOT$dir/ip"
-      break
+    if [[ -x $ROOT$dir/nft ]]; then
+      [[ -n $("$ROOT$dir/nft" list table inet cloudgateway_client 2>/dev/null || true) ]]
+      return
     fi
   done
-  [[ -n $ip_tool ]] || return 1
-  out="$("$ip_tool" -o link show dev cloudgateway 2>/dev/null || true)"
-  [[ $out == *"alias cloudgatewayd"* ]] && return 0
-  "$ip_tool" -o link show dev cloudgw-pending >/dev/null 2>&1
+  return 1
 }
 
 uninstall() {
@@ -173,12 +173,15 @@ uninstall() {
         daemon="$candidate"
       fi
     done < <(printf '%s\n' "$RELEASES_DIR"/*/bin/cloudgatewayd | sort -V)
+    if [[ -z $daemon ]] && compgen -G "$RELEASES_DIR/*/bin/cloudgatewayd" >/dev/null; then
+      die "could not pick an installed cloudgatewayd to remove network changes. Check that sort supports -V, then rerun install.sh --uninstall"
+    fi
   fi
   if [[ -n $daemon ]]; then
     say "Removing CloudGateway network changes"
     "$daemon" cleanup ||
       die "cloudgatewayd cleanup failed, so owned network changes may remain. The service is stopped and its files are kept. Fix the error above and rerun install.sh --uninstall"
-  elif owned_link; then
+  elif owned_network; then
     die "no cloudgatewayd is left to remove the VPN's network changes. Reboot to clear them, then rerun install.sh --uninstall"
   fi
   systemctl disable "$SERVICE" 2>/dev/null || true
@@ -187,11 +190,14 @@ uninstall() {
   if [[ -L $BIN_LINK && $(readlink "$BIN_LINK") == "$CURRENT_LINK/bin/cloudgateway" ]]; then
     rm -f "$BIN_LINK"
   fi
-  rm -rf "$INSTALL_DIR"
   rm -f "$DAEMON_CONFIG"
   rmdir "$CONFIG_DIR" 2>/dev/null || true
   if [[ $PURGE -eq 1 ]]; then
     rm -rf "$STATE_DIR"
+  fi
+  # Last, since it holds the lock that keeps an install from starting meanwhile
+  rm -rf "$INSTALL_DIR"
+  if [[ $PURGE -eq 1 ]]; then
     say "Uninstalled CloudGateway and deleted its account data"
   else
     say "Uninstalled CloudGateway. Kept account data in $STATE_DIR. Rerun with --uninstall --purge to delete it"

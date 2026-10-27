@@ -5,7 +5,6 @@ package cloud
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -184,12 +183,23 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	// handshakeFailed catches a reset or close during the TLS handshake, as when
-	// a firewall blocks the server name, which macOS reports as a TLS failure
-	var dispatched, handshakeFailed atomic.Bool
+	// A failure after a TCP connect and before a usable connection is a TLS,
+	// proxy CONNECT, or SOCKS failure, such as a firewall resetting a blocked
+	// server name. macOS doesn't count those as offline. The flags only ever
+	// turn on, so a dial that finishes late can't clear them
+	var dispatched, connected, gotConn atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		GotConn:          func(httptrace.GotConnInfo) { dispatched.Store(r.write) },
-		TLSHandshakeDone: func(_ tls.ConnectionState, err error) { handshakeFailed.Store(err != nil) },
+		ConnectDone: func(_, _ string, err error) {
+			if err == nil {
+				connected.Store(true)
+			}
+		},
+		GotConn: func(httptrace.GotConnInfo) {
+			gotConn.Store(true)
+			if r.write {
+				dispatched.Store(true)
+			}
+		},
 	})
 	var body io.Reader
 	if r.body != nil {
@@ -216,7 +226,7 @@ func (c *Client) send(ctx context.Context, r request) (*response, error) {
 	if err != nil {
 		failure := transportError(parent, r.op, dispatched.Load(), err)
 		var timeout interface{ Timeout() bool }
-		if failure.Kind == KindOffline && handshakeFailed.Load() && !(errors.As(err, &timeout) && timeout.Timeout()) {
+		if failure.Kind == KindOffline && connected.Load() && !gotConn.Load() && !(errors.As(err, &timeout) && timeout.Timeout()) {
 			failure.Kind = KindUnavailable
 		}
 		return nil, failure

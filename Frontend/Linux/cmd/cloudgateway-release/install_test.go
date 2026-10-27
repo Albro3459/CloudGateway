@@ -829,14 +829,25 @@ func TestUninstallRefusesWithoutADaemonWhileTheTunnelIsUp(t *testing.T) {
 	if err := os.RemoveAll(e.path("opt/cloudgateway/releases/1.0.0/bin")); err != nil {
 		t.Fatal(err)
 	}
-	// The owned interface is still up
-	link := `if [ "$5" = cloudgateway ]; then echo '9: cloudgateway: <POINTOPOINT,NOARP,UP> mtu 1420\    link/none \    alias cloudgatewayd'; else exit 1; fi`
-	writeFile(t, e.path("usr/sbin/ip"), "#!/bin/sh\n"+link+"\n", 0o755)
+	for name, leftover := range map[string]func(){
+		"aliased link": func() {
+			mkdirAll(t, e.path("sys/class/net/cloudgateway"))
+			writeFile(t, e.path("sys/class/net/cloudgateway/ifalias"), "cloudgatewayd\n", 0o644)
+		},
+		"pending link": func() { mkdirAll(t, e.path("sys/class/net/cloudgw-pending")) },
+		"nftables table": func() {
+			writeFile(t, e.path("usr/sbin/nft"), "#!/bin/sh\n[ \"$4\" = cloudgateway_client ] && echo 'table inet cloudgateway_client {'\n", 0o755)
+		},
+	} {
+		leftover()
 
-	e.refuse("no cloudgatewayd is left", filepath.Join(dir, "install.sh"), "--uninstall")
+		e.refuse("no cloudgatewayd is left", filepath.Join(dir, "install.sh"), "--uninstall")
 
-	if !e.exists("etc/systemd/system/cloudgatewayd.service") {
-		t.Fatal("uninstall removed files without cleaning up the network")
+		if !e.exists("etc/systemd/system/cloudgatewayd.service") {
+			t.Fatalf("%s: uninstall removed files without cleaning up the network", name)
+		}
+		_ = os.RemoveAll(e.path("sys/class/net"))
+		writeFile(t, e.path("usr/sbin/nft"), "#!/bin/sh\n", 0o755)
 	}
 }
 
@@ -848,7 +859,8 @@ func TestUninstallIgnoresAForeignLinkWithOurName(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A wg-quick link the admin named cloudgateway, without the daemon's alias
-	writeFile(t, e.path("usr/sbin/ip"), "#!/bin/sh\n"+`if [ "$5" = cloudgateway ]; then echo '9: cloudgateway: <POINTOPOINT,NOARP,UP> mtu 1420'; else exit 1; fi`+"\n", 0o755)
+	mkdirAll(t, e.path("sys/class/net/cloudgateway"))
+	writeFile(t, e.path("sys/class/net/cloudgateway/ifalias"), "\n", 0o644)
 
 	if output, err := e.run(filepath.Join(dir, "install.sh"), "--uninstall"); err != nil {
 		t.Fatalf("uninstall: %v\n%s", err, output)

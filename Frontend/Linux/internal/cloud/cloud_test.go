@@ -534,6 +534,79 @@ func TestHandshakeResetIsUnavailable(t *testing.T) {
 	wantKind(t, err, KindUnavailable)
 }
 
+func TestProxyDroppingConnectIsUnavailable(t *testing.T) {
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { proxy.Close() })
+	// A corporate proxy that closes a CONNECT to a blocked host
+	go func() {
+		for {
+			conn, err := proxy.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Read(make([]byte, 1024))
+			conn.Close()
+		}
+	}()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: proxy.Addr().String()})
+	client, err := New(Config{
+		Origin: "gocloudlaunch.com", FirebaseAPIKey: testAPIKey, FirebaseProjectID: testProject, FirebaseDatabaseID: "(default)",
+		APIBaseURL: "https://api.gocloudlaunch.com", Transport: transport,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.CheckAccess(t.Context(), "uid-1", staticTokens("id-1"))
+
+	wantKind(t, err, KindUnavailable)
+}
+
+func TestHandshakeTimeoutStaysOffline(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	// Accepts and never answers the ClientHello, as a lossy path does
+	var held []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			conn.Close()
+		}
+	})
+	client, err := New(Config{
+		Origin: "gocloudlaunch.com", FirebaseAPIKey: testAPIKey, FirebaseProjectID: testProject, FirebaseDatabaseID: "(default)",
+		APIBaseURL: "https://" + listener.Addr().String(), Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.timeout = 100 * time.Millisecond
+
+	_, err = client.CheckAccess(t.Context(), "uid-1", staticTokens("id-1"))
+
+	wantKind(t, err, KindOffline)
+}
+
 func TestOfflineMatchesMacOSURLErrors(t *testing.T) {
 	cases := map[string]struct {
 		err  error
