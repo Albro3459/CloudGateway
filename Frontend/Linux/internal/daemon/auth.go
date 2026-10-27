@@ -203,6 +203,9 @@ func (c *Controller) signOut() ipc.Outcome {
 	c.cancelResume()
 	c.mu.Lock()
 	cleared := c.store.ClearCredentials()
+	if c.retained != nil && c.retained.status.Phase != ipc.LoginFinished {
+		c.finishRetainedLocked(c.retained.status.AttemptID, ipc.LoginCancelled)
+	}
 	c.signOutLocked()
 	c.mu.Unlock()
 	if cleared != nil {
@@ -219,7 +222,9 @@ func (c *Controller) signOut() ipc.Outcome {
 }
 
 // discardCredentialsLocked signs out after definite credential rejection,
-// denial, or failed role invalidation. The VPN keeps running
+// denial, or failed role invalidation. The VPN keeps running. Like macOS
+// signing out of Firebase, it leaves a retained login for its watcher to
+// finish, so a denial reads as denied
 func (c *Controller) discardCredentialsLocked() {
 	if c.creds != nil {
 		if err := c.store.ClearCredentials(); err != nil {
@@ -234,9 +239,6 @@ func (c *Controller) signOutLocked() {
 	c.creds = nil
 	c.idToken, c.idTokenExpires = "", time.Time{}
 	c.accessResult = ""
-	if c.retained != nil && c.retained.status.Phase != ipc.LoginFinished {
-		c.finishRetainedLocked(c.retained.status.AttemptID, ipc.LoginCancelled)
-	}
 	if c.login != nil {
 		c.login.cancel()
 		c.login = nil

@@ -167,6 +167,26 @@ func TestLoginWithRetainedSessionRestoresInstead(t *testing.T) {
 	expect(t, "account", deref(h.settled().AccountID), any(userA))
 }
 
+func TestLoginWithDeniedRetainedSessionReportsDenied(t *testing.T) {
+	h := newHarness(t)
+	h.seedSession(userA, 1)
+	h.cloud.set(func(f *fakeCloud) { f.accessErr = cloudError(cloud.KindOffline, 0, false) })
+	h.open()
+	h.settled()
+	h.cloud.set(func(f *fakeCloud) {
+		f.accessErr = nil
+		delete(f.roles, userA)
+	})
+	id := newID()
+
+	begun := h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: id}).Login
+	expect(t, "phase", begun.Phase, ipc.LoginRestoring)
+	done := h.waitLogin(id, ipc.LoginFinished)
+
+	expect(t, "result", done.Result, ipc.LoginDenied)
+	expect(t, "access", h.settled().Access, ipc.AccessDenied)
+}
+
 func TestRestoreRetainedSessionOnlineAndOffline(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
