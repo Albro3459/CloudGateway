@@ -1,0 +1,1 @@
+{"nftables": [{"metainfo": {"version": "1.0.9", "release_name": "Old Doc Yak #3", "json_schema_version": 1}}, {"table": {"family": "ip", "name": "filter", "handle": 1}}, {"table": {"family": "ip6", "name": "filter", "handle": 2}}, {"table": {"family": "inet", "name": "cloudgateway_client", "handle": 3}}]}
