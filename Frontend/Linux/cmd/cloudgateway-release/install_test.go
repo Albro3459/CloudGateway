@@ -451,15 +451,16 @@ func TestInstallRefusesUnsafeArchiveContents(t *testing.T) {
 }
 
 func TestInstallFailsWhenTheDaemonDoesNotStayRunning(t *testing.T) {
-	e := newInstallEnv(t)
-	e.install(e.release("1.0.0", 1))
-	e.install(e.release("1.0.1", 1))
-	dir := e.release("1.0.2", 1)
 	for name, systemctl := range map[string]string{
 		// Each show reads a new invocation, as after an automatic restart
 		"restarted": `if [ "$1" = show ]; then echo >>"$CLOUDGATEWAY_TEST_LOG.starts"; wc -l <"$CLOUDGATEWAY_TEST_LOG.starts"; fi`,
 		"stopped":   `[ "$1" != is-active ]`,
 	} {
+		// A fresh install each time, so 1.0.1 is the previous release a successful install would prune around
+		e := newInstallEnv(t)
+		e.install(e.release("1.0.0", 1))
+		e.install(e.release("1.0.1", 1))
+		dir := e.release("1.0.2", 1)
 		e.stub("systemctl", `echo "systemctl $*" >>"$CLOUDGATEWAY_TEST_LOG"; `+systemctl)
 		output, err := e.run(filepath.Join(dir, "install.sh"), "--from", dir)
 		if err == nil || !strings.Contains(output, "cloudgatewayd.service did not stay running") || strings.Contains(output, "Installed CloudGateway") {
@@ -484,6 +485,32 @@ func TestInstallRefusesAnInstallDirOthersCanWrite(t *testing.T) {
 	e.refuse("is writable by a user other than root", filepath.Join(dir, "install.sh"), "--from", dir)
 	if e.exists("opt/cloudgateway/current") || e.exists("../target") {
 		t.Fatal("install continued in a dir others can write")
+	}
+}
+
+func TestInstallAcceptsASymlinkedInstallDir(t *testing.T) {
+	e := newInstallEnv(t)
+	// Like an install dir moved to another disk
+	mkdirAll(t, e.path("data/cloudgateway"))
+	if err := os.Chmod(e.path("data/cloudgateway"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkdirAll(t, e.path("opt"))
+	if err := os.Symlink(e.path("data/cloudgateway"), e.path("opt/cloudgateway")); err != nil {
+		t.Fatal(err)
+	}
+	// Linux symlinks are always 0777, so the check has to look through the link. macOS gives them a mode
+	if runtime.GOOS == "darwin" {
+		if output, err := exec.Command("chmod", "-h", "0777", e.path("opt/cloudgateway")).CombinedOutput(); err != nil {
+			t.Fatalf("chmod -h: %v\n%s", err, output)
+		}
+	}
+
+	if output := e.install(e.release("1.0.0", 1)); !strings.Contains(output, "Installed CloudGateway 1.0.0") {
+		t.Fatalf("output = %s", output)
+	}
+	if !e.exists("data/cloudgateway/releases/1.0.0") {
+		t.Fatal("release not installed through the link")
 	}
 }
 

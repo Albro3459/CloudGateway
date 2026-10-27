@@ -127,7 +127,8 @@ take_lock() {
   # -m keeps a new directory 0755 under any umask, so the check below passes
   mkdir -p -m 0755 "$INSTALL_DIR"
   # A chown would keep entries another user planted, such as a .lock symlink
-  if [[ ! -O $INSTALL_DIR || -n $(find "$INSTALL_DIR" -maxdepth 0 \( -perm -020 -o -perm -002 \)) ]]; then
+  # -H checks a symlinked install dir's target, as -O does
+  if [[ ! -O $INSTALL_DIR || -n $(find -H "$INSTALL_DIR" -maxdepth 0 \( -perm -020 -o -perm -002 \)) ]]; then
     die "$INSTALL_DIR is writable by a user other than root. Check what is in it, make it root-owned with mode 0755, and rerun"
   fi
   chmod 0755 "$INSTALL_DIR"
