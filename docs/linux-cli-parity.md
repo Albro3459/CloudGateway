@@ -267,7 +267,7 @@ Internal `isLong` and operation `failure` never serialize. Do not blanket-apply 
 Normative source: [public records](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/CloudGatewayMacCLI/CloudGatewayMacCLIRecords.swift),
 plus the login/update/doctor types linked above. Version fields remain strings;
 Linux sets both to its release version, without a separate build number.
-`codeHash` is the lowercase hex SHA-256 of the signed release manifest.
+`codeHash` is the lowercase hex SHA-256 of the daemon executable.
 Platform-specific messages/checks differ meaningfully, while shapes, shared
 enum values, command names, and exit mappings remain compatible.
 

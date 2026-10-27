@@ -568,18 +568,17 @@ There is no separate build counter. Keep the human version formatter
 `CloudGateway 1.0.0 (1.0.0)` to preserve its shape. The duplicate value is the
 explicit cost of retaining schema 1. A cleaner single-field schema would be
 a separate public contract change. Update `target.codeHash` is the lowercase hex
-SHA-256 of the signed release manifest, which fits the 64-character format macOS
+SHA-256 of the daemon executable, which fits the 64-character format macOS
 validates.
 
-Publish amd64/arm64 archives and a signed manifest binding version, architecture,
-asset size/hash, runtime compatibility, and all installed executables. Verify
-the exact manifest bytes with a pinned release key before trusting hashes or
-extracting assets. Go supplies
-[Ed25519 verification](https://pkg.go.dev/crypto/ed25519); the shell bootstrap can
-use a verified available OpenSSL implementation with the correct Ed25519 mode.
-The initial installer itself needs a trusted HTTPS distribution path, with an
-inspectable download option. A checksum beside an untrusted archive alone does
-not authenticate either file.
+Publish amd64/arm64 archives and an `install.sh` stamped with the release
+version, storage version, and each archive's size and SHA-256. Releases aren't
+signed. Every install and update downloads `install.sh` over HTTPS from the
+same GitHub release as the archives, so a signing key pinned in that script
+would add nothing, and `cloudgateway update` downloads nothing. The stamped
+hashes catch mismatched or corrupt archives, including a test build installed
+by a published installer. Add signing if a channel that downloads updates by
+itself, like an APT repository, ever ships.
 
 The installer detects architecture, parses
 [`os-release`](https://www.freedesktop.org/software/systemd/man/latest/os-release.html)
@@ -610,7 +609,7 @@ interface, routes, rules, nftables table, and resolver settings are kernel and
 resolved state, so a restarted daemon adopts them from its journal, the same as
 crash recovery.
 
-The installer verifies the release, extracts it into a root-owned versioned
+The installer checks the archive, extracts it into a root-owned versioned
 directory, atomically points `current` at it, and restarts the daemon. On
 SIGTERM, the daemon stops accepting new work, waits up to a short bound for
 running cloud requests, persists receipts and results, and exits without

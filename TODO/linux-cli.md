@@ -15,7 +15,7 @@ actual validation.
   network package with no HTTP/Firebase imports, without refactoring the
   shipped Apple packages
 - [x] Add host-free `linux` validation to `scripts/test.sh` and document the Go
-  toolchain pin and reproducible release build
+  toolchain pin and release build
 - [ ] Prove daemon socket authority and enrolled UID
 - [ ] Set up disposable Ubuntu 24.04/26.04 test VMs, amd64 and arm64, with
   console access for recovery. None exist yet
@@ -116,7 +116,7 @@ test accounts/clients rather than ordinary production inventory.
 
 ## 6. Installation, runtime update, and release
 
-- [ ] Build amd64/arm64 assets and signed manifests for `linux-v1.0.0`
+- [ ] Build amd64/arm64 assets and the stamped installer for `linux-v1.0.0`
 - [x] Implement inspectable shell installer, architecture/capability checks,
   explicit optional dependency installation, UID enrollment, and private state
 - [x] Install versioned releases with an atomic `current` switch, then restart
@@ -131,7 +131,7 @@ test accounts/clients rather than ordinary production inventory.
 - [x] Refuse downgrades across a storage format change and keep the previous
   release directory
 - [x] Keep JSON version/build strings mapped to the same release version, with
-  `codeHash` as the manifest SHA-256
+  `codeHash` as the daemon executable's SHA-256
 - [x] Implement owned-resource uninstall and opt-in data purge without deleting
   cloud clients or shared distro packages
 - [ ] Run contract differential checks, targeted `scripts/test.sh` validation,
