@@ -239,12 +239,12 @@ func TestCompileIsReproducible(t *testing.T) {
 		t.Fatal(err)
 	}
 	firebase := firebaseConfig{apiKey: "test-key", projectID: "test-project", databaseID: "(default)"}
-	first, err := compile(module, toolchain, "arm64", "9.8.7", firebase)
+	first, err := compile(module, toolchain, "arm64", "9.8.7", firebase, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The second build hits the compile cache but links again
-	second, err := compile(module, toolchain, "arm64", "9.8.7", firebase)
+	second, err := compile(module, toolchain, "arm64", "9.8.7", firebase, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,4 +300,22 @@ func fixtureParams(out, version string, storageVersion int, signer ed25519.Priva
 		}
 	}
 	return packageParams{outDir: out, version: version, storageVersion: storageVersion, signer: signer, publicKey: public, binaries: binaries}
+}
+
+func TestDirtyBuildsNeedATestKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "release.key")
+	if code := run([]string{"keygen", "-out", path}, io.Discard, io.Discard); code != 0 {
+		t.Fatal("keygen failed")
+	}
+	public, err := testPublicKey(path)
+	if err != nil || public == "" {
+		t.Fatalf("test key: %q, %v", public, err)
+	}
+
+	pinned := release.PublicKey
+	release.PublicKey = public
+	t.Cleanup(func() { release.PublicKey = pinned })
+	if _, err := testPublicKey(path); err == nil || !strings.Contains(err.Error(), "not the release key") {
+		t.Fatalf("release key accepted for a dirty build: %v", err)
+	}
 }

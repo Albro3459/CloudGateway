@@ -796,3 +796,63 @@ func writeFile(t *testing.T, path, contents string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 }
+
+func TestUninstallRestoresAnInterruptedRepair(t *testing.T) {
+	e := newInstallEnv(t)
+	dir := e.release("1.0.0", 1)
+	e.install(dir)
+	// A same-version repair killed after moving the old release aside
+	releases := e.path("opt/cloudgateway/releases")
+	replaced := filepath.Join(releases, ".replaced.abc123")
+	mkdirAll(t, replaced)
+	if err := os.Rename(filepath.Join(releases, "1.0.0"), filepath.Join(replaced, "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	e.takeLog()
+
+	if output, err := e.run(filepath.Join(dir, "install.sh"), "--uninstall"); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(e.takeLog(), "cloudgatewayd 1.0.0 cleanup") {
+		t.Fatal("uninstall skipped network cleanup")
+	}
+}
+
+func TestUninstallRefusesWithoutADaemonWhileTheTunnelIsUp(t *testing.T) {
+	e := newInstallEnv(t)
+	dir := e.release("1.0.0", 1)
+	e.install(dir)
+	if err := os.RemoveAll(e.path("opt/cloudgateway/releases/1.0.0/bin")); err != nil {
+		t.Fatal(err)
+	}
+	// The owned interface is still up
+	e.stub("ip", "exit 0")
+
+	e.refuse("no cloudgatewayd is left", filepath.Join(dir, "install.sh"), "--uninstall")
+
+	if !e.exists("etc/systemd/system/cloudgatewayd.service") {
+		t.Fatal("uninstall removed files without cleaning up the network")
+	}
+}
+
+func TestStampedInstallerOnlyInstallsItsReleaseFromAFolder(t *testing.T) {
+	e := newInstallEnv(t)
+	newer := e.release("2.0.0", 1)
+	older := e.release("1.0.0", 1)
+
+	e.refuse("the manifest is for release 1.0.0, not 2.0.0", filepath.Join(newer, "install.sh"), "--from", older)
+}
+
+func TestResolverCheckReadsLongOutput(t *testing.T) {
+	e := newInstallEnv(t)
+	dir := e.release("1.0.0", 1)
+	// Hosts with many veths print more than a pipe holds, and grep -q stops at the first match
+	e.stub("resolvectl", `echo 'Link 2 (eth0): 10.0.0.2'; i=0; while [ $i -lt 20000 ]; do echo "Link $i (veth$i): fe80::1"; i=$((i+1)); done`)
+
+	output := e.install(dir)
+
+	if strings.Contains(output, "no network link has upstream DNS servers") {
+		t.Fatalf("false resolver warning:\n%s", output)
+	}
+}

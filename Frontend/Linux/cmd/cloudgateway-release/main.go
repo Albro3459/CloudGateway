@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Albro3459/CloudGateway/Frontend/Linux/internal/release"
@@ -29,7 +30,9 @@ key to paste into release.PublicKey in internal/release/manifest.go.
 build cross-compiles linux/amd64 and linux/arm64 from this module at HEAD with
 the go.mod toolchain, then writes signed release assets and the stamped
 install.sh to <dir>/linux-v<x.y.z>. It refuses uncommitted changes unless
--allow-dirty is set. It reads the Firebase web config from
+-allow-dirty is set. A dirty build needs a test key other than the release key,
+and pins that key in its binaries and installer so published installs reject
+it. It reads the Firebase web config from
 CLOUDGATEWAY_FIREBASE_API_KEY, CLOUDGATEWAY_FIREBASE_PROJECT_ID, and
 CLOUDGATEWAY_FIREBASE_DATABASE_ID, or from Secrets/release.env. It never
 uploads anything
@@ -155,10 +158,6 @@ func build(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	signer, err := loadSigner(options.keyPath, release.PublicKey)
-	if err != nil {
-		return err
-	}
 	module, err := moduleDir()
 	if err != nil {
 		return err
@@ -167,9 +166,24 @@ func build(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	publicKey, testKey := release.PublicKey, ""
+	if dirty {
+		if testKey, err = testPublicKey(options.keyPath); err != nil {
+			return err
+		}
+		publicKey = testKey
+	}
+	signer, err := loadSigner(options.keyPath, publicKey)
+	if err != nil {
+		return err
+	}
 	toolchain, err := moduleToolchain(module)
 	if err != nil {
 		return err
+	}
+	// The archives are compressed in this process, so its Go must match too
+	if runtime.Version() != toolchain {
+		return fmt.Errorf("run the release tool with %s, not %s: GOTOOLCHAIN=%s go run ./cmd/cloudgateway-release", toolchain, runtime.Version(), toolchain)
 	}
 	envPath, explicit := options.envPath, options.envPath != ""
 	if !explicit {
@@ -186,13 +200,13 @@ func build(args []string, stdout, stderr io.Writer) error {
 	binaries := map[string]map[string][]byte{}
 	for _, arch := range release.Arches {
 		fmt.Fprintf(stderr, "Building linux/%s with %s\n", arch, toolchain)
-		if binaries[arch], err = compile(module, toolchain, arch, options.version, firebase); err != nil {
+		if binaries[arch], err = compile(module, toolchain, arch, options.version, firebase, testKey); err != nil {
 			return err
 		}
 	}
 	codeHash, err := packageRelease(packageParams{
 		outDir: options.outDir, version: options.version, storageVersion: store.StorageVersion,
-		signer: signer, publicKey: release.PublicKey, binaries: binaries,
+		signer: signer, publicKey: publicKey, binaries: binaries,
 	})
 	if err != nil {
 		return err
@@ -201,12 +215,39 @@ func build(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// testPublicKey encodes the public half of a dirty build's key, which must not be the release key
+func testPublicKey(path string) (string, error) {
+	signer, err := readSigner(path)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := release.EncodePublicKey(signer.Public().(ed25519.PublicKey))
+	if err != nil {
+		return "", err
+	}
+	if encoded == release.PublicKey {
+		return "", fmt.Errorf("-allow-dirty needs a test key from cloudgateway-release keygen, not the release key")
+	}
+	return encoded, nil
+}
+
 // loadSigner reads a PKCS #8 Ed25519 key and requires it to match the pinned public key
 func loadSigner(path, publicKey string) (ed25519.PrivateKey, error) {
 	pinned, err := release.ParsePublicKey(publicKey)
 	if err != nil {
 		return nil, err
 	}
+	signer, err := readSigner(path)
+	if err != nil {
+		return nil, err
+	}
+	if !pinned.Equal(signer.Public()) {
+		return nil, fmt.Errorf("%s does not match release.PublicKey", path)
+	}
+	return signer, nil
+}
+
+func readSigner(path string) (ed25519.PrivateKey, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -230,9 +271,6 @@ func loadSigner(path, publicKey string) (ed25519.PrivateKey, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s is not an Ed25519 key", path)
 	}
-	if !pinned.Equal(signer.Public()) {
-		return nil, fmt.Errorf("%s does not match release.PublicKey", path)
-	}
 	return signer, nil
 }
 
@@ -247,7 +285,7 @@ func printPublishSteps(out io.Writer, dir, version, codeHash, toolchain, commit 
 	}
 	fmt.Fprintf(out, "Built CloudGateway for Linux %s from %s with %s in %s\ncodeHash %s\n", version, commit, toolchain, dir, codeHash)
 	if dirty {
-		fmt.Fprintln(out, "The working tree had uncommitted changes, so don't publish this build")
+		fmt.Fprintln(out, "The working tree had uncommitted changes, so this build pins its test key and published installers reject it. Don't publish it")
 	}
 	fmt.Fprintf(out, "\nNothing was uploaded. To publish, push %s, then run:\n", commit)
 	fmt.Fprintf(out, "  gh release create linux-v%s --repo Albro3459/CloudGateway --target %s --title \"CloudGateway for Linux %s\" --notes \"CloudGateway %s for Linux amd64 and arm64. Source commit %s\" --latest=false \\\n    %s\n",

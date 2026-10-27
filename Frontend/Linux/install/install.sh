@@ -24,6 +24,10 @@ MAX_MANIFEST_BYTES=65536
 # Test only: prefixes every system path so tests run unprivileged with stub
 # commands on PATH. Never set it for a real install
 ROOT="${CLOUDGATEWAY_INSTALL_TEST_ROOT:-}"
+if [[ -n $ROOT && $EUID -eq 0 ]]; then
+  echo "install.sh: CLOUDGATEWAY_INSTALL_TEST_ROOT is only for tests. Unset it and rerun" >&2
+  exit 1
+fi
 
 INSTALL_DIR="$ROOT/opt/cloudgateway"
 RELEASES_DIR="$INSTALL_DIR/releases"
@@ -139,12 +143,28 @@ restore_replaced() {
 }
 
 uninstall() {
+  if [[ -d $INSTALL_DIR ]]; then
+    take_lock
+    # An interrupted repair can leave current pointing at a moved release
+    restore_replaced
+  fi
   say "Stopping $SERVICE"
   systemctl stop "$SERVICE" 2>/dev/null || true
+  local daemon=""
   if [[ -x $CURRENT_LINK/bin/cloudgatewayd ]]; then
+    daemon="$CURRENT_LINK/bin/cloudgatewayd"
+  else
+    local candidate
+    for candidate in "$RELEASES_DIR"/*/bin/cloudgatewayd; do
+      [[ -x $candidate ]] && daemon="$candidate"
+    done
+  fi
+  if [[ -n $daemon ]]; then
     say "Removing CloudGateway network changes"
-    "$CURRENT_LINK/bin/cloudgatewayd" cleanup ||
+    "$daemon" cleanup ||
       die "cloudgatewayd cleanup failed, so owned network changes may remain. The service is stopped and its files are kept. Fix the error above and rerun install.sh --uninstall"
+  elif [[ -d $INSTALL_DIR ]] && ip link show dev cloudgateway >/dev/null 2>&1; then
+    die "no cloudgatewayd is left to remove the VPN's network changes. Reboot to clear them, then rerun install.sh --uninstall"
   fi
   systemctl disable "$SERVICE" 2>/dev/null || true
   rm -f "$UNIT_PATH"
@@ -266,8 +286,12 @@ if ! systemctl is-active --quiet systemd-resolved.service; then
   resolver="systemd-resolved is not running"
 elif [[ $(readlink "$ROOT/etc/resolv.conf" 2>/dev/null) != */run/systemd/resolve/stub-resolv.conf ]]; then
   resolver="/etc/resolv.conf does not point at the systemd-resolved stub"
-elif ! resolvectl dns 2>/dev/null | grep -Eq '^Link [0-9]+ \([^)]*\): *[0-9A-Fa-f:.]+'; then
-  resolver="no network link has upstream DNS servers in systemd-resolved"
+else
+  # Captured first, since grep -q exiting early would fail the pipeline under pipefail
+  resolver_dns="$(resolvectl dns 2>/dev/null || true)"
+  if ! grep -Eq '^Link [0-9]+ \([^)]*\): *[0-9A-Fa-f:.]+' <<<"$resolver_dns"; then
+    resolver="no network link has upstream DNS servers in systemd-resolved"
+  fi
 fi
 if [[ -n $resolver ]]; then
   warn "$resolver. Mesh mode works without it, but Full mode needs systemd-resolved as the system resolver"
@@ -326,10 +350,9 @@ fetch() {
   elif command -v curl >/dev/null 2>&1; then
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 30 --max-time 900 \
       --max-filesize "$2" -o "$WORK/$1" "$url" || die "download failed: $url"
-  elif command -v wget >/dev/null 2>&1; then
-    wget --https-only --max-redirect=5 --timeout=30 --tries=2 -q -O "$WORK/$1" "$url" || die "download failed: $url"
   else
-    die "install curl or wget, or pass --from <dir>"
+    # wget can't keep redirects on HTTPS or cap a download's size
+    die "install curl, or pass --from <dir>"
   fi
   (($(wc -c <"$WORK/$1") <= $2)) || die "$1 is larger than expected"
 }
@@ -342,9 +365,10 @@ file_matches() {
   [[ $size == "$2" && ${sum%% *} == "$3" ]]
 }
 
-if [[ -z $FROM && -z $VERSION ]]; then
+if [[ -z $VERSION ]]; then
+  # With --from too, so a stale release left in that folder is never installed by mistake
   VERSION="$RELEASE_VERSION"
-  [[ -n $VERSION ]] || die "this installer has no stamped release. Pass --version <x.y.z> or --from <dir>"
+  [[ -n $VERSION || -n $FROM ]] || die "this installer has no stamped release. Pass --version <x.y.z> or --from <dir>"
 fi
 say "Verifying CloudGateway${VERSION:+ $VERSION} for $ARCH"
 fetch manifest.json "$MAX_MANIFEST_BYTES"

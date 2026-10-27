@@ -74,7 +74,9 @@ and installs refuse to run until it is set.
 3. Run `go run ./cmd/cloudgateway-release build -version 1.0.0 -key <path> -out <dir>`.
    It writes both archives, `manifest.json`, its signature, and a stamped
    `install.sh`, prints the code hash, and prints the `gh release` command
-   without running it.
+   without running it. With `-allow-dirty`, pass a separate test key from
+   `keygen`. That build pins the test key in its binaries and installer, so
+   published installers and daemons reject it.
 
 Tags are `linux-v<version>`. JSON `version` and `build` both carry the release
 version, and `codeHash` is the SHA-256 of the signed manifest.
@@ -86,7 +88,8 @@ Bump `storageVersion` for any state format change so the installer refuses a
 downgrade across it.
 
 For a test VM, copy the build output there and run
-`sudo bash install.sh --from <dir> --operator <user>`. Every installer run
+`sudo bash install.sh --from <dir> --operator <user>`. A stamped installer only
+installs its own release from that folder. Downloads need curl. Every installer run
 enables `cloudgatewayd.service`, including on update, so it also re-enables a
 service an admin disabled. `--uninstall` keeps `/var/lib/cloudgateway` unless
 `--purge` is added.

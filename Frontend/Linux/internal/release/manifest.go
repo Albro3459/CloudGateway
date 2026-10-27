@@ -20,8 +20,10 @@ import (
 
 // PublicKey is the pinned Ed25519 release key as base64 DER SubjectPublicKeyInfo,
 // which is also the body of its PEM form. cloudgateway-release keygen prints it
-// and build stamps it into install.sh. Releases can't be built or verified while it's empty
-const PublicKey = ""
+// and build stamps it into install.sh. Releases can't be built or verified while
+// it's empty. Only a build with uncommitted changes replaces it, at link time,
+// with its own test key, so published installers and daemons reject that build
+var PublicKey = ""
 
 const (
 	SchemaVersion = 1

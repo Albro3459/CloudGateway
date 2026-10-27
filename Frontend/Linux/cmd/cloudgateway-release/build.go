@@ -27,6 +27,7 @@ import (
 const (
 	modulePath    = "github.com/Albro3459/CloudGateway/Frontend/Linux"
 	buildinfoPath = modulePath + "/internal/buildinfo"
+	releasePath   = modulePath + "/internal/release"
 )
 
 // Values are stamped with -ldflags -X, which splits on spaces
@@ -103,8 +104,10 @@ func moduleDir() (string, error) {
 // buildEnv pins everything that changes compiler output: the go.mod
 // toolchain, the baseline CPU level, and no experiments, FIPS mode, or local GOFLAGS
 func buildEnv(toolchain, arch string) []string {
+	// An empty GOFLAGS or GOEXPERIMENT falls back to go env -w values, so GOENV=off
+	// ignores that file. GOWORK=off keeps a go.work above the module out
 	return append(os.Environ(), "GOTOOLCHAIN="+toolchain, "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch,
-		"GOAMD64=v1", "GOARM64=v8.0", "GOEXPERIMENT=", "GOFIPS140=off", "GOFLAGS=")
+		"GOAMD64=v1", "GOARM64=v8.0", "GOEXPERIMENT=", "GOFIPS140=off", "GOFLAGS=", "GOENV=off", "GOWORK=off")
 }
 
 // moduleToolchain reads the toolchain line from go.mod and checks go resolves to it
@@ -162,8 +165,9 @@ func sourceCommit(dir string, allowDirty bool) (string, bool, error) {
 	return commit, dirty, nil
 }
 
-// compile builds both executables reproducibly and returns them by release path
-func compile(module, toolchain, arch, version string, firebase firebaseConfig) (map[string][]byte, error) {
+// compile builds both executables reproducibly and returns them by release path.
+// A nonempty testKey replaces release.PublicKey for a dirty test build
+func compile(module, toolchain, arch, version string, firebase firebaseConfig, testKey string) (map[string][]byte, error) {
 	dir, err := os.MkdirTemp("", "cloudgateway-release-")
 	if err != nil {
 		return nil, err
@@ -176,6 +180,9 @@ func compile(module, toolchain, arch, version string, firebase firebaseConfig) (
 		"-X", buildinfoPath + ".FirebaseProjectID=" + firebase.projectID,
 		"-X", buildinfoPath + ".FirebaseDatabaseID=" + firebase.databaseID,
 	}, " ")
+	if testKey != "" {
+		ldflags += " -X " + releasePath + ".PublicKey=" + testKey
+	}
 	binaries := map[string][]byte{}
 	for _, executable := range release.Executables {
 		output := filepath.Join(dir, path.Base(executable))
