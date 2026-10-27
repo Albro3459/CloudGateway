@@ -64,6 +64,19 @@ func TestRebootResumesLastClientAndMode(t *testing.T) {
 	expect(t, "intent", h.intent().Phase, store.PhaseRunning)
 }
 
+func TestRebootResumesAfterAFailedFirstObservation(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunning()
+	var reads atomic.Int32
+	address := networktest.Match("ip", "-j", "-d", "-N", "address", "show")
+	h.host.FailWhen(func(c networktest.Call) bool { return address(c) && reads.Add(1) == 1 })
+
+	h.open()
+	h.eventually("resume", func() bool { return h.snapshot().Tunnel.Phase == ipc.TunnelConnected && !h.resuming() })
+
+	expect(t, "owned", h.owned(), fullOwned)
+}
+
 func TestResumeReportsConnectingWhileWaitingForAuthorization(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
@@ -641,6 +654,19 @@ func TestFailedUpDuringResumeKeepsReconnect(t *testing.T) {
 	expect(t, "up", *out.outcome, failedOutcome(ipc.CommandVPNFailed))
 	expect(t, "resume kept", h.resuming(), true)
 	h.host.RemoveAddress("enp0s1", conflict)
+	h.recoverNetwork()
+	expect(t, "config", deref(h.snapshot().Tunnel.ConfigID), any(configA))
+}
+
+func TestUpFailingAfterItsStartingIntentKeepsReconnect(t *testing.T) {
+	h := newHarness(t)
+	h.leaveResumeRetrying()
+
+	// Preflight passes and the starting intent is saved, then the endpoint lookup fails
+	out := h.up(configB)
+
+	expect(t, "up", *out.outcome, failedOutcome(ipc.CommandNetworkUnavailable))
+	expect(t, "resume kept", h.resuming(), true)
 	h.recoverNetwork()
 	expect(t, "config", deref(h.snapshot().Tunnel.ConfigID), any(configA))
 }

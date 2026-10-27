@@ -219,10 +219,11 @@ func (c *Controller) adopt(unreadable bool) {
 		if !down("interrupted start", func(*store.Intent) {}) {
 			return
 		}
-	case obs.State != network.StateDisconnected:
+	case obs.State != network.StateDisconnected && obs.Freshness == network.FreshnessCurrent:
 		c.logf("owned network resources do not match the saved intent")
 		return
 	}
+	// A failed read proves nothing either way, so the resume's start reads again
 	creds := c.creds
 	if intent.Suppression != "" || creds == nil || creds.AccountID != intent.AccountID ||
 		creds.Generation != intent.SessionGeneration || !belongs(intent.ProfileID, intent.AccountID) {
@@ -428,7 +429,7 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 	var applyErr *network.ApplyError
 	changed := errors.As(err, &applyErr) && !applyErr.Restored
 	code := failure(err)
-	if _, _, werr := c.writeIntentIf(base, func(i *store.Intent) {
+	_, _, werr := c.writeIntentIf(base, func(i *store.Intent) {
 		switch {
 		case !changed:
 			journal := i.Journal
@@ -439,10 +440,25 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 		default:
 			i.Phase, i.FailureCode = store.PhaseFailed, code
 		}
-	}, false); werr != nil && !errors.Is(werr, errSuperseded) {
+	}, false)
+	switch {
+	case werr == nil && !changed && desired:
+		// The start left everything as it was, so work it superseded, like a boot resume, may run again
+		c.restoreDesired(base, expect)
+	case werr != nil && !errors.Is(werr, errSuperseded):
 		c.logf("persisting the failed start failed: %v", werr)
 	}
 	return false, err
+}
+
+// restoreDesired moves the desired revision back to previous unless a newer
+// desired write already replaced current
+func (c *Controller) restoreDesired(current, previous uint64) {
+	c.intentMu.Lock()
+	defer c.intentMu.Unlock()
+	if c.desired == current {
+		c.desired = previous
+	}
 }
 
 // releaseSecret deletes the record a replaced intent used once the new intent
