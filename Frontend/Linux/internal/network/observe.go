@@ -98,7 +98,7 @@ func evaluate(s *snapshot, j *Journal, t transition, res Resources) Observation 
 // someone else added, and the peer
 func coreMismatch(s *snapshot, j *Journal) []string {
 	if s.own == nil {
-		return []string{"interface"}
+		return []string{DriftInterface}
 	}
 	var mismatch []string
 	for _, a := range s.own.Addrs {

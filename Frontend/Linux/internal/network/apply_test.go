@@ -966,3 +966,31 @@ func TestReconcileReplacesRuleWithStaleAction(t *testing.T) {
 
 	expectText(t, "owned state", ownedState(host), fullOwnedState)
 }
+
+func TestPublicVPNDNSStaysInTheTunnel(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	p := testProfile(ModeFull, 5)
+	p.DNS = []netip.Addr{netip.MustParseAddr("9.9.9.9"), netip.MustParseAddr("fd42:42:42::1")}
+	h.apply(p)
+	// A more specific main route would otherwise win through the suppress rule
+	host.AddRoute(networktest.Route{Dst: netip.MustParsePrefix("9.9.9.0/24"), Table: 254, Dev: "enp0s1", Gateway: netip.MustParseAddr("192.168.64.1"), Protocol: 4})
+
+	expect(t, "VPN DNS", host.RouteVia(netip.Addr{}, netip.MustParseAddr("9.9.9.9"), 0), InterfaceName)
+	expect(t, "same subnet", host.RouteVia(netip.Addr{}, netip.MustParseAddr("9.9.9.10"), 0), "enp0s1")
+}
+
+func TestReconcileReplacesRuleDifferingOnlyByNot(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	// The kernel refuses the right rule while this one exists, so the add must wait for the delete
+	host.RemoveRules(func(r networktest.Rule) bool { return r.Priority == PriorityTunnel && r.Family == 4 })
+	host.AddRule(networktest.Rule{Family: 4, Priority: PriorityTunnel, FwMark: FwMark, Table: RouteTable, Protocol: RouteProtocol})
+
+	if _, err := h.m.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	expectText(t, "owned state", ownedState(host), fullOwnedState)
+}

@@ -226,7 +226,9 @@ func resolverCommands(res Resources, dns []netip.Addr, search []string) []comman
 }
 
 // nftScript recreates the owned table in one transaction. The leading add makes
-// the delete valid when the table is absent
+// the delete valid when the table is absent. Drift checks compare only chain
+// names and rule counts, so rename a chain when a release changes its rules,
+// and a tunnel an older release left running gets the new rules on reconcile
 func nftScript(res Resources, addrs []netip.Prefix, full bool) command {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %[1]s\ndelete table inet %[1]s\ntable inet %[1]s {\n", res.NftTable)

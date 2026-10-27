@@ -347,7 +347,10 @@ func (c *Controller) inventoryFailedLocked(err error, account string, epoch uint
 // publishLocked replaces the authorized cache from a complete refresh, then
 // shows the saved metadata. Removed clients stay hidden until the account changes
 func (c *Controller) publishLocked(rows []row, role cloud.Role, account string) error {
-	rows = slices.DeleteFunc(rows, func(r row) bool { return c.removed[r.identifier] })
+	// Unsafe IDs only reach Authorize for its owner check, so they never count toward the cap
+	rows = slices.DeleteFunc(rows, func(r row) bool {
+		return c.removed[r.identifier] || !r.safeIDs() && (role == cloud.RoleAdmin || r.option.Client.OwnerUID == account)
+	})
 	options := make([]store.AuthorizedOption, 0, len(rows))
 	for _, r := range rows {
 		client := r.option.Client
@@ -359,8 +362,7 @@ func (c *Controller) publishLocked(rows []row, role cloud.Role, account string) 
 			Usable: r.eligibility() == eligible && r.safeIDs(), ConfigHash: r.hash,
 		})
 	}
-	// Every row still went through Authorize's owner check
-	rows = slices.DeleteFunc(rows, func(r row) bool { return !r.safeIDs() })
+
 	if err := c.cache.Authorize(account, store.Role(role), options); err != nil {
 		c.clearInventoryPresentationLocked(account)
 		return err

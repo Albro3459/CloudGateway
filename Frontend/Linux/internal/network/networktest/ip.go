@@ -243,7 +243,11 @@ func (h *Host) changeRule(verb string, family int, rest []string) error {
 		h.rules = slices.Delete(h.rules, index, index+1)
 		return nil
 	}
-	if slices.Contains(h.rules, r) {
+	// Like the kernel's rule_exists, not and the protocol don't make a rule distinct
+	if slices.ContainsFunc(h.rules, func(other Rule) bool {
+		other.Not, other.Protocol = r.Not, r.Protocol
+		return other == r
+	}) {
 		return errors.New("RTNETLINK answers: File exists")
 	}
 	h.rules = append(h.rules, r)

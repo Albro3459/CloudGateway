@@ -561,8 +561,11 @@ func (c *Controller) reconcile(ctx context.Context) {
 	c.mu.Unlock()
 	obs, err := c.net.Reconcile(ctx)
 	c.setObservation(obs)
-	if obs.Freshness == network.FreshnessCurrent && obs.State != network.StateDisconnected && !slices.Contains(obs.Drift, "interface") {
-		// Only a tunnel whose link a fresh read still finds may persist its running phase
+	// Only a tunnel whose link a fresh read still finds may persist its running
+	// phase. Unknown without drift never checked the link
+	linked := obs.State == network.StateConnected || obs.State == network.StateConnecting ||
+		obs.State == network.StateUnknown && len(obs.Drift) > 0 && !slices.Contains(obs.Drift, network.DriftInterface)
+	if obs.Freshness == network.FreshnessCurrent && linked {
 		c.saveUnsaved()
 	}
 	if drifted && obs.State == network.StateConnected {

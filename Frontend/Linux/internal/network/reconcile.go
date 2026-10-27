@@ -53,15 +53,28 @@ func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 		commands = append(commands, routeCommand(res, "del", r))
 	}
 	missingRules, extraRules := diffRules(s, j)
-	for _, r := range missingRules {
-		commands = append(commands, ruleAddCommand(res, r))
-	}
-	for _, r := range extraRules {
-		commands = append(commands, ruleDelCommand(res, r))
-	}
 	var errs []error
 	for _, c := range commands {
 		if _, err := m.run(ctx, c); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// Adds go first, so no rule is missing while a stale one is replaced. The
+	// kernel refuses an add that differs from an existing rule only by not or
+	// protocol, so a refused add runs again once the stale rule is gone
+	var refused []ruleKey
+	for _, r := range missingRules {
+		if _, err := m.run(ctx, ruleAddCommand(res, r)); err != nil {
+			refused = append(refused, r)
+		}
+	}
+	for _, r := range extraRules {
+		if _, err := m.run(ctx, ruleDelCommand(res, r)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, r := range refused {
+		if _, err := m.run(ctx, ruleAddCommand(res, r)); err != nil {
 			errs = append(errs, err)
 		}
 	}

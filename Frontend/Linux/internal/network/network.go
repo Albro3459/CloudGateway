@@ -340,6 +340,9 @@ const (
 	FreshnessUnavailable Freshness = "unavailable"
 )
 
+// DriftInterface is the drift entry for a missing owned link
+const DriftInterface = "interface"
+
 type Observation struct {
 	State      State
 	Freshness  Freshness
