@@ -319,6 +319,19 @@ for both address families. Record the allocation and reject collisions. Owned
 resources use fixed identities, so the daemon can find and remove them without
 the journal.
 
+The implementation uses interface `cloudgateway` with alias `cloudgatewayd`,
+created as `cloudgw-pending` and renamed once the alias is set, so a crash
+never leaves an ambiguous link. Table and fwmark are `52820`, and rules and
+routes carry routing protocol `206`. Rule priorities are `30200` for physical
+source addresses, `30205` for link-local destinations, `30210` for the
+suppress rule, and `30220` for the tunnel rule. They stay clear of Tailscale's
+`5210`-`5270`. The link-local rules send `169.254.0.0/16` and `fe80::/10` to
+the main table, since EC2 and GCE images often have no specific route for
+metadata or time sync. A journal must name a known resource set, and teardown
+never matches protocol `0` or `2`, so a damaged journal can't remove kernel
+rules. Rule, table, and mark collision checks apply only to Full, which is the
+only mode that installs them.
+
 Ubuntu Server manages its network with netplan and systemd-networkd. By default,
 networkd [removes routing rules and routes](https://www.freedesktop.org/software/systemd/man/latest/networkd.conf.html)
 it didn't configure, such as after `netplan apply` or a networkd restart. It
@@ -610,11 +623,25 @@ remove distro dependencies, or disturb another network manager.
 
 ## Validation and remaining engineering gates
 
-No tests/builds or VM experiments ran for this docs-only change. The
-[parity contract](linux-cli-parity.md) identifies existing macOS fixtures to
-reuse. Add a `linux` target to `scripts/test.sh` when implementation lands.
-Host-free validation belongs there; privileged route/DNS checks require actual
-disposable VMs with console recovery, not the ARM macOS development host.
+The [Linux client](../Frontend/Linux/README.md) is implemented. `./scripts/test.sh linux`
+runs its host-free checks, including macOS fixtures ported to Go and a
+simulated Ubuntu host for network tests. No VM experiments have run.
+Privileged route/DNS checks require actual disposable VMs with console
+recovery, not the ARM macOS development host.
+
+Known limitations to settle on VMs before release:
+
+* Full sends replies for DNAT'd inbound traffic, such as Docker `-p` or
+  libvirt port forwards, into the tunnel, as `wg-quick` does. A masked
+  connection mark could keep them on the underlay.
+* The `from <address> lookup main` rules skip later host policy rules, such as
+  multi-NIC `routing-policy` without a priority. `goto` to an owned `nop` rule
+  would keep them.
+* AWS IPv6 metadata (`fd00:ec2::254`) has no owned bypass rule.
+* Full rejects any search or routing domain on another link with DNS servers.
+  netplan `use-domains` or NetworkManager DHCP search domains block it.
+* `503 AUTH_UNAVAILABLE` and edge HTML errors keep the session without granting
+  offline starts. Only transport failures allow cached authorization.
 
 Release requires evidence for:
 

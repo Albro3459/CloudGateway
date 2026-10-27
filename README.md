@@ -128,11 +128,12 @@ cloudgateway down
 
 The CLI also supports client creation and removal, JSON output, diagnostics, and SSH use. See the [CLI setup and command reference](Frontend/Apple/macOS/README.md#command-line-tool).
 
-### Linux CLI planning
+### Linux CLI
 
-The [Linux CLI design](docs/linux-cli-research.md) targets Ubuntu VMs with the
-same commands and JSON contract as the macOS CLI. Research and implementation
-checkpoints are documented; a Linux client is not available yet.
+The [Linux client](Frontend/Linux/README.md) targets Ubuntu VMs with the same
+commands and JSON contract as the macOS CLI. It is implemented and tested
+host-free, but hasn't been validated on Linux or released yet. See the
+[design](docs/linux-cli-research.md) and [parity contract](docs/linux-cli-parity.md).
 
 ## Documentation
 

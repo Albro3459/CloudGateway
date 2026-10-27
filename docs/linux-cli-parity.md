@@ -344,3 +344,16 @@ interrupted JSON record is not guaranteed there. Linux should
 install a consistent signal-to-detach handler and emit a safe interrupted result
 when stdout remains available. That is an intentional lifecycle improvement,
 with command, schema, and exit compatibility retained.
+
+Other intentional differences, all with schema and exit compatibility kept:
+
+* Help, error, and update text say "daemon" and "this machine" where macOS
+  names the controller, Mac, app, extension, or Keychain. JSON message strings
+  follow the same wording.
+* Human `status` adds `Server: not responding. Run: cloudgateway refresh` when
+  the connected server doesn't answer. JSON status is unchanged.
+* Human tables pad by Unicode scalar count. macOS measures grapheme clusters
+  and pads by UTF-16 length, which truncates some emoji names.
+* `incompatible_version` suggests waiting for the daemon restart or running
+  `sudo systemctl restart cloudgatewayd`.
+* The QR mask can differ from CoreImage's. The encoded link and level M match.

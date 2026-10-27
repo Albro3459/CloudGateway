@@ -8,8 +8,9 @@ or the [root README](../README.md) for the product overview.
 * [Tool versions](tool-versions.md): supported local tools and deployed pins.
 * [Web dashboard](../Frontend/Web/README.md): development, routing, and publication.
 * [Apple clients](../Frontend/Apple/README.md): iOS, macOS, CLI, and shared packages.
-* [Linux CLI research](linux-cli-research.md): proposed Ubuntu daemon, routing,
-  REST access, [macOS parity contract](linux-cli-parity.md), and implementation plan.
+* [Linux client](../Frontend/Linux/README.md): layout, tests, runtime paths, and releases.
+  See the [research](linux-cli-research.md) for the daemon, routing, and REST
+  design, and the [macOS parity contract](linux-cli-parity.md).
 * [Regional API](../Backend/API/README.md): local setup and service architecture.
 * [API contracts](api-contract.md): routes, payloads, authorization, and errors.
 * [Device sign-in](device-auth.md): browser approval and native token exchange.
