@@ -791,6 +791,37 @@ func TestUpFailingAfterItsStartingIntentKeepsReconnect(t *testing.T) {
 	expect(t, "config", deref(h.snapshot().Tunnel.ConfigID), any(configA))
 }
 
+func TestFailedStartWhoseSaveFailsLeavesNoStartingPhase(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	// Once the replacement deletes the old tunnel's nftables table, a directory
+	// where the intent file belongs fails every save, so the start fails with
+	// nothing installed
+	path := filepath.Join(h.dir, "intent.json")
+	var once sync.Once
+	h.host.After(networktest.Match("nft", "-f", "-"), func() {
+		once.Do(func() {
+			if err := os.Remove(path); err != nil {
+				t.Error(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Error(err)
+			}
+		})
+	})
+
+	h.up(configB)
+
+	expect(t, "owned", h.owned(), "")
+	expect(t, "memory", h.c.currentIntent().Phase, store.PhaseStopped)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	h.c.reconcile(context.Background())
+	expect(t, "saved", h.intent().Phase, store.PhaseStopped)
+}
+
 func TestFailedLogoutKeepsResume(t *testing.T) {
 	h := newHarness(t)
 	h.leaveResumeRetrying()

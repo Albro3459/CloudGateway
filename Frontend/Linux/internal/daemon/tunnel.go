@@ -94,25 +94,20 @@ func (c *Controller) writeIntentIf(expect uint64, update func(*store.Intent), de
 // established. reconcile retries the save, and a restart adopts the
 // matching tunnel from the saved starting phase
 func (c *Controller) setRunning(expect uint64) error {
+	return c.recordIntent(expect, func(i *store.Intent) { i.Phase = store.PhaseRunning }, false)
+}
+
+// recordIntent saves a change the kernel already reflects, such as an applied,
+// failed, or stopped tunnel. A nonzero expect fails with errSuperseded once the
+// desired revision moved past it. A failed save still moves the in-memory
+// intent, so logout, reconcile, and later writes see what the kernel holds, and
+// reconcile retries the save
+func (c *Controller) recordIntent(expect uint64, update func(*store.Intent), desired bool) error {
 	c.intentMu.Lock()
 	defer c.intentMu.Unlock()
 	if expect != 0 && c.desired != expect {
 		return errSuperseded
 	}
-	next := c.intent
-	next.Phase = store.PhaseRunning
-	next.Revision = c.intent.Revision + 1
-	err := c.store.SaveIntent(next)
-	c.intent, c.unsaved = next, err != nil
-	return err
-}
-
-// recordStopped saves a confirmed stop. Like setRunning, a failed save still
-// moves the in-memory intent, since the tunnel is gone either way, and
-// reconcile retries the save
-func (c *Controller) recordStopped(update func(*store.Intent), desired bool) error {
-	c.intentMu.Lock()
-	defer c.intentMu.Unlock()
 	next := c.intent
 	update(&next)
 	next.Revision = c.intent.Revision + 1
@@ -124,7 +119,7 @@ func (c *Controller) recordStopped(update func(*store.Intent), desired bool) err
 	return err
 }
 
-// saveUnsaved retries persisting a running or stopped phase whose first save failed
+// saveUnsaved retries persisting an intent whose save in recordIntent failed
 func (c *Controller) saveUnsaved() {
 	c.intentMu.Lock()
 	defer c.intentMu.Unlock()
@@ -470,7 +465,8 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 	if !changed && desired && c.restoreDesired(base, expect) {
 		base = expect
 	}
-	if _, _, werr := c.writeIntentIf(base, func(i *store.Intent) {
+	// Recorded even when the save fails, so a stale starting phase never outlives the start
+	if werr := c.recordIntent(base, func(i *store.Intent) {
 		switch {
 		case !changed:
 			journal := i.Journal
@@ -562,7 +558,7 @@ func (c *Controller) stop() ipc.Outcome {
 		// suppression. This down is the later request, so it wins. When the first
 		// write failed, this one supersedes older work instead, so a reboot or
 		// queued start can't bring the tunnel back
-		persistErr = c.recordStopped(func(i *store.Intent) {
+		persistErr = c.recordIntent(0, func(i *store.Intent) {
 			i.Phase, i.Suppression, i.FailureCode = store.PhaseStopped, store.SuppressDown, ""
 		}, persistErr != nil)
 	}
