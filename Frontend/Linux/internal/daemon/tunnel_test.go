@@ -896,3 +896,29 @@ func TestUnsavedRunningIntentIsNotSavedAfterTheTunnelIsGone(t *testing.T) {
 		t.Fatalf("intent saved: %v", err)
 	}
 }
+
+func TestReplacedTunnelReleasesItsRevokedSecret(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	running := h.intent().SecretReference
+	// The server rotates client A's config, so a refresh revokes the running record
+	h.cloud.set(func(f *fakeCloud) {
+		for i := range f.clients {
+			if f.clients[i].ClientID == clientA {
+				f.clients[i].WireGuardConfig = cloud.Secret(strings.Replace(string(f.clients[i].WireGuardConfig), "PersistentKeepalive = 25", "PersistentKeepalive = 26", 1))
+			}
+		}
+	})
+	expect(t, "refresh", h.do(ipc.Request{Action: ipc.ActionAwaitRefresh}).Refresh, ipc.RefreshRefreshed)
+	if _, err := h.st().GetSecret(running); err != nil {
+		t.Fatalf("running record deleted: %v", err)
+	}
+
+	expect(t, "up", h.up(configA).outcome.Kind, ipc.OutcomeStartRequested)
+
+	expect(t, "new record", h.intent().SecretReference != running, true)
+	if _, err := h.st().GetSecret(running); err == nil {
+		t.Fatal("replaced record kept")
+	}
+}

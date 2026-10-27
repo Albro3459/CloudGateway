@@ -548,3 +548,44 @@ func TestOSReadFailureKeepsSessionRecord(t *testing.T) {
 		t.Fatalf("loaded = %+v, err = %v", loaded, err)
 	}
 }
+
+func TestLogoutRebuildsAnUnreadableSessionRecord(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files without permission")
+	}
+	store := openStore(t)
+	must(t, store.SaveSession(Session{Generation: 4, AccountID: "uid-1", RevokedThrough: 3}))
+	path := filepath.Join(store.Dir(), "session.json")
+	must(t, os.Chmod(path, 0))
+
+	// The daemon still knows generation 6 from memory
+	rebuilt, err := store.RebuildSession(6)
+
+	if err != nil || rebuilt != (Session{Generation: 7, RevokedThrough: 6}) {
+		t.Fatalf("rebuilt = %+v, err = %v", rebuilt, err)
+	}
+	if loaded, err := store.LoadSession(); err != nil || loaded != rebuilt {
+		t.Fatalf("loaded = %+v, err = %v", loaded, err)
+	}
+}
+
+func TestUnreadableFloorBlocksSessionRebuild(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files without permission")
+	}
+	store := openStore(t)
+	must(t, store.SaveCredentials(Credentials{AccountID: "uid-1", ProjectID: "project", Generation: 4, RefreshToken: "token"}))
+	must(t, os.WriteFile(filepath.Join(store.Dir(), "session.json"), []byte(`{"generation":`), 0o600))
+	credentials := filepath.Join(store.Dir(), "credentials.json")
+	must(t, os.Chmod(credentials, 0))
+
+	_, err := store.RecoverSession()
+
+	expectErr(t, err, ErrIO)
+	expectErr(t, store.SaveSession(Session{Generation: 2}), ErrIO)
+	must(t, os.Chmod(credentials, 0o600))
+	recovered, err := store.RecoverSession()
+	if err != nil || recovered != (Session{Generation: 5, RevokedThrough: 4}) {
+		t.Fatalf("recovered = %+v, err = %v", recovered, err)
+	}
+}

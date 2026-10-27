@@ -100,6 +100,10 @@ func (c *Controller) tokenSource(generation uint64) cloud.TokenSource {
 // credentials it can no longer vouch for
 func (c *Controller) loadSession() {
 	session, err := c.store.LoadSession()
+	if errors.Is(err, store.ErrIO) {
+		c.logf("session record could not be read. Starting signed out until a restart can read it")
+		return
+	}
 	if err != nil {
 		if !errors.Is(err, store.ErrMissing) {
 			c.logf("session record unreadable. Rebuilding it, so saved credentials need a new sign-in")
@@ -158,8 +162,16 @@ func (c *Controller) signOut() ipc.Outcome {
 	c.mu.Lock()
 	session, err := c.store.RecoverSession()
 	if err != nil {
+		// An unreadable record can't block logout, which only revokes more
+		known := c.currentIntent().SessionGeneration
+		if c.creds != nil {
+			known = max(known, c.creds.Generation)
+		}
+		session, err = c.store.RebuildSession(known)
+	}
+	if err != nil {
 		c.mu.Unlock()
-		c.logf("logout could not read the session: %v", err)
+		c.logf("logout could not read or rebuild the session: %v", err)
 		return failed
 	}
 	generation := session.Generation

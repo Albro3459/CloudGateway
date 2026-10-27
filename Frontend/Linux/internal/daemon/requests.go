@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -85,14 +85,17 @@ func NewRegistry(data []byte, now func() time.Time, persist func([]byte) error) 
 	if err := json.Unmarshal(data, &stored); err != nil {
 		return nil, err
 	}
-	if len(stored.Receipts) > maxReceipts {
-		return nil, errors.New("too many operation receipts")
-	}
 	current := now()
+	var ids []string
 	for id, receipt := range stored.Receipts {
 		if receipt.Expires.After(current) {
-			r.receipts[id] = receipt
+			ids = append(ids, id)
 		}
+	}
+	// A release with a higher cap may have saved more, so keep the newest
+	slices.SortFunc(ids, func(a, b string) int { return stored.Receipts[b].Expires.Compare(stored.Receipts[a].Expires) })
+	for _, id := range ids[:min(len(ids), maxReceipts)] {
+		r.receipts[id] = stored.Receipts[id]
 	}
 	return r, nil
 }

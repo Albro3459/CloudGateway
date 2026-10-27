@@ -392,6 +392,7 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 			if err != nil {
 				return false, errIntentNotSaved
 			}
+			c.releaseSecret(current, plan.secretRef)
 		}
 		return false, nil
 	}
@@ -419,6 +420,7 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 			c.logf("persisting the running intent failed: %v", werr)
 			return true, errIntentNotSaved
 		}
+		c.releaseSecret(current, plan.secretRef)
 		return true, nil
 	}
 	// Only an *ApplyError changed the kernel. Anything else left the previous state as it was
@@ -440,6 +442,19 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 		c.logf("persisting the failed start failed: %v", werr)
 	}
 	return false, err
+}
+
+// releaseSecret deletes the record a replaced intent used once the new intent
+// is saved, unless an installed config still uses it. The cache keeps it out of
+// a refresh's cleanup while the tunnel runs, so nothing else would delete it
+func (c *Controller) releaseSecret(replaced store.Intent, next string) {
+	old := replaced.SecretReference
+	if old == "" || old == next || c.cache.References(replaced.AccountID, old) {
+		return
+	}
+	if err := c.store.DeleteSecret(old); err != nil {
+		c.logf("deleting a replaced secret record failed")
+	}
 }
 
 // rollbackSupersededStart removes a start that finished after a newer intent

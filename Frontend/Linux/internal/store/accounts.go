@@ -359,6 +359,20 @@ func (c *AccountCache) deny(accountID string) error {
 	return nil
 }
 
+// References reports whether an installed config of accountID uses reference.
+// An unreadable cache counts as using it
+func (c *AccountCache) References(accountID, reference string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	payload, err := c.load(accountID)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(payload.Snapshot.Configs, func(config InstalledConfig) bool {
+		return config.Snapshot.SecretReference == reference
+	})
+}
+
 func (c *AccountCache) dropSecrets(references []string) {
 	if c.drop != nil && len(references) > 0 {
 		c.drop(references)
@@ -448,9 +462,7 @@ func (c *AccountCache) write(payload inventoryPayload) error {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if err := os.Mkdir(filepath.Dir(path), 0o700); err == nil {
-		if err := syncDir(c.dir); err != nil {
-			return fmt.Errorf("%w: %w", ErrUnavailable, err)
-		}
+		_ = syncDir(c.dir)
 	} else if !os.IsExist(err) {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}

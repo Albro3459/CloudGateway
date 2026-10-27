@@ -686,3 +686,30 @@ func TestAccountIDsMustFitConfigIdentifiers(t *testing.T) {
 	}
 	must(t, cache.Deny("Zx9_firebase-uid.1"))
 }
+
+func TestDowngradeDropsSecretsUnlessTheIntentIsUnreadable(t *testing.T) {
+	st := openStore(t)
+	cache := st.Accounts()
+	config, option := fixture("user-a", "client-a")
+	must(t, cache.Authorize("user-a", RoleAdmin, []AuthorizedOption{option}))
+	config = installSecret(t, st, config)
+	// Without a readable intent the running tunnel's record can't be told apart
+	must(t, os.WriteFile(filepath.Join(st.Dir(), "intent.json"), []byte("{"), 0o600))
+
+	if _, err := cache.ObserveRole("user-a", RoleUser); err != nil {
+		t.Fatal(err)
+	}
+
+	if !secretExists(st, config.Snapshot.SecretReference) {
+		t.Fatal("record deleted without a readable intent")
+	}
+	must(t, os.Remove(filepath.Join(st.Dir(), "intent.json")))
+	must(t, cache.Authorize("user-a", RoleAdmin, []AuthorizedOption{option}))
+	config = installSecret(t, st, config)
+	if _, err := cache.ObserveRole("user-a", RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	if secretExists(st, config.Snapshot.SecretReference) {
+		t.Fatal("downgrade kept the record")
+	}
+}

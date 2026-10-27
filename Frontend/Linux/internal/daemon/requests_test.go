@@ -626,19 +626,26 @@ func TestNewRegistryRestoresOnlyValidUnexpiredReceipts(t *testing.T) {
 	if _, err := NewRegistry([]byte(`{"receipts":`), clock, persist); err == nil {
 		t.Fatal("restored corrupt receipts")
 	}
+	// A release with a higher cap saved more, so the newest fit
 	receipts := map[string]receipt{}
-	for range maxReceipts + 1 {
+	oldest := newID()
+	receipts[oldest] = receipt{Digest: "d", Expires: now.Add(time.Second)}
+	for range maxReceipts {
 		receipts[newID()] = receipt{Digest: "d", Expires: now.Add(time.Minute)}
 	}
 	data, _ := json.Marshal(receiptFile{Receipts: receipts})
-	if _, err := NewRegistry(data, clock, persist); err == nil {
-		t.Fatal("restored more than maxReceipts receipts")
+	r, err := NewRegistry(data, clock, persist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := r.receipts[oldest]; len(r.receipts) != maxReceipts || kept {
+		t.Fatalf("restored %d receipts, oldest kept %t", len(r.receipts), kept)
 	}
 	expired, live := newID(), newID()
 	data, _ = json.Marshal(receiptFile{Receipts: map[string]receipt{
 		expired: {Digest: "d", Expires: now}, live: {Digest: "d", Expires: now.Add(time.Second)},
 	}})
-	r, err := NewRegistry(data, clock, persist)
+	r, err = NewRegistry(data, clock, persist)
 	if err != nil {
 		t.Fatal(err)
 	}

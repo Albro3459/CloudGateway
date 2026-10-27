@@ -367,15 +367,34 @@ func TestLoginFinishingDuringLogoutIsCancelled(t *testing.T) {
 	h.open()
 	id := newID()
 	h.do(ipc.Request{Action: ipc.ActionBeginLogin, ID: id})
-	// Logout has saved its revocation marker and not yet cleared credentials
-	h.c.mu.Lock()
-	h.c.signingOut = true
-	h.c.mu.Unlock()
+	// Holding intentMu stops logout after its revocation marker, before it clears credentials
+	h.c.intentMu.Lock()
+	var unlock sync.Once
+	release := func() { unlock.Do(h.c.intentMu.Unlock) }
+	defer release()
+	loggedOut := make(chan ipc.Outcome, 1)
+	go func() { loggedOut <- h.c.signOut() }()
+	var result ipc.LoginResult
+	h.eventually("login finished during logout", func() bool {
+		h.c.mu.Lock()
+		defer h.c.mu.Unlock()
+		if !h.c.signingOut {
+			return false
+		}
+		if h.c.lastLogin == nil {
+			select {
+			case h.cloud.polls <- pollReply{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}:
+			default:
+			}
+			return false
+		}
+		result = h.c.lastLogin.Result
+		return true
+	})
+	release()
 
-	h.cloud.polls <- pollReply{poll: cloud.DevicePoll{CustomToken: "custom-" + userA}}
-	status := h.waitLogin(id, ipc.LoginFinished)
-
-	expect(t, "result", status.Result, ipc.LoginCancelled)
+	expect(t, "result", result, ipc.LoginCancelled)
+	expect(t, "logout", (<-loggedOut).Kind, ipc.OutcomeCompleted)
 	if _, err := h.st().LoadCredentials(); err == nil {
 		t.Fatal("credentials were saved")
 	}

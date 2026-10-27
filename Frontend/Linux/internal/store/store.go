@@ -29,10 +29,11 @@ var (
 	// ErrReadOnly refuses writes to a store opened for cleanup with another storage version
 	ErrReadOnly = errors.New("store: read-only")
 
+	// ErrIO marks an unreadable file the OS failed to read, such as EMFILE or
+	// EIO, as opposed to one that is malformed. It always comes with ErrUnreadable
+	ErrIO = errors.New("store: I/O failure")
+
 	errTooLarge = errors.New("too large")
-	// errIO marks an unreadable file the OS failed to read, such as EMFILE or
-	// EIO, as opposed to one that is malformed
-	errIO = errors.New("I/O failure")
 )
 
 const (
@@ -155,12 +156,13 @@ func (s *Store) remove(path string) error {
 
 // privateDir creates path as a 0700 directory owned by the daemon user
 func privateDir(path string) error {
+	_, missing := os.Lstat(path)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
-	// A new directory's entry is durable only once its parent is synced
-	if err := syncDir(filepath.Dir(path)); err != nil {
-		return err
+	if errors.Is(missing, fs.ErrNotExist) {
+		// A new directory's entry is durable only once its parent is synced
+		_ = syncDir(filepath.Dir(path))
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -184,19 +186,19 @@ func readFile(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s", ErrMissing, path)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, ErrIO, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, ErrIO, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: %s is not a regular file", ErrUnreadable, path)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, errIO, err)
+		return nil, fmt.Errorf("%w: %w: %w", ErrUnreadable, ErrIO, err)
 	}
 	if int64(len(data)) > limit {
 		return nil, fmt.Errorf("%w: %s: %w", ErrUnreadable, path, errTooLarge)
@@ -254,7 +256,8 @@ func writeFile(path string, data []byte) (err error) {
 		return err
 	}
 	// The new contents are in place, so callers must treat the write as done.
-	// A failed directory sync only risks losing it to a crash, as before the write
+	// A failed directory sync only risks losing it to a crash. Every directory
+	// sync after a change that landed follows this rule
 	_ = syncDir(dir)
 	return nil
 }
@@ -279,7 +282,8 @@ func removeFile(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return syncDir(filepath.Dir(path))
+	_ = syncDir(filepath.Dir(path))
+	return nil
 }
 
 func syncDir(path string) error {

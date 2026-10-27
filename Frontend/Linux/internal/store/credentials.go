@@ -72,8 +72,14 @@ func (s *Store) SaveSession(session Session) error {
 	if err == nil && (session.Generation < current.Generation || session.RevokedThrough < current.RevokedThrough) {
 		return ErrStale
 	}
-	if floor := s.sessionFloor(); err != nil && (session.RevokedThrough < floor || floor > 0 && session.Generation <= floor) {
-		return ErrStale
+	if err != nil {
+		floor, floorErr := s.sessionFloor()
+		if floorErr != nil {
+			return floorErr
+		}
+		if session.RevokedThrough < floor || floor > 0 && session.Generation <= floor {
+			return ErrStale
+		}
 	}
 	return s.save(s.path(sessionFile), session)
 }
@@ -89,10 +95,28 @@ func (s *Store) RecoverSession() (Session, error) {
 	switch {
 	case err == nil:
 		return current, nil
-	case errors.Is(err, errIO):
+	case errors.Is(err, ErrIO):
 		return Session{}, err
 	}
-	floor := s.sessionFloor()
+	floor, err := s.sessionFloor()
+	if err != nil {
+		return Session{}, err
+	}
+	return s.writeRevokedSession(floor)
+}
+
+// RebuildSession replaces the session record whatever its state, revoking
+// every generation at or below known and any that readable credentials or the
+// intent name. Logout uses it when the record can't be read, since revoking
+// more is the safe direction
+func (s *Store) RebuildSession(known uint64) (Session, error) {
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	floor, _ := s.sessionFloor()
+	return s.writeRevokedSession(max(floor, known))
+}
+
+func (s *Store) writeRevokedSession(floor uint64) (Session, error) {
 	session := Session{Generation: floor + 1, RevokedThrough: floor}
 	if err := s.save(s.path(sessionFile), session); err != nil {
 		return Session{}, err
@@ -100,14 +124,23 @@ func (s *Store) RecoverSession() (Session, error) {
 	return session, nil
 }
 
-// sessionFloor is the highest generation readable credentials or intent name
-func (s *Store) sessionFloor() uint64 {
+// sessionFloor is the highest generation saved credentials or the intent name.
+// An OS read failure returns ErrIO, since the floor may be too low
+func (s *Store) sessionFloor() (uint64, error) {
 	var floor uint64
-	if credentials, err := s.LoadCredentials(); err == nil {
+	credentials, err := s.LoadCredentials()
+	if errors.Is(err, ErrIO) {
+		return 0, err
+	}
+	if err == nil {
 		floor = credentials.Generation
 	}
-	if intent, err := s.LoadIntent(); err == nil {
+	intent, err := s.LoadIntent()
+	if errors.Is(err, ErrIO) {
+		return 0, err
+	}
+	if err == nil {
 		floor = max(floor, intent.SessionGeneration)
 	}
-	return floor
+	return floor, nil
 }
