@@ -113,7 +113,7 @@ func TestWriteArchiveIsDeterministic(t *testing.T) {
 }
 
 func TestStampInstaller(t *testing.T) {
-	archives := map[string][]byte{"amd64": []byte("abc"), "arm64": []byte("arm")}
+	archives := map[string][]byte{"amd64": []byte("abc"), "arm64": []byte("arm64")}
 	stamped, err := stampInstaller(install.Script, "1.2.3", 2, archives)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestStampInstaller(t *testing.T) {
 	for _, want := range []string{
 		"\nRELEASE_VERSION=\"1.2.3\"\n", "\nSTORAGE_VERSION=\"2\"\n",
 		"\nAMD64_ARCHIVE_SIZE=\"3\"\n", "\nAMD64_ARCHIVE_SHA256=\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"\n",
-		"\nARM64_ARCHIVE_SIZE=\"3\"\n",
+		"\nARM64_ARCHIVE_SIZE=\"5\"\n", "\nARM64_ARCHIVE_SHA256=\"f69162950f235e3cdbbad33f1f912d1a504be90d8a37d002c735d6f3e3882265\"\n",
 	} {
 		if !bytes.Contains(stamped, []byte(want)) {
 			t.Errorf("stamped installer lacks %q", want)
@@ -230,7 +230,8 @@ func fixtureParams(out, version string, storageVersion int) packageParams {
 		binaries[arch] = map[string][]byte{}
 		for _, executable := range release.Executables {
 			name := filepath.Base(executable)
-			binaries[arch][executable] = []byte("#!/bin/sh\necho \"" + name + " " + version + " $*\" >>\"$CLOUDGATEWAY_TEST_LOG\"\n")
+			// The arch comment keeps each arch's archive distinct
+			binaries[arch][executable] = []byte("#!/bin/sh\n# " + arch + "\necho \"" + name + " " + version + " $*\" >>\"$CLOUDGATEWAY_TEST_LOG\"\n")
 		}
 	}
 	return packageParams{outDir: out, version: version, storageVersion: storageVersion, binaries: binaries}

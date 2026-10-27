@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidVersion(t *testing.T) {
@@ -28,6 +29,10 @@ func writeDaemon(t *testing.T, root, version, contents string) string {
 	}
 	path := filepath.Join(dir, DaemonPath)
 	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Installed binaries keep the archive's zero mtime
+	if err := os.Chtimes(path, time.Unix(0, 0), time.Unix(0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -57,13 +62,21 @@ func TestInstalledIdentityThroughCurrentLink(t *testing.T) {
 		t.Fatalf("Hash = %s, %v", hash, err)
 	}
 
-	// A replaced file is hashed again even when its size matches
+	// A replaced file is hashed again even when its size and mtime match
 	if err := os.Remove(daemon); err != nil {
 		t.Fatal(err)
 	}
 	writeDaemon(t, root, "1.0.1", "xyz")
-	if got, _ := installed.Identity(); got.CodeHash == abc || len(got.CodeHash) != 64 {
-		t.Fatalf("replaced daemon kept codeHash %s", got.CodeHash)
+	const xyz = "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282"
+	if got, _ := installed.Identity(); got.CodeHash != xyz {
+		t.Fatalf("replaced daemon codeHash %s", got.CodeHash)
+	}
+	// So is a file rewritten in place
+	if err := os.WriteFile(daemon, []byte("abc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := installed.Identity(); got.CodeHash != abc {
+		t.Fatalf("rewritten daemon codeHash %s", got.CodeHash)
 	}
 
 	writeDaemon(t, root, "1.0.2", "abc")

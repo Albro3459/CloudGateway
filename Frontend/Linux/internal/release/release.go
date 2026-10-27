@@ -39,7 +39,9 @@ func hashFile(file *os.File) (string, error) {
 type Installed struct {
 	link string
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// file stays open so its inode can't be reused by another file while cached
+	file *os.File
 	info os.FileInfo
 	hash string
 }
@@ -67,23 +69,29 @@ func (i *Installed) daemonHash(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
+		file.Close()
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
+		file.Close()
 		return "", fmt.Errorf("release: %s is not a regular file", path)
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.info != nil && os.SameFile(i.info, info) && i.info.Size() == info.Size() && i.info.ModTime().Equal(info.ModTime()) {
+		file.Close()
 		return i.hash, nil
 	}
 	hash, err := hashFile(file)
 	if err != nil {
+		file.Close()
 		return "", err
 	}
-	i.info, i.hash = info, hash
+	if i.file != nil {
+		i.file.Close()
+	}
+	i.file, i.info, i.hash = file, info, hash
 	return hash, nil
 }

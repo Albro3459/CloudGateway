@@ -84,7 +84,8 @@ func Open(dir string) (*Store, error) {
 	case version.StorageVersion < 1:
 		return nil, fmt.Errorf("%w: storage version %d", ErrUnreadable, version.StorageVersion)
 	}
-	// TODO: migrate older storage versions here once a second version exists
+	// TODO: migrate older storage versions here once a second version exists.
+	// Rewrite storage.json after migrating, since install.sh reads it to refuse downgrades
 	removeTempFiles(dir)
 	removeTempFiles(filepath.Join(dir, secretsDir))
 	if entries, err := os.ReadDir(filepath.Join(dir, accountsDir)); err == nil {
