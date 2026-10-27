@@ -71,10 +71,12 @@ and installs refuse to run until it is set.
    private key offline, and paste the printed public key into `release.PublicKey`.
 2. Copy `Secrets/example.release.env` to `Secrets/release.env` and fill in the
    public Firebase web configuration.
-3. Run `go run ./cmd/cloudgateway-release build -version 1.0.0 -key <path> -out <dir>`.
-   It writes both archives, `manifest.json`, its signature, and a stamped
-   `install.sh`, prints the code hash, and prints the `gh release` command
-   without running it. With `-allow-dirty`, pass a separate test key from
+3. Run `GOTOOLCHAIN=go1.27.3 go run ./cmd/cloudgateway-release build -version 1.0.0 -key <path> -out <dir>`
+   with the `go.mod` toolchain, since the tool compresses the archives itself
+   and refuses any other Go. It writes both archives, `manifest.json`, its
+   signature, and a stamped `install.sh`, prints the code hash, and prints the
+   `gh release` command without running it. Builds ignore `go env -w`
+   settings, so set `GOPROXY` and similar as environment variables. With `-allow-dirty`, pass a separate test key from
    `keygen`. That build pins the test key in its binaries and installer, so
    published installers and daemons reject it.
 

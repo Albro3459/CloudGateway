@@ -142,28 +142,43 @@ restore_replaced() {
   rm -rf "$RELEASES_DIR"/.replaced.*
 }
 
+# owned_link reports whether the daemon's link exists, found by its alias, or
+# under the temporary name only the daemon uses. It reads ip from the system dirs
+owned_link() {
+  local dir ip_tool="" out
+  for dir in /usr/sbin /usr/bin /sbin /bin; do
+    if [[ -x $ROOT$dir/ip ]]; then
+      ip_tool="$ROOT$dir/ip"
+      break
+    fi
+  done
+  [[ -n $ip_tool ]] || return 1
+  out="$("$ip_tool" -o link show dev cloudgateway 2>/dev/null || true)"
+  [[ $out == *"alias cloudgatewayd"* ]] && return 0
+  "$ip_tool" -o link show dev cloudgw-pending >/dev/null 2>&1
+}
+
 uninstall() {
-  if [[ -d $INSTALL_DIR ]]; then
-    take_lock
-    # An interrupted repair can leave current pointing at a moved release
-    restore_replaced
-  fi
+  # An interrupted repair can leave current pointing at a moved release
+  restore_replaced
   say "Stopping $SERVICE"
   systemctl stop "$SERVICE" 2>/dev/null || true
-  local daemon=""
+  local daemon="" candidate
   if [[ -x $CURRENT_LINK/bin/cloudgatewayd ]]; then
     daemon="$CURRENT_LINK/bin/cloudgatewayd"
   else
-    local candidate
-    for candidate in "$RELEASES_DIR"/*/bin/cloudgatewayd; do
-      [[ -x $candidate ]] && daemon="$candidate"
-    done
+    # The highest installed version reads every older state format
+    while IFS= read -r candidate; do
+      if [[ -x $candidate ]]; then
+        daemon="$candidate"
+      fi
+    done < <(printf '%s\n' "$RELEASES_DIR"/*/bin/cloudgatewayd | sort -V)
   fi
   if [[ -n $daemon ]]; then
     say "Removing CloudGateway network changes"
     "$daemon" cleanup ||
       die "cloudgatewayd cleanup failed, so owned network changes may remain. The service is stopped and its files are kept. Fix the error above and rerun install.sh --uninstall"
-  elif [[ -d $INSTALL_DIR ]] && ip link show dev cloudgateway >/dev/null 2>&1; then
+  elif owned_link; then
     die "no cloudgatewayd is left to remove the VPN's network changes. Reboot to clear them, then rerun install.sh --uninstall"
   fi
   systemctl disable "$SERVICE" 2>/dev/null || true

@@ -61,6 +61,9 @@ func newInstallEnv(t *testing.T) *installEnv {
 			t.Skipf("installer tests need %s", tool)
 		}
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("install.sh refuses its test root when run as root")
+	}
 	signer, public := testSigner(t)
 	base := t.TempDir()
 	e := &installEnv{
@@ -827,12 +830,53 @@ func TestUninstallRefusesWithoutADaemonWhileTheTunnelIsUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The owned interface is still up
-	e.stub("ip", "exit 0")
+	link := `if [ "$5" = cloudgateway ]; then echo '9: cloudgateway: <POINTOPOINT,NOARP,UP> mtu 1420\    link/none \    alias cloudgatewayd'; else exit 1; fi`
+	writeFile(t, e.path("usr/sbin/ip"), "#!/bin/sh\n"+link+"\n", 0o755)
 
 	e.refuse("no cloudgatewayd is left", filepath.Join(dir, "install.sh"), "--uninstall")
 
 	if !e.exists("etc/systemd/system/cloudgatewayd.service") {
 		t.Fatal("uninstall removed files without cleaning up the network")
+	}
+}
+
+func TestUninstallIgnoresAForeignLinkWithOurName(t *testing.T) {
+	e := newInstallEnv(t)
+	dir := e.release("1.0.0", 1)
+	e.install(dir)
+	if err := os.RemoveAll(e.path("opt/cloudgateway/releases/1.0.0/bin")); err != nil {
+		t.Fatal(err)
+	}
+	// A wg-quick link the admin named cloudgateway, without the daemon's alias
+	writeFile(t, e.path("usr/sbin/ip"), "#!/bin/sh\n"+`if [ "$5" = cloudgateway ]; then echo '9: cloudgateway: <POINTOPOINT,NOARP,UP> mtu 1420'; else exit 1; fi`+"\n", 0o755)
+
+	if output, err := e.run(filepath.Join(dir, "install.sh"), "--uninstall"); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, output)
+	}
+	if e.exists("opt/cloudgateway") {
+		t.Fatal("uninstall kept files")
+	}
+}
+
+func TestUninstallFallsBackToTheHighestInstalledDaemon(t *testing.T) {
+	e := newInstallEnv(t)
+	e.install(e.release("1.9.0", 1))
+	dir := e.release("1.10.0", 1)
+	e.install(dir)
+	// current points at a release that is gone
+	if err := os.RemoveAll(e.path("opt/cloudgateway/releases/1.10.0")); err != nil {
+		t.Fatal(err)
+	}
+	mkdirAll(t, e.path("opt/cloudgateway/releases/1.11.0/bin"))
+	writeFile(t, e.path("opt/cloudgateway/releases/1.11.0/bin/cloudgatewayd"), "#!/bin/sh\n"+`echo "cloudgatewayd 1.11.0 $*" >>"$CLOUDGATEWAY_TEST_LOG"`+"\n", 0o755)
+	e.takeLog()
+
+	if output, err := e.run(filepath.Join(dir, "install.sh"), "--uninstall"); err != nil {
+		t.Fatalf("uninstall: %v\n%s", err, output)
+	}
+
+	if log := e.takeLog(); !strings.Contains(log, "cloudgatewayd 1.11.0 cleanup") {
+		t.Fatalf("log:\n%s", log)
 	}
 }
 
