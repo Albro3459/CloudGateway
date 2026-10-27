@@ -343,6 +343,32 @@ func TestStatusShowsPendingUpdateAndLooksItUpAcrossARestart(t *testing.T) {
 	expectActions(t, other.daemon, ipc.ActionHandshake, ipc.ActionOperation)
 }
 
+func TestStatusOperationFollowsARestartDuringTheHandshake(t *testing.T) {
+	id := "6f9619ff-8b86-d011-b42d-00c04fc964ff"
+	h := newHarness(t, testState())
+	h.realClock = true
+	completed := ipc.UpdateStatus{ID: id, Phase: ipc.UpdateCompleted, Target: testBuild}
+	h.daemon.operation, h.daemon.update = ptr(completed.Operation()), &completed
+	restarted := false
+	h.daemon.onRequest = func(request ipc.Request) *ipc.Reply {
+		if request.Action == ipc.ActionHandshake && !restarted {
+			restarted = true
+			go func() {
+				h.daemon.stop()
+				time.Sleep(50 * time.Millisecond)
+				h.daemon.listen()
+			}()
+			return dropReply
+		}
+		return nil
+	}
+
+	expectExit(t, h.run("status", "--operation", id, "--json", "--timeout", "10"), 0)
+
+	expectEqual(t, "update id", field(h.last(), "data", "update", "id"), any(id))
+	expectActions(t, h.daemon, ipc.ActionHandshake, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionOperation)
+}
+
 func TestStatusOperationFailsFastWhenTheDaemonIsDown(t *testing.T) {
 	h := newHarness(t)
 	h.daemon.stop()

@@ -420,11 +420,12 @@ func (s *session) operation(id string) (data, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	if err := s.connect(); err != nil {
-		return nil, err
-	}
 	lookup := ipc.Request{Action: ipc.ActionOperation, ContextID: id}
-	reply, err := s.call(lookup)
+	var reply ipc.Reply
+	err := s.connect()
+	if err == nil {
+		reply, err = s.call(lookup)
+	}
 	for errors.Is(err, errNoConnection) {
 		if err = s.reconnect(); err == nil {
 			reply, err = s.call(lookup)
