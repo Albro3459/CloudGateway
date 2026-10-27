@@ -224,6 +224,36 @@ func TestResolverPolicyFailureTearsDownAndRequiresPreflight(t *testing.T) {
 	expect(t, "doctor after fix", dns.Status, ipc.DoctorPass)
 }
 
+func TestLostLinkTearsDownTheTunnel(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	// Without the link, Full's rules would send traffic out the underlay
+	h.host.RemoveLink(network.InterfaceName)
+
+	h.c.reconcile(context.Background())
+
+	expect(t, "tunnel", h.snapshot().Tunnel.Phase, ipc.TunnelDisconnected)
+	expect(t, "owned", h.owned(), "")
+	intent := h.intent()
+	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression)+" "+string(intent.FailureCode), "failed  vpn_failed")
+}
+
+func TestRestartTearsDownTunnelWhoseLinkWasDeleted(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	h.close(h.c)
+	h.host.RemoveLink(network.InterfaceName)
+
+	h.open()
+	h.settled()
+
+	expect(t, "owned", h.owned(), "")
+	expect(t, "intent", h.intent().Phase, store.PhaseFailed)
+	expect(t, "resume", !h.resuming(), true)
+}
+
 func TestRefreshRecoversChangedServerAddress(t *testing.T) {
 	for _, mode := range []ipc.Mode{ipc.ModeFull, ipc.ModeMesh} {
 		t.Run(string(mode), func(t *testing.T) {
@@ -824,7 +854,7 @@ func TestDownWaitingOnResolverFailureEndsAsDown(t *testing.T) {
 	h.c.netMu.Lock()
 	go func() { downed <- h.run(ipc.Request{Action: ipc.ActionTurnOff}) }()
 	h.waitSuppression(store.SuppressDown)
-	h.c.failResolverPolicy(context.Background())
+	h.c.failTunnel(context.Background(), store.SuppressResolverFailure, "test")
 	h.c.netMu.Unlock()
 	out := <-downed
 
@@ -948,9 +978,9 @@ func TestUnsavedRunningIntentIsNotSavedAfterTheTunnelIsGone(t *testing.T) {
 
 	h.c.reconcile(context.Background())
 
-	if _, err := h.st().LoadIntent(); !errors.Is(err, store.ErrMissing) {
-		t.Fatalf("intent saved: %v", err)
-	}
+	// The lost link fails the tunnel instead
+	expect(t, "intent", h.intent().Phase, store.PhaseFailed)
+	expect(t, "owned", h.owned(), "")
 }
 
 func TestReplacedTunnelReleasesItsRevokedSecret(t *testing.T) {

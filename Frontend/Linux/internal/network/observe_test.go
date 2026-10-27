@@ -164,6 +164,32 @@ func TestReconcileWithoutDriftChangesNothing(t *testing.T) {
 	expect(t, "mutations", len(mutations(host.Calls())), 0)
 }
 
+func TestReconcileReportsLostLinkOnlyWhileOwnedStateRemains(t *testing.T) {
+	host := networktest.NewUbuntu()
+	h := newHarness(t, host)
+	h.apply(testProfile(ModeFull, 5))
+	host.RemoveLink(InterfaceName)
+	host.ResetCalls()
+
+	obs, err := h.m.Reconcile(ctx)
+
+	if !errors.Is(err, ErrTunnelLost) {
+		t.Fatalf("err = %v, want ErrTunnelLost", err)
+	}
+	expect(t, "state", obs.State, StateUnknown)
+	expect(t, "mutations", len(mutations(host.Calls())), 0)
+
+	// After a reboot nothing owned is left, so nothing is lost
+	journal := h.lastJournal()
+	h.host = networktest.NewUbuntu()
+	h.restart(journal)
+	obs, err = h.m.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, "state after reboot", obs.State, StateDisconnected)
+}
+
 func TestResolverRepairThenPolicyFailure(t *testing.T) {
 	host := networktest.NewUbuntu()
 	h := newHarness(t, host)

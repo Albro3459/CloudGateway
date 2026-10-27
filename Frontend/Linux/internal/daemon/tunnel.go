@@ -215,6 +215,11 @@ func (c *Controller) adopt(unreadable bool) {
 		c.logf("adopted the running tunnel. Repairing owned routes and rules")
 		c.reconcile(ctx)
 		return
+	case obs.State == network.StateUnknown && obs.Freshness == network.FreshnessCurrent && intent.Phase == store.PhaseRunning:
+		c.logf("owned network resources do not match the saved intent")
+		// Reconcile fails a tunnel whose link or peer changed while the daemon was down
+		c.reconcile(ctx)
+		return
 	case intent.Phase == store.PhaseStarting && obs.State != network.StateDisconnected:
 		if !down("interrupted start", func(*store.Intent) {}) {
 			return
@@ -564,8 +569,8 @@ func (c *Controller) watchNetwork(ctx context.Context) {
 	}
 }
 
-// reconcile repairs drift in a running tunnel. Losing exclusive Full DNS
-// tears the tunnel down as an explicit failure
+// reconcile repairs drift in a running tunnel. Losing exclusive Full DNS, or
+// the link or peer, tears the tunnel down as an explicit failure
 func (c *Controller) reconcile(ctx context.Context) {
 	c.netMu.Lock()
 	defer c.netMu.Unlock()
@@ -589,32 +594,41 @@ func (c *Controller) reconcile(ctx context.Context) {
 	if drifted && obs.State == network.StateConnected {
 		c.cloud.CloseIdleConnections()
 	}
-	if errors.Is(err, network.ErrResolverPolicy) {
-		c.failResolverPolicy(ctx)
+	switch {
+	case errors.Is(err, network.ErrResolverPolicy):
+		// Suppression lets doctor explain the failure. The selected mode stays
+		// Full, and the next up must pass preflight again
+		c.failTunnel(ctx, store.SuppressResolverFailure, "Full mode DNS policy could not be restored")
+	case errors.Is(err, network.ErrTunnelLost):
+		// Without the link or peer, Full's rules would send traffic out the underlay
+		c.failTunnel(ctx, "", "The tunnel's link or peer changed outside the daemon")
 	}
 }
 
-// failResolverPolicy suppresses restart and tears down a Full tunnel whose
-// DNS no longer goes only to the VPN link. The selected mode stays Full, and
-// the next up must pass preflight again
-func (c *Controller) failResolverPolicy(ctx context.Context) {
+// failTunnel tears down a running tunnel the daemon can't repair as an
+// explicit vpn_failed failure. A failed phase never resumes at boot. A nonempty
+// suppression replaces the current one
+func (c *Controller) failTunnel(ctx context.Context, suppression store.Suppression, reason string) {
 	if i := c.currentIntent(); i.Phase == store.PhaseStopping && i.Suppression == store.SuppressDown {
 		// A down waiting for netMu owns this teardown
 		return
 	}
-	c.logf("Full mode DNS policy could not be restored. Tearing down the tunnel")
+	c.logf("%s. Tearing down the tunnel", reason)
 	if _, err := c.writeIntent(func(i *store.Intent) {
-		i.Phase, i.Suppression, i.FailureCode = store.PhaseStopping, store.SuppressResolverFailure, ipc.CommandVPNFailed
+		i.Phase, i.FailureCode = store.PhaseStopping, ipc.CommandVPNFailed
+		if suppression != "" {
+			i.Suppression = suppression
+		}
 	}, true); err != nil {
-		c.logf("persisting the resolver failure failed: %v", err)
+		c.logf("persisting the tunnel failure failed: %v", err)
 	}
 	c.wake()
 	if _, err := c.stopTunnel(context.WithoutCancel(ctx)); err != nil {
-		c.logf("resolver failure teardown is incomplete: %s", failure(err))
+		c.logf("tunnel failure teardown is incomplete: %s", failure(err))
 		return
 	}
 	if _, err := c.writeIntent(func(i *store.Intent) { i.Phase = store.PhaseFailed }, false); err != nil {
-		c.logf("persisting the resolver failure failed: %v", err)
+		c.logf("persisting the tunnel failure failed: %v", err)
 	}
 }
 

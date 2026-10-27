@@ -15,8 +15,9 @@ const resolverGrace = 30 * time.Second
 // Reconcile repairs drift in an applied tunnel: link state, MTU, and addresses,
 // owned routes and rules, source rules after address changes, the nftables
 // table, src_valid_mark, and Full's resolver settings with one reapply. It never
-// recreates the link or peer. ErrResolverPolicy means exclusive Full DNS could
-// not be restored, or resolved stopped answering for longer than resolverGrace
+// recreates the link or peer, so ErrTunnelLost means one changed while other
+// owned resources remain. ErrResolverPolicy means exclusive Full DNS could not
+// be restored, or resolved stopped answering for longer than resolverGrace
 func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -30,7 +31,12 @@ func (m *Manager) Reconcile(ctx context.Context) (Observation, error) {
 		return m.stale(), err
 	}
 	if len(coreMismatch(s, j)) > 0 {
-		return m.Observe(ctx)
+		// Nothing owned left, as after a reboot, observes as disconnected instead
+		obs, err := m.Observe(ctx)
+		if err == nil && obs.State == StateUnknown {
+			err = ErrTunnelLost
+		}
+		return obs, err
 	}
 	var commands []command
 	if s.own.MTU != j.MTU {

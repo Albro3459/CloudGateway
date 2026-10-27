@@ -366,6 +366,10 @@ var (
 	// ErrResolverPolicy means Full DNS no longer goes only to the VPN link. Tear
 	// down, suppress restart, and report vpn_failed
 	ErrResolverPolicy = errors.New("network: full mode resolver policy lost")
+	// ErrTunnelLost means the link, peer, or fwmark changed outside the daemon
+	// while other owned resources remain. Reconcile never recreates those, so
+	// tear down and report vpn_failed
+	ErrTunnelLost = errors.New("network: tunnel link or peer changed outside the daemon")
 )
 
 type ConflictKind string
