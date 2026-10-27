@@ -107,7 +107,24 @@ func (c *Controller) setRunning(expect uint64) error {
 	return err
 }
 
-// saveUnsaved retries persisting a running phase whose first save failed
+// recordStopped saves a confirmed stop. Like setRunning, a failed save still
+// moves the in-memory intent, since the tunnel is gone either way, and
+// reconcile retries the save
+func (c *Controller) recordStopped(update func(*store.Intent), desired bool) error {
+	c.intentMu.Lock()
+	defer c.intentMu.Unlock()
+	next := c.intent
+	update(&next)
+	next.Revision = c.intent.Revision + 1
+	err := c.store.SaveIntent(next)
+	c.intent, c.unsaved = next, err != nil
+	if desired {
+		c.desired = next.Revision
+	}
+	return err
+}
+
+// saveUnsaved retries persisting a running or stopped phase whose first save failed
 func (c *Controller) saveUnsaved() {
 	c.intentMu.Lock()
 	defer c.intentMu.Unlock()
@@ -215,9 +232,15 @@ func (c *Controller) adopt(unreadable bool) {
 		c.logf("adopted the running tunnel. Repairing owned routes and rules")
 		c.reconcile(ctx)
 		return
+	case obs.State == network.StateUnknown && slices.Contains(obs.Drift, network.DriftInterface) && intent.Phase == store.PhaseRunning:
+		// Leftovers without the link, like an nftables table a saved ruleset
+		// restored at boot, go before the resume reinstalls the tunnel
+		if !down("owned resources without the tunnel link", func(*store.Intent) {}) {
+			return
+		}
 	case obs.State == network.StateUnknown && obs.Freshness == network.FreshnessCurrent && intent.Phase == store.PhaseRunning:
 		c.logf("owned network resources do not match the saved intent")
-		// Reconcile fails a tunnel whose link or peer changed while the daemon was down
+		// Reconcile fails a tunnel whose peer or fwmark changed while the daemon was down
 		c.reconcile(ctx)
 		return
 	case intent.Phase == store.PhaseStarting && obs.State != network.StateDisconnected:
@@ -322,8 +345,12 @@ func (c *Controller) cancelResume() {
 	c.mu.Unlock()
 }
 
+// resumeAbandonedLocked keeps a resume through a newer start still in flight.
+// That start may change nothing and hand the desired revision back, and the
+// resume's own start checks the revision again under netMu
 func (c *Controller) resumeAbandonedLocked(r *resumeState) bool {
-	return c.closing || c.resume != r || c.desiredRevision() != r.revision || c.creds == nil || c.creds.AccountID != r.account ||
+	superseded := c.desiredRevision() != r.revision && c.currentIntent().Phase != store.PhaseStarting
+	return c.closing || c.resume != r || superseded || c.creds == nil || c.creds.AccountID != r.account ||
 		c.creds.Generation != r.generation || c.accessResult == ipc.AccessDenied
 }
 
@@ -434,7 +461,13 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 	var applyErr *network.ApplyError
 	changed := errors.As(err, &applyErr) && !applyErr.Restored
 	code := failure(err)
-	_, _, werr := c.writeIntentIf(base, func(i *store.Intent) {
+	// A start that changed nothing lets work it superseded, like a boot resume,
+	// run again. The desired revision goes back while the phase still says
+	// starting, so a waiting resume never sees the rollback without it
+	if !changed && desired && c.restoreDesired(base, expect) {
+		base = expect
+	}
+	if _, _, werr := c.writeIntentIf(base, func(i *store.Intent) {
 		switch {
 		case !changed:
 			journal := i.Journal
@@ -445,12 +478,7 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 		default:
 			i.Phase, i.FailureCode = store.PhaseFailed, code
 		}
-	}, false)
-	switch {
-	case werr == nil && !changed && desired:
-		// The start left everything as it was, so work it superseded, like a boot resume, may run again
-		c.restoreDesired(base, expect)
-	case werr != nil && !errors.Is(werr, errSuperseded):
+	}, false); werr != nil && !errors.Is(werr, errSuperseded) {
 		c.logf("persisting the failed start failed: %v", werr)
 	}
 	return false, err
@@ -458,12 +486,14 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 
 // restoreDesired moves the desired revision back to previous unless a newer
 // desired write already replaced current
-func (c *Controller) restoreDesired(current, previous uint64) {
+func (c *Controller) restoreDesired(current, previous uint64) bool {
 	c.intentMu.Lock()
 	defer c.intentMu.Unlock()
-	if c.desired == current {
-		c.desired = previous
+	if c.desired != current {
+		return false
 	}
+	c.desired = previous
+	return true
 }
 
 // releaseSecret deletes the record a replaced intent used once the new intent
@@ -501,7 +531,14 @@ func (c *Controller) stopTunnel(ctx context.Context) (network.Observation, error
 	obs, err := c.net.Down(ctx)
 	c.setObservation(obs)
 	c.cloud.CloseIdleConnections()
-	if err == nil && (obs.State != network.StateDisconnected || obs.Freshness != network.FreshnessCurrent) {
+	switch {
+	case obs.State == network.StateDisconnected && obs.Freshness == network.FreshnessCurrent:
+		if err != nil {
+			// Only clearing the journal can fail once nothing owned remains, as on a full disk
+			c.logf("removed the tunnel but its journal could not be cleared: %v", err)
+		}
+		return obs, nil
+	case err == nil:
 		err = errStopUnconfirmed
 	}
 	return obs, err
@@ -522,7 +559,7 @@ func (c *Controller) stop() ipc.Outcome {
 		// suppression. This down is the later request, so it wins. When the first
 		// write failed, this one supersedes older work instead, so a reboot or
 		// queued start can't bring the tunnel back
-		_, persistErr = c.writeIntent(func(i *store.Intent) {
+		persistErr = c.recordStopped(func(i *store.Intent) {
 			i.Phase, i.Suppression, i.FailureCode = store.PhaseStopped, store.SuppressDown, ""
 		}, persistErr != nil)
 	}
@@ -576,6 +613,7 @@ func (c *Controller) reconcile(ctx context.Context) {
 	defer c.netMu.Unlock()
 	intent := c.currentIntent()
 	if intent.Phase != store.PhaseRunning {
+		c.saveUnsaved()
 		c.observe(ctx)
 		return
 	}
@@ -601,7 +639,7 @@ func (c *Controller) reconcile(ctx context.Context) {
 		c.failTunnel(ctx, store.SuppressResolverFailure, "Full mode DNS policy could not be restored")
 	case errors.Is(err, network.ErrTunnelLost):
 		// Without the link or peer, Full's rules would send traffic out the underlay
-		c.failTunnel(ctx, "", "The tunnel's link or peer changed outside the daemon")
+		c.failTunnel(ctx, "", "the tunnel's link or peer changed outside the daemon")
 	}
 }
 

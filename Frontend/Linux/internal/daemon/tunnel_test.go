@@ -140,6 +140,33 @@ func TestDownWhoseFirstSavesFailTurnsOffAndStaysOff(t *testing.T) {
 	expect(t, "resume", !h.resuming(), true)
 }
 
+func TestDownOnADiskThatStaysFullTurnsOffAndSavesOnceItCan(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	// A directory where the intent file belongs fails every save
+	path := filepath.Join(h.dir, "intent.json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	out := h.run(ipc.Request{Action: ipc.ActionTurnOff})
+
+	expect(t, "down", *out.outcome, failedOutcome(ipc.CommandVPNFailed))
+	expect(t, "owned", h.owned(), "")
+	memory := h.c.currentIntent()
+	expect(t, "memory", string(memory.Phase)+" "+string(memory.Suppression), "stopped down")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	h.c.reconcile(context.Background())
+	intent := h.intent()
+	expect(t, "saved", string(intent.Phase)+" "+string(intent.Suppression), "stopped down")
+}
+
 func TestUnreadableIntentRemovesOwnedResources(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
@@ -239,18 +266,39 @@ func TestLostLinkTearsDownTheTunnel(t *testing.T) {
 	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression)+" "+string(intent.FailureCode), "failed  vpn_failed")
 }
 
-func TestRestartTearsDownTunnelWhoseLinkWasDeleted(t *testing.T) {
+func TestRestartReplacesLeftoversOfADeletedLink(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
 	h.up(configA)
 	h.close(h.c)
+	// Like a reboot whose saved nftables ruleset restored the owned table
 	h.host.RemoveLink(network.InterfaceName)
+
+	h.open()
+	h.eventually("resume", func() bool { return h.snapshot().Tunnel.Phase == ipc.TunnelConnected && !h.resuming() })
+
+	expect(t, "owned", h.owned(), fullOwned)
+	expect(t, "intent", h.intent().Phase, store.PhaseRunning)
+}
+
+func TestRestartFailsATunnelWhoseFwmarkChanged(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	h.close(h.c)
+	// Someone cleared the fwmark while the daemon was down, so WireGuard's own packets loop into the tunnel
+	link, _ := h.host.Link(network.InterfaceName)
+	wg := *link.WireGuard
+	wg.FwMark = 0
+	link.WireGuard = &wg
+	h.host.RemoveLink(network.InterfaceName)
+	h.host.AddLink(link)
 
 	h.open()
 	h.settled()
 
 	expect(t, "owned", h.owned(), "")
-	expect(t, "intent", h.intent().Phase, store.PhaseFailed)
+	expect(t, "intent", string(h.intent().Phase)+" "+string(h.intent().FailureCode), "failed vpn_failed")
 	expect(t, "resume", !h.resuming(), true)
 }
 
@@ -720,6 +768,19 @@ func TestFailedUpDuringResumeKeepsReconnect(t *testing.T) {
 func TestUpFailingAfterItsStartingIntentKeepsReconnect(t *testing.T) {
 	h := newHarness(t)
 	h.leaveResumeRetrying()
+	before := h.c.desiredRevision()
+	var once sync.Once
+	// The resume's backoff ends while the up is past its starting write
+	h.host.After(func(networktest.Call) bool { return h.c.desiredRevision() != before }, func() {
+		once.Do(func() {
+			h.clock.releaseSleeps()
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for h.resuming() && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			h.clock.holdSleeps()
+		})
+	})
 
 	// Preflight passes and the starting intent is saved, then the endpoint lookup fails
 	out := h.up(configB)
@@ -973,14 +1034,17 @@ func TestDownOverwritesResolverFailureThatLandedFirst(t *testing.T) {
 func TestUnsavedRunningIntentIsNotSavedAfterTheTunnelIsGone(t *testing.T) {
 	h := newHarness(t)
 	h.leaveRunningUnsaved()()
-	// Someone deleted the interface behind the daemon
+	// Someone removed every owned resource behind the daemon
 	h.host.RemoveLink(network.InterfaceName)
+	h.host.RemoveRules(func(r networktest.Rule) bool { return r.Protocol == network.RouteProtocol })
+	h.host.FlushNftRuleset()
+	expect(t, "owned", h.owned(), "")
 
 	h.c.reconcile(context.Background())
 
-	// The lost link fails the tunnel instead
-	expect(t, "intent", h.intent().Phase, store.PhaseFailed)
-	expect(t, "owned", h.owned(), "")
+	if _, err := h.st().LoadIntent(); !errors.Is(err, store.ErrMissing) {
+		t.Fatalf("intent saved: %v", err)
+	}
 }
 
 func TestReplacedTunnelReleasesItsRevokedSecret(t *testing.T) {

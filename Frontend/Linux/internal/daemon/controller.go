@@ -122,7 +122,7 @@ type Controller struct {
 	intent   store.Intent
 	// desired is the revision of the latest intent change. Journal writes do not move it
 	desired uint64
-	// unsaved means intent holds a running phase its save failed to persist
+	// unsaved means intent holds a running or stopped phase its save failed to persist
 	unsaved bool
 
 	tokenMu sync.Mutex
@@ -429,11 +429,14 @@ func (c *Controller) operationReply(ctx context.Context, id string) ipc.Reply {
 }
 
 // observe refreshes the cached observation
-func (c *Controller) observe(ctx context.Context) network.Observation {
-	ctx, cancel := context.WithTimeout(ctx, observeTimeout)
+func (c *Controller) observe(parent context.Context) network.Observation {
+	ctx, cancel := context.WithTimeout(parent, observeTimeout)
 	defer cancel()
 	obs, _ := c.net.Observe(ctx)
-	c.setObservation(obs)
+	// A caller that hung up cut the read short, so its stale result doesn't replace the last one
+	if parent.Err() == nil {
+		c.setObservation(obs)
+	}
 	return obs
 }
 
