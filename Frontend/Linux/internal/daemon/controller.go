@@ -122,6 +122,8 @@ type Controller struct {
 	intent   store.Intent
 	// desired is the revision of the latest intent change. Journal writes do not move it
 	desired uint64
+	// unsaved means intent holds a running phase its save failed to persist
+	unsaved bool
 
 	tokenMu sync.Mutex
 

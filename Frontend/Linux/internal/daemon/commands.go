@@ -128,10 +128,11 @@ func (c *Controller) canAdmitRemovalLocked() bool {
 }
 
 // canAdmitModeLocked refuses a mode change while the tunnel connects, which
-// includes a pending boot resume, like macOS
+// includes a pending boot resume, like macOS. Drift also reports connecting on
+// Linux, and a mode change may replace a drifted tunnel
 func (c *Controller) canAdmitModeLocked() bool {
-	return c.canAdmitRemovalLocked() && c.resume == nil &&
-		c.obs.State != network.StateConnecting && c.obs.State != network.StateDisconnecting
+	transition := c.obs.State == network.StateConnecting && len(c.obs.Drift) == 0 || c.obs.State == network.StateDisconnecting
+	return c.canAdmitRemovalLocked() && c.resume == nil && !transition
 }
 
 func (c *Controller) settledLocked(session SessionToken) bool {

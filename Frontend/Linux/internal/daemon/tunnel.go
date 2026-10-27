@@ -16,6 +16,9 @@ import (
 const (
 	resumeBackoff    = 5 * time.Second
 	resumeMaxBackoff = 60 * time.Second
+	// resumeSetupWindow bounds boot resume retries after host setup or network
+	// failures, which can clear as the host finishes booting
+	resumeSetupWindow = 5 * time.Minute
 )
 
 var (
@@ -78,11 +81,44 @@ func (c *Controller) writeIntentIf(expect uint64, update func(*store.Intent), de
 	if err := c.store.SaveIntent(next); err != nil {
 		return c.intent, c.desired, err
 	}
-	c.intent = next
+	c.intent, c.unsaved = next, false
 	if desired {
 		c.desired = next.Revision
 	}
 	return next, c.desired, nil
+}
+
+// setRunning records an applied tunnel. A failed save still moves the
+// in-memory phase to running, so logout and reconcile treat the tunnel as
+// established. reconcile retries the save, and a restart adopts the
+// matching tunnel from the saved starting phase
+func (c *Controller) setRunning(expect uint64) error {
+	c.intentMu.Lock()
+	defer c.intentMu.Unlock()
+	if expect != 0 && c.desired != expect {
+		return errSuperseded
+	}
+	next := c.intent
+	next.Phase = store.PhaseRunning
+	next.Revision = c.intent.Revision + 1
+	err := c.store.SaveIntent(next)
+	c.intent, c.unsaved = next, err != nil
+	return err
+}
+
+// saveUnsaved retries persisting a running phase whose first save failed
+func (c *Controller) saveUnsaved() {
+	c.intentMu.Lock()
+	defer c.intentMu.Unlock()
+	if !c.unsaved {
+		return
+	}
+	next := c.intent
+	next.Revision++
+	if err := c.store.SaveIntent(next); err != nil {
+		return
+	}
+	c.intent, c.unsaved = next, false
 }
 
 // persistJournal stores the network journal inside the intent before every kernel change
@@ -168,7 +204,7 @@ func (c *Controller) adopt(unreadable bool) {
 	switch {
 	case obs.State == network.StateConnected && obs.ProfileID == intent.ProfileID && ipc.Mode(obs.ActiveMode) == intent.Mode:
 		if intent.Phase == store.PhaseStarting {
-			if _, err := c.writeIntent(func(i *store.Intent) { i.Phase = store.PhaseRunning }, false); err != nil {
+			if err := c.setRunning(0); err != nil {
 				c.logf("persisting the adopted tunnel failed: %v", err)
 			}
 		}
@@ -208,6 +244,7 @@ func (c *Controller) runResume(ctx context.Context, r *resumeState) {
 		c.mu.Unlock()
 	}()
 	backoff := resumeBackoff
+	var setupDeadline time.Time
 	retry := func() bool {
 		if c.sleep(ctx, backoff) != nil {
 			return false
@@ -247,6 +284,18 @@ func (c *Controller) runResume(ctx context.Context, r *resumeState) {
 		case errors.Is(err, errSuperseded), errors.Is(err, errCancelled):
 			return
 		case errors.Is(err, network.ErrEndpointUnresolved):
+			if !retry() {
+				return
+			}
+		case failure(err) == ipc.CommandSetupRequired || failure(err) == ipc.CommandVPNFailed:
+			if setupDeadline.IsZero() {
+				setupDeadline = c.now().Add(resumeSetupWindow)
+			}
+			if c.now().After(setupDeadline) {
+				c.logf("boot resume stopped: %s", failure(err))
+				return
+			}
+			c.logf("boot resume will retry: %s", failure(err))
 			if !retry() {
 				return
 			}
@@ -360,7 +409,7 @@ func (c *Controller) startTunnel(ctx context.Context, plan startPlan, expect uin
 	c.setObservation(obs)
 	c.cloud.CloseIdleConnections()
 	if err == nil {
-		_, _, werr := c.writeIntentIf(base, func(i *store.Intent) { i.Phase = store.PhaseRunning }, false)
+		werr := c.setRunning(base)
 		switch {
 		case errors.Is(werr, errSuperseded):
 			c.rollbackSupersededStart(ctx)
@@ -431,7 +480,11 @@ func (c *Controller) stop() ipc.Outcome {
 	c.netMu.Lock()
 	_, err := c.stopTunnel(context.Background())
 	if err == nil && persistErr == nil {
-		_, persistErr = c.writeIntent(func(i *store.Intent) { i.Phase = store.PhaseStopped }, false)
+		// A resolver failure that ran while this waited for netMu leaves its own
+		// suppression. This down is the later request, so it wins
+		_, persistErr = c.writeIntent(func(i *store.Intent) {
+			i.Phase, i.Suppression, i.FailureCode = store.PhaseStopped, store.SuppressDown, ""
+		}, false)
 	}
 	c.netMu.Unlock()
 	switch {
@@ -486,6 +539,7 @@ func (c *Controller) reconcile(ctx context.Context) {
 		c.observe(ctx)
 		return
 	}
+	c.saveUnsaved()
 	c.mu.Lock()
 	drifted := len(c.obs.Drift) > 0 || c.obs.State != network.StateConnected
 	c.mu.Unlock()
@@ -503,6 +557,10 @@ func (c *Controller) reconcile(ctx context.Context) {
 // DNS no longer goes only to the VPN link. The selected mode stays Full, and
 // the next up must pass preflight again
 func (c *Controller) failResolverPolicy(ctx context.Context) {
+	if i := c.currentIntent(); i.Phase == store.PhaseStopping && i.Suppression == store.SuppressDown {
+		// A down waiting for netMu owns this teardown
+		return
+	}
 	c.logf("Full mode DNS policy could not be restored. Tearing down the tunnel")
 	if _, err := c.writeIntent(func(i *store.Intent) {
 		i.Phase, i.Suppression, i.FailureCode = store.PhaseStopping, store.SuppressResolverFailure, ipc.CommandVPNFailed

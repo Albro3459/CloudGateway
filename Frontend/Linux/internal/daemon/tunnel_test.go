@@ -701,3 +701,129 @@ func TestDrainRefusesUpdateConfirm(t *testing.T) {
 	default:
 	}
 }
+
+// leaveRunningUnsaved models a start whose apply succeeded but whose running
+// save failed: the saved intent says starting while the tunnel is up. The
+// returned func lets intent saves work again
+func (h *harness) leaveRunningUnsaved() func() {
+	h.t.Helper()
+	h.signedIn(userA)
+	h.up(configA)
+	if _, err := h.c.writeIntent(func(i *store.Intent) { i.Phase = store.PhaseStarting }, false); err != nil {
+		h.t.Fatal(err)
+	}
+	// A directory where the intent file belongs makes every save fail
+	path := filepath.Join(h.dir, "intent.json")
+	if err := os.Remove(path); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.c.setRunning(0); err == nil {
+		h.t.Fatal("running save succeeded")
+	}
+	expect(h.t, "memory", h.c.currentIntent().Phase, store.PhaseRunning)
+	return func() {
+		if err := os.Remove(path); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+func TestUnsavedRunningIntentKeepsTunnelThroughLogout(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunningUnsaved()()
+
+	out := h.run(ipc.Request{Action: ipc.ActionSignOut})
+
+	expect(t, "logout", out.outcome.Kind, ipc.OutcomeCompleted)
+	expect(t, "owned", h.owned(), fullOwned)
+	intent := h.intent()
+	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression), "running logout")
+}
+
+func TestReconcileSavesUnsavedRunningIntent(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunningUnsaved()()
+
+	h.c.reconcile(context.Background())
+
+	expect(t, "intent", h.intent().Phase, store.PhaseRunning)
+	h.host.SetLinkDomains("enp0s1", "lan")
+	h.c.reconcile(context.Background())
+	// Running is established, so a lost DNS policy fails the tunnel
+	expect(t, "owned", h.owned(), "")
+	expect(t, "failure", h.intent().FailureCode, ipc.CommandVPNFailed)
+}
+
+func TestDownWaitingOnResolverFailureEndsAsDown(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	h.host.SetLinkDomains("enp0s1", "lan")
+	downed := make(chan result, 1)
+
+	// Hold netMu like a running reconcile while down persists its intent
+	h.c.netMu.Lock()
+	go func() { downed <- h.run(ipc.Request{Action: ipc.ActionTurnOff}) }()
+	h.waitSuppression(store.SuppressDown)
+	h.c.failResolverPolicy(context.Background())
+	h.c.netMu.Unlock()
+	out := <-downed
+
+	expect(t, "down", out.outcome.Kind, ipc.OutcomeCompleted)
+	expect(t, "owned", h.owned(), "")
+	intent := h.intent()
+	expect(t, "intent", string(intent.Phase)+" "+string(intent.Suppression)+" "+string(intent.FailureCode), "stopped down ")
+	h.host.SetLinkDomains("enp0s1")
+	dns := h.do(ipc.Request{Action: ipc.ActionDiagnostics, Probe: "dns_policy"}).Check
+	expect(t, "doctor", dns.Status, ipc.DoctorPass)
+}
+
+func TestResumeRetriesHostSetupDuringBoot(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunning()
+	// resolved comes up after the daemon, so the first two preflights fail
+	h.host.SetResolverActive(false)
+	checks := 0
+	h.host.After(networktest.Match("busctl", "ActiveState"), func() {
+		if checks++; checks == 2 {
+			h.host.SetResolverActive(true)
+		}
+	})
+
+	h.open()
+	h.eventually("resume", func() bool { return h.snapshot().Tunnel.Phase == ipc.TunnelConnected && !h.resuming() })
+
+	expect(t, "owned", h.owned(), fullOwned)
+	expect(t, "backoff", h.clock.Now().Sub(testStart), 15*time.Second)
+}
+
+func TestResumeStopsAfterSetupWindow(t *testing.T) {
+	h := newHarness(t)
+	h.leaveRunning()
+	h.host.SetResolverActive(false)
+
+	h.open()
+	h.eventually("resume stopped", func() bool { return !h.resuming() })
+
+	expect(t, "owned", h.owned(), "")
+	expect(t, "gave up after the window", h.clock.Now().Sub(testStart) >= resumeSetupWindow, true)
+}
+
+func TestModeChangeReplacesDriftedTunnel(t *testing.T) {
+	h := newHarness(t)
+	h.signedIn(userA)
+	h.up(configA)
+	// networkd removed a rule that cannot be added back
+	h.host.RemoveRules(func(r networktest.Rule) bool { return r.Priority == network.PrioritySuppress })
+	h.host.FailWhen(networktest.Match("ip", "rule", "add"))
+	h.c.reconcile(context.Background())
+	expect(t, "drifted", h.snapshot().Tunnel.Phase, ipc.TunnelConnecting)
+
+	out := h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeMesh})
+
+	expect(t, "mode", out.outcome.Kind, ipc.OutcomeStartRequested)
+	h.eventually("mesh", func() bool { return h.owned() == meshOwned })
+}
