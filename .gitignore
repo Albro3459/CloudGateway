@@ -9,6 +9,7 @@
 **/*.env.*
 !**/.env.example
 !**/example.env
+!**/Secrets/example.*.env
 
 **/*.vars
 !**/*.vars.example

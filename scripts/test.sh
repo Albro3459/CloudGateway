@@ -354,6 +354,7 @@ test_linux() {
   cd "$ROOT/Frontend/Linux" || return 1
   local failed=0
   run_check "Linux Go format" check_linux_gofmt || failed=1
+  run_check "Linux installer syntax" bash -n install/install.sh || failed=1
   run_check "Linux Go vet (host)" go vet ./... || failed=1
   run_check "Linux Go vet (linux/amd64)" env GOOS=linux GOARCH=amd64 go vet ./... || failed=1
   run_check "Linux Go vet (linux/arm64)" env GOOS=linux GOARCH=arm64 go vet ./... || failed=1
