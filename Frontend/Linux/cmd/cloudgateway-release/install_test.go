@@ -569,6 +569,9 @@ func TestInstallChecksHostAndOperator(t *testing.T) {
 	if e.current() != "releases/1.0.0" {
 		t.Fatalf("arm64 install current -> %q", e.current())
 	}
+	if daemon, _ := os.ReadFile(e.path("opt/cloudgateway/current/bin/cloudgatewayd")); !strings.Contains(string(daemon), "# arm64\n") {
+		t.Fatalf("arm64 install holds %q", daemon)
+	}
 }
 
 func TestInstallNeedsFlock(t *testing.T) {
