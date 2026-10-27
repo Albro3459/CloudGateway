@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Terraform renders this, then cloud-init runs it as root after creating the
+# backdoor user. Output lands in /var/log/cloud-init-output.log
+
+set -euxo pipefail
+
+cd "$(mktemp -d)"
+curl --proto '=https' --tlsv1.2 -fsSLO "https://github.com/Albro3459/CloudGateway/releases/download/linux-v${release_version}/install.sh"
+bash install.sh --operator backdoor --yes

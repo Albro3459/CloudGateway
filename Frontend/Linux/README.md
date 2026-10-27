@@ -26,6 +26,7 @@ in the research doc must pass first.
 | `internal/wgconfig` | Allowlisted config parser, Mesh transform, hashes, `wg setconf` input |
 | `internal/network` | Owned interface, routes, rules, nftables, resolved DNS, observation, repair |
 | `internal/release` | Release asset names, code hash, installed release identity |
+| `test-vm/` | Terraform for a throwaway OCI VM that installs a published release |
 
 `internal/network` never imports HTTP or Firebase code. Its `networktest`
 package simulates an Ubuntu host for tests, so the real network code runs in
@@ -81,7 +82,8 @@ so an update that drops support for an older journal disconnects the VPN.
 Bump `storageVersion` for any state format change so the installer refuses a
 downgrade across it.
 
-For a test VM, copy the `linux-v<version>` folder there and run
+For a test VM, publish a pre-release and use [test-vm](test-vm/README.md), or
+copy the `linux-v<version>` folder to a machine and run
 `sudo bash install.sh --from <folder> --operator <user>`. Each `install.sh`
 installs only the archives it was built with, so use a release's own
 `install.sh` to install it. Downloads need curl. Every installer run
