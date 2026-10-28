@@ -1,129 +1,180 @@
-# Linux client
+# CloudGateway for Linux
 
-`cloudgateway` CLI and `cloudgatewayd` root daemon for Ubuntu Server 24.04 and
-26.04 LTS, amd64 and arm64. The [parity contract](../../docs/linux-cli-parity.md)
-defines the public behavior and the [research](../../docs/linux-cli-research.md)
-explains the design. Progress lives in the [implementation plan](../../TODO/linux-cli.md).
+`cloudgateway` is the CLI and `cloudgatewayd` is its root systemd daemon.
+The 1.0.0 release targets **Ubuntu 24.04 LTS on ARM64 and AMD64**. Both
+architectures passed sign-in and Chicago/San Jose connectivity checks in Mesh
+and Full modes. The [VM results](../../docs/linux-cli-vm-results.md) record the
+exact prerelease versions and test scope.
 
-Status: v0.0.3 is a prerelease. Ubuntu 24.04 amd64 (v0.0.3) and arm64 (v0.0.2)
-passed native login and Chicago/San Jose Mesh and Full connectivity checks on
-1 OCPU / 1 GB OCI VMs.
-Full required removing the VM's DHCP-provided DNS search domain. See the
-[VM results](../../docs/linux-cli-vm-results.md). The remaining VM matrix is
-unverified. No broader distro support is claimed.
+Linux defaults to **Mesh**, which leaves ordinary internet traffic and DNS on
+the host's network. **Full is experimental on cloud VMs** and may require
+DHCP/DNS configuration. Read [Mesh vs Full and cloud VM setup](../../docs/linux-cli-routing.md)
+before enabling it. Explicit saved mode choices are retained during upgrades.
 
-## Layout
+Other distributions with systemd and kernel WireGuard will likely need small
+installer or network-integration changes. They are unverified; hosts with a
+different init system or resolver may need more work. Containers, WSL, and
+user-space WireGuard are outside the supported scope.
+
+## Install
+
+Download `install.sh` from the [Linux release](https://github.com/Albro3459/CloudGateway/releases/tag/linux-v1.0.0),
+inspect it, then run it as root. Choose the local user who will control the VPN:
+
+```sh
+curl --proto '=https' --tlsv1.2 -fSLO https://github.com/Albro3459/CloudGateway/releases/download/linux-v1.0.0/install.sh
+less install.sh
+sudo bash install.sh --operator "$USER"
+```
+
+The installer selects the ARM64 or AMD64 archive and verifies its embedded size
+and SHA-256 before installation. It requires systemd, kernel WireGuard, `ip`,
+`wg`, and `nft`. It asks before installing missing network tools; `--yes` grants
+that consent for unattended installation. Full also requires systemd-resolved
+as the system resolver. The installer does not switch DNS managers.
+
+The daemon starts immediately and is enabled at boot. Run the CLI as the
+enrolled user, without sudo. Root can also control it; other users are denied.
+No desktop app or Firebase service-account credentials are required.
+
+## Sign in and connect
+
+```sh
+cloudgateway auth login
+cloudgateway list
+cloudgateway up '<client-uuid>'
+cloudgateway status
+cloudgateway doctor
+cloudgateway down
+```
+
+Approve the displayed device code in a browser on any device. To create a new
+client, use `cloudgateway add chicago 'Ubuntu VM'`, then list the clients to get
+its UUID. Region aliases such as `chicago` and `sanjose` are accepted.
+
+`up` reports that the start was accepted; use `status` to confirm the observed
+tunnel state. The daemon continues accepted operations after the CLI or SSH
+session disconnects. Use `--json` for scripts, and UUIDs rather than row indices
+when retaining a selector across inventory changes.
+
+Useful commands:
+
+* `cloudgateway help` or `cloudgateway help <command>`: command reference.
+* `cloudgateway mode status`: selected and active routing modes.
+* `cloudgateway mode mesh` / `cloudgateway mode full`: save a mode, or switch
+  the connected client to that mode.
+* `cloudgateway refresh`: refresh inventory and the active server endpoint.
+* `cloudgateway auth status`: session and access state.
+* `cloudgateway auth logout`: sign out while retaining the running tunnel and
+  saved configs. Run `down` first when you also want to disconnect.
+* `cloudgateway remove '<client-uuid>' --yes`: permanently remove an inactive
+  cloud client and free its peer slot.
+
+The daemon resumes the last connected client and mode after reboot unless
+reconnect was suppressed by an explicit stop, logout, or a failed transition.
+A sign-in session is not needed for bare `cloudgateway down`.
+
+## Update and uninstall
+
+Run the **new release's** installer to install its exact archives. Each
+installer is stamped for one version. To install from a downloaded release
+folder instead, use `sudo bash install.sh --from <folder> --operator <user>`.
+
+The installer switches `/opt/cloudgateway/current` to the new release and
+restarts the daemon. `cloudgateway update` only activates an already installed
+release; it does not download an update. A matching version is a no-op. Every
+installer run enables the daemon service, including if an administrator had
+previously disabled it.
+
+Before decommissioning a machine, disconnect and remove its cloud clients
+while signed in. Uninstalling alone does not remove cloud clients:
+
+```sh
+cloudgateway down
+cloudgateway remove '<client-uuid>' --yes
+sudo bash install.sh --uninstall
+```
+
+Uninstall removes CloudGateway's networking, service, and program files. It
+keeps account data unless `--purge` is also passed. Shared distro tools are kept.
+
+## Layout and development
 
 | Path | Owns |
 | --- | --- |
 | `cmd/cloudgateway` | CLI entry point |
-| `cmd/cloudgatewayd` | Daemon entry point and `cleanup` for uninstall |
-| `cmd/cloudgateway-release` | Release builds with archive hashes stamped into `install.sh` |
-| `install/` | `install.sh` and the systemd unit, embedded into releases |
-| `internal/cli` | Parser, help, JSON schema 1 records, rendering, session flows, login terminal, doctor runner |
-| `internal/jsonout` | JSON writer that matches Swift's `JSONEncoder` bytes |
-| `internal/ipc` | Length-framed CLI/daemon protocol and doctor probe catalog |
-| `internal/daemon` | Controller, operation registry, request validation, peer-checked socket server |
-| `internal/store` | Atomic state files, credentials, session generations, account caches, secrets, intent |
-| `internal/cloud` | Device login, Firebase Auth, Firestore reads, regional API calls |
-| `internal/wgconfig` | Allowlisted config parser, Mesh transform, hashes, `wg setconf` input |
-| `internal/network` | Owned interface, routes, rules, nftables, resolved DNS, observation, repair |
-| `internal/release` | Release asset names, code hash, installed release identity |
-| `test-vm/` | Terraform for a throwaway OCI VM that installs a published release |
+| `cmd/cloudgatewayd` | Root daemon and uninstall cleanup |
+| `cmd/cloudgateway-release` | Reproducible archives and stamped installer |
+| `install/` | Installer and systemd unit |
+| `internal/cli`, `internal/jsonout` | Commands, terminal UI, diagnostics, and JSON schema 1 |
+| `internal/ipc` | Framed CLI/daemon protocol and peer authority |
+| `internal/daemon`, `internal/store` | Auth, inventory, operations, persisted intent, and private state |
+| `internal/cloud` | Existing device auth, Firebase, and regional API contracts |
+| `internal/network`, `internal/wgconfig` | Kernel WireGuard, owned routes/firewall/DNS, and config parsing |
+| `internal/release`, `internal/buildinfo` | Version, installed identity, and public build configuration |
+| `test-vm/` | Isolated Terraform state for a disposable OCI test VM |
 
-`internal/network` never imports HTTP or Firebase code. Its `networktest`
-package simulates an Ubuntu host for tests, so the real network code runs in
-daemon tests without root.
+Swift and platform UI code stay in the Apple projects. Linux's network package
+has no HTTP or Firebase imports. Its simulated Ubuntu host exercises the real
+network code without root.
 
-## Routing mode
-
-The Linux CLI is Mesh-first, unlike the macOS and iOS clients. Full mode is
-experimental on Linux and is not guaranteed to work seamlessly out of the box
-with every cloud provider. Provider-specific DHCP and DNS settings may need
-manual configuration.
-
-Version 0.0.3 defaults to Mesh for new accounts and missing legacy
-preferences. Published v0.0.2 and earlier default to Full. An explicit saved
-Full or Mesh choice is retained across updates.
-
-Mesh routes only CloudGateway network traffic through the VPN and leaves host
-internet routing and DNS unchanged. To route internet traffic through the VPN:
-
-```sh
-cloudgateway mode full
-```
-
-The human command prints a notice that DHCP-provided DNS search domains can
-prevent Full from connecting. Run `cloudgateway doctor` for the host's DNS
-requirements, or `cloudgateway mode mesh` to keep host DNS unchanged. The CLI
-does not change DHCP or search-domain settings automatically. JSON mode command
-output keeps its existing schema without the human notice.
-
-If a Full switch is blocked while Mesh stays connected, `doctor` warns about
-the selected Full mode's DNS requirements without reporting Mesh as broken.
-
-## Build and test
-
-Go is pinned by `go.mod` (`toolchain go1.27.3`). There are no third-party
-modules.
+Go is pinned by `go.mod` (`toolchain go1.27.3`), with no third-party modules.
+From the repository root:
 
 ```sh
 ./scripts/test.sh linux
 ```
 
-This runs `gofmt`, `go vet` for the host and both Linux architectures, the
-race-enabled tests, the installer syntax check, and static Linux builds. Route,
-DNS, and service behavior still needs real VMs.
+This runs formatting checks, host and Linux architecture vetting, race-enabled
+tests, installer checks, and static AMD64/ARM64 builds. For privileged network
+checks, use the [disposable VM setup](test-vm/README.md).
 
-## Runtime layout
+See the [parity contract](../../docs/linux-cli-parity.md) for command/JSON
+behavior and the [design](../../docs/linux-cli-research.md) for architecture and
+remaining validation scenarios.
+
+## Runtime paths
 
 | Path | Contents |
 | --- | --- |
-| `/opt/cloudgateway/releases/<version>` | Release files, previous release kept |
+| `/opt/cloudgateway/releases/<version>` | Release files; the previous release is retained |
 | `/opt/cloudgateway/current` | Atomic link to the active release |
 | `/usr/local/bin/cloudgateway` | CLI link |
-| `/etc/cloudgateway/daemon.json` | Enrolled operator UID, root-owned |
-| `/var/lib/cloudgateway` | Daemon state, `0700`, files `0600` |
-| `/run/cloudgateway/cloudgatewayd.sock` | Socket for root and the operator, checked with `SO_PEERCRED` |
+| `/etc/cloudgateway/daemon.json` | Root-owned enrolled operator UID |
+| `/var/lib/cloudgateway` | Private state, directory `0700` and files `0600` |
+| `/run/cloudgateway/cloudgatewayd.sock` | Root/operator socket checked with `SO_PEERCRED` |
 
-Owned network identities are fixed so the daemon can remove them without its
-journal: interface `cloudgateway` (created as `cloudgw-pending`) with alias
-`cloudgatewayd`, table and fwmark `52820`, rule priorities `30200`-`30220`,
-routing protocol `206`, and nftables table `inet cloudgateway_client`.
-
-Docker containers skip the systemd-resolved stub. Docker hands them the servers
-in `/run/systemd/resolve/resolv.conf`, without resolved's per-link routing, so
-in Full their DNS can go to the physical network's servers instead of the VPN.
-The [research](../../docs/linux-cli-research.md#validation-and-remaining-engineering-gates)
-lists other known limits.
+Owned network identities are fixed for recovery: interface `cloudgateway`
+(created as `cloudgw-pending`) with alias `cloudgatewayd`, table and fwmark
+`52820`, rule priorities `30200`–`30220`, routing protocol `206`, and nftables
+table `inet cloudgateway_client`.
 
 ## Releases
 
 1. Copy `Secrets/example.release.env` to `Secrets/release.env` and fill in the
-   public Firebase client configuration. The API key must allow headless Firebase
-   Auth REST calls. A web key restricted by HTTP referrer blocks CLI login.
-2. Commit, then run `go run ./cmd/cloudgateway-release build -version 1.0.0 -out <dir>`.
-   It builds with the `go.mod` toolchain and writes both archives and an
-   `install.sh` stamped with the version, storage version, and each archive's
-   size and SHA-256. It prints the `gh release` command without running it.
-   Builds ignore `go env -w` settings, so set `GOPROXY` and similar as
-   environment variables. `-allow-dirty` builds uncommitted changes for
-   testing and prints no `gh release` command. Don't publish that build.
+   public Firebase client configuration. Use a native-compatible API key that
+   permits headless Firebase Auth REST calls. HTTP-referrer restrictions block
+   CLI login. Keep this local file out of git; do not use service-account keys.
+2. Run `./scripts/test.sh linux` from the repository root, then commit the
+   release changes before building official assets.
+3. From `Frontend/Linux`, run:
 
-Tags are `linux-v<version>`. JSON `version` and `build` both carry the release
-version, and `codeHash` is the SHA-256 of the daemon executable.
+   ```sh
+   go run ./cmd/cloudgateway-release build -version 1.0.0 -out <dir>
+   ```
 
-Each release must read the previous release's network journal and state. A
-daemon that can't parse the journal removes owned resources by fixed identity,
-so an update that drops support for an older journal disconnects the VPN.
-Bump `storageVersion` for any state format change so the installer refuses a
-downgrade across it.
+The builder writes `linux-v1.0.0/` containing the AMD64 and ARM64 archives and
+an installer stamped with their sizes, SHA-256 hashes, and storage version. It
+prints publication steps but uploads nothing. `-allow-dirty` is for local
+validation builds only; those artifacts must not be published. Builds ignore
+`go env -w` settings, so set `GOPROXY` and similar as environment variables.
 
-For a test VM, publish a pre-release and use [test-vm](test-vm/README.md), or
-copy the `linux-v<version>` folder to a machine and run
-`sudo bash install.sh --from <folder> --operator <user>`. Each `install.sh`
-installs only the archives it was built with, so use a release's own
-`install.sh` to install it. Downloads need curl. Every installer run
-enables `cloudgatewayd.service`, including on update, so it also re-enables a
-service an admin disabled. `--uninstall` keeps `/var/lib/cloudgateway` unless
-`--purge` is added.
+Tags use `linux-v<version>`. JSON `version` and `build` both carry the release
+version; `codeHash` is the daemon executable's SHA-256. Leave GitHub's global
+Latest selection on the Mac release when publishing Linux.
+
+Each release must read the previous network journal and state. If it cannot
+parse the journal, the daemon removes owned resources by fixed identity and
+reports disconnected. Bump `storageVersion` for state-format changes so the
+installer refuses an incompatible downgrade. Connected upgrades between
+releases have not had VM acceptance testing; see the [recorded scope](../../docs/linux-cli-vm-results.md).

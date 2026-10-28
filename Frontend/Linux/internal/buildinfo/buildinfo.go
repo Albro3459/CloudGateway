@@ -4,7 +4,7 @@ package buildinfo
 
 var (
 	// Version is the Linux release version. JSON version and build both use it
-	Version = "0.0.0-dev"
+	Version = "1.0.0"
 
 	// Public Firebase web configuration. These identify the project and are
 	// not secrets. Release builds inject the real values

@@ -2,9 +2,9 @@
 
 CloudGateway is a shared regional WireGuard VPN platform, live at
 [gocloudlaunch.com](https://www.gocloudlaunch.com/). Each OCI region runs one
-long-lived server. Use the macOS app, `cloudgateway` CLI, or iOS app to manage
-clients and connections. The web dashboard also provides config export and admin
-tools. Firebase owns product state and stored configs.
+long-lived server. Use the macOS or iOS app, or the `cloudgateway` CLI on macOS
+and Linux, to manage clients and connections. The web dashboard also provides
+config export and admin tools. Firebase owns product state and stored configs.
 
 Built from [CloudLaunch](https://github.com/Albro3459/CloudLaunch), extending its
 VPN proof of concept into a shared regional service.
@@ -58,6 +58,9 @@ Cloudflare fronts the regional API only. It is not part of the VPN data path; Wi
 * [Apple clients](Frontend/Apple/README.md): iOS app, macOS menu app, and CLI.
   Kit/AppCore share VPN/config APIs and app contracts; platform targets own UI
   and runtime adapters. The Mac app and CLI share a background controller.
+* [Linux CLI](Frontend/Linux/README.md): CLI and systemd daemon, tested on
+  Ubuntu 24.04 LTS on ARM64 and AMD64. Mesh is the default; Full is experimental
+  on cloud VMs.
 * [Regional API](Backend/API/README.md): FastAPI with Firebase Admin SDK and
   locked WireGuard/policy mutations. It runs as root on loopback behind Caddy.
 * [Firebase](Backend/Firebase/README.md): Auth and Firestore, the source of truth
@@ -95,8 +98,10 @@ time only, with no account/client identifiers or tunnel addresses.
 
 * [Email me](mailto:brodsky.alex22@gmail.com) or message me on [LinkedIn](https://www.linkedin.com/in/brodsky-alex22/) if you want to try it.
 
-* Use the CloudGateway macOS app or `cloudgateway` CLI on Mac, and the CloudGateway iOS app on iPhone or iPad.
-* The native apps install the selected VPN profile and manage the tunnel through their packet tunnel extensions.
+* Use the CloudGateway macOS app, the `cloudgateway` CLI on macOS or Linux,
+  or the CloudGateway iOS app on iPhone or iPad.
+* Apple apps manage the tunnel through their packet tunnel extensions. Linux
+  uses a root systemd daemon and the kernel WireGuard interface.
 
 ### iOS
 
@@ -130,15 +135,22 @@ The CLI also supports client creation and removal, JSON output, diagnostics, and
 
 ### Linux CLI
 
-The [Linux client](Frontend/Linux/README.md) targets Ubuntu VMs with the same
-commands and JSON contract as the macOS CLI. Linux is Mesh-first, unlike macOS
-and iOS. Full mode is experimental on Linux and may require cloud-provider DHCP
-or DNS configuration before it works. The Mesh default is in the next release;
-published v0.0.2 and earlier default to Full. Saved mode choices are retained.
+The [Linux client](Frontend/Linux/README.md) provides the same commands and JSON
+contract as the macOS CLI. It has been tested on **Ubuntu 24.04 LTS on ARM64 and
+AMD64**, including sign-in and connectivity within and across regions.
 
-The v0.0.2 prerelease passed an Ubuntu 24.04 ARM VM smoke test. See the
-[VM results](docs/linux-cli-vm-results.md), [design](docs/linux-cli-research.md),
-and [parity contract](docs/linux-cli-parity.md).
+Linux defaults to **Mesh mode**: CloudGateway peers use the VPN while ordinary
+internet traffic and DNS keep using the host's network. **Full mode is
+experimental on cloud VMs** and routes internet traffic and system DNS through
+the selected region. It may need provider-specific DHCP/DNS configuration.
+Existing saved mode choices are retained.
+
+Other Linux distributions with systemd and kernel WireGuard will likely need
+only small installer or network-integration changes, but remain unverified.
+
+See [installation and commands](Frontend/Linux/README.md),
+[Mesh vs Full and cloud VM setup](docs/linux-cli-routing.md), and the
+[VM results](docs/linux-cli-vm-results.md).
 
 ## Documentation
 

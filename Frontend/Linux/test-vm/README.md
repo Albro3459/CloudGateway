@@ -12,7 +12,7 @@ public IP. The VCN, subnet, and security list are managed elsewhere.
 Linux is Mesh-first, unlike macOS and iOS. Full mode is experimental and may
 need provider-specific DHCP/DNS configuration. In particular, an OCI DHCP DNS
 search domain can block Full. Use `cloudgateway doctor` to inspect the host.
-Version 0.0.3 defaults to Mesh; v0.0.2 and earlier default to Full.
+See [routing modes and cloud VM setup](../../../docs/linux-cli-routing.md).
 
 ## Publish a test release
 
@@ -20,7 +20,7 @@ Cloud-init downloads `install.sh` from the `linux-v<version>` GitHub release, so
 publish one first:
 
 1. Build it as described in [Releases](../README.md#releases), with a version
-   you haven't used, such as `0.1.0`.
+   you haven't used.
 2. Push the commit, then run the printed `gh release create` command with
    `--prerelease` added.
 
@@ -41,7 +41,7 @@ This folder has its own state, separate from the regional servers.
 | --- | --- |
 | `arch` | `arm64` uses `VM.Standard.A1.Flex` with 1 OCPU and 1 GB. `amd64` uses `VM.Standard.E2.1.Micro` with 1/8 OCPU and 1 GB |
 | `amd64_shape` | Defaults to `VM.Standard.E2.1.Micro`. Use `VM.Standard.E4.Flex` for a paid AMD fallback with 1 OCPU and 1 GB when the free shape is unavailable |
-| `ubuntu_version` | Any Ubuntu release OCI has an image for, such as `24.04` or `26.04` |
+| `ubuntu_version` | Use `24.04`, the tested release. Other images remain unverified |
 | `release_version` | The `linux-v<version>` release to install |
 
 The default A1 and E2 shapes are Always Free. `E2.1.Micro` is free only in the

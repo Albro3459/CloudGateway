@@ -15,7 +15,7 @@ arch            = "arm64"
 # amd64_shape = "VM.Standard.E4.Flex"
 ubuntu_version  = "24.04"
 # Installs the linux-v<version> GitHub release
-release_version = "0.1.0"
+release_version = "1.0.0"
 
 # --- Access ---
 # Create your password with 'openssl passwd -6'

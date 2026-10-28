@@ -2,8 +2,9 @@
 
 Research date: 2026-10-26. Reference implementation: `32dae6c` on `main`.
 
-This records the Linux client design. The client and installer are implemented,
-and initial Ubuntu 24.04 ARM VM results are linked below. Linux is Mesh-first,
+This records the Linux client design, updated for the 1.0.0 release scope on
+2026-10-28. The client and installer are implemented, and Ubuntu 24.04 ARM64
+and AMD64 VM results are linked below. Linux is Mesh-first,
 unlike macOS and iOS. Full mode is experimental and may need provider-specific
 DHCP/DNS configuration before it works. Source inspection establishes backend
 capability, not the state of deployed servers.
@@ -13,8 +14,9 @@ capability, not the state of deployed servers.
 This document supersedes the earlier cross-distro Linux CLI proposal, including
 the final user corrections from that discussion. The current macOS CLI is the
 public compatibility baseline. Linux emulates its interface, not its process
-architecture. See the [parity contract](linux-cli-parity.md) and
-[implementation checkpoints](../TODO/linux-cli.md).
+architecture. See the [parity contract](linux-cli-parity.md),
+[Linux guide](../Frontend/Linux/README.md), and
+[routing modes and cloud VM setup](linux-cli-routing.md).
 
 | Earlier proposal | Updated decision |
 | --- | --- |
@@ -29,23 +31,21 @@ architecture. See the [parity contract](linux-cli-parity.md) and
 | Shell installer, no CloudGateway package repository | Keep. Verify release assets before privileged installation |
 | Future P2P | Keep the daemon extensible, without adding P2P to this release |
 
-Initial release targets are Ubuntu Server 24.04 and 26.04 LTS on amd64 and arm64,
-subject to the VM gates below. Both are current LTS lines in the
-[Ubuntu release schedule](https://ubuntu.com/about/release-cycle).
-Debian, Arch/Omarchy, Amazon Linux, and Oracle Linux remain unverified targets.
-Do not publish a percentage compatibility claim or say Ubuntu is tested before
-running the matrix. Linux containers, WSL, non-systemd hosts, and user-space
-WireGuard fallbacks are outside the initial target.
+The 1.0.0 release targets Ubuntu Server 24.04 LTS on ARM64 and AMD64. The
+[VM results](linux-cli-vm-results.md) record the versions and scenarios tested.
+Other Ubuntu versions, Debian, Arch/Omarchy, Amazon Linux, and Oracle Linux
+remain unverified. Linux containers, WSL, non-systemd hosts, and user-space
+WireGuard fallbacks are outside the supported scope.
 
 ## Implementation choice
 
-Recommend Go under `Frontend/Linux/`, with a thin `cloudgateway` executable and
-one root background daemon.
+The client uses Go under `Frontend/Linux/`, with a thin `cloudgateway`
+executable and one root background daemon.
 Use standard-library HTTP, JSON, cryptographic randomness, hashing, and local IPC.
 No generic REST framework is needed. Go's
 [`net/http`](https://pkg.go.dev/net/http) supplies HTTPS and transport control.
-QR encoding and terminal support may need small pinned dependencies. Choose
-those against the terminal parity fixtures rather than promising zero dependencies.
+QR encoding and terminal support use the standard library. The Go module has
+no third-party dependencies.
 
 Swift remains possible. The official
 [Static Linux SDK](https://www.swift.org/documentation/articles/static-linux-getting-started.html)
@@ -79,8 +79,8 @@ Linux interface and routing changes need
 That capability alone does not grant resolver D-Bus or privileged file access.
 Run as root and restrict the unit with systemd capability and filesystem
 controls. Do not apply `PrivateNetwork` or a sandbox that hides the host network
-it must configure. Exact unit settings need a spike on both supported Ubuntu
-versions, rather than copying latest-systemd options.
+it must configure. The shipped unit was exercised on Ubuntu 24.04 on both
+architectures; changes to its capability or sandbox settings need validation.
 
 Enroll one administrator-designated local operator UID during installation.
 The daemon socket accepts that UID and root. Check filesystem socket permissions
@@ -654,18 +654,20 @@ files. Preserve
 account data unless purge is explicitly chosen. Do not delete cloud clients,
 remove distro dependencies, or disturb another network manager.
 
-## Validation and remaining engineering gates
+## Validation and known limits
 
 The [Linux client](../Frontend/Linux/README.md) is implemented. `./scripts/test.sh linux`
 runs its host-free checks, including macOS fixtures ported to Go and a
-simulated Ubuntu host for network tests. Ubuntu 24.04 arm64 VM testing of
-v0.0.2 passed native login and Chicago/San Jose Mesh and Full connectivity,
-with the physical link's DNS search domain cleared for Full. Other platforms
-and the remaining failure cases are unverified. See the [VM results](linux-cli-vm-results.md).
+simulated Ubuntu host for network tests. Ubuntu 24.04 ARM64 testing of v0.0.2
+and AMD64 testing of v0.0.3 passed native login and Chicago/San Jose Mesh and
+Full connectivity, with the physical link's DNS search domain cleared for Full.
+AMD64 also passed Mesh reboot resume and explicit `down` persistence. Other
+platforms and the remaining failure cases are unverified. See the
+[VM results](linux-cli-vm-results.md).
 Privileged route/DNS checks require actual disposable VMs with console
 recovery, not the ARM macOS development host.
 
-Known limitations to settle on VMs before release:
+Known limitations:
 
 * Full sends replies for DNAT'd inbound traffic, such as Docker `-p` or
   libvirt port forwards, into the tunnel, as `wg-quick` does. So do replies
@@ -685,9 +687,10 @@ Known limitations to settle on VMs before release:
   keep the session without granting offline starts. Only connection failures
   allow cached authorization.
 
-Release requires evidence for:
+The VM runs do not cover every combination below. These are additional
+validation scenarios, not broader platform-support claims:
 
-* Ubuntu 24.04/26.04, amd64/arm64, headless boot, IPv4-only and dual-stack
+* Ubuntu 24.04, AMD64/ARM64, headless boot, IPv4-only and dual-stack
   underlays, kernel WireGuard, resolved, and restrictive supported firewalls.
 * Full: controlled IPv4/IPv6 internet egress and system DNS through the region,
   including inner IPv6 over IPv4 transport, resolver restarts, DHCP changes,
@@ -710,8 +713,9 @@ Release requires evidence for:
   account redaction, revoked/downgraded access, refresh rotation, and no secrets
   in process lists, output, journal, or diagnostics.
 
-The highest-risk implementation spikes are full-mode DNS exclusivity, SSH and
-local-route behavior in Full, and the daemon adopting a running tunnel on
-restart. Existing backend gaps
+Further failure-case validation should focus on Full-mode DNS exclusivity and
+SSH/local-route behavior. The recorded VM tests cover daemon adoption on restart
+and ordinary connectivity, rather than every interruption or network change.
+Existing backend gaps
 are create idempotency and per-device remote revocation. Neither requires new endpoints
 to ship parity, but neither should be promised by the Linux client.

@@ -245,8 +245,8 @@ if [[ -f $os_release ]]; then
     esac
   done <"$os_release"
 fi
-if [[ $OS_ID != ubuntu || ($OS_VERSION_ID != 24.04 && $OS_VERSION_ID != 26.04) ]]; then
-  warn "CloudGateway is tested on Ubuntu 24.04 and 26.04. Continuing on $OS_NAME"
+if [[ $OS_ID != ubuntu || $OS_VERSION_ID != 24.04 ]]; then
+  warn "CloudGateway is tested on Ubuntu 24.04 LTS. Continuing on unverified $OS_NAME"
 fi
 
 [[ -d $ROOT/run/systemd/system ]] || die "CloudGateway needs systemd as the init system"

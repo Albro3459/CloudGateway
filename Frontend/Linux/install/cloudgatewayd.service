@@ -32,9 +32,8 @@ RuntimeDirectoryPreserve=restart
 StateDirectory=cloudgateway
 StateDirectoryMode=0700
 
-# TODO: verify this hardening on the Ubuntu 24.04 and 26.04 VMs. Check
-# wireguard module autoload without CAP_SYS_MODULE, resolved D-Bus calls under
-# the bounding set, nft and wg over netlink, and src_valid_mark writes
+# Ubuntu 24.04 arm64 and amd64 VM runs exercised WireGuard, resolved, nftables,
+# and Full routing with these restrictions
 NoNewPrivileges=yes
 # strict leaves /proc/sys writable as long as ProtectKernelTunables stays off.
 # The state and runtime directories above stay writable
@@ -49,9 +48,8 @@ RestrictRealtime=yes
 LockPersonality=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
-# CAP_CHOWN hands the socket to the operator. TODO: CAP_FOWNER and
-# CAP_DAC_OVERRIDE are candidates to drop once the VM spike shows root never
-# needs them
+# CAP_CHOWN hands the socket to the operator. Narrowing the remaining file
+# capabilities needs separate validation
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 
 [Install]

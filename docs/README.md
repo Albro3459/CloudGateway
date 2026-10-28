@@ -8,9 +8,8 @@ or the [root README](../README.md) for the product overview.
 * [Tool versions](tool-versions.md): supported local tools and deployed pins.
 * [Web dashboard](../Frontend/Web/README.md): development, routing, and publication.
 * [Apple clients](../Frontend/Apple/README.md): iOS, macOS, CLI, and shared packages.
-* [Linux client](../Frontend/Linux/README.md): layout, tests, runtime paths, and releases.
-  Linux is Mesh-first, unlike macOS/iOS. Full is experimental and may need
-  cloud-provider DHCP/DNS configuration. The Mesh default is in the next release.
+* [Linux client](../Frontend/Linux/README.md): installation, commands, layout,
+  tests, and releases for Ubuntu 24.04 LTS on ARM64 and AMD64.
   See the [research](linux-cli-research.md) for the daemon, routing, and REST
   design, and the [macOS parity contract](linux-cli-parity.md).
 * [Regional API](../Backend/API/README.md): local setup and service architecture.
@@ -34,6 +33,9 @@ or the [root README](../README.md) for the product overview.
 
 ## Network policy
 
+* [Linux Mesh and Full modes](linux-cli-routing.md): mode selection, cloud VM
+  DHCP/DNS setup, recovery, and routing limits. Linux defaults to Mesh; Full is
+  experimental on cloud VMs.
 * [Account-scoped ACL](access-control-list.md): enforcement, identity, and status.
 * [ACL live verification](acl-live-verification.md): controlled runtime checks.
 * [Shared subnet mesh](shared-subnet-mesh.md): cross-region routing and reconciliation.

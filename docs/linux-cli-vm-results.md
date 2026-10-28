@@ -68,8 +68,8 @@ client. Both address families still reached the Mac, and public IPv4 stayed on
 the VM underlay. After explicit `down`, another reboot restored authentication
 but kept the tunnel disconnected through the subsequent 20-second observation.
 
-Ubuntu 26.04, connected release upgrades, Full-mode reboot with persistent DNS
-setup, cross-account denial, and failure-injection cases remain untested.
+Other distributions, connected release upgrades, Full-mode reboot with persistent
+DNS setup, cross-account denial, and failure-injection cases remain untested.
 
 ### Cleanup
 

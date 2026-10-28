@@ -5,7 +5,10 @@ This specifies the Linux command contract and its intentional differences.
 Linux is Mesh-first, unlike macOS and iOS. Full is experimental on Linux and
 may require cloud-provider DHCP/DNS configuration instead of working out of
 the box. [Research and platform decisions](linux-cli-research.md) explain the
-runtime, version, update, and diagnostic substitutions.
+runtime, version, update, and diagnostic substitutions. The 1.0.0 support scope
+is Ubuntu 24.04 LTS on ARM64 and AMD64; see the
+[mode and cloud VM guide](linux-cli-routing.md) for operational guidance and
+[VM results](linux-cli-vm-results.md) for acceptance evidence.
 
 ## Commands and parsing
 
