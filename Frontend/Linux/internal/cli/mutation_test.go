@@ -537,10 +537,17 @@ func TestModeMutationForwardsTypedModeAndUsesConfirmationAndPolling(t *testing.T
 		expectEqual(t, "active", field(records[1], "data", "mode", "activeMode"), nil)
 		expectActions(t, h.daemon, ipc.ActionHandshake, ipc.ActionUserActivity, ipc.ActionSnapshot, ipc.ActionSetMode, ipc.ActionConfirm, ipc.ActionOperation)
 		expectEqual(t, "elapsed", h.clock.elapsed(), pollInterval)
+		expectEqual(t, "JSON diagnostics", h.diag.String(), "")
 		h.reset()
 		expectExit(t, h.run("mode", string(mode)), 0)
 		expectContains(t, h.out.String(), "Routing mode selected: "+string(mode)+"\n")
 		expectContains(t, h.out.String(), "Active mode:       none\n")
+		if mode == ipc.ModeFull {
+			expectContains(t, h.diag.String(), "DHCP-provided DNS search domains")
+			expectContains(t, h.diag.String(), "cloudgateway doctor")
+		} else {
+			expectEqual(t, "Mesh diagnostics", h.diag.String(), "")
+		}
 	}
 	for _, tc := range []struct {
 		edit func(*ipc.State)
@@ -561,6 +568,19 @@ func TestModeMutationForwardsTypedModeAndUsesConfirmationAndPolling(t *testing.T
 	if slices.Contains(refreshing.daemon.actions(), ipc.ActionSetMode) {
 		t.Fatal("reserved while inventory was refreshing")
 	}
+}
+
+func TestFullModeNoticePrintsBeforeAFailedSwitch(t *testing.T) {
+	h := newHarness(t, testState())
+	h.daemon.onRequest = acceptAndConfirm(h.daemon, ipc.ActionSetMode, ipc.OperationFailed,
+		&ipc.Outcome{Kind: ipc.OutcomeFailed, Failure: ipc.CommandSetupRequired}, func() *ipc.Reply {
+			expectContains(t, h.diag.String(), "DHCP-provided DNS search domains")
+			return &ipc.Reply{}
+		})
+
+	expectExit(t, h.run("mode", "full"), 4)
+	expectContains(t, h.diag.String(), "cloudgateway doctor")
+	expectContains(t, h.diag.String(), "cloudgateway mode mesh")
 }
 
 func TestModeOutputFailureLeavesReservationUnconfirmedAndTimeoutDetaches(t *testing.T) {

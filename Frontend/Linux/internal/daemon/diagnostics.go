@@ -130,7 +130,7 @@ func (c *Controller) wireguardSupported() bool {
 	return false
 }
 
-// diagnosticMode is the active mode, else the account's selected mode, else the saved intent's. Full is the default
+// diagnosticMode is the active mode, else the account's selected mode, else the saved intent's. Mesh is the default
 func (c *Controller) diagnosticMode() ipc.Mode {
 	intent := c.currentIntent()
 	c.mu.Lock()
@@ -143,7 +143,7 @@ func (c *Controller) diagnosticMode() ipc.Mode {
 	case intent.Mode != "":
 		return intent.Mode
 	}
-	return ipc.ModeFull
+	return ipc.ModeMesh
 }
 
 // doctorProfile lets Preflight read the resolver policy a Full start needs. Only its resolver findings are used
@@ -168,16 +168,29 @@ func (c *Controller) resolverConflicts(ctx context.Context) (*network.PreflightE
 
 func (c *Controller) dnsPolicyCheck(ctx context.Context) *ipc.DoctorCheck {
 	const name = "dns_policy"
-	if c.diagnosticMode() == ipc.ModeMesh {
+	mesh := c.diagnosticMode() == ipc.ModeMesh
+	c.mu.Lock()
+	selectedFull := c.user != "" && c.selectedMode != nil && *c.selectedMode == ipc.ModeFull
+	c.mu.Unlock()
+	if mesh && !selectedFull {
 		return check(name, ipc.DoctorPass, "Mesh mode leaves host DNS unchanged", "", "")
 	}
+	fullCheck := func(status ipc.DoctorStatus, evidence, suggestion, failureCode string) *ipc.DoctorCheck {
+		if mesh {
+			if status == ipc.DoctorFail {
+				status = ipc.DoctorWarning
+			}
+			evidence = "Mesh remains connected. Selected Full: " + evidence
+		}
+		return check(name, status, evidence, suggestion, failureCode)
+	}
 	if c.currentIntent().Suppression == store.SuppressResolverFailure {
-		return check(name, ipc.DoctorFail, "Another resolver change took Full mode DNS away from the VPN, so the daemon took the tunnel down",
+		return fullCheck(ipc.DoctorFail, "Another resolver change took Full mode DNS away from the VPN, so the daemon took the tunnel down",
 			"Restore systemd-resolved as the only resolver for this host, then run: cloudgateway up", string(ipc.CommandVPNFailed))
 	}
 	conflicts, err := c.resolverConflicts(ctx)
 	if err != nil {
-		return check(name, ipc.DoctorUnknown, "The resolver policy could not be read", "", "")
+		return fullCheck(ipc.DoctorUnknown, "The resolver policy could not be read", "", "")
 	}
 	setup := string(ipc.CommandSetupRequired)
 	if conflicts != nil {
@@ -185,23 +198,23 @@ func (c *Controller) dnsPolicyCheck(ctx context.Context) *ipc.DoctorCheck {
 			switch conflict.Kind {
 			case network.ConflictMissingTools:
 				if slices.Contains(conflict.Names, network.ToolResolvectl) || slices.Contains(conflict.Names, network.ToolBusctl) {
-					return check(name, ipc.DoctorFail, "Full mode needs resolvectl and busctl from systemd",
+					return fullCheck(ipc.DoctorFail, "Full mode needs resolvectl and busctl from systemd",
 						"Install systemd-resolved, or switch to Mesh: cloudgateway mode mesh", setup)
 				}
-				return check(name, ipc.DoctorUnknown, "Network tools are missing, so the resolver policy was not checked", "", "")
+				return fullCheck(ipc.DoctorUnknown, "Network tools are missing, so the resolver policy was not checked", "", "")
 			case network.ConflictResolverInactive:
-				return check(name, ipc.DoctorFail, "systemd-resolved is not active, so Full mode cannot carry VPN DNS",
+				return fullCheck(ipc.DoctorFail, "systemd-resolved is not active, so Full mode cannot carry VPN DNS",
 					"Enable systemd-resolved, or switch to Mesh: cloudgateway mode mesh", setup)
 			case network.ConflictResolverStub:
-				return check(name, ipc.DoctorFail, "/etc/resolv.conf does not use the systemd-resolved stub",
+				return fullCheck(ipc.DoctorFail, "/etc/resolv.conf does not use the systemd-resolved stub",
 					"Point /etc/resolv.conf at /run/systemd/resolve/stub-resolv.conf, or switch to Mesh: cloudgateway mode mesh", setup)
 			case network.ConflictResolverDomains:
-				return check(name, ipc.DoctorFail, "Another link routes DNS domains that Full mode cannot override",
+				return fullCheck(ipc.DoctorFail, "Another link has DNS search or routing domains that Full mode cannot override",
 					"Remove the routing domains from the other link, or switch to Mesh: cloudgateway mode mesh", setup)
 			}
 		}
 	}
-	return check(name, ipc.DoctorPass, "systemd-resolved can carry Full mode VPN DNS", "", "")
+	return fullCheck(ipc.DoctorPass, "systemd-resolved can carry Full mode VPN DNS", "", "")
 }
 
 func (c *Controller) resolverCheck(ctx context.Context) *ipc.DoctorCheck {

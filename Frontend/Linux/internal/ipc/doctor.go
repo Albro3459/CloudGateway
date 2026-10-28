@@ -34,7 +34,7 @@ var DoctorProbes = []DoctorProbe{
 	{Name: "network_tools", Requirement: DoctorSetup,
 		Meaning: "wg, ip, and nft are installed and the kernel provides WireGuard. Fails with setup_required"},
 	{Name: "dns_policy", Requirement: DoctorSetup,
-		Meaning: "Passes in Mesh. In Full, fails with setup_required when the resolver cannot carry VPN DNS, " +
+		Meaning: "Passes in Mesh unless selected Full has a DNS-readiness warning. In Full, fails with setup_required when the resolver cannot carry VPN DNS, " +
 			"and with vpn_failed after a resolver-policy failure tore the tunnel down"},
 	{Name: "resolver", Requirement: DoctorOptional,
 		Meaning: "systemd-resolved is active, /etc/resolv.conf uses its stub, and links have upstream DNS servers. Full mode needs it"},

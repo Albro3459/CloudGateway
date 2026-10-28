@@ -2,9 +2,11 @@
 
 Research date: 2026-10-26. Reference implementation: `32dae6c` on `main`.
 
-This is a proposed implementation design. There is no Linux client, installer,
-release, or completed Linux VM validation yet. Source inspection establishes
-backend capability, not the state of deployed servers.
+This records the Linux client design. The client and installer are implemented,
+and initial Ubuntu 24.04 ARM VM results are linked below. Linux is Mesh-first,
+unlike macOS and iOS. Full mode is experimental and may need provider-specific
+DHCP/DNS configuration before it works. Source inspection establishes backend
+capability, not the state of deployed servers.
 
 ## Scope and original decisions
 
@@ -18,7 +20,7 @@ architecture. See the [parity contract](linux-cli-parity.md) and
 | --- | --- |
 | Direct Firebase REST reads | Keep. Use existing regional APIs for mutations |
 | Named client creation | Keep, using macOS `add <region> <name>` |
-| Required `up --mode` | Superseded by current `mode full\|mesh`, saved per-account preference, Full default |
+| Required `up --mode` | Superseded by `mode full\|mesh`, saved per-account preference, Linux Mesh default, macOS Full default |
 | Number from the last displayed list | Superseded by current region-local indices from settled inventory |
 | `login`, `regions`, `--autostart` examples | Use the implemented macOS command surface, with no added public commands/flags |
 | Daemon from v1 | Keep, as one root daemon. Accepted work must survive CLI/SSH detachment |
@@ -293,6 +295,13 @@ Ubuntu, Debian, and Arch. Direct netlink or
 but neither removes route/DNS lifecycle work.
 
 ### Full routing and VM access
+
+Linux defaults to Mesh for new accounts and missing legacy preferences, unlike
+macOS and iOS. Full is experimental on Linux and is not guaranteed to work out
+of the box with every cloud provider. Saved Full choices remain Full.
+Human `cloudgateway mode full` prints a notice that
+DHCP-provided DNS search domains may block connection, with `doctor` and
+`mode mesh` guidance. The notice does not change JSON command output.
 
 Full means public internet traffic and DNS use the region. Browsers, package
 managers, and other outbound connections exit from the regional server over
@@ -649,7 +658,10 @@ remove distro dependencies, or disturb another network manager.
 
 The [Linux client](../Frontend/Linux/README.md) is implemented. `./scripts/test.sh linux`
 runs its host-free checks, including macOS fixtures ported to Go and a
-simulated Ubuntu host for network tests. No VM experiments have run.
+simulated Ubuntu host for network tests. Ubuntu 24.04 arm64 VM testing of
+v0.0.2 passed native login and Chicago/San Jose Mesh and Full connectivity,
+with the physical link's DNS search domain cleared for Full. Other platforms
+and the remaining failure cases are unverified. See the [VM results](linux-cli-vm-results.md).
 Privileged route/DNS checks require actual disposable VMs with console
 recovery, not the ARM macOS development host.
 

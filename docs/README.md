@@ -9,6 +9,8 @@ or the [root README](../README.md) for the product overview.
 * [Web dashboard](../Frontend/Web/README.md): development, routing, and publication.
 * [Apple clients](../Frontend/Apple/README.md): iOS, macOS, CLI, and shared packages.
 * [Linux client](../Frontend/Linux/README.md): layout, tests, runtime paths, and releases.
+  Linux is Mesh-first, unlike macOS/iOS. Full is experimental and may need
+  cloud-provider DHCP/DNS configuration. The Mesh default is in the next release.
   See the [research](linux-cli-research.md) for the daemon, routing, and REST
   design, and the [macOS parity contract](linux-cli-parity.md).
 * [Regional API](../Backend/API/README.md): local setup and service architecture.

@@ -131,9 +131,14 @@ The CLI also supports client creation and removal, JSON output, diagnostics, and
 ### Linux CLI
 
 The [Linux client](Frontend/Linux/README.md) targets Ubuntu VMs with the same
-commands and JSON contract as the macOS CLI. It is implemented and tested
-host-free, but hasn't been validated on Linux or released yet. See the
-[design](docs/linux-cli-research.md) and [parity contract](docs/linux-cli-parity.md).
+commands and JSON contract as the macOS CLI. Linux is Mesh-first, unlike macOS
+and iOS. Full mode is experimental on Linux and may require cloud-provider DHCP
+or DNS configuration before it works. The Mesh default is in the next release;
+published v0.0.2 and earlier default to Full. Saved mode choices are retained.
+
+The v0.0.2 prerelease passed an Ubuntu 24.04 ARM VM smoke test. See the
+[VM results](docs/linux-cli-vm-results.md), [design](docs/linux-cli-research.md),
+and [parity contract](docs/linux-cli-parity.md).
 
 ## Documentation
 

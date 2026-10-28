@@ -161,6 +161,9 @@ func (c *CLI) execute(ctx context.Context, inv invocation) (data, error) {
 			}
 			return err
 		}
+		if cmd.kind == cmdSetMode && cmd.mode == ipc.ModeFull {
+			_, _ = io.WriteString(c.stderr, "Note: "+fullModeNotice+"\n")
+		}
 		_, err := io.WriteString(c.stdout, "Accepted operation "+id+"\n")
 		return err
 	}

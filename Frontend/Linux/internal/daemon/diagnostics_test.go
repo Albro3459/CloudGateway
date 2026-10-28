@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,48 @@ func TestDoctorProbesReadEvidenceOnly(t *testing.T) {
 	expect(t, "cloud reads", tokens, 0)
 }
 
+func TestFreshDoctorUsesMeshWithDHCPDomains(t *testing.T) {
+	h := newHarness(t)
+	h.host.SetLinkDomains("enp0s1", "lan")
+	h.open()
+
+	expect(t, "DNS policy", h.probe("dns_policy"), "pass")
+	expect(t, "mutations", len(h.mutations()), 0)
+}
+
+func TestDoctorExplainsBlockedFullWhileMeshStaysConnected(t *testing.T) {
+	h := newHarness(t)
+	h.host.SetLinkDomains("enp0s1", "lan")
+	h.signedIn(userA)
+	h.up(configA)
+
+	full := h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
+	expect(t, "switch failure", full.outcome.Failure, ipc.CommandSetupRequired)
+	expect(t, "selected", deref(full.reply.State.SelectedMode), any(ipc.ModeFull))
+	expect(t, "active", deref(full.reply.State.ActiveMode), any(ipc.ModeMesh))
+	expect(t, "owned", h.owned(), meshOwned)
+	h.host.ResetCalls()
+
+	check := h.do(ipc.Request{Action: ipc.ActionDiagnostics, Probe: "dns_policy"}).Check
+	if check == nil {
+		t.Fatal("missing DNS policy check")
+	}
+	expect(t, "diagnostic", check.Status, ipc.DoctorWarning)
+	expect(t, "failure code", deref(check.FailureCode), any(string(ipc.CommandSetupRequired)))
+	for _, text := range []string{"Mesh remains connected", "Selected Full", "DNS search or routing domains"} {
+		if !strings.Contains(check.Evidence, text) {
+			t.Fatalf("evidence = %q, missing %q", check.Evidence, text)
+		}
+	}
+	expect(t, "diagnostic mutations", len(h.mutations()), 0)
+
+	h.host.SetLinkDomains("enp0s1")
+	expect(t, "Full ready", h.probe("dns_policy"), "pass")
+	full = h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
+	expect(t, "Full start", full.outcome.Kind, ipc.OutcomeStartRequested)
+	expect(t, "Full active", deref(full.reply.State.ActiveMode), any(ipc.ModeFull))
+}
+
 func TestDoctorProbeFailures(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -52,7 +95,11 @@ func TestDoctorProbeFailures(t *testing.T) {
 		{name: "no wireguard", probe: "network_tools", setup: func(h *harness) {
 			h.host.RemoveFile("/sys/module/wireguard/version")
 		}, want: "fail setup_required"},
-		{name: "resolver stopped", probe: "dns_policy", setup: func(h *harness) { h.host.SetResolverActive(false) }, want: "fail setup_required"},
+		{name: "resolver stopped", probe: "dns_policy", setup: func(h *harness) {
+			h.signedIn(userA)
+			h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
+			h.host.SetResolverActive(false)
+		}, want: "fail setup_required"},
 		{name: "resolver stopped in mesh", probe: "dns_policy", setup: func(h *harness) {
 			h.host.SetResolverActive(false)
 			h.signedIn(userA)
@@ -124,6 +171,7 @@ func TestInventorySchedule(t *testing.T) {
 func TestDNSPolicyPassesInMeshAfterResolverFailure(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.SetLinkDomains("enp0s1", "lan")
 	h.c.reconcile(context.Background())

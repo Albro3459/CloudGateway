@@ -5,9 +5,11 @@
 defines the public behavior and the [research](../../docs/linux-cli-research.md)
 explains the design. Progress lives in the [implementation plan](../../TODO/linux-cli.md).
 
-Status: implemented and tested host-free on macOS. Nothing has run on a Linux
-host yet, no release exists, and no distro support is claimed. The VM matrix
-in the research doc must pass first.
+Status: v0.0.2 is a prerelease. Ubuntu 24.04 arm64 passed native login and
+Chicago/San Jose Mesh and Full connectivity checks on a 1 OCPU / 1 GB OCI VM.
+Full required removing the VM's DHCP-provided DNS search domain. See the
+[VM results](../../docs/linux-cli-vm-results.md). The remaining VM matrix is
+unverified. No broader distro support is claimed.
 
 ## Layout
 
@@ -31,6 +33,33 @@ in the research doc must pass first.
 `internal/network` never imports HTTP or Firebase code. Its `networktest`
 package simulates an Ubuntu host for tests, so the real network code runs in
 daemon tests without root.
+
+## Routing mode
+
+The Linux CLI is Mesh-first, unlike the macOS and iOS clients. Full mode is
+experimental on Linux and is not guaranteed to work seamlessly out of the box
+with every cloud provider. Provider-specific DHCP and DNS settings may need
+manual configuration.
+
+The next release defaults to Mesh for new accounts and missing legacy
+preferences. Published v0.0.2 and earlier default to Full. An explicit saved
+Full or Mesh choice is retained across updates.
+
+Mesh routes only CloudGateway network traffic through the VPN and leaves host
+internet routing and DNS unchanged. To route internet traffic through the VPN:
+
+```sh
+cloudgateway mode full
+```
+
+The human command prints a notice that DHCP-provided DNS search domains can
+prevent Full from connecting. Run `cloudgateway doctor` for the host's DNS
+requirements, or `cloudgateway mode mesh` to keep host DNS unchanged. The CLI
+does not change DHCP or search-domain settings automatically. JSON mode command
+output keeps its existing schema without the human notice.
+
+If a Full switch is blocked while Mesh stays connected, `doctor` warns about
+the selected Full mode's DNS requirements without reporting Mesh as broken.
 
 ## Build and test
 
@@ -70,7 +99,8 @@ lists other known limits.
 ## Releases
 
 1. Copy `Secrets/example.release.env` to `Secrets/release.env` and fill in the
-   public Firebase web configuration.
+   public Firebase client configuration. The API key must allow headless Firebase
+   Auth REST calls. A web key restricted by HTTP referrer blocks CLI login.
 2. Commit, then run `go run ./cmd/cloudgateway-release build -version 1.0.0 -out <dir>`.
    It builds with the `go.mod` toolchain and writes both archives and an
    `install.sh` stamped with the version, storage version, and each archive's

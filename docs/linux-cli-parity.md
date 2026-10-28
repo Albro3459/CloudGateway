@@ -1,8 +1,10 @@
 # Linux CLI parity contract
 
 Baseline: implemented macOS CLI at `32dae6c`, inspected 2026-10-26.
-This specifies Linux implementation requirements, not currently available Linux
-commands. [Research and platform decisions](linux-cli-research.md) explain the
+This specifies the Linux command contract and its intentional differences.
+Linux is Mesh-first, unlike macOS and iOS. Full is experimental on Linux and
+may require cloud-provider DHCP/DNS configuration instead of working out of
+the box. [Research and platform decisions](linux-cli-research.md) explain the
 runtime, version, update, and diagnostic substitutions.
 
 ## Commands and parsing
@@ -107,8 +109,10 @@ and [controller mapping](../Frontend/Apple/macOS/CloudGatewayMacCore/Sources/Clo
   `auth status` can succeed while signed out, denied, or restoring.
 * Logout ends the local session and hides account data, retaining the running
   VPN, saved profiles/secrets/cache. It does not request cloud deletion.
-* Full is the account-local default. A missing legacy preference defaults to
-  Full; a malformed explicit preference remains unavailable. Mesh clears VPN
+* Linux defaults to Mesh per account, unlike macOS and iOS. Full is experimental
+  on Linux and may need cloud-provider DHCP/DNS configuration. A missing
+  Linux legacy preference defaults to Mesh. Explicit saved choices are retained;
+  a malformed explicit preference remains unavailable. Mesh clears VPN
   DNS/search domains and applies exactly `10.0.0.0/16` and `fd42:42:42::/48`.
   Changing mode while disconnected saves the preference. While connected it
   restarts the same client. Selected and applied modes can differ during failure
@@ -347,6 +351,12 @@ with command, schema, and exit compatibility retained.
 
 Other intentional differences, all with schema and exit compatibility kept:
 
+* Linux defaults to Mesh, including doctor's fallback before login. Human
+  `mode full` prints a notice before execution that DHCP-provided DNS search
+  domains may prevent connection, with `doctor` and `mode mesh` guidance.
+  JSON mode command output is unchanged. Full-mode help includes the same notice.
+  If selected Full is blocked while Mesh remains active, the DNS policy probe
+  warns about Full readiness and preserves the valid Mesh status.
 * Help, error, and update text say "daemon" and "this machine" where macOS
   names the controller, Mac, app, extension, or Keychain. JSON message strings
   follow the same wording.

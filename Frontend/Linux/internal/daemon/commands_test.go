@@ -24,9 +24,23 @@ func secretFiles(t *testing.T, dir string) int {
 	return len(entries)
 }
 
+func TestFreshAccountStartsInMeshWithDHCPDomains(t *testing.T) {
+	h := newHarness(t)
+	h.host.SetLinkDomains("enp0s1", "lan")
+	state := h.signedIn(userA)
+	expect(t, "default mode", deref(state.SelectedMode), any(ipc.ModeMesh))
+
+	started := h.up(configA)
+	expect(t, "started", started.outcome.Kind, ipc.OutcomeStartRequested)
+	expect(t, "active mode", deref(started.reply.State.ActiveMode), any(ipc.ModeMesh))
+	expect(t, "owned", h.owned(), meshOwned)
+	expect(t, "DNS policy", h.probe("dns_policy"), "pass")
+}
+
 func TestUpInstallsThenReportsAlreadyActive(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 
 	bare := h.up("")
 	expect(t, "bare without selection", bare.outcome.Failure, ipc.CommandSelectionUnavailable)
@@ -190,6 +204,7 @@ func TestDownRunsDuringPendingAdd(t *testing.T) {
 func TestTargetedDownStopsOnlyThatClient(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 
 	other := h.run(ipc.Request{Action: ipc.ActionDisconnectClient, Identifier: configB})
@@ -357,6 +372,7 @@ func TestAccountRedactionHidesOtherAccountsTunnelAndOutcome(t *testing.T) {
 func TestNoSecretBytesInRepliesOrArguments(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeMesh})
 	h.do(ipc.Request{Action: ipc.ActionAwaitRefresh})
@@ -457,6 +473,7 @@ func TestCreateDenialSignsOut(t *testing.T) {
 func TestStaleObservationIsNotEvidence(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.FailWhen(networktest.Match("ip", "-j", "-d", "-N", "address", "show"))
 

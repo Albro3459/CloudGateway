@@ -72,7 +72,7 @@ variable "ssh_authorized_keys" {
 locals {
   # Always Free shapes. E2.1.Micro is free only in the tenancy's home region
   shapes = {
-    arm64 = { name = "VM.Standard.A1.Flex", ocpus = 1, memory_in_gbs = 6 }
+    arm64 = { name = "VM.Standard.A1.Flex", ocpus = 1, memory_in_gbs = 1 }
     amd64 = { name = "VM.Standard.E2.1.Micro", ocpus = null, memory_in_gbs = null }
   }
   shape = local.shapes[var.arch]
@@ -130,6 +130,8 @@ resource "oci_core_instance" "test" {
   compartment_id      = var.compartment_id
   display_name        = "CloudGateway-Linux-Test"
   shape               = local.shape.name
+
+  preserve_boot_volume = false
 
   dynamic "shape_config" {
     for_each = local.shape.ocpus == null ? [] : [local.shape]

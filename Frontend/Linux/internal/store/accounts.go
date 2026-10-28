@@ -70,7 +70,7 @@ type InventorySnapshot struct {
 	SelectedMode       *ipc.Mode         `json:"selectedMode"`
 }
 
-// UnmarshalJSON defaults a missing mode to full and maps an invalid one to nil
+// UnmarshalJSON defaults a missing mode to mesh and maps an invalid one to nil
 func (s *InventorySnapshot) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Configs            *[]InstalledConfig `json:"configs"`
@@ -86,7 +86,7 @@ func (s *InventorySnapshot) UnmarshalJSON(data []byte) error {
 	}
 	*s = InventorySnapshot{Configs: *raw.Configs, SelectedIdentifier: raw.SelectedIdentifier, AccessAllowed: *raw.AccessAllowed}
 	if raw.SelectedMode == nil {
-		s.SelectedMode = modePointer(ipc.ModeFull)
+		s.SelectedMode = modePointer(ipc.ModeMesh)
 		return nil
 	}
 	var mode ipc.Mode
@@ -97,7 +97,7 @@ func (s *InventorySnapshot) UnmarshalJSON(data []byte) error {
 }
 
 func emptySnapshot() InventorySnapshot {
-	return InventorySnapshot{Configs: []InstalledConfig{}, SelectedMode: modePointer(ipc.ModeFull)}
+	return InventorySnapshot{Configs: []InstalledConfig{}, SelectedMode: modePointer(ipc.ModeMesh)}
 }
 
 func modePointer(mode ipc.Mode) *ipc.Mode { return &mode }

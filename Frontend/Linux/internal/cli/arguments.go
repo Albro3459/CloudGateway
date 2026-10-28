@@ -13,6 +13,8 @@ import (
 
 type option int
 
+const fullModeNotice = "Full mode is experimental on Linux. DHCP-provided DNS search domains may prevent connection. Run: cloudgateway doctor. To return to Mesh, use: cloudgateway mode mesh"
+
 const (
 	optHelp option = iota
 	optJSON
@@ -185,6 +187,7 @@ var topics = []topic{
 	{kind: kindRoot, options: []option{optVersion},
 		summary: "Control the CloudGateway VPN on this machine",
 		notes: []string{
+			"Linux defaults to Mesh. Full mode is experimental and may require cloud-provider DNS configuration",
 			"Use a client UUID or a region and row index to select a config. `ls` is an alias of `list`",
 			"Request acceptance reserves work. `up` succeeds after start submission or if already active. " +
 				"`down` succeeds only after a confirmed stop. Check `status` for the observed tunnel state",
@@ -211,6 +214,7 @@ var topics = []topic{
 	{kind: kindMode, path: []string{"mode"}, arguments: "[status | full | mesh]",
 		summary: "Show or change this account's routing mode on this machine",
 		notes: []string{"Without a subcommand, shows the selected and observed active mode",
+			"Mesh is the default on Linux. The selected mode is saved per account",
 			"Changing mode while connected restarts the same client. Confirmed work continues after timeout or interruption",
 			"After acceptance, use status --operation to check an uncertain result before retrying"},
 		examples: []string{"cloudgateway mode", "cloudgateway mode mesh", "cloudgateway mode full"}},
@@ -219,8 +223,8 @@ var topics = []topic{
 		notes:    []string{"A saved preference does not prove the running tunnel applied it"},
 		examples: []string{"cloudgateway mode status --json"}},
 	{kind: kindModeFull, path: []string{"mode", "full"},
-		summary:  "Route internet and mesh traffic through the VPN",
-		notes:    []string{"Saves the preference while disconnected. Restarts the same client while connected"},
+		summary:  "Route internet and mesh traffic through the VPN (experimental on Linux)",
+		notes:    []string{"Saves the preference while disconnected. Restarts the same client while connected", fullModeNotice},
 		examples: []string{"cloudgateway mode full"}},
 	{kind: kindModeMesh, path: []string{"mode", "mesh"},
 		summary:  "Route only CloudGateway mesh traffic through the VPN",

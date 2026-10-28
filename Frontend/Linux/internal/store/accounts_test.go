@@ -91,7 +91,7 @@ func TestAccountCacheStoresMetadataAndSelectionWithoutConfigMaterial(t *testing.
 	must(t, cache.Save(config))
 	must(t, cache.Select(config.Identifier, "user-a"))
 	restored := load(t, reopen(cache), "user-a")
-	want := InventorySnapshot{Configs: []InstalledConfig{config}, SelectedIdentifier: config.Identifier, AccessAllowed: true, SelectedMode: modePtr(ipc.ModeFull)}
+	want := InventorySnapshot{Configs: []InstalledConfig{config}, SelectedIdentifier: config.Identifier, AccessAllowed: true, SelectedMode: modePtr(ipc.ModeMesh)}
 	if !reflect.DeepEqual(restored, want) {
 		t.Fatalf("restored = %+v", restored)
 	}
@@ -447,7 +447,7 @@ func TestEvictionRevokesANeverInstalledClientAndIsIdempotent(t *testing.T) {
 	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{option}))
 	evicted, err := cache.Evict(target.Identifier, "user-a")
 	must(t, err)
-	want := InventorySnapshot{Configs: []InstalledConfig{}, AccessAllowed: true, SelectedMode: modePtr(ipc.ModeFull)}
+	want := InventorySnapshot{Configs: []InstalledConfig{}, AccessAllowed: true, SelectedMode: modePtr(ipc.ModeMesh)}
 	if !reflect.DeepEqual(evicted, want) {
 		t.Fatalf("evicted = %+v", evicted)
 	}
@@ -534,14 +534,14 @@ func TestAccountRoutingPreferencePersistsAcrossRefreshAndAccounts(t *testing.T) 
 	config, option := fixture("user-a", "client-a")
 	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{option}))
 	must(t, cache.Save(config))
-	must(t, cache.SelectMode(ipc.ModeMesh, "user-a"))
+	must(t, cache.SelectMode(ipc.ModeFull, "user-a"))
 	must(t, cache.Authorize("user-a", RoleUser, []AuthorizedOption{option}))
 	reopened := reopen(cache)
 	restored := load(t, reopened, "user-a")
-	if *restored.SelectedMode != ipc.ModeMesh || !reflect.DeepEqual(restored.Configs, []InstalledConfig{config}) {
+	if *restored.SelectedMode != ipc.ModeFull || !reflect.DeepEqual(restored.Configs, []InstalledConfig{config}) {
 		t.Fatalf("restored = %+v", restored)
 	}
-	if got := load(t, reopened, "user-b").SelectedMode; *got != ipc.ModeFull {
+	if got := load(t, reopened, "user-b").SelectedMode; *got != ipc.ModeMesh {
 		t.Fatalf("other mode = %v", *got)
 	}
 	expectErr(t, reopened.SelectMode(ipc.ModeMesh, "user-b"), ErrAccessDenied)
@@ -551,7 +551,7 @@ func TestAccountRoutingPreferencePersistsAcrossRefreshAndAccounts(t *testing.T) 
 func TestRoutingPreferenceLegacyDefaultsAndInvalidValuesStayUnknown(t *testing.T) {
 	var legacy InventorySnapshot
 	must(t, json.Unmarshal([]byte(`{"configs":[],"accessAllowed":true}`), &legacy))
-	if legacy.SelectedMode == nil || *legacy.SelectedMode != ipc.ModeFull {
+	if legacy.SelectedMode == nil || *legacy.SelectedMode != ipc.ModeMesh {
 		t.Fatalf("legacy mode = %v", legacy.SelectedMode)
 	}
 	for _, invalid := range []string{`"unsupported"`, `null`, `42`} {

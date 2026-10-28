@@ -9,6 +9,11 @@ operator. It isn't for production.
 The VM joins an existing subnet, such as the Chicago server's, and gets a
 public IP. The VCN, subnet, and security list are managed elsewhere.
 
+Linux is Mesh-first, unlike macOS and iOS. Full mode is experimental and may
+need provider-specific DHCP/DNS configuration. In particular, an OCI DHCP DNS
+search domain can block Full. Use `cloudgateway doctor` to inspect the host.
+The Mesh default is in the next release; v0.0.2 and earlier default to Full.
+
 ## Publish a test release
 
 Cloud-init downloads `install.sh` from the `linux-v<version>` GitHub release, so
@@ -34,7 +39,7 @@ This folder has its own state, separate from the regional servers.
 
 | Setting | Values |
 | --- | --- |
-| `arch` | `arm64` uses `VM.Standard.A1.Flex` with 1 OCPU and 6 GB. `amd64` uses `VM.Standard.E2.1.Micro` with 1 OCPU and 1 GB |
+| `arch` | `arm64` uses `VM.Standard.A1.Flex` with 1 OCPU and 1 GB. `amd64` uses `VM.Standard.E2.1.Micro` with 1/8 OCPU and 1 GB |
 | `ubuntu_version` | Any Ubuntu release OCI has an image for, such as `24.04` or `26.04` |
 | `release_version` | The `linux-v<version>` release to install |
 
@@ -71,3 +76,5 @@ Each enrolled VM takes one of the region's peer slots. Free it first with
 ```sh
 terraform destroy
 ```
+
+Destroy deletes the test VM's boot volume too.

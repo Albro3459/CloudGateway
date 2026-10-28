@@ -23,6 +23,7 @@ import (
 func TestRestartAdoptsRunningTunnelWithoutChanges(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.ResetCalls()
 
@@ -80,6 +81,7 @@ func TestRebootResumesAfterAFailedFirstObservation(t *testing.T) {
 func TestResumeReportsConnectingWhileWaitingForAuthorization(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	h.host = networktest.NewUbuntu()
@@ -114,6 +116,7 @@ func TestDownBeforeRebootStaysOff(t *testing.T) {
 func TestDownWhoseFirstSavesFailTurnsOffAndStaysOff(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	// A directory where the intent file belongs fails the stopping and removing
 	// saves. The teardown's first change clears it, so the later saves work
@@ -207,6 +210,7 @@ func TestInterruptedStopFinishesAtStartup(t *testing.T) {
 func TestNetworkdRuleRemovalIsReconciled(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.RemoveRules(func(r networktest.Rule) bool { return r.Protocol == network.RouteProtocol })
 	expect(t, "drifted", h.snapshot().Tunnel.Phase, ipc.TunnelConnecting)
@@ -220,6 +224,7 @@ func TestNetworkdRuleRemovalIsReconciled(t *testing.T) {
 func TestResolverPolicyFailureTearsDownAndRequiresPreflight(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.SetLinkDomains("enp0s1", "lan")
 
@@ -269,6 +274,7 @@ func TestLostLinkTearsDownTheTunnel(t *testing.T) {
 func TestRestartReplacesLeftoversOfADeletedLink(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	// Like a reboot whose saved nftables ruleset restored the owned table
@@ -284,6 +290,7 @@ func TestRestartReplacesLeftoversOfADeletedLink(t *testing.T) {
 func TestRestartFailsATunnelWhoseFwmarkChanged(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	// Someone cleared the fwmark while the daemon was down, so WireGuard's own packets loop into the tunnel
@@ -400,6 +407,7 @@ func TestUpdateReadinessFailureAndSupersede(t *testing.T) {
 func TestCleanupRemovesOwnedResourcesByJournal(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	st := h.st()
@@ -426,6 +434,7 @@ func TestCleanupRemovesOwnedResourcesByJournal(t *testing.T) {
 func TestCleanupRemovesResourcesFromNewerUnwritableState(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	if err := os.WriteFile(filepath.Join(h.dir, "storage.json"), []byte(`{"storageVersion":2}`), 0o600); err != nil {
@@ -489,6 +498,7 @@ func TestControllerOverServerSocket(t *testing.T) {
 func (h *harness) leaveRunning() {
 	h.t.Helper()
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.close(h.c)
 	h.host = networktest.NewUbuntu()
@@ -630,6 +640,7 @@ func TestUserUpSupersedesWaitingResume(t *testing.T) {
 func TestReadFailureBeforeAnyChangeKeepsWorkingTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	var failing atomic.Bool
 	var count atomic.Int32
@@ -886,6 +897,7 @@ func TestDrainRefusesUpdateConfirm(t *testing.T) {
 func (h *harness) leaveRunningUnsaved() func() {
 	h.t.Helper()
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	if _, err := h.c.writeIntent(func(i *store.Intent) { i.Phase = store.PhaseStarting }, false); err != nil {
 		h.t.Fatal(err)
@@ -938,6 +950,7 @@ func TestReconcileSavesUnsavedRunningIntent(t *testing.T) {
 func TestDownWaitingOnResolverFailureEndsAsDown(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	h.host.SetLinkDomains("enp0s1", "lan")
 	downed := make(chan result, 1)
@@ -993,6 +1006,7 @@ func TestResumeStopsAfterSetupWindow(t *testing.T) {
 func TestModeChangeReplacesDriftedTunnel(t *testing.T) {
 	h := newHarness(t)
 	h.signedIn(userA)
+	h.run(ipc.Request{Action: ipc.ActionSetMode, Mode: ipc.ModeFull})
 	h.up(configA)
 	// networkd removed a rule that cannot be added back
 	h.host.RemoveRules(func(r networktest.Rule) bool { return r.Priority == network.PrioritySuppress })
