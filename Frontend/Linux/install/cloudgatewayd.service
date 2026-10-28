@@ -1,0 +1,56 @@
+[Unit]
+Description=CloudGateway VPN daemon
+Documentation=https://github.com/Albro3459/CloudGateway
+# Boot resume retries its endpoint lookup, so this orders after resolved for
+# D-Bus without waiting for network-online.target
+After=network.target systemd-resolved.service
+# A daemon that fails fast stops after 5 starts in 60s. install.sh runs
+# reset-failed before it starts the daemon again
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/opt/cloudgateway/current/bin/cloudgatewayd
+# A managed update exits the daemon so systemd starts the newly installed release
+Restart=always
+RestartSec=2s
+# The daemon finishes in-flight requests on SIGTERM and leaves the tunnel up.
+# mixed sends SIGTERM only to the daemon, and systemd kills any remaining ip,
+# wg, or nft child once the daemon exits
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=10s
+LimitCORE=0
+UMask=0077
+
+# The operator traverses to the 0600 operator-owned socket
+RuntimeDirectory=cloudgateway
+RuntimeDirectoryMode=0711
+# Keeps the socket across a restart, so the CLI waits for the new release
+RuntimeDirectoryPreserve=restart
+StateDirectory=cloudgateway
+StateDirectoryMode=0700
+
+# Ubuntu 24.04 arm64 and amd64 VM runs exercised WireGuard, resolved, nftables,
+# and Full routing with these restrictions
+NoNewPrivileges=yes
+# strict leaves /proc/sys writable as long as ProtectKernelTunables stays off.
+# The state and runtime directories above stay writable
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+# CAP_CHOWN hands the socket to the operator. Narrowing the remaining file
+# capabilities needs separate validation
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

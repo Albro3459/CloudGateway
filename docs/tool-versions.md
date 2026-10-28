@@ -18,6 +18,9 @@ versions. These are development baselines, not a record of workstation patches.
 * Go available to Xcode: both Apple projects build the checked-in WireGuard
   submodule and Go bridge. Its module declares Go 1.17 as a floor, not a pinned
   build toolchain. Homebrew Go is found at `/opt/homebrew/bin/go` on ARM macOS.
+* Go 1.26 or newer for the [Linux client](../Frontend/Linux/go.mod), which pins
+  `toolchain go1.27.3` so release builds stay reproducible. It has no
+  third-party modules.
 * Periphery: strict Apple dead-code scans. Install with `brew install periphery`;
   see the platform configs under `Frontend/Apple/`.
 * Terraform 1.6 or newer: repo development baseline. Use the

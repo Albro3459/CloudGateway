@@ -1429,8 +1429,9 @@ public final class CloudGatewayMacController {
                     clearAccountPresentation()
                     finishRetainedLogin(attemptId, result: .expired)
                 } else {
+                    // Firebase signs out once it rejects the retained credentials
                     finishRetainedLogin(attemptId, result: user != nil ? .authorized
-                        : accessResult == .denied ? .denied : .offline)
+                        : accessResult == .denied ? .denied : auth.currentUser == nil ? .signInRequired : .offline)
                 }
             }
             return status

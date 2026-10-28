@@ -1,0 +1,9 @@
+[
+  {"priority": 0, "src": "all", "table": "local"},
+  {"priority": 5210, "src": "all", "fwmark": "0x80000", "fwmask": "0xff0000", "table": "main"},
+  {"priority": 5230, "src": "all", "fwmark": "0x80000", "fwmask": "0xff0000", "table": "default"},
+  {"priority": 5250, "src": "all", "fwmark": "0x80000", "fwmask": "0xff0000", "action": "unreachable"},
+  {"priority": 5270, "src": "all", "table": "52"},
+  {"priority": 32766, "src": "all", "table": "main"},
+  {"priority": 32767, "src": "all", "table": "default"}
+]

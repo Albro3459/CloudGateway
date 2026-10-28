@@ -1,0 +1,12 @@
+[
+  {"dst": "default", "table": "52820", "dev": "cloudgateway", "protocol": "206", "metric": 1024, "flags": [], "pref": "medium"},
+  {"dst": "2001:db8:1::/64", "dev": "enp0s1", "protocol": "9", "metric": 100, "flags": [], "expires": 86391, "pref": "medium"},
+  {"dst": "fd42:42:42::5", "dev": "cloudgateway", "protocol": "2", "metric": 256, "flags": [], "pref": "medium"},
+  {"dst": "fe80::/64", "dev": "enp0s1", "protocol": "2", "metric": 256, "flags": [], "pref": "medium"},
+  {"dst": "default", "gateway": "fe80::1", "dev": "enp0s1", "protocol": "9", "metric": 100, "flags": [], "expires": 1791, "pref": "medium"},
+  {"type": "local", "dst": "::1", "table": "255", "dev": "lo", "protocol": "2", "metric": 0, "flags": [], "pref": "medium"},
+  {"type": "local", "dst": "2001:db8:1::5", "table": "255", "dev": "enp0s1", "protocol": "2", "metric": 0, "flags": [], "pref": "medium"},
+  {"type": "local", "dst": "fd42:42:42::5", "table": "255", "dev": "cloudgateway", "protocol": "2", "metric": 0, "flags": [], "pref": "medium"},
+  {"type": "local", "dst": "fe80::5054:ff:fe12:3456", "table": "255", "dev": "enp0s1", "protocol": "2", "metric": 0, "flags": [], "pref": "medium"},
+  {"type": "multicast", "dst": "ff00::/8", "table": "255", "dev": "enp0s1", "protocol": "2", "metric": 256, "flags": [], "pref": "medium"}
+]

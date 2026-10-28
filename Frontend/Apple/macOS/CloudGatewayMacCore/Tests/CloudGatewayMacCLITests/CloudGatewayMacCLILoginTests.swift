@@ -146,14 +146,14 @@ private func loginWithoutInteractiveStdinStillPollsToAuthorization(_ flags: [Str
     #expect(fixture.polls == 0)
 }
 
-@Test(arguments: [CloudGatewayMacLoginStatus.Result.denied, .expired, .busy, .cancelled, .offline]) @MainActor
+@Test(arguments: [CloudGatewayMacLoginStatus.Result.denied, .expired, .busy, .cancelled, .offline, .signInRequired]) @MainActor
 private func terminalLoginResultsRestoreInput(_ terminal: CloudGatewayMacLoginStatus.Result) async {
     let fixture = LoginFixture()
     fixture.result = terminal
     let result = await fixture.run(["--json"])
     guard case .failure(let error) = result else { Issue.record("Expected terminal failure"); return }
     let exit: Int32 = switch terminal {
-    case .denied: 3
+    case .denied, .signInRequired: 3
     case .expired: 8
     case .busy: 7
     case .offline: 6

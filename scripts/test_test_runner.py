@@ -19,7 +19,7 @@ class TestRunnerTests(unittest.TestCase):
         start = text.index("run_step() {")
         runner = text[start:]
         stubs = []
-        for target in ("api", "web", "infra", "firebase", "ios", "macos"):
+        for target in ("api", "web", "infra", "firebase", "linux", "ios", "macos"):
             outcome = "return 1" if target == failing else "return 0"
             if target == recorded_failure:
                 outcome = f'FAILURES+=("{target} check"); return 0'
@@ -40,7 +40,7 @@ class TestRunnerTests(unittest.TestCase):
     def test_default_runs_every_suite_once(self):
         result = self.run_targets()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.called(result), ["api", "web", "infra", "firebase", "ios", "macos"])
+        self.assertEqual(self.called(result), ["api", "web", "infra", "firebase", "linux", "ios", "macos"])
         self.assertIn("All checks passed.", result.stdout)
 
     def test_apple_runs_both_platforms(self):
@@ -49,7 +49,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(self.called(result), ["ios", "macos"])
 
     def test_platform_targets_run_independently(self):
-        for target in ("ios", "macos"):
+        for target in ("ios", "macos", "linux"):
             with self.subTest(target=target):
                 result = self.run_targets(target)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -87,7 +87,7 @@ class TestRunnerTests(unittest.TestCase):
         self.assertIn("Unknown target: unknown", result.stderr)
 
     def test_default_continues_after_any_suite_fails(self):
-        targets = ["api", "web", "infra", "firebase", "ios", "macos"]
+        targets = ["api", "web", "infra", "firebase", "linux", "ios", "macos"]
         for target in targets:
             with self.subTest(target=target):
                 result = self.run_targets(failing=target)

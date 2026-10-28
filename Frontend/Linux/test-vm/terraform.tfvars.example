@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and fill in real values. It's gitignored.
+# Placement can match the Chicago server's tfvars
+
+# --- OCI placement ---
+region              = "us-chicago-1"
+oci_config_profile  = "your-oci-profile"
+availability_domain = "AAAA:US-CHICAGO-1-AD-1"
+compartment_id      = "ocid1.tenancy.oc1..replace_me"
+subnet_id           = "ocid1.subnet.oc1.us-chicago-1.replace_me"
+
+# --- What to test ---
+# arm64 or amd64
+arch            = "arm64"
+# Optional paid AMD fallback when E2.1.Micro is unavailable
+# amd64_shape = "VM.Standard.E4.Flex"
+ubuntu_version  = "24.04"
+# Installs the linux-v<version> GitHub release
+release_version = "1.0.0"
+
+# --- Access ---
+# Create your password with 'openssl passwd -6'
+hashed_password = "$6$replace_with_salt$replace_with_hash"
+
+# Optional. OCI requires ssh-rsa!
+ssh_authorized_keys = []

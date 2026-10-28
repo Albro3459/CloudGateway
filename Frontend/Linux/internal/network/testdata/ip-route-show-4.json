@@ -1,0 +1,12 @@
+[
+  {"dst": "default", "table": "52820", "dev": "cloudgateway", "protocol": "206", "scope": "253", "flags": []},
+  {"dst": "default", "gateway": "192.168.64.1", "dev": "enp0s1", "protocol": "16", "prefsrc": "192.168.64.5", "metric": 100, "flags": []},
+  {"dst": "192.168.64.0/24", "dev": "enp0s1", "protocol": "2", "scope": "253", "prefsrc": "192.168.64.5", "metric": 100, "flags": []},
+  {"dst": "192.168.64.1", "dev": "enp0s1", "protocol": "16", "scope": "253", "prefsrc": "192.168.64.5", "metric": 100, "flags": []},
+  {"type": "local", "dst": "10.0.0.5", "table": "255", "dev": "cloudgateway", "protocol": "2", "scope": "254", "prefsrc": "10.0.0.5", "flags": []},
+  {"type": "local", "dst": "127.0.0.0/8", "table": "255", "dev": "lo", "protocol": "2", "scope": "254", "prefsrc": "127.0.0.1", "flags": []},
+  {"type": "local", "dst": "127.0.0.1", "table": "255", "dev": "lo", "protocol": "2", "scope": "254", "prefsrc": "127.0.0.1", "flags": []},
+  {"type": "broadcast", "dst": "127.255.255.255", "table": "255", "dev": "lo", "protocol": "2", "scope": "253", "prefsrc": "127.0.0.1", "flags": []},
+  {"type": "local", "dst": "192.168.64.5", "table": "255", "dev": "enp0s1", "protocol": "2", "scope": "254", "prefsrc": "192.168.64.5", "flags": []},
+  {"type": "broadcast", "dst": "192.168.64.255", "table": "255", "dev": "enp0s1", "protocol": "2", "scope": "253", "prefsrc": "192.168.64.5", "flags": []}
+]

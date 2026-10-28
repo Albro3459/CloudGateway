@@ -58,7 +58,7 @@ Menu polling pauses at 15 minutes. The controller can exit once requests,
 accepted work, extension work, and retained results allow it; the tunnel stays
 connected independently. Sleep does not catch up missed refreshes.
 
-Menu opening shows cached state and refreshes inventory older than 30 seconds.
+Menu opening shows cached state and refreshes inventory older than 60 seconds.
 CLI `list` waits for that refresh within its deadline. Explicit Refresh and
 `list --refresh` fetch immediately, joining an existing fetch. Refresh never
 reconnects the VPN. Access checks and parallel region/client reads have separate
