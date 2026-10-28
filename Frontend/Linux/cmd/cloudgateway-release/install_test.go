@@ -173,6 +173,7 @@ func (e *installEnv) exists(rel string) bool {
 }
 
 func TestInstallFreshLayout(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	output := e.install(dir)
@@ -231,6 +232,7 @@ func TestInstallFreshLayout(t *testing.T) {
 }
 
 func TestInstallUpdateKeepsPreviousRelease(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	e.install(e.release("1.0.0", 1))
 	e.takeLog()
@@ -258,6 +260,7 @@ func TestInstallUpdateKeepsPreviousRelease(t *testing.T) {
 }
 
 func TestReinstallReusesOrRepairsRelease(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.install(dir)
@@ -301,6 +304,7 @@ func TestReinstallReusesOrRepairsRelease(t *testing.T) {
 }
 
 func TestInstallCleansUpAfterKilledRun(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	e.install(e.release("1.0.0", 1))
 	// A killed same-version reinstall moved 1.0.0 aside and left temp dirs behind
@@ -324,6 +328,7 @@ func TestInstallCleansUpAfterKilledRun(t *testing.T) {
 }
 
 func TestRerunFinishesInterruptedFirstInstall(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.env["CLOUDGATEWAY_TEST_FAIL"] = "enable"
@@ -340,6 +345,7 @@ func TestRerunFinishesInterruptedFirstInstall(t *testing.T) {
 }
 
 func TestInstallRefusesTamperedAssets(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	archive := filepath.Join(dir, release.ArchiveName("1.0.0", "amd64"))
@@ -401,6 +407,7 @@ func rawArchive(t *testing.T, entries []archiveEntry) []byte {
 }
 
 func TestInstallRefusesUnsafeArchiveContents(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	escape := filepath.Join(e.base, "escaped")
 	legit := []archiveEntry{
@@ -451,6 +458,7 @@ func TestInstallRefusesUnsafeArchiveContents(t *testing.T) {
 }
 
 func TestInstallFailsWhenTheDaemonDoesNotStayRunning(t *testing.T) {
+	t.Parallel()
 	for name, systemctl := range map[string]string{
 		// Each show reads a new invocation, as after an automatic restart
 		"restarted": `if [ "$1" = show ]; then echo >>"$CLOUDGATEWAY_TEST_LOG.starts"; wc -l <"$CLOUDGATEWAY_TEST_LOG.starts"; fi`,
@@ -473,6 +481,7 @@ func TestInstallFailsWhenTheDaemonDoesNotStayRunning(t *testing.T) {
 }
 
 func TestInstallRefusesAnInstallDirOthersCanWrite(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	mkdirAll(t, e.path("opt/cloudgateway"))
@@ -489,6 +498,7 @@ func TestInstallRefusesAnInstallDirOthersCanWrite(t *testing.T) {
 }
 
 func TestInstallAcceptsASymlinkedInstallDir(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	// Like an install dir moved to another disk
 	mkdirAll(t, e.path("data/cloudgateway"))
@@ -515,6 +525,7 @@ func TestInstallAcceptsASymlinkedInstallDir(t *testing.T) {
 }
 
 func TestInstallRefusesStorageDowngrade(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	older := e.release("1.0.0", 1)
 	newer := e.release("1.0.1", 2)
@@ -531,6 +542,7 @@ func TestInstallRefusesStorageDowngrade(t *testing.T) {
 }
 
 func TestUninstallKeepsStateUnlessPurged(t *testing.T) {
+	t.Parallel()
 	for _, purge := range []bool{false, true} {
 		e := newInstallEnv(t)
 		dir := e.release("1.0.0", 1)
@@ -564,6 +576,7 @@ func TestUninstallKeepsStateUnlessPurged(t *testing.T) {
 }
 
 func TestUninstallStopsWhenCleanupFails(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.install(dir)
@@ -575,6 +588,7 @@ func TestUninstallStopsWhenCleanupFails(t *testing.T) {
 }
 
 func TestForeignCommandLinkIsLeftAlone(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	foreign := e.path("usr/local/bin/cloudgateway")
@@ -601,6 +615,7 @@ func TestForeignCommandLinkIsLeftAlone(t *testing.T) {
 }
 
 func TestInstallChecksHostAndOperator(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	script := filepath.Join(dir, "install.sh")
@@ -642,6 +657,7 @@ func TestInstallChecksHostAndOperator(t *testing.T) {
 }
 
 func TestInstallNeedsFlock(t *testing.T) {
+	t.Parallel()
 	for _, dir := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
 		if _, err := os.Stat(filepath.Join(dir, "flock")); err == nil {
 			t.Skip("this host has flock outside the stub dir")
@@ -656,6 +672,7 @@ func TestInstallNeedsFlock(t *testing.T) {
 }
 
 func TestInstallMissingPackagesNeedConsent(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	if err := os.Remove(e.path("usr/sbin/nft")); err != nil {
@@ -681,6 +698,7 @@ func TestInstallMissingPackagesNeedConsent(t *testing.T) {
 }
 
 func TestInstallWarnsWithoutResolved(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.stub("resolvectl", "echo Global:")
@@ -691,6 +709,7 @@ func TestInstallWarnsWithoutResolved(t *testing.T) {
 }
 
 func TestInstallDownloadsOverHTTPS(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	// The stub serves files from the release dir by URL basename
@@ -730,6 +749,7 @@ func writeFile(t *testing.T, path, contents string, mode os.FileMode) {
 }
 
 func TestUninstallRestoresAnInterruptedRepair(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.install(dir)
@@ -752,6 +772,7 @@ func TestUninstallRestoresAnInterruptedRepair(t *testing.T) {
 }
 
 func TestUninstallRefusesWithoutADaemonWhileTheTunnelIsUp(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.install(dir)
@@ -781,6 +802,7 @@ func TestUninstallRefusesWithoutADaemonWhileTheTunnelIsUp(t *testing.T) {
 }
 
 func TestUninstallIgnoresAForeignLinkWithOurName(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	e.install(dir)
@@ -800,6 +822,7 @@ func TestUninstallIgnoresAForeignLinkWithOurName(t *testing.T) {
 }
 
 func TestUninstallFallsBackToTheHighestInstalledDaemon(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	e.install(e.release("1.9.0", 1))
 	dir := e.release("1.10.0", 1)
@@ -822,6 +845,7 @@ func TestUninstallFallsBackToTheHighestInstalledDaemon(t *testing.T) {
 }
 
 func TestStampedInstallerOnlyInstallsItsReleaseFromAFolder(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	newer := e.release("2.0.0", 1)
 	older := e.release("1.0.0", 1)
@@ -830,6 +854,7 @@ func TestStampedInstallerOnlyInstallsItsReleaseFromAFolder(t *testing.T) {
 }
 
 func TestResolverCheckReadsLongOutput(t *testing.T) {
+	t.Parallel()
 	e := newInstallEnv(t)
 	dir := e.release("1.0.0", 1)
 	// Hosts with many veths print more than a pipe holds, and grep -q stops at the first match

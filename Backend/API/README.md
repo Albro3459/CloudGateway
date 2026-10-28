@@ -123,6 +123,11 @@ Run `./scripts/test.sh api` from the repo root for API validation. The separate
 Firestore rules tests, with local Auth and Firestore emulators. Other API tests
 need no Firebase credentials or emulators.
 
+The test runner reuses successful editable dependency setup while the API
+project metadata, Python environment, and installed package metadata match.
+Source-only edits need no reinstall. Dependency changes or missing tools
+trigger another sync. The success fingerprint lives inside the ignored `.venv`.
+
 ## Deployment And Operations
 
 The bootstrap creates `/opt/cloudgateway/api`, its `.venv`, `/etc/cloudgateway/api.env`,

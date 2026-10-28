@@ -28,20 +28,51 @@ FAILURES=()
 API_PYTHON_TOOLS_READY=0
 APPLE_SIGNED=0
 APPLE_SHARED_TEST_STATUS=-1
+APPLE_KIT_TESTS_BUILT=0
+APPLE_FIREBASE_TESTS_BUILT=0
+MACOS_CORE_TESTS_BUILT=0
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
 run_check() {
   local name="$1"
   shift
+  local started=$SECONDS
   echo "--- $name ---"
   if "$@"; then
-    echo "OK: $name"
+    echo "OK: $name ($((SECONDS - started))s)"
     return 0
   fi
-  echo "FAILED: $name" >&2
+  echo "FAILED: $name ($((SECONDS - started))s)" >&2
   FAILURES+=("$name")
   return 1
+}
+
+api_python_tools_fingerprint() {
+  ./.venv/bin/python - <<'PY'
+from hashlib import sha256
+from importlib.metadata import distributions
+from pathlib import Path
+import sys
+
+if Path(sys.prefix).resolve() != Path('.venv').resolve():
+    raise SystemExit('Backend/API/.venv is not a working virtual environment')
+interpreter = Path(sys.executable).resolve()
+state = [
+    Path('pyproject.toml').read_bytes(),
+    Path('.venv/pyvenv.cfg').read_bytes(),
+    str(Path.cwd().resolve()).encode(),
+    sys.version.encode(),
+    str(interpreter).encode(),
+    str(interpreter.stat().st_mtime_ns).encode(),
+]
+packages = sorted(
+    (dist.metadata['Name'], dist.version, dist.read_text('direct_url.json') or '')
+    for dist in distributions()
+)
+state.append(repr(packages).encode())
+print(sha256(b'\0'.join(state)).hexdigest())
+PY
 }
 
 ensure_api_python_tools() {
@@ -56,10 +87,28 @@ ensure_api_python_tools() {
     run_check "API venv create" python3 -m venv .venv || return 1
     run_check "API pip upgrade" ./.venv/bin/python -m pip install --quiet --upgrade pip || return 1
   fi
-  # Upsert dependencies from pyproject every run (like `npm i`) so new deps are
-  # picked up on an existing venv. pip is a no-op when everything is satisfied.
+  local stamp=.venv/.test-tools-fingerprint
+  local fingerprint
+  if ! fingerprint="$(api_python_tools_fingerprint)"; then
+    FAILURES+=("API dependency state")
+    return 1
+  fi
+  if [[ -f "$stamp" && -x .venv/bin/pyright && -x .venv/bin/vulture &&
+        "$(cat "$stamp")" == "$fingerprint" ]]; then
+    API_PYTHON_TOOLS_READY=1
+    return 0
+  fi
+  # Invalidate before pip so a failed sync cannot reuse an earlier success
+  if ! echo > "$stamp"; then
+    FAILURES+=("API dependency cache")
+    return 1
+  fi
   echo "Syncing API dependencies"
   run_check "API dependency sync" ./.venv/bin/python -m pip install --quiet -e '.[dev]' || return 1
+  if ! fingerprint="$(api_python_tools_fingerprint)" || ! echo "$fingerprint" > "$stamp"; then
+    FAILURES+=("API dependency cache")
+    return 1
+  fi
   API_PYTHON_TOOLS_READY=1
 }
 
@@ -95,8 +144,8 @@ test_web() {
     run_check "Web dependency install" npm install || return 1
   fi
 
-  run_check "Web Jest" env CI=true npm run test -- --watchAll=false --runInBand
-  run_check "Web TypeScript" npx tsc --noEmit
+  run_check "Web Jest" env CI=true npm run test -- --watchAll=false --maxWorkers=2
+  run_check "Web TypeScript" npx tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/test-runner.tsbuildinfo
   # Dead-code enforcement via knip (see Frontend/Web/knip.json), mirroring the
   # Apple Periphery scans: unused files/exports/deps fail the target.
   run_check "Web dead code (knip)" npx --no-install knip
@@ -151,8 +200,8 @@ check_apple_signing_prerequisites() {
 # Frontend/Apple/.periphery.yml for why three): the app xcodeproj scan covers
 # all production code including unused public shared API, and the two SPM
 # scans (which build the test targets) cover dead test code. --strict makes
-# any finding fail the target. SPM scans force the native build system, since
-# newer SwiftPM defaults to swiftbuild, which writes no index store for Periphery.
+# any finding fail the target. Keep SPM scans and tests on the native build
+# system so successful scans can supply the test executables
 scan_apple_dead_code() {
   if ! command -v periphery >/dev/null 2>&1; then
     echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
@@ -166,19 +215,36 @@ scan_apple_dead_code() {
       --schemes CloudGateway --schemes CloudGatewayScreenshots \
       --report-exclude "**/wireguard-apple/**" ||
     failed=1
-  run_check "Apple dead code: Kit tests" \
+  if run_check "Apple dead code: Kit tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
-      --report-include "**/Tests/**" -- --build-system native ||
+      --report-include "**/Tests/**" -- --build-system native
+  then
+    APPLE_KIT_TESTS_BUILT=1
+  else
     failed=1
-  run_check "Apple dead code: Firebase adapter tests" \
+  fi
+  if run_check "Apple dead code: Firebase adapter tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
-      --report-include "**/Tests/**" -- --build-system native ||
+      --report-include "**/Tests/**" -- --build-system native
+  then
+    APPLE_FIREBASE_TESTS_BUILT=1
+  else
     failed=1
+  fi
   return "$failed"
+}
+
+run_apple_package_tests() {
+  local name="$1" package="$2" built="$3"
+  local args=(--package-path "$package" --build-system native)
+  if [[ "$built" -eq 1 ]]; then
+    args+=(--skip-build)
+  fi
+  run_check "$name" swift test "${args[@]}"
 }
 
 test_apple_shared_packages() {
@@ -190,11 +256,11 @@ test_apple_shared_packages() {
   run_check "Apple WireGuard startup regressions" \
     make -C Frontend/Apple/wireguard-apple test ||
     APPLE_SHARED_TEST_STATUS=1
-  run_check "Apple Kit and AppCore package tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayKit ||
+  run_apple_package_tests "Apple Kit and AppCore package tests" \
+    Frontend/Apple/CloudGatewayKit "$APPLE_KIT_TESTS_BUILT" ||
     APPLE_SHARED_TEST_STATUS=1
-  run_check "Apple Firebase auth adapter tests" \
-    swift test --package-path Frontend/Apple/CloudGatewayFirebaseAdapter ||
+  run_apple_package_tests "Apple Firebase auth adapter tests" \
+    Frontend/Apple/CloudGatewayFirebaseAdapter "$APPLE_FIREBASE_TESTS_BUILT" ||
     APPLE_SHARED_TEST_STATUS=1
   return "$APPLE_SHARED_TEST_STATUS"
 }
@@ -277,12 +343,16 @@ scan_macos_dead_code() {
       --report-include "**/CloudGatewayCustomTokenAuthServicing.swift" \
       --report-include "**/CloudGatewayFirebaseCustomTokenSession.swift" ||
     failed=1
-  run_check "macOS dead code: host-free tests" \
+  if run_check "macOS dead code: host-free tests" \
     periphery scan --quiet --strict \
       --config "$ROOT/Frontend/Apple/macOS/.periphery.yml" \
       --project-root "$ROOT/Frontend/Apple/macOS/CloudGatewayMacCore" \
-      --report-include "**/Tests/**" -- --build-system native ||
+      --report-include "**/Tests/**" -- --build-system native
+  then
+    MACOS_CORE_TESTS_BUILT=1
+  else
     failed=1
+  fi
   return "$failed"
 }
 
@@ -302,10 +372,10 @@ test_macos() {
     python3 -m unittest scripts/test_macos_release.py || failed=1
   test_apple_shared_packages ||
     failed=1
-  run_check "macOS host-free core and IPC tests" \
-    swift test --package-path Frontend/Apple/macOS/CloudGatewayMacCore ||
-    failed=1
   scan_macos_dead_code || failed=1
+  run_apple_package_tests "macOS host-free core and IPC tests" \
+    Frontend/Apple/macOS/CloudGatewayMacCore "$MACOS_CORE_TESTS_BUILT" ||
+    failed=1
   run_check "macOS project list" \
     xcodebuild -list -project Frontend/Apple/macOS/CloudGateway.xcodeproj ||
     failed=1
@@ -406,21 +476,21 @@ test_infra() {
   run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' Infrastructure/OCI/caddy/Dockerfile
   run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' Infrastructure/OCI/caddy/Dockerfile
 
-  run_pyright "Terraform preflight pyright" scripts/terraform-preflight.py scripts/test_terraform_preflight.py
+  run_pyright "Infra tools pyright" \
+    scripts/terraform-preflight.py scripts/test_terraform_preflight.py \
+    scripts/test_terraform_wrapper.py scripts/backup_firestore.py \
+    scripts/test_backup_firestore.py scripts/test_ios_release.py
   run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
   run_check "Terraform  preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
-  run_pyright "Terraform wrapper pyright" scripts/test_terraform_wrapper.py
   run_check "Terraform wrapper compile" python3 -m py_compile scripts/test_terraform_wrapper.py
   run_check "Terraform wrapper tests" python3 -m unittest scripts/test_terraform_wrapper.py
 
-  run_pyright "Firestore backup pyright" scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup compile" python3 -m py_compile scripts/backup_firestore.py scripts/test_backup_firestore.py
   run_check "Firestore backup tests" python3 -m unittest scripts/test_backup_firestore.py
 
   # bash -n above only parses the shell; these exercise the Python embedded in
   # the ios-release heredocs (JWT signer + version bumper) so a release-only
   # code path is validated locally instead of first failing during a release.
-  run_pyright "iOS release pyright" scripts/test_ios_release.py
   run_check "iOS release compile" python3 -m py_compile scripts/test_ios_release.py
   run_check "iOS release tests" python3 -m unittest scripts/test_ios_release.py
 }

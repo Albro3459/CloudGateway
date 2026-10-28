@@ -25,3 +25,8 @@ platform targets own UI, lifecycle, signing, and adapters.
 Use `./scripts/test.sh ios`, `macos`, or `apple` from the repository root.
 Add `--signed` for provisioning/signature checks. Runtime VPN and approval
 checks remain manual; documentation-only edits need manual review.
+
+Package tests use the native SwiftPM build system. When a package's Periphery
+scan succeeds in the same invocation, tests reuse its built test executables.
+If the scan fails or Periphery is unavailable, the tests build normally.
+Production scans keep their own indexes, separate from package tests.
