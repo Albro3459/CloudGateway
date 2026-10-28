@@ -5,8 +5,9 @@
 defines the public behavior and the [research](../../docs/linux-cli-research.md)
 explains the design. Progress lives in the [implementation plan](../../TODO/linux-cli.md).
 
-Status: v0.0.2 is a prerelease. Ubuntu 24.04 arm64 passed native login and
-Chicago/San Jose Mesh and Full connectivity checks on a 1 OCPU / 1 GB OCI VM.
+Status: v0.0.3 is a prerelease. Ubuntu 24.04 amd64 (v0.0.3) and arm64 (v0.0.2)
+passed native login and Chicago/San Jose Mesh and Full connectivity checks on
+1 OCPU / 1 GB OCI VMs.
 Full required removing the VM's DHCP-provided DNS search domain. See the
 [VM results](../../docs/linux-cli-vm-results.md). The remaining VM matrix is
 unverified. No broader distro support is claimed.
@@ -41,7 +42,7 @@ experimental on Linux and is not guaranteed to work seamlessly out of the box
 with every cloud provider. Provider-specific DHCP and DNS settings may need
 manual configuration.
 
-The next release defaults to Mesh for new accounts and missing legacy
+Version 0.0.3 defaults to Mesh for new accounts and missing legacy
 preferences. Published v0.0.2 and earlier default to Full. An explicit saved
 Full or Mesh choice is retained across updates.
 

@@ -11,6 +11,8 @@ subnet_id           = "ocid1.subnet.oc1.us-chicago-1.replace_me"
 # --- What to test ---
 # arm64 or amd64
 arch            = "arm64"
+# Optional paid AMD fallback when E2.1.Micro is unavailable
+# amd64_shape = "VM.Standard.E4.Flex"
 ubuntu_version  = "24.04"
 # Installs the linux-v<version> GitHub release
 release_version = "0.1.0"

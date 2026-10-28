@@ -1,13 +1,14 @@
 # Linux CLI implementation
 
 Linux is Mesh-first, unlike macOS and iOS. Full mode is experimental and may
-need cloud-provider DHCP/DNS configuration. The Mesh default is in the next
-release; published v0.0.2 and earlier default to Full.
+need cloud-provider DHCP/DNS configuration. Version 0.0.3 defaults to Mesh;
+published v0.0.2 and earlier default to Full.
 
 The client is implemented in [`Frontend/Linux`](../Frontend/Linux/README.md)
-and tested host-free. Checked items are implemented. Ubuntu 24.04 arm64
-v0.0.2 VM testing passed login and Chicago/San Jose Mesh and Full connectivity,
-with a DNS search-domain adjustment for Full. See the [VM results](../docs/linux-cli-vm-results.md).
+and tested host-free. Checked items are implemented. Ubuntu 24.04 v0.0.2 arm64
+and v0.0.3 amd64 VM testing passed login and Chicago/San Jose Mesh
+and Full connectivity, with a DNS search-domain adjustment for Full. See the
+[VM results](../docs/linux-cli-vm-results.md).
 The remaining platform and failure-case acceptance items still need evidence.
 Start from `linux-cli` and use the
 [research](../docs/linux-cli-research.md) and [parity contract](../docs/linux-cli-parity.md).
@@ -25,7 +26,7 @@ actual validation.
   toolchain pin and release build
 - [ ] Prove daemon socket authority and enrolled UID
 - [ ] Set up disposable Ubuntu 24.04/26.04 test VMs, amd64 and arm64, with
-  console access for recovery. Ubuntu 24.04 arm64 was created and tested once
+  console access for recovery. Ubuntu 24.04 arm64 and amd64 were created and tested
 - [ ] On those VMs, prove owned dual-stack policy routing, resolved DNS
   exclusivity, and the Full-mode server hostname lookup over the physical link
   before committing to the production adapter
@@ -101,7 +102,8 @@ and daemon restart leave no unowned changes or secret output.
   MTU on jumbo-frame NICs, interrupted transition, rollback, and
   incomplete-cleanup behavior
 - [ ] Prove crash recovery, reboot resume of the last connected client/mode,
-  `down` before reboot staying off, and logout suppression
+  `down` before reboot staying off, and logout suppression. Ubuntu 24.04 amd64
+  passed Mesh reboot resume and `down` persistence; crash and logout cases remain
 
 Checkpoint: both modes meet the network acceptance matrix. Document the absence
 of a kill-switch guarantee and which local routes stay outside the tunnel.

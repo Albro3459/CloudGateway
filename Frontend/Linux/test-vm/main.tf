@@ -46,6 +46,17 @@ variable "arch" {
   description = "arm64 or amd64. Picks the shape, which picks the image build"
 }
 
+variable "amd64_shape" {
+  type        = string
+  default     = "VM.Standard.E2.1.Micro"
+  description = "AMD shape: Always Free E2.1.Micro, or paid E4.Flex with 1 OCPU and 1 GB"
+
+  validation {
+    condition     = contains(["VM.Standard.E2.1.Micro", "VM.Standard.E4.Flex"], var.amd64_shape)
+    error_message = "Use VM.Standard.E2.1.Micro or VM.Standard.E4.Flex"
+  }
+}
+
 variable "ubuntu_version" {
   type        = string
   default     = "24.04"
@@ -70,10 +81,14 @@ variable "ssh_authorized_keys" {
 }
 
 locals {
-  # Always Free shapes. E2.1.Micro is free only in the tenancy's home region
+  # E2.1.Micro is free only in the home region and may not be offered there
   shapes = {
     arm64 = { name = "VM.Standard.A1.Flex", ocpus = 1, memory_in_gbs = 1 }
-    amd64 = { name = "VM.Standard.E2.1.Micro", ocpus = null, memory_in_gbs = null }
+    amd64 = {
+      name          = var.amd64_shape
+      ocpus         = var.amd64_shape == "VM.Standard.E2.1.Micro" ? null : 1
+      memory_in_gbs = var.amd64_shape == "VM.Standard.E2.1.Micro" ? null : 1
+    }
   }
   shape = local.shapes[var.arch]
 

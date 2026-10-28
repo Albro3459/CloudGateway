@@ -2,11 +2,92 @@
 
 Current Linux policy is Mesh-first, unlike macOS and iOS. Full mode is
 experimental and may require cloud-provider DHCP/DNS configuration. This policy
-starts with the next release; the v0.0.1/v0.0.2 runs below used the old Full
+starts with v0.0.3; the v0.0.1/v0.0.2 runs below used the old Full
 default. Their saved mode choices are not changed by an update.
 
 Network addresses and provider-specific domain names are omitted. Role labels
 preserve the routing evidence without identifying individual hosts.
+Results also omit account, client, and infrastructure identifiers, approval
+codes, and credentials. Local test artifacts retain sanitized check summaries.
+
+## 2026-10-27: v0.0.3, Ubuntu 24.04 amd64
+
+Result: native login, the new Mesh default, inventory, client creation,
+Chicago/San Jose Mesh and Full connectivity, and reboot recovery passed. Full
+required the same temporary DNS search-domain adjustment as the arm64 run.
+
+### Environment
+
+* Release: [linux-v0.0.3](https://github.com/Albro3459/CloudGateway/releases/tag/linux-v0.0.3)
+* Source commit: `10d4cbe83a322fb85ad98c69d06104f127297f7c`
+* OCI image: `Canonical-Ubuntu-24.04-2026.09.18-0`
+* Architecture: `x86_64`, kernel `6.17.0-1020-oracle`
+* OS: Ubuntu 24.04.5 LTS
+* Region: Chicago, availability domain 1
+* Shape: paid `VM.Standard.E4.Flex`, 1 OCPU and 1 GB RAM
+
+The Always Free `E2.1.Micro` shape was absent from all three Chicago availability
+domains. Its initial launch failed without creating a VM. The test Terraform
+setup now accepts an explicit paid E4 fallback and keeps E2 as its amd64 default.
+Both installed executables matched the published amd64 archive's SHA-256 hashes.
+
+### Connectivity and DNS
+
+The Mac stayed connected to its existing Chicago Mesh client. The VM used
+separate temporary Chicago and San Jose clients. Each ping case sent three
+requests to the Mac peer in each address family.
+
+| VM client | Mode | Mac IPv4 ping | Mac IPv6 ping | Public IPv4 |
+| --- | --- | --- | --- | --- |
+| Chicago | Mesh | 3/3, 0% loss | 3/3, 0% loss | VM underlay |
+| Chicago | Full | 3/3, 0% loss | 3/3, 0% loss | Chicago exit |
+| San Jose | Mesh | 3/3, 0% loss | 3/3, 0% loss | VM underlay |
+| San Jose | Full | 3/3, 0% loss | 3/3, 0% loss | San Jose exit |
+
+The fresh account selected Mesh after login and connected without a mode change.
+With stock OCI DHCP DNS, switching to Full returned `setup_required`, preserved
+the connected Mesh tunnel, and left doctor reporting a Full-readiness warning.
+Human output included the experimental-mode and DHCP guidance on stderr.
+
+Temporarily clearing the physical interface's DNS search domain enabled Full.
+Both regions then provided IPv6 HTTPS egress, tunnel DNS servers, and the `~.`
+DNS routing domain. All 13 doctor checks passed in each region. Mesh left tunnel
+DNS unset. Stock search domains were restored after Full checks. No shared VCN
+DHCP or subnet settings were changed.
+
+### Runtime
+
+The unenrolled `ubuntu` user was denied daemon access. The state directory was
+mode `0700` and the operator socket was mode `0600`. Restarting the daemon in
+Chicago Full adopted the existing interface without replacing it. The installed
+release's no-op `update` completed with the tunnel connected. This does not
+validate an upgrade between different releases.
+
+A connected reboot restored authentication and resumed the same San Jose Mesh
+client. Both address families still reached the Mac, and public IPv4 stayed on
+the VM underlay. After explicit `down`, another reboot restored authentication
+but kept the tunnel disconnected through the subsequent 20-second observation.
+
+Ubuntu 26.04, connected release upgrades, Full-mode reboot with persistent DNS
+setup, cross-account denial, and failure-injection cases remain untested.
+
+### Cleanup
+
+Both temporary clients were removed online. The original inventory and the
+Mac's connected Mesh client were preserved. Signed-out `down` succeeded, while
+signed-out `up` required login. The owned interface, both-family policy rules
+and routes, and nftables table were absent after disconnect. Uninstall with
+`--purge` removed the CLI, releases, state, and systemd unit.
+
+Terraform destroyed the VM and its boot volume. Follow-up OCI reads confirmed
+the VM was terminated, no active test boot volume remained, and existing
+instances, boot volumes, subnet configuration, and security rules were unchanged.
+The test state has no managed resources remaining.
+
+A separate follow-up audit covered all three Chicago availability domains and
+all accessible compartments. It found one running VPN server and one 50 GB
+boot volume attached to that server, with no other nonterminated VMs or boot
+volumes.
 
 ## 2026-10-27: v0.0.2, Ubuntu 24.04 arm64
 

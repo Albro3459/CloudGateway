@@ -12,7 +12,7 @@ public IP. The VCN, subnet, and security list are managed elsewhere.
 Linux is Mesh-first, unlike macOS and iOS. Full mode is experimental and may
 need provider-specific DHCP/DNS configuration. In particular, an OCI DHCP DNS
 search domain can block Full. Use `cloudgateway doctor` to inspect the host.
-The Mesh default is in the next release; v0.0.2 and earlier default to Full.
+Version 0.0.3 defaults to Mesh; v0.0.2 and earlier default to Full.
 
 ## Publish a test release
 
@@ -40,12 +40,17 @@ This folder has its own state, separate from the regional servers.
 | Setting | Values |
 | --- | --- |
 | `arch` | `arm64` uses `VM.Standard.A1.Flex` with 1 OCPU and 1 GB. `amd64` uses `VM.Standard.E2.1.Micro` with 1/8 OCPU and 1 GB |
+| `amd64_shape` | Defaults to `VM.Standard.E2.1.Micro`. Use `VM.Standard.E4.Flex` for a paid AMD fallback with 1 OCPU and 1 GB when the free shape is unavailable |
 | `ubuntu_version` | Any Ubuntu release OCI has an image for, such as `24.04` or `26.04` |
 | `release_version` | The `linux-v<version>` release to install |
 
-Both shapes are Always Free. `E2.1.Micro` is free only in the tenancy's home
-region. `A1.Flex` sometimes fails with "Out of host capacity". Retry later or
-switch `arch`.
+The default A1 and E2 shapes are Always Free. `E2.1.Micro` is free only in the
+tenancy's home region. `A1.Flex` sometimes fails with "Out of host capacity".
+Retry later or switch `arch`.
+
+Some regions do not offer `E2.1.Micro`. Check shape availability before applying.
+The `E4.Flex` fallback is paid and must be selected explicitly, for example
+`terraform apply -var=arch=amd64 -var=amd64_shape=VM.Standard.E4.Flex`.
 
 Changing any setting replaces the VM on the next apply. So does a newer OCI
 image for that Ubuntu release. The plan shows the replacement.
