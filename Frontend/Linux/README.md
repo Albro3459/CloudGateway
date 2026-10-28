@@ -41,16 +41,16 @@ No desktop app or Firebase service-account credentials are required.
 
 ```sh
 cloudgateway auth login
-cloudgateway list
-cloudgateway up '<client-uuid>'
+cloudgateway ls -l
+cloudgateway up chicago 1
 cloudgateway status
 cloudgateway doctor
 cloudgateway down
 ```
 
-Approve the displayed device code in a browser on any device. To create a new
-client, use `cloudgateway add chicago 'Ubuntu VM'`, then list the clients to get
-its UUID. Region aliases such as `chicago` and `sanjose` are accepted.
+Approve the displayed device code in any browser. Use the row under Chicago,
+or a client UUID. Create a client with `cloudgateway add chicago 'Ubuntu VM'`,
+then rerun `ls -l`. Region aliases such as `chicago` and `sanjose` are accepted.
 
 `up` reports that the start was accepted; use `status` to confirm the observed
 tunnel state. The daemon continues accepted operations after the CLI or SSH

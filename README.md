@@ -125,8 +125,8 @@ time only, with no account/client identifiers or tunnel addresses.
 
 ```sh
 cloudgateway auth login
-cloudgateway list
-cloudgateway up '<client-uuid>'
+cloudgateway ls -l
+cloudgateway up chicago 1
 cloudgateway status
 cloudgateway down
 ```

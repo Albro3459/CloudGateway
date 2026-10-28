@@ -276,11 +276,11 @@ cloudgateway status                # VPN details, routing mode, and auth
 cloudgateway mode status           # Routing mode only; bare mode is shorthand
 cloudgateway mode mesh             # Mesh only, with ordinary internet outside the VPN
 cloudgateway mode full             # Internet and mesh through the VPN (default)
-cloudgateway list --region us-east-1
-cloudgateway list --refresh --json
+cloudgateway ls
+cloudgateway ls --refresh --json
 cloudgateway ls -l                 # VPN id, tunnel IP, connection URL, owner email
+cloudgateway up chicago 1          # Row 1 under Chicago
 cloudgateway up '<client-uuid>'
-cloudgateway up sanjose 1          # Also accepts us-sanjose-1 or California
 cloudgateway add sanjose "Mac mini"
 cloudgateway add us-sanjose-1 "Work Mac" --json
 cloudgateway up                    # This account's last selection
@@ -359,6 +359,7 @@ keeps Disconnect available while connect, refresh, and another add remain blocke
 `ls` aliases `list`. Rows show a region-local index starting at 1, client name
 and owner email, client UUID, and any connection/selection/unavailable state.
 `list --long` and `ls -l` show the iOS-style details without repeating the region.
+Filter by region with `cloudgateway ls -l --region chicago`.
 Connection URL prefers the server hostname, then IPv4. Saved configs without
 owner metadata show `Unknown` offline. Installation labels stay hidden.
 
