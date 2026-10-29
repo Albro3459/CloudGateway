@@ -2359,7 +2359,11 @@ final class CloudGatewayViewModelTests: XCTestCase {
         await waitUntil { viewModel.signedInUid == "u2" }
         await grantGate.open()
         await staleGrant.value
-        await waitUntil { !viewModel.isWorking && viewModel.signedInUid == "u2" }
+        await waitUntil {
+            !viewModel.isWorking
+                && viewModel.signedInUid == "u2"
+                && service.fetchRegionsCallCount > baselineFetches
+        }
 
         XCTAssertEqual(service.fetchRegionsCallCount, baselineFetches + 1)
     }

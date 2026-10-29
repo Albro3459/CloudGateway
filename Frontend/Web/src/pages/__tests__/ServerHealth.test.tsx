@@ -933,8 +933,11 @@ describe("ServerHealth", () => {
             region("us-chicago-1", "Chicago", false, 2),
         ]);
         runRegionsSync.mockResolvedValueOnce([]);
+        await waitFor(() => expect(
+            (screen.getByRole("button", { name: "Sync All Regions" }) as HTMLButtonElement).disabled
+        ).toBe(false));
         fireEvent.click(screen.getByRole("button", { name: "Sync All Regions" }));
-        fireEvent.click(screen.getByRole("button", { name: "Sync 2 regions" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Sync 2 regions" }));
 
         await waitFor(() => expect(
             (screen.getByLabelText("Mesh enabled for San Jose") as HTMLInputElement).checked
