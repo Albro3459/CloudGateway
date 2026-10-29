@@ -13,7 +13,7 @@ Targets: `web`, `api`, `firebase`, `infra`, `ios`, `macos`, `apple`, `linux`.
 Targets and independent checks run concurrently, including unsigned iOS/macOS
 pipelines. Add `--serial` for sequential execution. Live status appears in the
 terminal; full worker logs are saved under `.deps/test-runs/`, with failed output
-also printed. See [local test performance](../TODO/test-performance.md).
+also printed.
 
 ## Deploy the frontend
 
