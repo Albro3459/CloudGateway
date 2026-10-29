@@ -2324,7 +2324,9 @@ private actor MacControllerGate {
     fixture.controller.setSetupState(.ready)
     fixture.controller.start()
     defer { fixture.controller.shutdown() }
-    try await controllerWaitUntil { fixture.domainSnapshot.domain.observationIsFresh }
+    try await controllerWaitUntil {
+        fixture.domainSnapshot.domain.observationIsFresh && fixture.domainSnapshot.domain.stopAllowed == true
+    }
     let stop = MacControllerGate()
     await fixture.profiles.pauseStop(stop)
     var outcome: CloudGatewayMacCommandOutcome?

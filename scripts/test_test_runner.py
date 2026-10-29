@@ -67,6 +67,7 @@ class TestRunnerTests(unittest.TestCase):
         text = SCRIPT.read_text()
         start = text.index("run_step() {")
         runner = text[start:]
+        runner = runner.replace('PARALLEL_PROGRESS="$TEST_PARALLEL"', 'PARALLEL_PROGRESS=0')
         stubs = []
         for target in ("api", "web", "infra", "firebase", "linux", "ios", "macos"):
             outcome = "return 1" if target == failing else "return 0"
@@ -75,13 +76,23 @@ class TestRunnerTests(unittest.TestCase):
             stubs.append(
                 f'test_{target}() {{ echo "CALLED: {target} signed=$APPLE_SIGNED"; {outcome}; }}'
             )
-        harness = "\n".join(["set -uo pipefail", "FAILURES=()", "APPLE_SIGNED=0", *stubs, runner])
-        return subprocess.run(
-            ["/bin/bash", "-c", harness, "test.sh", *arguments],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            harness = "\n".join([
+                "set -uo pipefail", "FAILURES=()", "APPLE_SIGNED=0", "TEST_PARALLEL=1",
+                f"ROOT={shlex.quote(directory)}",
+                'ensure_api_python_tools() { echo "SETUP: python"; return 0; }',
+                "apple_wireguard_tests() { return 0; }",
+                "apple_kit_tests() { return 0; }",
+                "apple_firebase_tests() { return 0; }",
+                "apple_macos_core_tests() { return 0; }",
+                *stubs, runner,
+            ])
+            return subprocess.run(
+                ["/bin/bash", "-c", harness, "test.sh", *arguments],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
     def called(self, result: subprocess.CompletedProcess[str]) -> list[str]:
         return [line.split()[1] for line in result.stdout.splitlines() if line.startswith("CALLED:")]
@@ -96,6 +107,18 @@ class TestRunnerTests(unittest.TestCase):
         result = self.run_targets("apple")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.called(result), ["ios", "macos"])
+
+    def test_shared_python_setup_finishes_once_before_workers_start(self):
+        result = self.run_targets("api", "infra", "firebase")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("SETUP: python"), 1)
+        self.assertLess(result.stdout.index("SETUP: python"), result.stdout.index("Starting:"))
+        self.assertNotIn("SETUP: python", self.run_targets("apple").stdout)
+
+    def test_firebase_waits_for_short_checks_even_when_requested_first(self):
+        result = self.run_targets("firebase", "api", "web", "infra")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.called(result), ["api", "web", "infra", "firebase"])
 
     def test_platform_targets_run_independently(self):
         for target in ("ios", "macos", "linux"):
@@ -162,21 +185,101 @@ class TestRunnerTests(unittest.TestCase):
         self.assertNotEqual(keys[0], keys[1])
 
 
+class ParallelRunnerTests(unittest.TestCase):
+    def run_workers(self, setup: str, *, serial: bool = False) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            return run_shell(
+                ("run_check", "run_step", "run_parallel"),
+                'run_parallel first second; echo "RESULT: $?"',
+                setup=f'TEST_RUN_DIR="$ROOT"\nTEST_PARALLEL={int(not serial)}\n' + setup,
+                root=Path(directory),
+            )
+
+    def test_workers_overlap_with_separate_working_directories(self):
+        result = self.run_workers(textwrap.dedent('''\
+            rendezvous() {
+              mkdir -p "$ROOT/$1"
+              cd "$ROOT/$1" || return 1
+              touch "$ROOT/$1.started"
+              python3 -c 'import pathlib,sys,time
+            marker = pathlib.Path(sys.argv[1])
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            sys.exit(0 if marker.exists() else 1)' "$ROOT/$2.started" || return 1
+              echo "CWD: $PWD"
+            }
+            first() { rendezvous one two; }
+            second() { rendezvous two one; }
+        '''))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESULT: 0", result.stdout)
+        self.assertRegex(result.stdout, r"CWD: .*/one")
+        self.assertRegex(result.stdout, r"CWD: .*/two")
+        self.assertEqual(failures(result), [])
+
+    def test_worker_failure_is_collected_even_when_callback_returns_success(self):
+        result = self.run_workers('''
+            first() { run_check "early failure" false; run_check "later check" true; }
+            second() { run_check "sibling check" true; }
+        ''')
+        self.assertIn("RESULT: 1", result.stdout)
+        self.assertIn("OK: later check", result.stdout)
+        self.assertIn("OK: sibling check", result.stdout)
+        self.assertEqual(failures(result), ["early failure"])
+
+    def test_abrupt_worker_exit_still_waits_for_sibling_and_fails(self):
+        result = self.run_workers('''
+            first() { exit 23; }
+            second() { run_check "sibling check" true; }
+        ''')
+        self.assertIn("RESULT: 1", result.stdout)
+        self.assertIn("OK: sibling check", result.stdout)
+        self.assertEqual(failures(result), ["first"])
+
+    def test_serial_mode_preserves_failures_and_runs_later_workers(self):
+        result = self.run_workers('''
+            first() { run_check "early failure" false; return 0; }
+            second() { run_check "sibling check" true; }
+        ''', serial=True)
+        self.assertIn("RESULT: 1", result.stdout)
+        self.assertIn("OK: sibling check", result.stdout)
+        self.assertEqual(failures(result), ["early failure"])
+
+    def test_serial_workers_start_from_the_same_directory(self):
+        result = self.run_workers('''
+            first() { mkdir "$ROOT/one"; cd "$ROOT/one"; }
+            second() { run_check "initial directory" test "$PWD" -ef "$ROOT"; }
+        ''', serial=True)
+        self.assertIn("RESULT: 0", result.stdout)
+        self.assertEqual(failures(result), [])
+
+
 class AppleRunnerTests(unittest.TestCase):
     def run_apple(
         self,
-        body: str = 'for platform in ios macos; do status=0; "test_$platform" || status=$?; echo "RESULT: $platform $status"; done',
+        body: str = 'status=0; test_apple_targets || status=$?; echo "RESULT: $status"',
         *,
+        targets: tuple[str, ...] = ("ios", "macos"),
         periphery_failure: str = "",
         swift_failure: str = "",
         missing_periphery: bool = False,
         fail_wireguard: bool = False,
+        signed: bool = False,
+        signing_failure: str = "",
+        xcode_failure: str = "",
+        serial: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         setup = "\n".join([
+            f"APPLE_TARGETS=({' '.join(shlex.quote(target) for target in targets)})",
+            f"APPLE_SIGNED={int(signed)}",
+            f"TEST_PARALLEL={int(not serial)}",
             f"PERIPHERY_FAILURE={shlex.quote(periphery_failure)}",
             f"SWIFT_FAILURE={shlex.quote(swift_failure)}",
             f"MISSING_PERIPHERY={int(missing_periphery)}",
             f"FAIL_WIREGUARD={int(fail_wireguard)}",
+            f"SIGNING_FAILURE={shlex.quote(signing_failure)}",
+            f"XCODE_FAILURE={shlex.quote(xcode_failure)}",
             textwrap.dedent('''\
                 command() {
                   if [[ "$*" == '-v periphery' && "$MISSING_PERIPHERY" -eq 1 ]]; then
@@ -189,9 +292,19 @@ class AppleRunnerTests(unittest.TestCase):
                   if [[ -n "$PERIPHERY_FAILURE" && "$*" == *"$PERIPHERY_FAILURE"* ]]; then
                     return 1
                   fi
+                  local previous="" argument
+                  for argument in "$@"; do
+                    if [[ "$previous" == --project-root ]]; then
+                      touch "$TEST_RUN_DIR/${argument##*/}.scanned"
+                    fi
+                    previous="$argument"
+                  done
                 }
                 swift() {
                   trace swift "$@"
+                  if [[ "$*" == *--skip-build* ]]; then
+                    [[ -f "$TEST_RUN_DIR/${3##*/}.scanned" ]] || return 99
+                  fi
                   if [[ -n "$SWIFT_FAILURE" && "$*" == *"$SWIFT_FAILURE"* ]]; then
                     return 1
                   fi
@@ -199,20 +312,37 @@ class AppleRunnerTests(unittest.TestCase):
                 make() { trace make "$@"; return "$FAIL_WIREGUARD"; }
                 bash() { trace bash "$@"; }
                 python3() { trace python3 "$@"; }
-                xcodebuild() { trace xcodebuild "$@"; }
+                xcodebuild() {
+                  trace xcodebuild "$@"
+                  if [[ -n "$XCODE_FAILURE" && "$*" == *"$XCODE_FAILURE"* && "$*" == *' build' ]]; then
+                    return 1
+                  fi
+                }
+                check_apple_signing_prerequisites() {
+                  trace signing ios
+                  [[ "$SIGNING_FAILURE" != ios ]]
+                }
+                check_macos_signing_prerequisites() {
+                  trace signing macos
+                  [[ "$SIGNING_FAILURE" != macos ]]
+                }
             '''),
         ])
-        return run_shell(
-            (
-                "run_check", "scan_apple_dead_code", "scan_macos_dead_code",
-                "run_apple_package_tests", "test_apple_shared_packages", "test_ios", "test_macos",
-            ),
-            body,
-            setup=setup,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            return run_shell(
+                (
+                    "run_check", "run_step", "run_parallel", "scan_apple_dead_code",
+                    "scan_macos_dead_code", "run_apple_package_tests", "test_apple_package",
+                    "apple_wireguard_tests", "apple_kit_tests", "apple_firebase_tests",
+                    "apple_macos_core_tests", "test_ios", "test_macos",
+                    "test_apple_projects", "test_apple_targets",
+                ),
+                body,
+                setup=f"TEST_RUN_DIR={shlex.quote(directory)}\n" + setup,
+            )
 
     def assert_package_tests(
-        self, result: subprocess.CompletedProcess[str], skipped: tuple[bool, bool, bool]
+        self, result: subprocess.CompletedProcess[str], skipped: tuple[bool, ...]
     ) -> None:
         packages = (
             "Frontend/Apple/CloudGatewayKit",
@@ -222,10 +352,12 @@ class AppleRunnerTests(unittest.TestCase):
         expected = []
         for package, skip_build in zip(packages, skipped):
             args = ["test", "--package-path", package, "--build-system", "native"]
+            if package.endswith("CloudGatewayMacCore"):
+                args.extend(["--experimental-maximum-parallelization-width", "8"])
             if skip_build:
                 args.append("--skip-build")
             expected.append(args)
-        self.assertEqual(tool_calls(result, "swift"), expected)
+        self.assertCountEqual(tool_calls(result, "swift"), expected)
 
     def test_successful_scans_supply_only_the_matching_package_builds(self):
         result = self.run_apple()
@@ -233,53 +365,68 @@ class AppleRunnerTests(unittest.TestCase):
         self.assert_package_tests(result, (True, True, True))
         self.assertEqual(len(tool_calls(result, "make")), 1)
         self.assertEqual(failures(result), [])
-        self.assertIn("RESULT: ios 0", result.stdout)
-        self.assertIn("RESULT: macos 0", result.stdout)
+        self.assertIn("RESULT: 0", result.stdout)
 
     def test_macos_alone_builds_shared_packages_and_reuses_its_own_scan(self):
-        result = self.run_apple('status=0; test_macos || status=$?; echo "RESULT: $status"')
+        result = self.run_apple(targets=("macos",))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_package_tests(result, (False, False, True))
         self.assertEqual(len(tool_calls(result, "periphery")), 2)
+        self.assertTrue(all(
+            "--project-root" not in scan or "CloudGatewayMacCore" in " ".join(scan)
+            for scan in tool_calls(result, "periphery")
+        ))
+        self.assertTrue(all("/iOS/" not in " ".join(call) for call in tool_calls(result, "xcodebuild")))
+        self.assertEqual(failures(result), [])
+        self.assertIn("RESULT: 0", result.stdout)
+
+    def test_ios_alone_omits_macos_core_and_project(self):
+        result = self.run_apple(targets=("ios",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_package_tests(result, (True, True))
+        self.assertEqual(len(tool_calls(result, "periphery")), 3)
+        self.assertTrue(all("/macOS/" not in " ".join(call) for call in tool_calls(result, "xcodebuild")))
         self.assertEqual(failures(result), [])
         self.assertIn("RESULT: 0", result.stdout)
 
     def test_failed_package_scan_builds_that_package_and_runs_all_other_tests(self):
         scans = (
-            ("CloudGatewayKit", "Apple dead code: Kit tests", (False, True, True), "ios"),
-            ("CloudGatewayFirebaseAdapter", "Apple dead code: Firebase adapter tests", (True, False, True), "ios"),
-            ("CloudGatewayMacCore", "macOS dead code: host-free tests", (True, True, False), "macos"),
+            ("CloudGatewayKit", "Apple dead code: Kit tests", (False, True, True)),
+            ("CloudGatewayFirebaseAdapter", "Apple dead code: Firebase adapter tests", (True, False, True)),
+            ("CloudGatewayMacCore", "macOS dead code: host-free tests", (True, True, False)),
         )
-        for package, name, skipped, platform in scans:
+        for package, name, skipped in scans:
             with self.subTest(package=package):
                 result = self.run_apple(periphery_failure=package)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_package_tests(result, skipped)
                 self.assertEqual(len(tool_calls(result, "periphery")), 5)
                 self.assertEqual(failures(result), [name])
-                self.assertIn(f"RESULT: {platform} 1", result.stdout)
+                self.assertIn("RESULT: 1", result.stdout)
+                self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
 
     def test_missing_periphery_builds_and_runs_all_packages(self):
         result = self.run_apple(missing_periphery=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_package_tests(result, (False, False, False))
         self.assertEqual(tool_calls(result, "periphery"), [])
-        self.assertIn("skipping Apple dead-code scans", result.stderr)
-        self.assertIn("skipping macOS dead-code scans", result.stderr)
+        self.assertIn("skipping Apple dead-code scans", result.stdout)
+        self.assertIn("skipping macOS dead-code scans", result.stdout)
         self.assertEqual(failures(result), [])
+        self.assertIn("RESULT: 0", result.stdout)
 
     def test_all_failed_scans_still_build_and_run_every_package(self):
         result = self.run_apple(periphery_failure="--strict")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_package_tests(result, (False, False, False))
         self.assertEqual(len(tool_calls(result, "periphery")), 5)
-        self.assertEqual(failures(result), [
+        self.assertCountEqual(failures(result), [
             "Apple dead code: app project", "Apple dead code: Kit tests",
             "Apple dead code: Firebase adapter tests", "macOS dead code: app and extension",
             "macOS dead code: host-free tests",
         ])
-        self.assertIn("RESULT: ios 1", result.stdout)
-        self.assertIn("RESULT: macos 1", result.stdout)
+        self.assertIn("RESULT: 1", result.stdout)
+        self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
 
     def test_strict_scan_and_swift_failures_remain_recorded(self):
         result = self.run_apple(
@@ -287,11 +434,11 @@ class AppleRunnerTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_package_tests(result, (True, True, True))
-        self.assertEqual(failures(result), [
+        self.assertCountEqual(failures(result), [
             "Apple dead code: app project", "Apple Kit and AppCore package tests",
         ])
-        self.assertIn("RESULT: ios 1", result.stdout)
-        self.assertIn("RESULT: macos 1", result.stdout)
+        self.assertIn("RESULT: 1", result.stdout)
+        self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
 
     def test_production_scan_arguments_and_configs_are_unchanged(self):
         result = self.run_apple()
@@ -299,14 +446,13 @@ class AppleRunnerTests(unittest.TestCase):
         scans = tool_calls(result, "periphery")
         root = SCRIPT.parent.parent
         self.assertEqual(len(scans), 5)
-        self.assertEqual(scans[0], [
+        expected = [[
             "scan", "--quiet", "--strict",
             "--config", str(root / "Frontend/Apple/.periphery.yml"),
             "--project", str(root / "Frontend/Apple/iOS/CloudGateway.xcodeproj"),
             "--schemes", "CloudGateway", "--schemes", "CloudGatewayScreenshots",
             "--report-exclude", "**/wireguard-apple/**",
-        ])
-        self.assertEqual(scans[3], [
+        ], [
             "scan", "--quiet", "--strict",
             "--config", str(root / "Frontend/Apple/macOS/.periphery.yml"),
             "--project", str(root / "Frontend/Apple/macOS/CloudGateway.xcodeproj"),
@@ -315,51 +461,162 @@ class AppleRunnerTests(unittest.TestCase):
             "--report-include", "**/CloudGatewayDeviceAuthClient.swift",
             "--report-include", "**/CloudGatewayCustomTokenAuthServicing.swift",
             "--report-include", "**/CloudGatewayFirebaseCustomTokenSession.swift",
-        ])
-        for index, package, config in (
-            (1, "Frontend/Apple/CloudGatewayKit", "Frontend/Apple/.periphery.yml"),
-            (2, "Frontend/Apple/CloudGatewayFirebaseAdapter", "Frontend/Apple/.periphery.yml"),
-            (4, "Frontend/Apple/macOS/CloudGatewayMacCore", "Frontend/Apple/macOS/.periphery.yml"),
+        ]]
+        for package, config in (
+            ("Frontend/Apple/CloudGatewayKit", "Frontend/Apple/.periphery.yml"),
+            ("Frontend/Apple/CloudGatewayFirebaseAdapter", "Frontend/Apple/.periphery.yml"),
+            ("Frontend/Apple/macOS/CloudGatewayMacCore", "Frontend/Apple/macOS/.periphery.yml"),
         ):
-            self.assertEqual(scans[index], [
+            expected.append([
                 "scan", "--quiet", "--strict", "--config", str(root / config),
                 "--project-root", str(root / package), "--report-include", "**/Tests/**",
                 "--", "--build-system", "native",
             ])
+        self.assertCountEqual(scans, expected)
 
-    def run_shared_packages(self, fail_kit: bool, fail_wireguard: bool = False) -> subprocess.CompletedProcess[str]:
-        return self.run_apple(
-            'for iteration in 1 2; do status=0; test_apple_shared_packages || status=$?; echo "RESULT: $status"; done',
-            swift_failure="CloudGatewayKit" if fail_kit else "",
-            fail_wireguard=fail_wireguard,
-        )
+    def test_package_scans_precede_their_matching_tests(self):
+        for serial in (False, True):
+            for periphery_failure in ("", "--strict"):
+                with self.subTest(serial=serial, periphery_failure=periphery_failure):
+                    result = self.run_apple(serial=serial, periphery_failure=periphery_failure)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assert_package_tests(result, (not periphery_failure,) * 3)
+                    self.assertEqual(len(failures(result)), 5 if periphery_failure else 0)
+                    calls = [
+                        line.split("\t")[1:]
+                        for line in result.stdout.splitlines() if line.startswith("CALL\t")
+                    ]
+                    for package in (
+                        "Frontend/Apple/CloudGatewayKit",
+                        "Frontend/Apple/CloudGatewayFirebaseAdapter",
+                        "Frontend/Apple/macOS/CloudGatewayMacCore",
+                    ):
+                        scan = next(
+                            index for index, call in enumerate(calls)
+                            if call[0] == "periphery" and str(SCRIPT.parent.parent / package) in call
+                        )
+                        test = next(
+                            index for index, call in enumerate(calls)
+                            if call[0] == "swift" and package in call
+                        )
+                        self.assertLess(scan, test, package)
 
     def test_shared_packages_run_once_for_both_platforms(self):
-        result = self.run_shared_packages(fail_kit=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(tool_calls(result, "make")), 1)
-        self.assertEqual(len(tool_calls(result, "swift")), 2)
-        self.assertEqual(result.stdout.count("RESULT: 0"), 2)
-        self.assertEqual(failures(result), [])
+        for targets in (("ios", "macos"), ("macos", "ios")):
+            for serial in (False, True):
+                with self.subTest(targets=targets, serial=serial):
+                    result = self.run_apple(targets=targets, serial=serial)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(tool_calls(result, "make"), [["-C", "Frontend/Apple/wireguard-apple", "test"]])
+                    self.assert_package_tests(result, (True, True, True))
+                    self.assertEqual(len(tool_calls(result, "periphery")), 5)
+                    self.assertEqual(failures(result), [])
+                    self.assertIn("RESULT: 0", result.stdout)
 
-    def test_shared_failure_is_cached_without_skipping_other_package(self):
-        result = self.run_shared_packages(fail_kit=True)
+    def test_shared_failure_does_not_skip_other_packages_or_platforms(self):
+        result = self.run_apple(swift_failure="CloudGatewayKit")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(tool_calls(result, "make")), 1)
-        self.assertEqual(len(tool_calls(result, "swift")), 2)
-        self.assertIn("Apple Firebase auth adapter tests", result.stdout)
-        self.assertEqual(result.stdout.count("RESULT: 1"), 2)
+        self.assert_package_tests(result, (True, True, True))
+        self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
+        self.assertIn("RESULT: 1", result.stdout)
         self.assertEqual(failures(result), ["Apple Kit and AppCore package tests"])
 
-    def test_wireguard_failure_is_cached_without_skipping_shared_packages(self):
-        result = self.run_shared_packages(fail_kit=False, fail_wireguard=True)
+    def test_wireguard_failure_does_not_skip_packages_or_platforms(self):
+        result = self.run_apple(fail_wireguard=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(tool_calls(result, "make")), 1)
-        self.assertEqual(len(tool_calls(result, "swift")), 2)
-        self.assertIn("Apple Kit and AppCore package tests", result.stdout)
-        self.assertIn("Apple Firebase auth adapter tests", result.stdout)
-        self.assertEqual(result.stdout.count("RESULT: 1"), 2)
+        self.assert_package_tests(result, (True, True, True))
+        self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
+        self.assertIn("RESULT: 1", result.stdout)
         self.assertEqual(failures(result), ["Apple WireGuard startup regressions"])
+
+    def test_each_platform_scan_precedes_its_project_build(self):
+        result = self.run_apple()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [
+            line.split("\t")[1:]
+            for line in result.stdout.splitlines() if line.startswith("CALL\t")
+        ]
+        for project in (
+            "Frontend/Apple/iOS/CloudGateway.xcodeproj",
+            "Frontend/Apple/macOS/CloudGateway.xcodeproj",
+        ):
+            with self.subTest(project=project):
+                scan = next(
+                    index for index, call in enumerate(calls)
+                    if call[0] == "periphery" and str(SCRIPT.parent.parent / project) in call
+                )
+                build = next(
+                    index for index, call in enumerate(calls)
+                    if call[0] == "xcodebuild" and project in call and call[-1] == "build"
+                )
+                self.assertLess(scan, build)
+
+    def test_signed_and_unsigned_builds_keep_platform_signing_options(self):
+        for signed in (False, True):
+            with self.subTest(signed=signed):
+                result = self.run_apple(signed=signed)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(failures(result), [])
+                self.assertIn("RESULT: 0", result.stdout)
+                builds = [call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]
+                configuration = "Release" if signed else "Debug"
+                signing = ["-allowProvisioningUpdates"] if signed else ["CODE_SIGNING_ALLOWED=NO"]
+                derived_data = SCRIPT.parent.parent / "Frontend/Apple/macOS/.build/Xcode"
+                self.assertCountEqual(builds, [
+                    [
+                        "-project", "Frontend/Apple/iOS/CloudGateway.xcodeproj",
+                        "-scheme", "CloudGateway", "-configuration", configuration,
+                        "-destination", "generic/platform=iOS", *signing, "build",
+                    ],
+                    [
+                        "-project", "Frontend/Apple/macOS/CloudGateway.xcodeproj",
+                        "-scheme", "CloudGateway", "-configuration", configuration,
+                        "-destination", "platform=macOS,arch=arm64" if signed else "generic/platform=macOS",
+                        "-derivedDataPath", str(derived_data), "ARCHS=arm64", *signing, "build",
+                    ],
+                ])
+                self.assertCountEqual(tool_calls(result, "signing"), [["ios"], ["macos"]] if signed else [])
+                verifications = [call for call in tool_calls(result, "python3")
+                                 if call[0] == "scripts/verify_macos_build.py"]
+                self.assertEqual(verifications, [[
+                    "scripts/verify_macos_build.py",
+                    str(derived_data / f"Build/Products/{configuration}/CloudGateway.app"),
+                    *(["--signed"] if signed else []), "--cli-smoke",
+                ]])
+
+    def test_signing_failure_skips_only_that_platform_build(self):
+        for platform, name in (
+            ("ios", "Apple signing prerequisites"),
+            ("macos", "macOS signing prerequisites"),
+        ):
+            with self.subTest(platform=platform):
+                result = self.run_apple(signed=True, signing_failure=platform)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(failures(result), [name])
+                self.assert_package_tests(result, (True, True, True))
+                builds = [call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]
+                other = "macOS" if platform == "ios" else "iOS"
+                self.assertEqual(len(builds), 1)
+                self.assertIn(f"Frontend/Apple/{other}/CloudGateway.xcodeproj", builds[0])
+                self.assertIn("RESULT: 1", result.stdout)
+
+    def test_project_build_failure_does_not_skip_other_platform(self):
+        for platform, name in (
+            ("iOS", "Apple unsigned no-device iOS build"),
+            ("macOS", "macOS Debug arm64 app and system extension build"),
+        ):
+            with self.subTest(platform=platform):
+                result = self.run_apple(xcode_failure=f"/{platform}/")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(failures(result), [name])
+                self.assert_package_tests(result, (True, True, True))
+                self.assertEqual(len([call for call in tool_calls(result, "xcodebuild") if call[-1] == "build"]), 2)
+                self.assertIn("RESULT: 1", result.stdout)
+                verifications = [call for call in tool_calls(result, "python3")
+                                 if call[0] == "scripts/verify_macos_build.py"]
+                self.assertEqual(len(verifications), int(platform == "iOS"))
 
 
 class APIPythonToolsTests(unittest.TestCase):
@@ -569,9 +826,10 @@ class InfraRunnerTests(unittest.TestCase):
             )
             pyright.chmod(0o755)
             result = run_shell(
-                ("run_check", "run_pyright", "test_infra", "run_step"),
+                ("run_check", "run_pyright", "infra_validation", "test_infra", "run_step", "run_parallel"),
                 'status=0; run_step "Infra validation" test_infra || status=$?; echo "RESULT: $status"',
                 setup=textwrap.dedent('''\
+                    TEST_RUN_DIR="$ROOT"
                     ensure_api_python_tools() { return 0; }
                     python3() { trace python3 "$@"; }
                     terraform() { trace terraform "$@"; }

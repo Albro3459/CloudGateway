@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/test.sh            # run everything (Apple builds unsigned)
 #   ./scripts/test.sh --signed   # run everything with signed Apple builds
+#   ./scripts/test.sh --serial   # run the same checks sequentially
 #   ./scripts/test.sh api        # API only
 #   ./scripts/test.sh ios        # iOS tests + unsigned no-device iOS build
 #   ./scripts/test.sh ios --signed  # iOS tests + signed no-device iOS build
@@ -27,10 +28,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAILURES=()
 API_PYTHON_TOOLS_READY=0
 APPLE_SIGNED=0
-APPLE_SHARED_TEST_STATUS=-1
-APPLE_KIT_TESTS_BUILT=0
-APPLE_FIREBASE_TESTS_BUILT=0
-MACOS_CORE_TESTS_BUILT=0
+TEST_PARALLEL=1
 
 # Run a named command, recording it in FAILURES on failure. Never aborts, so
 # later steps still run. Returns the command's exit code.
@@ -39,11 +37,14 @@ run_check() {
   shift
   local started=$SECONDS
   echo "--- $name ---"
+  if [[ "${PARALLEL_PROGRESS:-0}" -eq 1 ]]; then echo "--- $name ---" >&3; fi
   if "$@"; then
     echo "OK: $name ($((SECONDS - started))s)"
+    if [[ "${PARALLEL_PROGRESS:-0}" -eq 1 ]]; then echo "OK: $name ($((SECONDS - started))s)" >&3; fi
     return 0
   fi
   echo "FAILED: $name ($((SECONDS - started))s)" >&2
+  if [[ "${PARALLEL_PROGRESS:-0}" -eq 1 ]]; then echo "FAILED: $name ($((SECONDS - started))s)" >&3; fi
   FAILURES+=("$name")
   return 1
 }
@@ -78,6 +79,9 @@ PY
 ensure_api_python_tools() {
   cd "$ROOT/Backend/API" || return 1
 
+  if [[ "$API_PYTHON_TOOLS_READY" -eq -1 ]]; then
+    return 1
+  fi
   if [[ "$API_PYTHON_TOOLS_READY" -eq 1 ]]; then
     return 0
   fi
@@ -125,14 +129,11 @@ test_api() {
   ensure_api_python_tools || return 1
   cd "$ROOT/Backend/API" || return 1
 
-  run_check "API compile" ./.venv/bin/python -m compileall -q src tests
-  run_pyright "API pyright" Backend/API/src Backend/API/tests
-  cd "$ROOT/Backend/API" || return 1
-  # Dead-code enforcement via vulture (see [tool.vulture] in pyproject.toml),
-  # mirroring the Web knip and Apple Periphery scans: unused code fails the
-  # target. vulture reads its config from pyproject.toml when run from here.
-  run_check "API dead code (vulture)" ./.venv/bin/vulture
-  run_check "API pytest" ./.venv/bin/python -m pytest
+  api_compile() { run_check "API compile" ./.venv/bin/python -m compileall -q src tests; }
+  api_types() { run_pyright "API pyright" Backend/API/src Backend/API/tests; }
+  api_dead_code() { run_check "API dead code (vulture)" ./.venv/bin/vulture; }
+  api_tests() { run_check "API pytest" ./.venv/bin/python -m pytest; }
+  run_parallel api_compile api_types api_dead_code api_tests
 }
 
 test_web() {
@@ -144,12 +145,15 @@ test_web() {
     run_check "Web dependency install" npm install || return 1
   fi
 
-  run_check "Web Jest" env CI=true npm run test -- --watchAll=false --maxWorkers=2
-  run_check "Web TypeScript" npx tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/test-runner.tsbuildinfo
-  # Dead-code enforcement via knip (see Frontend/Web/knip.json), mirroring the
-  # Apple Periphery scans: unused files/exports/deps fail the target.
-  run_check "Web dead code (knip)" npx --no-install knip
-  run_check "Web production build" npm run build
+  # Generate CSS before readers start; the build below skips this lifecycle hook
+  run_check "Web styles" npm run prebuild
+  web_tests() { run_check "Web Jest" env CI=true npm run test -- --watchAll=false --maxWorkers=2; }
+  web_types() {
+    run_check "Web TypeScript" npx tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/test-runner.tsbuildinfo
+  }
+  web_dead_code() { run_check "Web dead code (knip)" npx --no-install knip; }
+  web_build() { run_check "Web production build" npm run build --ignore-scripts; }
+  run_parallel web_tests web_types web_dead_code web_build
 }
 
 test_firebase() {
@@ -161,11 +165,14 @@ test_firebase() {
     run_check "Firebase dependency install" npm install || return 1
   fi
 
-  run_check "Firebase schema and tests typecheck" npm run typecheck
-  run_pyright "Device auth tools pyright" scripts/device-auth-client.py scripts/test_device_auth_client.py scripts/test_firebase_emulators.py
-  cd "$ROOT" || return 1
-  run_check "Device auth test client" Backend/API/.venv/bin/python -m unittest scripts/test_device_auth_client.py
-  cd "$ROOT/Backend/Firebase" || return 1
+  firebase_types() {
+    run_check "Firebase schema and tests typecheck" npm run typecheck
+    run_pyright "Device auth tools pyright" scripts/device-auth-client.py scripts/test_device_auth_client.py scripts/test_firebase_emulators.py
+  }
+  firebase_client_tests() {
+    cd "$ROOT" || return 1
+    run_check "Device auth test client" Backend/API/.venv/bin/python -m unittest scripts/test_device_auth_client.py
+  }
 
   run_firebase_emulator_tests() {
     env FIREBASE_CLI_DISABLE_UPDATE_CHECK=true npm exec -- firebase emulators:exec --only auth,firestore --project demo-cloudgateway "../API/.venv/bin/python ../../scripts/test_firebase_emulators.py" 2> >(
@@ -174,7 +181,8 @@ test_firebase() {
   }
 
   # Both suites share one offline demo-project emulator lifetime
-  run_check "Firebase rules and API exchange tests" run_firebase_emulator_tests
+  firebase_emulators() { run_check "Firebase rules and API exchange tests" run_firebase_emulator_tests; }
+  run_parallel firebase_types firebase_client_tests firebase_emulators
 }
 
 check_apple_signing_prerequisites() {
@@ -196,12 +204,6 @@ check_apple_signing_prerequisites() {
   return 0
 }
 
-# Dead-code enforcement via Periphery, three strict scans (see
-# Frontend/Apple/.periphery.yml for why three): the app xcodeproj scan covers
-# all production code including unused public shared API, and the two SPM
-# scans (which build the test targets) cover dead test code. --strict makes
-# any finding fail the target. Keep SPM scans and tests on the native build
-# system so successful scans can supply the test executables
 scan_apple_dead_code() {
   if ! command -v periphery >/dev/null 2>&1; then
     echo "periphery not found; skipping Apple dead-code scans. Install: brew install periphery" >&2
@@ -215,54 +217,73 @@ scan_apple_dead_code() {
       --schemes CloudGateway --schemes CloudGatewayScreenshots \
       --report-exclude "**/wireguard-apple/**" ||
     failed=1
-  if run_check "Apple dead code: Kit tests" \
-    periphery scan --quiet --strict \
-      --config "$ROOT/Frontend/Apple/.periphery.yml" \
-      --project-root "$ROOT/Frontend/Apple/CloudGatewayKit" \
-      --report-include "**/Tests/**" -- --build-system native
-  then
-    APPLE_KIT_TESTS_BUILT=1
-  else
-    failed=1
-  fi
-  if run_check "Apple dead code: Firebase adapter tests" \
-    periphery scan --quiet --strict \
-      --config "$ROOT/Frontend/Apple/.periphery.yml" \
-      --project-root "$ROOT/Frontend/Apple/CloudGatewayFirebaseAdapter" \
-      --report-include "**/Tests/**" -- --build-system native
-  then
-    APPLE_FIREBASE_TESTS_BUILT=1
-  else
-    failed=1
-  fi
   return "$failed"
 }
 
 run_apple_package_tests() {
   local name="$1" package="$2" built="$3"
   local args=(--package-path "$package" --build-system native)
+  # Keep hundreds of MainActor tests from starving their own deadline workers
+  if [[ "$package" == Frontend/Apple/macOS/CloudGatewayMacCore ]]; then
+    args+=(--experimental-maximum-parallelization-width 8)
+  fi
   if [[ "$built" -eq 1 ]]; then
     args+=(--skip-build)
   fi
   run_check "$name" swift test "${args[@]}"
 }
 
-test_apple_shared_packages() {
-  if [[ "$APPLE_SHARED_TEST_STATUS" -ne -1 ]]; then
-    return "$APPLE_SHARED_TEST_STATUS"
+test_apple_package() {
+  local name="$1" package="$2" scan="$3" config="$4"
+  local built=0 failed=0
+  if [[ -n "$scan" ]]; then
+    if command -v periphery >/dev/null 2>&1; then
+      if run_check "$scan" \
+        periphery scan --quiet --strict --config "$ROOT/$config" \
+          --project-root "$ROOT/$package" --report-include "**/Tests/**" -- --build-system native
+      then
+        built=1
+      else
+        failed=1
+      fi
+    else
+      echo "periphery not found; skipping $scan. Install: brew install periphery" >&2
+    fi
   fi
+  # A failed scan still runs tests, with a normal build instead of --skip-build
+  run_apple_package_tests "$name" "$package" "$built" || failed=1
+  return "$failed"
+}
+
+apple_wireguard_tests() {
   cd "$ROOT" || return 1
-  APPLE_SHARED_TEST_STATUS=0
-  run_check "Apple WireGuard startup regressions" \
-    make -C Frontend/Apple/wireguard-apple test ||
-    APPLE_SHARED_TEST_STATUS=1
-  run_apple_package_tests "Apple Kit and AppCore package tests" \
-    Frontend/Apple/CloudGatewayKit "$APPLE_KIT_TESTS_BUILT" ||
-    APPLE_SHARED_TEST_STATUS=1
-  run_apple_package_tests "Apple Firebase auth adapter tests" \
-    Frontend/Apple/CloudGatewayFirebaseAdapter "$APPLE_FIREBASE_TESTS_BUILT" ||
-    APPLE_SHARED_TEST_STATUS=1
-  return "$APPLE_SHARED_TEST_STATUS"
+  run_check "Apple WireGuard startup regressions" make -C Frontend/Apple/wireguard-apple test
+}
+
+apple_kit_tests() {
+  cd "$ROOT" || return 1
+  local scan=""
+  if [[ " ${APPLE_TARGETS[*]} " == *" ios "* ]]; then
+    scan="Apple dead code: Kit tests"
+  fi
+  test_apple_package "Apple Kit and AppCore package tests" Frontend/Apple/CloudGatewayKit \
+    "$scan" Frontend/Apple/.periphery.yml
+}
+
+apple_firebase_tests() {
+  cd "$ROOT" || return 1
+  local scan=""
+  if [[ " ${APPLE_TARGETS[*]} " == *" ios "* ]]; then
+    scan="Apple dead code: Firebase adapter tests"
+  fi
+  test_apple_package "Apple Firebase auth adapter tests" Frontend/Apple/CloudGatewayFirebaseAdapter \
+    "$scan" Frontend/Apple/.periphery.yml
+}
+
+apple_macos_core_tests() {
+  cd "$ROOT" || return 1
+  test_apple_package "macOS host-free core and IPC tests" Frontend/Apple/macOS/CloudGatewayMacCore \
+    "macOS dead code: host-free tests" Frontend/Apple/macOS/.periphery.yml
 }
 
 test_ios() {
@@ -275,8 +296,6 @@ test_ios() {
 
   run_check "Apple release script syntax" \
     bash -n scripts/ios-release.sh ||
-    failed=1
-  test_apple_shared_packages ||
     failed=1
   run_check "Apple iOS project list" \
     xcodebuild -list -project Frontend/Apple/iOS/CloudGateway.xcodeproj ||
@@ -343,16 +362,6 @@ scan_macos_dead_code() {
       --report-include "**/CloudGatewayCustomTokenAuthServicing.swift" \
       --report-include "**/CloudGatewayFirebaseCustomTokenSession.swift" ||
     failed=1
-  if run_check "macOS dead code: host-free tests" \
-    periphery scan --quiet --strict \
-      --config "$ROOT/Frontend/Apple/macOS/.periphery.yml" \
-      --project-root "$ROOT/Frontend/Apple/macOS/CloudGatewayMacCore" \
-      --report-include "**/Tests/**" -- --build-system native
-  then
-    MACOS_CORE_TESTS_BUILT=1
-  else
-    failed=1
-  fi
   return "$failed"
 }
 
@@ -370,12 +379,7 @@ test_macos() {
   run_check "macOS release script syntax" bash -n scripts/macos-release.sh || failed=1
   run_check "macOS release workflow tests" \
     python3 -m unittest scripts/test_macos_release.py || failed=1
-  test_apple_shared_packages ||
-    failed=1
   scan_macos_dead_code || failed=1
-  run_apple_package_tests "macOS host-free core and IPC tests" \
-    Frontend/Apple/macOS/CloudGatewayMacCore "$MACOS_CORE_TESTS_BUILT" ||
-    failed=1
   run_check "macOS project list" \
     xcodebuild -list -project Frontend/Apple/macOS/CloudGateway.xcodeproj ||
     failed=1
@@ -422,23 +426,27 @@ check_linux_gofmt() {
 # Host-free Linux checks. Privileged route/DNS behavior needs real Ubuntu VMs
 test_linux() {
   cd "$ROOT/Frontend/Linux" || return 1
-  local failed=0
-  run_check "Linux Go format" check_linux_gofmt || failed=1
-  run_check "Linux installer syntax" bash -n install/install.sh || failed=1
-  run_check "Linux Go vet (host)" go vet ./... || failed=1
-  run_check "Linux Go vet (linux/amd64)" env GOOS=linux GOARCH=amd64 go vet ./... || failed=1
-  run_check "Linux Go vet (linux/arm64)" env GOOS=linux GOARCH=arm64 go vet ./... || failed=1
-  run_check "Linux Go tests" go test -race -count=1 ./... || failed=1
-  local arch
-  for arch in amd64 arm64; do
-    run_check "Linux $arch static build" \
-      env CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o /dev/null ./cmd/... ||
-      failed=1
-  done
-  return "$failed"
+  linux_style() {
+    run_check "Linux Go format" check_linux_gofmt
+    run_check "Linux installer syntax" bash -n install/install.sh
+  }
+  linux_vet() {
+    run_check "Linux Go vet (host)" go vet ./...
+    run_check "Linux Go vet (linux/amd64)" env GOOS=linux GOARCH=amd64 go vet ./...
+    run_check "Linux Go vet (linux/arm64)" env GOOS=linux GOARCH=arm64 go vet ./...
+  }
+  linux_tests() { run_check "Linux Go tests" go test -race -count=1 ./...; }
+  linux_builds() {
+    local arch
+    for arch in amd64 arm64; do
+      run_check "Linux $arch static build" \
+        env CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o /dev/null ./cmd/...
+    done
+  }
+  run_parallel linux_style linux_vet linux_tests linux_builds
 }
 
-test_infra() {
+infra_validation() {
   cd "$ROOT" || return 1
 
   run_check "Test runner routing and failure handling" python3 -m unittest scripts/test_test_runner.py
@@ -476,10 +484,6 @@ test_infra() {
   run_check "Caddy Dockerfile target asset" grep -Fq 'cloudgateway-caddy-linux-arm64' Infrastructure/OCI/caddy/Dockerfile
   run_check "Caddy Dockerfile rate limit module" grep -Fq 'github.com/mholt/caddy-ratelimit' Infrastructure/OCI/caddy/Dockerfile
 
-  run_pyright "Infra tools pyright" \
-    scripts/terraform-preflight.py scripts/test_terraform_preflight.py \
-    scripts/test_terraform_wrapper.py scripts/backup_firestore.py \
-    scripts/test_backup_firestore.py scripts/test_ios_release.py
   run_check "Terraform preflight compile" python3 -m py_compile scripts/terraform-preflight.py
   run_check "Terraform  preflight tests" python3 -m unittest scripts/test_terraform_preflight.py
   run_check "Terraform wrapper compile" python3 -m py_compile scripts/test_terraform_wrapper.py
@@ -493,6 +497,16 @@ test_infra() {
   # code path is validated locally instead of first failing during a release.
   run_check "iOS release compile" python3 -m py_compile scripts/test_ios_release.py
   run_check "iOS release tests" python3 -m unittest scripts/test_ios_release.py
+}
+
+test_infra() {
+  infra_types() {
+    run_pyright "Infra tools pyright" \
+      scripts/terraform-preflight.py scripts/test_terraform_preflight.py \
+      scripts/test_terraform_wrapper.py scripts/backup_firestore.py \
+      scripts/test_backup_firestore.py scripts/test_ios_release.py
+  }
+  run_parallel infra_validation infra_types
 }
 
 run_step() {
@@ -523,20 +537,114 @@ run_step() {
   return 0
 }
 
+# Each worker owns its cwd, failure list, and log. Merge every failure after wait
+run_parallel() {
+  if [[ "${TEST_PARALLEL:-1}" -eq 0 ]]; then
+    local job failed=0 directory="$PWD"
+    for job in "$@"; do
+      cd "$directory" || return 1
+      run_step "$job" "$job" || failed=1
+    done
+    cd "$directory" || return 1
+    return "$failed"
+  fi
+  local directory
+  if ! directory="$(mktemp -d "$TEST_RUN_DIR/group.XXXXXX")"; then
+    FAILURES+=("Parallel worker logs")
+    return 1
+  fi
+  local pids=() names=() job
+  for job in "$@"; do
+    echo "Starting: $job"
+    (
+      FAILURES=()
+      status=0
+      run_step "$job" "$job" || status=$?
+      if [[ ${#FAILURES[@]} -gt 0 ]]; then
+        printf '%s\n' "${FAILURES[@]}" > "$directory/$job.failures"
+      fi
+      exit "$status"
+    ) > "$directory/$job.log" 2>&1 &
+    pids+=("$!")
+    names+=("$job")
+  done
+  local index failed=0 failure status
+  for ((index=0; index<${#pids[@]}; index++)); do
+    job="${names[$index]}"
+    status=0
+    wait "${pids[$index]}" || status=$?
+    if [[ "$status" -ne 0 ]]; then
+      failed=1
+      if [[ ! -s "$directory/$job.failures" ]]; then
+        FAILURES+=("$job")
+      fi
+    fi
+    if [[ "${PARALLEL_PROGRESS:-0}" -eq 0 || "$status" -ne 0 || -s "$directory/$job.failures" ]]; then
+      cat "$directory/$job.log"
+    fi
+    if [[ -f "$directory/$job.failures" ]]; then
+      while IFS= read -r failure; do
+        FAILURES+=("$failure")
+        failed=1
+      done < "$directory/$job.failures"
+    fi
+  done
+  return "$failed"
+}
+
+test_service_targets() {
+  local jobs=() target failed=0
+  for target in "${SERVICE_TARGETS[@]}"; do
+    if [[ "$target" != firebase ]]; then jobs+=("test_$target"); fi
+  done
+  if [[ ${#jobs[@]} -gt 0 ]]; then
+    run_parallel "${jobs[@]}" || failed=1
+  fi
+  # Let short CPU-heavy checks finish before emulator transaction contention tests
+  if [[ " ${SERVICE_TARGETS[*]} " == *" firebase "* ]]; then
+    run_step firebase test_firebase || failed=1
+  fi
+  return "$failed"
+}
+
+test_apple_projects() {
+  local jobs=() target
+  for target in "${APPLE_TARGETS[@]}"; do
+    jobs+=("test_$target")
+  done
+  # Signing stays sequential; unsigned projects use separate DerivedData and scan caches
+  if [[ "$APPLE_SIGNED" -eq 1 ]]; then
+    local TEST_PARALLEL=0
+    run_parallel "${jobs[@]}"
+  else
+    run_parallel "${jobs[@]}"
+  fi
+}
+
+test_apple_targets() {
+  local jobs=(apple_wireguard_tests apple_kit_tests apple_firebase_tests)
+  if [[ " ${APPLE_TARGETS[*]} " == *" macos "* ]]; then
+    jobs+=(apple_macos_core_tests)
+  fi
+  jobs+=(test_apple_projects)
+  run_parallel "${jobs[@]}"
+}
+
 targets=()
 for arg in "$@"; do
   case "$arg" in
     --signed) APPLE_SIGNED=1 ;;
+    --serial) TEST_PARALLEL=0 ;;
     api|web|app|ios|macos|apple|infra|firebase|linux) targets+=("$arg") ;;
     *)
-      echo "Unknown target: $arg (expected: api, web, ios, macos, apple, infra, firebase, linux; optional flag: --signed)" >&2
+      echo "Unknown target: $arg (expected: api, web, ios, macos, apple, infra, firebase, linux; optional flags: --signed, --serial)" >&2
       exit 2
       ;;
   esac
 done
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-  # Apple builds run last and unsigned by default; pass --signed to sign.
+  # Targets overlap and Apple builds are unsigned by default; pass --signed to sign
   # Non-macOS/CI runners should pass explicit targets instead.
   targets=(api web infra firebase linux apple)
 fi
@@ -550,22 +658,47 @@ for target in "${targets[@]}"; do
   esac
 done
 
+# Finish shared environment writes before any Python consumers start
+for target in "${expanded_targets[@]}"; do
+  case "$target" in
+    api|infra|firebase)
+      ensure_api_python_tools || API_PYTHON_TOOLS_READY=-1
+      break
+      ;;
+  esac
+done
+
+mkdir -p "$ROOT/.deps/test-runs" || exit 1
+TEST_RUN_DIR="$(mktemp -d "$ROOT/.deps/test-runs/run.XXXXXX")" || exit 1
+echo "Parallel logs: $TEST_RUN_DIR"
+PARALLEL_PROGRESS="$TEST_PARALLEL"
+exec 3>&1
 completed_targets=" "
+jobs=()
+APPLE_TARGETS=()
+SERVICE_TARGETS=()
 for target in "${expanded_targets[@]}"; do
   if [[ "$completed_targets" == *" $target "* ]]; then
     continue
   fi
   completed_targets+="$target "
   case "$target" in
-    api) run_step "API tests (pyright + pytest + compile)" test_api ;;
-    web) run_step "Web tests + typecheck + build (jest + tsc + CRA)" test_web ;;
-    ios) run_step "iOS tests + no-device iOS build" test_ios ;;
-    macos) run_step "macOS tests + arm64 app and system extension build" test_macos ;;
-    infra) run_step "Infra validation (terraform + script parse)" test_infra ;;
-    firebase) run_step "Firebase schema, rules and API exchange tests (emulators)" test_firebase ;;
-    linux) run_step "Linux CLI and daemon tests + cross-builds" test_linux ;;
+    api|web|infra|firebase)
+      if [[ ${#SERVICE_TARGETS[@]} -eq 0 ]]; then
+        jobs+=(test_service_targets)
+      fi
+      SERVICE_TARGETS+=("$target")
+      ;;
+    ios|macos)
+      if [[ ${#APPLE_TARGETS[@]} -eq 0 ]]; then
+        jobs+=(test_apple_targets)
+      fi
+      APPLE_TARGETS+=("$target")
+      ;;
+    *) jobs+=("test_$target") ;;
   esac
 done
+run_parallel "${jobs[@]}"
 
 echo
 if [[ ${#FAILURES[@]} -gt 0 ]]; then

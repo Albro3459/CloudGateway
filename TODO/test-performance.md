@@ -3,10 +3,10 @@
 ## Scope
 
 Speed up the existing local test runner without dropping tests, scans, compiler
-checks, cross-builds, or signed packaging checks. Target execution remains serial.
-GitHub Actions and deployment workflows are outside this work.
+checks, cross-builds, or signed packaging checks. Independent checks and targets
+run concurrently. GitHub Actions and deployment workflows are outside this work.
 
-## Benchmark method
+## Initial serial benchmark method
 
 - Date: 2026-10-28
 - Branch: `test-performance`, based on `main` at `35a1fa6`
@@ -29,7 +29,7 @@ The following signed run reused that compilation. Treat that cache warm-up
 separately from improvements due to this change. Firebase integration tests also
 vary between runs because they exercise real emulator transactions.
 
-## Results
+## Initial serial results
 
 | Full suite | Baseline seconds | Optimized seconds | Result |
 | --- | ---: | ---: | --- |
@@ -119,3 +119,117 @@ Observed full-suite reductions were 53.241 seconds unsigned and 11.513 seconds
 signed. The signed result better reflects the remaining cost of Release builds
 and provisioning on this machine. The Apple production build commands are
 unchanged.
+
+## Parallel execution
+
+The default runner overlaps API, Web, infra, Linux, and Apple targets. Firebase
+follows the short API/Web/infra group while Linux and Apple continue, reducing
+CPU contention during emulator transactions. Within each target, independent
+tests, typechecks, dead-code scans, and builds also overlap. The concurrency graph is fixed by the selected targets. Jest
+keeps two workers. Linux vet passes stay in one worker, and its two cross-builds
+stay in another, alongside the forced race-enabled tests.
+
+The shared API environment is prepared before Python consumers start. Concurrent
+Pyright processes keep their existing explicit source lists and root config.
+Web CSS is generated before readers start, then the production build skips its
+already-completed prebuild lifecycle hook. Firebase retains one emulator lifetime
+and its existing sequential rules/API integration suites inside that lifetime.
+An all-at-once run hit emulator transaction lock timeouts in the five-writer
+rate-limit test. The scheduling barrier preserves its concurrent requests and
+exact response-count assertions.
+
+Apple work is split into independent workers:
+
+- WireGuard startup regressions, once per invocation
+- Kit scan followed by Kit/AppCore tests
+- Firebase adapter scan followed by adapter tests
+- macOS host-free scan followed by core/IPC tests, when macOS is selected
+- iOS production scan, project list, and app build
+- macOS production scan, project list, app build, and packaging verification
+
+Each package owns its scan result and reuses executables only after that scan
+succeeds. Failed scans still run normal test builds and remain failures. A
+macOS-only selection retains its earlier behavior: shared package tests run,
+but the two iOS package scans do not. Both platform production scans retain
+separate Periphery cache keys and indexes. Xcode builds keep their existing
+separate DerivedData locations, which also isolate WireGuard make outputs.
+Signed platform pipelines stay sequential. Signed builds were not benchmarked
+again for this concurrency work.
+
+Workers keep separate working directories, failure lists, and logs. The parent
+waits for every worker and collects all failures, including a worker that exits
+without writing a failure list. Live named-check status goes to the terminal.
+Full output stays under the ignored `.deps/test-runs/` directory, and failed
+worker output is printed. `--serial` runs the same checks sequentially and
+restores the starting directory between callbacks.
+
+Full concurrency exposed an existing deferred-auth test assertion race. The test
+now waits for the expected reload's region fetch before its unchanged exact-count
+assertion. A macOS login/stop test now waits for stop admission as well as fresh
+profile observation, so startup cancellation cleanup finishes before it submits
+the command. A React superseded-read test now waits for its pending write to
+release the Sync button before opening the confirmation dialog. Its existing
+state assertions remain. A macOS capacity test also hit its one-second deadline
+before its read workers ran, when hundreds of MainActor tests competed. The runner limits
+macOS core tests to eight concurrent cases, preserving assertions and deadlines.
+This uses Swift 6.3's
+[maximum-parallelization-width option](https://github.com/swiftlang/swift-package-manager/blob/swift-6.3-RELEASE/Sources/Commands/SwiftTestCommand.swift).
+
+Runner coverage includes real worker overlap, cwd isolation, failure collection,
+abrupt worker exit, aliases/deduplication, shared setup ordering, scan-before-test
+ordering, shared Apple work running once, scan failure fallback, per-platform
+selection, and signed/unsigned build and packaging arguments.
+
+## Parallel benchmark results
+
+Measured on the same M3 Mac with 24 GB RAM on 2026-10-28. Dependency and build
+caches stayed in place. Each run used the normal test entry point, measured with
+Python's monotonic clock. The final five full unsigned runs ran consecutively
+with the same code and no overlapping benchmark suites. No failure retries were
+added. Cold builds and signed Release builds are separate measurements.
+
+| Full unsigned suite | Seconds | Result |
+| --- | ---: | --- |
+| Serial reference (`--serial`) | 187.610 | Passed |
+| Target concurrency, sequential Apple | 120.111 | Passed |
+| Full parallel run 1 | 70.141 | Passed |
+| Full parallel run 2 | 54.055 | Passed |
+| Full parallel run 3 | 71.102 | Passed |
+| Full parallel run 4 | 53.083 | Passed |
+| Full parallel run 5 | 69.898 | Passed |
+| Parallel median | 69.898 | 5/5 passed |
+
+The median is 2.68 times faster than the serial reference, and
+3.58 times faster than the original 250.281-second unsigned baseline. The
+slowest final run was 71.102 seconds, below both the 120-second goal and the
+90-second stretch goal. These are warm local observations, not a cold-build or
+CI timing guarantee. The serial reference predates the last two test-readiness
+fixes and the Firebase scheduling barrier's additional regression test.
+
+Every final run completed all 76 named checks successfully: all 75 earlier
+checks, plus separately reported CSS generation that previously ran inside the
+Web prebuild hook. Counts were checked in every run: 616 API tests, 13 emulator
+integration tests, 303 Web tests, 280 Kit/AppCore XCTest cases and 266 Swift
+Testing cases, 31 adapter tests, 837 macOS core tests, and 40 runner regression
+tests. All five strict Periphery scans, compiler/type checks, production Web
+build, unsigned Apple builds, packaging verification, Linux race tests, vet
+passes, and both Linux cross-builds remain.
+
+Resource sampling used Mach CPU counters, IOKit GPU counters, and system swap
+usage at roughly two-second intervals. CPU peaked at 100% of all eight logical
+CPUs, with per-run averages from 55.9% to 71.6%. GPU utilization
+peaked at 1%, and every sampled swap-used value was zero. Individual checks can
+take longer under CPU contention even while the full suite finishes sooner.
+Firebase transaction retry timing accounts for much of the final variation.
+
+Raw timing logs, JSON results, and resource samples are under
+`.deps/test-performance/parallel-complete-1` through `parallel-complete-5`
+(`.log`, `.json`, and `-resources.jsonl`). The summary is
+`.deps/test-performance/parallel-summary.json`. Full worker logs remain in the
+per-invocation directories recorded there. The initial mixed baseline and
+failed development candidates are excluded from the comparison.
+
+Main Codex reviewed the scheduler and shared build state. Its serial-cwd finding
+was fixed and covered by a regression test. Secure Codex updated Apple runner
+coverage. All delegates used 6.1 Sol High. Final manual diff and whitespace
+review passed.
